@@ -312,7 +312,7 @@ biome format . → node scripts/check-boundaries.mjs → tsc --noEmit
 |---|---|---|
 | world 无保留/清理，历史只增 | I2 长跑或库文件膨胀 | 批 9 之前补 retention/清理 |
 | 事件 Watch 不可用（`ObservationCursor` 不覆盖 events） | 需要"等一条聊天/等受击"的程序 | 批 9（Program 的 waitUntil 依赖它） |
-| `ItemSelector.components` 未实现匹配 | 需要按组件区分物品（带魔咒/自定义名） | 批 3 或 K7 |
+| 新版本物品/协议差异 | 已验收的 1.21.11 之外版本接入 | 实现同一 DriverProtocol 窄端口并做该版本协议/真服验证；ItemSelector 当前已统一匹配组件、剩余耐久与替代名称 |
 | `world@1.difficulty` 常为 null | 需要按难度决策（饥饿伤害、刷怪） | 读并缓存 `game_state_change`，不做也能活 |
 | `vitest run tests/mc` 连带匹配 `tests/mcp-*` | 每次跑全量都会看到 2 例无关失败 | 顺手改成显式文件列表或调整测试目录 |
 | 拾取半径内才报 `dropped` | 需要"挖完就拿到"的强保证 | 由调用方 `goto` 到被挖格上方；已在 K1 场景固化为写法 |

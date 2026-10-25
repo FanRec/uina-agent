@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import {
 	buildEventPage,
 	decodeCursor,
@@ -19,6 +20,13 @@ import {
  */
 
 const scope = eventScopeOf("bind:t", "wld:t", "wldrev:t");
+const validate = buildCapabilities({
+	knowledge: () => null,
+	runtime: () => {
+		throw new Error("unused");
+	},
+	gotoDirector: {} as never,
+}).validators.get("events@1")!;
 
 function failureOf(run: () => unknown): CallFailure {
 	try {
@@ -31,20 +39,20 @@ function failureOf(run: () => unknown): CallFailure {
 
 describe("events 输入校验", () => {
 	test("cursor 不能与 kinds/after/limit 同时出现", () => {
-		const err = failureOf(() => parseEventInput({ cursor: "x", kinds: ["chat"] }));
+		const err = failureOf(() => validate({ cursor: "x", kinds: ["chat"] }));
 		expect(err.code).toBe("INVALID_INPUT");
 		expect(err.source).toBe("input");
 	});
 
 	test("kinds 不能为空数组；未知 kind 拒绝", () => {
-		expect(failureOf(() => parseEventInput({ kinds: [] })).code).toBe("INVALID_INPUT");
-		expect(failureOf(() => parseEventInput({ kinds: ["system"] })).code).toBe("INVALID_INPUT");
+		expect(failureOf(() => validate({ kinds: [] })).code).toBe("INVALID_INPUT");
+		expect(failureOf(() => validate({ kinds: ["system"] })).code).toBe("INVALID_INPUT");
 	});
 
 	test("limit 1..200，缺省 50", () => {
 		expect(parseEventInput({}).limit).toBe(50);
-		expect(failureOf(() => parseEventInput({ limit: 0 })).code).toBe("INVALID_INPUT");
-		expect(failureOf(() => parseEventInput({ limit: 201 })).code).toBe("INVALID_INPUT");
+		expect(failureOf(() => validate({ limit: 0 })).code).toBe("INVALID_INPUT");
+		expect(failureOf(() => validate({ limit: 201 })).code).toBe("INVALID_INPUT");
 	});
 });
 
@@ -78,6 +86,21 @@ describe("events 游标", () => {
 
 	test("伪造/损坏 token → INVALID_INPUT（不当作从头开始）", () => {
 		expect(failureOf(() => decodeCursor("not-base64-json", scope)).code).toBe("INVALID_INPUT");
+	});
+
+	test("decoded tokens reject malformed filters and numeric positions without coercing them", () => {
+		const base = { v: 1, partition: scope.partition, kinds: null, limit: 10, pos: 0, upper: 5 };
+		for (const change of [
+			{ kinds: "chat" },
+			{ kinds: ["system"] },
+			{ limit: 0 },
+			{ pos: 0.5 },
+			{ pos: -1 },
+			{ upper: -1 },
+		]) {
+			const token = Buffer.from(JSON.stringify({ ...base, ...change })).toString("base64url");
+			expect(failureOf(() => decodeCursor(token, scope)).code).toBe("INVALID_INPUT");
+		}
 	});
 
 	test("after 不能换过滤：kinds 与 token 不一致 → INVALID_INPUT", () => {

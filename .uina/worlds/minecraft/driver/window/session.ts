@@ -1,5 +1,4 @@
 /** Window Operation: authoritative server snapshots, guarded synchronous dispatch, exact listener retirement. */
-import { isDeepStrictEqual } from "node:util";
 import type {
 	BlockTarget,
 	EntityRef,
@@ -12,30 +11,19 @@ import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { EffectRecorder, fail, nowIso } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
-import { type NativeWindow, WindowWire } from "../mineflayer/window.js";
+import { type NativeWindow, type DriverProtocol, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
+import { jsonEqual, matchesItem } from "../../contracts/items.js";
 
 const RESPONSE_MS = 5000;
 type ClickInput = Parameters<WindowSession["click"]>[0];
-interface FullPacket {
-	windowId: number;
-	stateId: number;
-	items: unknown[];
-	carriedItem?: unknown;
-}
-interface SlotPacket {
-	windowId: number;
-	stateId: number;
-	slot: number;
-	item: unknown;
-}
-
 export interface WindowSessionDeps {
 	bot: MineflayerBot;
 	signal: AbortSignal;
 	operation: Ref;
 	connection: Ref;
 	incarnation: Ref;
-	target: BlockTarget | EntityRef;
+	target?: BlockTarget | EntityRef;
+	player?: boolean;
 	recorder: EffectRecorder;
 	mintOp(): Ref;
 	mintEff(): Ref;
@@ -77,17 +65,9 @@ function layout(window: NativeWindow): WindowSnapshot["layout"] {
 function matches(value: JsonValue | null, expected: StackExpectation): boolean {
 	if (expected.item === null) return value === null && expected.count === 0;
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-	const selector = expected.item;
-	const names = [selector.name, ...(selector.substitutions ?? [])].map((name) => name.replace(/^minecraft:/, ""));
-	if (!names.includes(String(value.name).replace(/^minecraft:/, "")) || value.count !== expected.count) return false;
-	if (
-		selector.components !== undefined &&
-		(value.components === null || !isDeepStrictEqual(selector.components, value.components))
-	)
-		return false;
 	return (
-		selector.minDurability === undefined ||
-		(typeof value.durability === "number" && value.durability >= selector.minDurability)
+		value.count === expected.count &&
+		matchesItem(expected.item, value as unknown as import("../../contracts/body.js").ItemValue)
 	);
 }
 
@@ -122,7 +102,7 @@ function expectedClick(
 	}
 	if (slot.name === cursor.name) {
 		if (slot.components === null || cursor.components === null) return null;
-		if (isDeepStrictEqual(slot.components, cursor.components) && slot.durability === cursor.durability) {
+		if (jsonEqual(slot.components, cursor.components) && slot.durability === cursor.durability) {
 			if (typeof slot.stackSize !== "number") return null;
 			const placed = Math.min(button === 0 ? Number(cursor.count) : 1, slot.stackSize - Number(slot.count));
 			return {
@@ -135,7 +115,7 @@ function expectedClick(
 }
 
 export class WindowSessionImpl implements WindowSession {
-	private readonly wire: WindowWire;
+	private readonly wire: DriverProtocol;
 	private native: NativeWindow | null = null;
 	private value: WindowSnapshot | null = null;
 	private observedAt = nowIso();
@@ -145,38 +125,53 @@ export class WindowSessionImpl implements WindowSession {
 	private uncertain = false;
 	private fullSequence = 0;
 	private readonly wake = new Set<() => void>();
-	private readonly earlyFull = new Map<number, FullPacket>();
+	private readonly earlyFull = new Map<number, Extract<ProtocolNotice, { kind: "full" }>>();
 	private readonly detach: (() => void)[] = [];
 
 	constructor(private readonly deps: WindowSessionDeps) {
-		this.wire = new WindowWire(deps.bot);
-		this.listen(deps.bot, "windowOpen", this.onOpen);
-		this.listen(deps.bot, "windowClose", this.onClose);
-		this.listen(deps.bot, "end", this.onEnd);
-		this.listen(deps.bot._client, "open_window", this.onReplacement);
-		this.listen(deps.bot._client, "open_horse_window", this.onReplacement);
-		this.listen(deps.bot._client, "window_items", this.onFull);
-		this.listen(deps.bot._client, "set_slot", this.onSlot);
-		this.listen(deps.bot._client, "set_cursor_item", this.onCursor);
-		this.listen(deps.bot._client, "set_player_inventory", this.onPlayerInventory);
-		this.listen(deps.bot._client, "craft_progress_bar", this.onProperty);
+		this.wire = protocolFor(deps.bot);
+		this.wire.assertSupported();
+		if (deps.player) {
+			const initial = this.wire.playerSnapshot();
+			if (initial === null) throw failure("WRONG_STATE", "authoritative player inventory has not arrived");
+			this.native = deps.bot.inventory;
+			this.value = { ...initial, window: `window:${deps.operation}` };
+		}
+		this.detach.push(
+			this.wire.subscribe((notice) => {
+				switch (notice.kind) {
+					case "window_open":
+						this.onOpen(notice.window);
+						break;
+					case "window_close":
+						this.onClose(notice.window);
+						break;
+					case "end":
+						this.onEnd();
+						break;
+					case "replacement":
+						this.onReplacement();
+						break;
+					case "full":
+						this.onFull(notice);
+						break;
+					case "slot":
+						this.onSlot(notice);
+						break;
+					case "cursor":
+						this.onCursor(notice);
+						break;
+					case "player_slot":
+						this.onPlayerInventory(notice);
+						break;
+					case "property":
+						this.onProperty(notice);
+						break;
+				}
+			}),
+		);
 		deps.signal.addEventListener("abort", this.onAbort, { once: true });
 		this.detach.push(() => deps.signal.removeEventListener("abort", this.onAbort));
-	}
-
-	private listen(
-		emitter: {
-			on(event: string, listener: (...args: unknown[]) => void): unknown;
-			removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
-		},
-		event: string,
-		listener: (...args: never[]) => void,
-	): void {
-		const callback = listener as (...args: unknown[]) => void;
-		emitter.on(event, callback);
-		this.detach.push(() => {
-			emitter.removeListener(event, callback);
-		});
 	}
 
 	private live(): boolean {
@@ -187,7 +182,10 @@ export class WindowSessionImpl implements WindowSession {
 			this.retire(false);
 			return false;
 		}
-		if (this.native != null && this.deps.bot.currentWindow !== this.native) {
+		if (
+			this.native != null &&
+			(this.deps.player ? this.deps.bot.currentWindow !== null : this.deps.bot.currentWindow !== this.native)
+		) {
 			this.retire(false);
 			return false;
 		}
@@ -200,7 +198,7 @@ export class WindowSessionImpl implements WindowSession {
 	}
 
 	private readonly onOpen = (window: NativeWindow): void => {
-		if (!this.live()) return;
+		if (this.deps.player || !this.live()) return;
 		if (this.native !== null) {
 			if (window !== this.native) this.retire(false);
 			return;
@@ -220,7 +218,7 @@ export class WindowSessionImpl implements WindowSession {
 	private readonly onEnd = (): void => this.retire(false);
 	private readonly onAbort = (): void => this.retire(true);
 
-	private readonly onFull = (packet: FullPacket): void => {
+	private readonly onFull = (packet: Extract<ProtocolNotice, { kind: "full" }>): void => {
 		if (!this.live()) return;
 		const native = this.native;
 		if (native === null) {
@@ -233,15 +231,13 @@ export class WindowSessionImpl implements WindowSession {
 				window: `window:${this.deps.operation}`,
 				type: String(native.type),
 				revision: this.value?.revision ?? 0,
-				layout: layout(native),
+				layout: this.deps.player ? (this.value as WindowSnapshot).layout : layout(native),
 				properties: this.value?.properties ?? {},
-				slots: packet.items.map((item, slot) => ({ slot, item: this.wire.decode(item) })),
-				cursor: packet.carriedItem === undefined ? (this.value?.cursor ?? null) : this.wire.decode(packet.carriedItem),
+				slots: packet.items.map((item, slot) => ({ slot, item })),
+				cursor: packet.cursor,
 			};
-			if (next.slots.length !== next.layout.slotCount || packet.carriedItem === undefined) return;
-			this.wire.setCursor(native, packet.carriedItem);
+			if (next.slots.length !== next.layout.slotCount) return;
 			this.fullSequence++;
-			this.uncertain = false;
 			this.update(next);
 		} catch (error) {
 			this.openError = error;
@@ -249,38 +245,35 @@ export class WindowSessionImpl implements WindowSession {
 		}
 	};
 
-	private readonly onSlot = (packet: SlotPacket): void => {
+	private readonly onSlot = (packet: Extract<ProtocolNotice, { kind: "slot" }>): void => {
 		if (!this.live() || this.value === null || this.native === null) return;
 		if (packet.windowId === -1 && packet.slot === -1) {
-			this.wire.setCursor(this.native, packet.item);
-			this.update({ ...this.value, cursor: this.wire.decode(packet.item) });
+			this.update({ ...this.value, cursor: packet.item });
 			return;
 		}
 		if (packet.windowId !== this.native.id || packet.slot < 0 || packet.slot >= this.value.layout.slotCount) return;
 		this.update({
 			...this.value,
 			slots: this.value.slots.map((entry) =>
-				entry.slot === packet.slot ? { slot: entry.slot, item: this.wire.decode(packet.item) } : entry,
+				entry.slot === packet.slot ? { slot: entry.slot, item: packet.item } : entry,
 			),
 		});
 	};
-	private readonly onCursor = (packet: { contents: unknown }): void => {
+	private readonly onCursor = (packet: Extract<ProtocolNotice, { kind: "cursor" }>): void => {
 		if (!this.live() || this.value === null || this.native === null) return;
-		this.wire.setCursor(this.native, packet.contents);
-		this.update({ ...this.value, cursor: this.wire.decode(packet.contents) });
+		this.update({ ...this.value, cursor: packet.item });
 	};
-	private readonly onPlayerInventory = (packet: { slotId: number; contents: unknown }): void => {
+	private readonly onPlayerInventory = (packet: Extract<ProtocolNotice, { kind: "player_slot" }>): void => {
 		if (!this.live() || this.value === null || this.native === null) return;
-		// Vanilla Inventory indices: 0..8 hotbar, 9..35 main. Armor/offhand are outside this layout.
-		const index = packet.slotId;
-		if (!Number.isInteger(index) || index < 0 || index > 35) return;
-		const slot = this.native.inventoryStart + (index < 9 ? 27 + index : index - 9);
-		this.wire.setSlot(this.native, slot, packet.contents);
+		const slot = this.deps.player
+			? packet.slot
+			: packet.slot >= 9 && packet.slot <= 44
+				? this.native.inventoryStart + packet.slot - 9
+				: -1;
+		if (slot < 0) return;
 		this.update({
 			...this.value,
-			slots: this.value.slots.map((entry) =>
-				entry.slot === slot ? { slot, item: this.wire.decode(packet.contents) } : entry,
-			),
+			slots: this.value.slots.map((entry) => (entry.slot === slot ? { slot, item: packet.item } : entry)),
 		});
 	};
 	private readonly onProperty = (packet: { windowId: number; property: number; value: number }): void => {
@@ -289,11 +282,11 @@ export class WindowSessionImpl implements WindowSession {
 	};
 
 	private update(next: WindowSnapshot): void {
-		if (!isDeepStrictEqual(this.value, next)) {
+		if (!jsonEqual(this.value, next)) {
 			next.revision++;
 			this.value = next;
 			this.observedAt = nowIso();
-			this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: next }));
+			if (this.deps.target) this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: next }));
 		}
 		this.notify();
 	}
@@ -353,6 +346,15 @@ export class WindowSessionImpl implements WindowSession {
 				completionContract: "server window and complete slot/cursor contents received",
 			});
 		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.name === "CallFailure" &&
+				(error as import("../../contracts/values.js").CallFailure).dispatch === "not_sent"
+			) {
+				this.openSent = false;
+				this.retire(false);
+				throw error;
+			}
 			this.deps.recorder.record(
 				effect,
 				operation,
@@ -410,14 +412,14 @@ export class WindowSessionImpl implements WindowSession {
 		if (input.expectedRevision !== value.revision) throw failure("CONFLICT", "window revision changed before dispatch");
 		if (
 			!Number.isInteger(input.slot) ||
-			input.slot < 0 ||
+			(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
 			input.slot >= value.layout.slotCount ||
 			input.mode !== 0 ||
 			![0, 1].includes(input.button)
 		)
 			throw failure("INVALID_INPUT", "only in-window mode 0 left/right clicks are supported");
 		if (
-			!input.expectedSlots.some((entry) => entry.slot === input.slot) ||
+			(input.slot !== -999 && !input.expectedSlots.some((entry) => entry.slot === input.slot)) ||
 			!validExpectation(input.expectedCursor) ||
 			input.expectedSlots.some((entry) => !validExpectation(entry.stack))
 		) {
@@ -442,10 +444,21 @@ export class WindowSessionImpl implements WindowSession {
 		const operation = this.deps.mintOp();
 		const effect = this.deps.mintEff();
 		let sent = false;
+		let writing = false;
 		try {
 			this.check();
-			const expected = expectedClick(value.slots[input.slot].item, value.cursor, input.button);
+			const expected =
+				input.slot === -999
+					? {
+							slot: null,
+							cursor:
+								input.button === 0
+									? null
+									: withCount(stack(value.cursor) as Stack, Number(stack(value.cursor)?.count) - 1),
+						}
+					: expectedClick(value.slots[input.slot]?.item ?? null, value.cursor, input.button);
 			const before = this.fullSequence;
+			writing = true;
 			this.wire.click(native, input.slot, input.button);
 			sent = true;
 			this.deps.recorder.record(effect, operation, "body.window.click@1", "dispatch", "sent", "unknown", {
@@ -459,15 +472,15 @@ export class WindowSessionImpl implements WindowSession {
 				() =>
 					this.fullSequence > before &&
 					this.value !== null &&
-					!isDeepStrictEqual(
-						{ slot: this.value.slots[input.slot].item, cursor: this.value.cursor },
-						{ slot: value.slots[input.slot].item, cursor: value.cursor },
+					!jsonEqual(
+						{ slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor },
+						{ slot: value.slots[input.slot]?.item ?? null, cursor: value.cursor },
 					),
 			);
 			if (!confirmed || !this.live() || this.value === null) return this.unknown(effect, operation);
 			this.check();
-			const actual = { slot: this.value.slots[input.slot].item, cursor: this.value.cursor };
-			if (expected === null || !isDeepStrictEqual(actual, expected)) return this.unknown(effect, operation);
+			const actual = { slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor };
+			if (expected === null || !jsonEqual(actual, expected)) return this.unknown(effect, operation);
 			const completion = "met";
 			this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", completion, {
 				window: value.window,
@@ -479,15 +492,33 @@ export class WindowSessionImpl implements WindowSession {
 				completion,
 				evidence: [],
 				confirmed: {
-					slots: [structuredClone(this.value.slots[input.slot])],
+					slots: input.slot === -999 ? [] : [structuredClone(this.value.slots[input.slot])],
 					cursor: structuredClone(this.value.cursor),
 				},
 				needsSnapshot: false,
 			};
 		} catch (error) {
 			if (sent) return this.unknown(effect, operation);
-			this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "unknown", "unknown");
-			throw error;
+			const failure = error as import("../../contracts/values.js").CallFailure;
+			const dispatch =
+				failure?.name === "CallFailure" && failure.dispatch === "not_sent"
+					? "not_sent"
+					: writing
+						? "unknown"
+						: "not_sent";
+			if (dispatch !== "not_sent") {
+				this.uncertain = true;
+				this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", dispatch, "unknown");
+			}
+			if (failure?.name === "CallFailure") throw failure;
+			throw fail({
+				code: "INTERNAL",
+				source: "environment",
+				message: error instanceof Error ? error.message : String(error),
+				dispatch,
+				effects: dispatch === "not_sent" ? [] : [effect],
+				recoverable: false,
+			});
 		} finally {
 			this.busy = false;
 			this.deps.exitOp();
@@ -510,10 +541,15 @@ export class WindowSessionImpl implements WindowSession {
 		this.earlyFull.clear();
 		this.notify();
 		const native = this.native;
-		if (closeNative && native !== null && this.deps.bot.currentWindow === native && this.deps.canCleanup()) {
+		if (
+			closeNative &&
+			native !== null &&
+			(this.deps.player ? this.deps.bot.currentWindow === null : this.deps.bot.currentWindow === native) &&
+			this.deps.canCleanup()
+		) {
 			const effect = this.deps.mintEff();
 			try {
-				this.deps.bot.closeWindow(native);
+				this.wire.close(native);
 				const cursor = this.value?.cursor ?? null;
 				const cursorKnown = this.value !== null && !this.uncertain && !this.busy;
 				this.deps.recorder.record(
@@ -535,7 +571,7 @@ export class WindowSessionImpl implements WindowSession {
 				this.deps.recorder.record(effect, this.deps.operation, "body.window.close@1", "cleanup", "unknown", "unknown");
 			}
 		}
-		this.deps.publishWindow?.(null);
+		if (this.deps.target) this.deps.publishWindow?.(null);
 		this.deps.onRetired(this.openSent && native === null);
 	}
 

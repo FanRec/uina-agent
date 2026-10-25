@@ -247,11 +247,12 @@ interface WindowSnapshot {
   slots: { slot: number; item: JsonValue | null }[];
   cursor: JsonValue | null;
 }
-// slot.item/cursor 的纯值载荷；组件使用当前版本的 {added,removed} patch，未知保持 null。
-interface WindowItemValue {
+// 窗口/库存/查询共用的纯值；组件使用当前版本的 {added,removed} patch，未知保持 null。
+interface ItemValue {
   name: string; count: number; stackSize: number | null;
-  components: JsonValue | null; durability: number | null; // 实际剩余耐久
+  components: JsonValue | null; durability: number | null; // 实际剩余耐久；max_damage/max_stack_size 覆盖值与移除语义优先于类别默认值
 }
+interface TossOutcome { receipt: EffectReceipt; removed: Record<string, number>; remaining: number }
 interface ClientWindowObservation { target: BlockTarget | EntityRef; snapshot: WindowSnapshot }
 interface StackExpectation { item: ItemSelector | null; count: number }
 interface WindowClickReceipt extends EffectReceipt {
@@ -280,7 +281,7 @@ interface BodyOps {
   endUse(): Promise<EffectReceipt>; // 结束所属的原生使用状态，可能释放蓄力效果
   interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;
   equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt>; // null 只允许 hand/offhand；不得隐式丢弃
-  toss(item: string, count: number): Promise<EffectReceipt>; // 只收物品名；可丢域=主背包+快捷栏(9..44)，回执 completion 只到 unknown
+  toss(item: ItemSelector, count: number): Promise<TossOutcome>; // 主背包+快捷栏(9..44)；removed 只累计服务端确认移出量
   lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
   writeSign(target: BlockTarget, input: {side: "front" | "back"; lines: SignText}): Promise<EffectReceipt>;
   openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;
@@ -333,7 +334,9 @@ click 的 confirmed 只含本次模式/前态与回执能确认的槽位后态�
 
 普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；失败清理显式 close({force:true})，作用域退出/停机同样强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择并非现有 click 的别名；对应能力设计须在此补确切受控操作合同，经同一窗口适配执行，不向玩法公开 Bot，也不另建窗口能力目录。
 
-批 2 的实际支持范围：stateIdUsed 的现代协议，普通容器布局（generic_9xN、generic_3x3、hopper、shulker_box），mode=0 的左/右键。每个业务点击仅发送一个 stateId=-1 的 window_click，服务端处理后返回完整 window_items；不另加第二次同步点击。只将符合本次 mode-0 前态的目标槽/光标后态列入 confirmed，其他槽位通过 snapshot 读取。未变化/不明回包不能证明本次点击已被处理，超时保持 unknown 且不自动重试。开箱前等待一个真实物理步并复验资格，避免连续开箱超过实际 Paper 的 block-use 突发门。打开已派发而未确认窗口时发生取消/超时，关闭屏障记为不明，同连接不再授予身体资格，须重连。
+当前受控协议实现为 Java 1.21.11。版本差异集中在按连接创建、随连接退役的 DriverProtocol；未来版本实现相同窄端口，不让能力/World/Runtime 添加协议分支。其他版本的相关写入明确报 UNSUPPORTED_PROTOCOL。
+
+玩家库存与普通容器（generic_9xN、generic_3x3、hopper、shulker_box）共用 mode=0 左/右键的快照与确认实现；只有玩家库存内部丢弃操作允许目标 -999。每个业务点击仅发送一个 stateId=-1 的 window_click，服务端处理后返回完整 window_items；不另加第二次同步点击。只将符合本次 mode-0 前态的目标槽/光标后态列入 confirmed，其他槽位通过 snapshot 读取。未变化/不明回包不能证明本次点击已被处理，超时保持 unknown 且不自动重试。开箱前等待一个真实物理步并复验资格，避免连续开箱超过实际 Paper 的 block-use 突发门。打开已派发而未确认窗口时发生取消/超时，关闭屏障记为不明，同连接不再授予身体资格，须重连。
 
 <a id="client-facts"></a>
 
@@ -414,9 +417,8 @@ type ClientEventPayload =
       cause: string | null; attacker: EventActor | null}
   | {kind: "death"; message: string | null; place: Place | null}
   | {kind: "connection"; state: "connected" | "disconnected"; reason: string | null};
-interface ClientItemValue { name: string; count: number; components: JsonValue | null }
 type ClientSlotValue = { slot: number } & (
-  | { known: true; item: ClientItemValue | null }
+  | { known: true; item: ItemValue | null }
   | { known: false; item: null }
 );
 interface ClientInventoryValue {
@@ -498,9 +500,10 @@ sections 按整数 Section 坐标读取；单格局部索引为 y*256+z*16+x（�
 ### 4.2 Driver → 能力：静态游戏知识
 
 ```typescript
+type HarvestRequirement = {kind: "any"} | {kind: "tools"; names: string[]} | {kind: "unknown"};
 type ItemSource =
   | {kind: "craft" | "smelt"}
-  | {kind: "block"; block: string; requiredTool: string | null}
+  | {kind: "block"; block: string; harvest: HarvestRequirement}
   | {kind: "entity"; entity: string}
   | {kind: "trade"; profession: string | null};
 interface KnowledgeItem {
@@ -518,7 +521,7 @@ interface KnowledgeRecipe {
   output: {item: string; count: number};
   fuel?: {item: string; count: number};
 }
-interface KnowledgeBlockDrops { items: string[]; requiredTool: string | null }
+interface KnowledgeBlockDrops { items: string[]; harvest: HarvestRequirement }
 interface RegistryKnowledge {
   dataVersion: string;
   item(name: string): KnowledgeItem | null;
@@ -529,7 +532,7 @@ interface RegistryKnowledge {
 }
 ```
 
-知识随连接版本固定（minecraft-data / prismarine-registry），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；requiredTool 取 harvestTools 中最弱的工具。当前数据版本没有熔炼与交易类别，sourcesComplete=false 如实表达。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表的位置。
+知识随连接版本固定（minecraft-data / prismarine-registry），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；harvest 保留注册表的实际可采工具集合、无工具限制或未知，不用材质顺序猜测。block.harvest、mine、collect 共用可采性判断；自动选用当前合格手持，否则取槽序第一个合格工具。当前数据版本没有熔炼与交易类别，sourcesComplete=false 如实表达。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表的位置。
 
 <a id="world"></a>
 
@@ -576,6 +579,8 @@ interface WorldAvailabilityValue {
 ```
 
 查询域值由同一 QueryDescriptor 声明，基础值复用 Driver schema；当前采样与可选反馈复用纯函数，不另建传感目录。world@1 的可用性采用 WorldAvailabilityValue，其游戏字段见能力描述。
+
+查询输入在能力装配时按 QueryDescriptor.input 编译，World 的 read/watch 入口统一校验后才分派，null 归一化为 {}。current/static/history 使用同一入口；缺少校验器在装配时明确失败。历史解析只负责坐标、token 和分区等语义，不再复制请求形状校验。
 
 read 按查询类别分派（world.md §8.2）：current 走同步采样并给出 cursor；static（item/recipe 的知识部分）不依赖连接、cursor=null；history（events@1）在提交屏障后由存储读取。events 页形状：
 

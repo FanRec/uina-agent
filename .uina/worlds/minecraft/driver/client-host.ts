@@ -8,6 +8,7 @@
  * 不自动重连、不自动重启旧游戏任务（§4.4）：重建 = 新 Connection，旧资格全部失效。
  */
 
+import { protocolFor } from "./mineflayer/protocol.js";
 import type { Ref } from "../contracts/values.js";
 import {
 	connectMinecraftClient,
@@ -97,6 +98,7 @@ export class ClientHost {
 
 		const bot = connectMinecraftClient(opts);
 		this._bot = bot;
+		protocolFor(bot);
 
 		await new Promise<void>((resolve) => {
 			const onReady = () => {

@@ -7,7 +7,7 @@
  */
 
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { BodyOps, SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { BodyOps, SelfState, ItemValue, ItemSelector } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { CallFailure, JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
@@ -76,7 +76,7 @@ export const self: SelfState = {
 	look: { yaw: 0, pitch: 0 },
 };
 
-export interface SlotFixture {
+export interface SlotFixture extends Partial<ItemValue> {
 	slot: number;
 	name: string;
 	count: number;
@@ -120,8 +120,9 @@ export function fact<T>(value: T): Observation<T> {
 
 export interface HarnessHooks {
 	onDig?: (target: { block: { x: number; y: number; z: number } }) => void;
-	onEquip?: (slot: string) => void;
-	onToss?: (name: string, count: number) => void;
+	onEquip?: (slot: string, selector: ItemSelector | null) => void;
+	onToss?: (name: string, count: number, selector: ItemSelector) => void;
+	digCompletion?: "met" | "not_met" | "unknown";
 	/** 步进替身：测试可在里面模拟"走到之后顺手捡起"。 */
 	onDrive?: (ticks: number) => void;
 	/** 导航替身：测试可在里面模拟"走到之后世界发生了什么"（例如顺手捡起）。 */
@@ -191,11 +192,11 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		async dig(target: { block: { x: number; y: number; z: number } }) {
 			calls.push("dig");
 			hooks.onDig?.(target);
-			return { effect: "eff:t:1", dispatch: "sent", completion: "met", evidence: [] };
+			return { effect: "eff:t:1", dispatch: "sent", completion: hooks.digCompletion ?? "met", evidence: [] };
 		},
-		async equip(_item: unknown, slot: string) {
+		async equip(item: ItemSelector | null, slot: string) {
 			calls.push(`equip:${slot}`);
-			hooks.onEquip?.(slot);
+			hooks.onEquip?.(slot, item);
 			return { effect: "eff:t:2", dispatch: "sent", completion: "met", evidence: [] };
 		},
 		async interact() {
@@ -231,11 +232,16 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			calls.push("writeSign");
 			return { effect: "eff:t:9", dispatch: "sent", completion: "met", evidence: [] };
 		},
-		async toss(name: string, count: number) {
+		async toss(selector: ItemSelector, count: number) {
+			const name = selector.name;
 			calls.push(`toss:${name}x${count}`);
-			hooks.onToss?.(name, count);
-			// 与真实 Driver 一致：上游只保证点击写出去了，完成度是 unknown。
-			return { effect: "eff:t:10", dispatch: "sent", completion: "unknown", evidence: [] };
+			hooks.onToss?.(name, count, selector);
+			// 替换 Driver 的服务端确认边界；玩法核验仍由能力本身执行。
+			return {
+				receipt: { effect: "eff:t:10", dispatch: "sent", completion: "met", evidence: [] },
+				removed: { [name]: count },
+				remaining: 0,
+			};
 		},
 	} as unknown as BodyOps;
 

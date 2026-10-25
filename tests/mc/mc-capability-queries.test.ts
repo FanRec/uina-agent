@@ -100,10 +100,14 @@ const inventoryValue = {
 		],
 	},
 	slots: [
-		{ slot: 5, known: true, item: { name: "diamond_helmet", count: 1, components: null } },
-		{ slot: 36, known: true, item: { name: "oak_log", count: 8, components: null } },
-		{ slot: 37, known: true, item: { name: "oak_log", count: 4, components: null } },
-		{ slot: 38, known: true, item: { name: "apple", count: 2, components: null } },
+		{
+			slot: 5,
+			known: true,
+			item: { name: "diamond_helmet", count: 1, stackSize: 1, durability: 20, components: null },
+		},
+		{ slot: 36, known: true, item: { name: "oak_log", count: 8, stackSize: 64, durability: null, components: null } },
+		{ slot: 37, known: true, item: { name: "oak_log", count: 4, stackSize: 64, durability: null, components: null } },
+		{ slot: 38, known: true, item: { name: "apple", count: 2, stackSize: 64, durability: null, components: null } },
 		{ slot: 9, known: true, item: null },
 	],
 	selectedSlot: 0,
@@ -147,7 +151,7 @@ function failureOf(fn: () => unknown): CallFailure {
 }
 
 describe("self@1", () => {
-	test("held 取当前快捷栏选择，armor 取 5..8；耐久缺失记 unknown", () => {
+	test("held/armor 保留库存物品的完整字段，未知来源由库存事实提供", () => {
 		const reader = readerOf("self@1");
 		if (reader.kind !== "current") throw new Error("self must be a current reader");
 		const result = reader.read(makeView(), {} as JsonValue) as Fact<{
@@ -155,10 +159,21 @@ describe("self@1", () => {
 			armor: Record<string, { name: string }>;
 			health: number | null;
 		}>;
-		expect(result.value.held).toEqual({ name: "oak_log", count: 8 });
-		expect(result.value.armor.head).toEqual({ name: "diamond_helmet", count: 1 });
+		expect(result.value.held).toMatchObject({
+			name: "oak_log",
+			count: 8,
+			stackSize: 64,
+			durability: null,
+			components: null,
+		});
+		expect(result.value.armor.head).toMatchObject({
+			name: "diamond_helmet",
+			count: 1,
+			components: null,
+			durability: 20,
+		});
 		expect(result.value.armor.chest).toBeUndefined();
-		expect(result.unknown.some((entry) => entry.includes("durability"))).toBe(true);
+		expect(result.unknown.some((entry) => entry.includes("not captured"))).toBe(false);
 		expect(result.value.health).toBe(18);
 	});
 });

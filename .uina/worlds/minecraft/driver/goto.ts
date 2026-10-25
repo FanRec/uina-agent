@@ -225,7 +225,7 @@ export class GotoDirector {
 				// path.length===0 再判 status，noPath 的空路径被当成正常结束）。
 				// 完成必须是 GoalNear 真实成立：这里按实际站位复核，不把 resolve 当到达。
 				const gap = Math.hypot(at.x - request.at.x, at.y - request.at.y, at.z - request.at.z);
-				if (gap > request.tolerance + 0.75) {
+				if (nodeGap(at, request.at) > request.tolerance) {
 					throw fail({
 						code: "UNREACHABLE",
 						source: "world",

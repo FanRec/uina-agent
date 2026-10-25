@@ -288,7 +288,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 ### block · `block@1`
 - 输入 `{ at: GridPos }` 或 `{ below: 1..4 }`（脚下第 N 格）
 - 返回 `{block:{name,position,properties,light?,harvest?,sign?:SignValue|null}|null}`；外层 null 表示空气，未加载走 unknown。告示牌的正背面、颜色、发光与上蜡状态见 public-api 的 SignValue；牌面未知不当成空白。非告示牌省略 sign。
-- `harvest` 是"以手头最好的工具能不能掉落"：`{ ok, requiredTool? }`
+- `harvest` 是"以当前库存中可验证的工具能不能掉落"：`{ ok, requiredTools? }`；requiredTools 是注册表实际接受的工具集合，不是推测的最低材质。
 - 例：`{ at:{x:120,y:63,z:-30} } → { block:{ name:"stone", position:{x:120,y:63,z:-30}, harvest:{ ok:true } } }`
 
 ### blocks · `blocks@1`
@@ -325,9 +325,10 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - sources 用统一结构替代单个 dropOf：
 
 ```ts
+type HarvestRequirement = {kind: "any"} | {kind: "tools"; names: string[]} | {kind: "unknown"};
 type ItemSource =
   | {kind: "craft" | "smelt"}
-  | {kind: "block"; block: string; requiredTool: string | null}
+  | {kind: "block"; block: string; harvest: HarvestRequirement}
   | {kind: "entity"; entity: string}
   | {kind: "trade"; profession: string | null};
 ```
@@ -427,7 +428,8 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 #### goto · `goto@1` · act · P0
 - 输入 GotoInput；目标字段为 MoveTargetRequest（§2.2），与 route.plan 原样复用。tolerance 缺省 2（1..8），digThrough=false、placeToReach=true、sprint=true；maxTimeMs 缺省 120000。
 - 做：**在当前维度内**寻路走过去；路上卡住会跳、绕、必要时挖一格或搭一块（由 `digThrough`/`placeToReach` 控制）。不找传送门、不换交通方式——跨维度用 `transit`。
-- 完成：与 `at` 的直线距离 ≤ `tolerance`。站姿核验（是否站在可站立方块）随运动能力包补齐，当前不谎称已核验。
+- placeToReach=false 同时禁止垫柱、搭桥和跳跃补块，不消耗方块；重新启用时恢复默认可用垫块材料。
+- 完成：GoalNear 的整数格节点距离 ≤ `tolerance`；派发前和完成复查使用相同 nodeGap 判据。返回的 distance 仍为实际连续坐标的欧氏距离，用于诊断；不能用它另加 tolerance+0.75 拒绝已满足节点目标的站位。站姿核验（是否站在可站立方块）随运动能力包补齐，当前不谎称已核验。
 - 返回 `{ at, distance, dug, placed, ticks }`；`dug` 是本次导航实测挖掘次数，`placed` 无法归属到本次导航，当前恒为 null。
 - 失败 `UNREACHABLE`（`hint` 带 `blockers`）、`TIMEOUT`、`INTERRUPTED`
 
@@ -482,16 +484,16 @@ type ExploreTarget =
 
 #### mine · `mine@1` · act · P0
 - 输入 `{ at: GridPos, tool?: Name|ItemSelector, collect?: true }`
-- 做：破坏一格够得着的方块；自动选合适工具（有 `tool` 则用指定的）。工具按方块真实掉落要求选，选不出在派发前报 `MISSING_TOOL`。够不着报 `UNREACHABLE`，不自己走过去（§4 可达性归调用方）。
-- 完成：该格在客户端世界变为空气。掉落只在短窗口（约 1.5 秒）内观察背包增量，观察到才给 `dropped`；`collect:false` 不观察。读不到方块（未加载）不等于空气。
+- 做：破坏一格够得着的方块；工具按实际 harvestTools 集合判定，显式 tool 同时满足物品选择器与可采要求。自动选用当前合格手持，否则按库存槽序选择；金、铜等材质不按自造等级排序。选不出在派发前报 `MISSING_TOOL`，要求未知时明确失败。够不着报 `UNREACHABLE`，不自己走过去（§4 可达性归调用方）。
+- 完成：Driver 实际收到同连接/化身和目标位置的服务端空气更新，才返回 broken:true；本地预测、挖掘计时结束或协议 ACK 都不认证破坏。结束后 5 秒没有确认保留未知，不自动重试。掉落只在短窗口内观察背包增量，观察到才给 `dropped`；`collect:false` 不观察。读不到方块（未加载）不等于空气。
 - 返回 `{ broken, dropped?:{ name, count }, tool? }`
-- 失败 `NOT_FOUND`（那块是空气/未加载）、`UNREACHABLE`、`MISSING_TOOL`（`hint` 带 `required`）、`TARGET_NOT_MET`（服务器拒绝，如领地保护）、`INTERRUPTED`
+- 失败 `NOT_FOUND`（那块是空气/未加载）、`UNREACHABLE`、`MISSING_TOOL`（`hint` 带实际接受工具）、`TARGET_NOT_MET`（确认不足或服务器明确拒绝）、`INTERRUPTED`；未知效果保留在运行记录中。
 
 #### collect · `collect@1` · act · P0
 - 输入 `{ item: Name, count?: 1..1024 = 1, radius?: 32, digThrough?: false, tool?: Name|ItemSelector }`
 - 做：寻找掉落匹配 item 的方块，走近、挖掘并拾取；只负责已经可执行的采集，不为 charcoal 等自动展开科技树。
 - 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
-- 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 是实际破坏格数。
+- 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
 - 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
 - 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
 - 实现：物品名先用静态知识反查方块来源（`item@1` 的 block sources），再用 `blocks@1` 取前沿；走的是一遍遍 `goto@1` + `mine@1(collect:false)` + 掉落观察，入不了包再 `pickup@1` 兜底。**不持身体**（Body 槽与 goto 槽互斥），每一步独立取放；子调用的 `CONTROL_CONFLICT` 原样上抛，不做跨 run 隔离。可预判的失败（无来源/没工具/背包满）全在移动之前判定。
@@ -585,8 +587,8 @@ type EquipInput =
 - 输入 DropInput：`{item:Name|ItemSelector, count?:1..1024, toward?:Name|EntityRef}`；count 缺省为首次库存快照中全部匹配物品。
 - 不给 toward 时原地丢弃；给出玩家/实体时走近至可投掷距离、朝向目标后丢弃。目标失踪或不可达明确失败，不改成原地丢弃。目标引用与当前位置在派发前复核。
 - 完成：声明数量已从自身库存丢出；返回 `{dropped:{[item]:number}, remaining:0, at, toward?:EntityRef}`。只证明丢弃，不证明目标拾取、背包增加或交易完成。
-- 部分丢弃抛错并在 progress 保留 dropped/remaining/at/toward；派发未知不自动补丢。失败 `NOT_FOUND`、`MISSING_MATERIAL`、`UNREACHABLE`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。
-- 实现：数量与可丢量都按主背包+快捷栏（9..44）算，和 Driver 的 `toss` 同一槽域；完成不靠本地库存（窗口点击是乐观预测），而是看半径 4 内同名掉落物实体的数量增量是否达到声明值，达不到报 `TARGET_NOT_MET`。
+- 部分丢弃抛错并在 progress 保留 removed/dropped/remaining/at/toward；removed 为服务端确认离包量，dropped 为观察到的地面增量，两者分别保留；派发未知不自动补丢。失败 `NOT_FOUND`、`MISSING_MATERIAL`、`UNREACHABLE`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。
+- 实现：数量与可丢量都按主背包+快捷栏（9..44）算，和 Driver 的 `toss` 同一槽域；组件/剩余耐久/替代名称通过共享 ItemSelector 匹配，不会按名字降级丢出其他实例。先取得服务端确认的移出量，再按每个名称检查半径 4 内地面增量；不能把某一名称的额外掉落补给另一名称，达不到报 `TARGET_NOT_MET`。
 
 #### pickup · `pickup@1` · act · P1
 - 输入 `{ item?: Name, radius?: 4..16 = 8, maxTimeMs?: 30000 }`

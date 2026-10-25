@@ -6,10 +6,12 @@
  * 缺失数据必须如实表达（sourcesComplete / null），不得用空数组冒充"无法获得"。
  */
 
+export type HarvestRequirement = { kind: "any" } | { kind: "tools"; names: string[] } | { kind: "unknown" };
+
 export type ItemSource =
 	| { kind: "craft" }
 	| { kind: "smelt" }
-	| { kind: "block"; block: string; requiredTool: string | null }
+	| { kind: "block"; block: string; harvest: HarvestRequirement }
 	| { kind: "entity"; entity: string }
 	| { kind: "trade"; profession: string | null };
 
@@ -36,10 +38,10 @@ export interface KnowledgeRecipe {
 	fuel?: { item: string; count: number };
 }
 
-/** 方块掉落：items 是可能产出（概率掉落也在此列），requiredTool 为最低工具名。 */
+/** 方块掉落：items 是可能产出（概率掉落也在此列），harvest 保留实际工具集合及未知。 */
 export interface KnowledgeBlockDrops {
 	items: string[];
-	requiredTool: string | null;
+	harvest: HarvestRequirement;
 }
 
 /**

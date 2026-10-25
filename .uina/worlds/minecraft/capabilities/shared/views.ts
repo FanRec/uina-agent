@@ -5,11 +5,12 @@
  * 只给 TypeScript 一个窄面（字段缺失时按可选处理，不编默认值）。
  */
 
+import type { ItemValue } from "../../contracts/body.js";
 import type { Observation } from "../../contracts/values.js";
 import type { WorldReadPort } from "../../contracts/world.js";
 import type { Vec3 } from "../../contracts/values.js";
 
-export interface SlotView {
+export interface SlotView extends Partial<ItemValue> {
 	slot: number;
 	name: string;
 	count: number;
@@ -18,8 +19,8 @@ export interface SlotView {
 export interface InventorySnapshot {
 	slots: SlotView[];
 	counts: Record<string, number>;
-	held?: { name: string; count: number };
-	armor?: Record<string, { name: string; count: number }>;
+	held?: { name: string; count: number } & Partial<ItemValue>;
+	armor?: Record<string, { name: string; count: number } & Partial<ItemValue>>;
 	usedSlots?: number;
 	freeSlots?: number;
 	selectedSlot?: number | null;
@@ -30,7 +31,7 @@ export interface BlockSnapshot {
 	position: Vec3;
 	properties: Record<string, string>;
 	sign: unknown;
-	harvest?: { ok: boolean; requiredTool?: string };
+	harvest?: { ok: boolean; requiredTools?: string[] };
 }
 
 export interface BlockReadValue {

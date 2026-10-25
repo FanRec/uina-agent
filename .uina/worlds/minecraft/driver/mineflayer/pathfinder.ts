@@ -37,6 +37,7 @@ interface PathfinderMovements {
 	allowSprinting: boolean;
 	canDig: boolean;
 	allow1by1towers: boolean;
+	scafoldingBlocks: number[];
 }
 
 const { pathfinder, Movements } = pathfinderModule;
@@ -71,7 +72,8 @@ export function loadPathfinderPlugin(bot: MineflayerBot): void {
 
 /**
  * 以原语配置 Movements；实例不外泄（§9.1）。复用已装载实例，避免重置寻路共享状态。
- * placeToReach 直接映射上游 allow1by1towers；脚手架方块沿用上游默认列表。
+ * Disabling placements removes usable scaffolding as well as towers: bridging and jump supports
+ * consult remainingBlocks, not allow1by1towers. Re-enabling restores this adapter's default materials.
  */
 export function configureMovements(bot: MineflayerBot, config: PathfinderMovementsConfig): void {
 	const assembly = (bot as BotWithAssembly).pathfinder;
@@ -80,6 +82,9 @@ export function configureMovements(bot: MineflayerBot, config: PathfinderMovemen
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
+	movements.scafoldingBlocks = config.placeToReach
+		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
+		: [];
 	assembly?.setMovements(movements);
 }
 

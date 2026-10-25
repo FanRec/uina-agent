@@ -1,15 +1,9 @@
 /** 槽位搬移：两个方向共用一个固定清单与 mode-0 点击算法。 */
-import { isDeepStrictEqual } from "node:util";
-import type {
-	ItemSelector,
-	StackExpectation,
-	WindowItemValue,
-	WindowSession,
-	WindowSnapshot,
-} from "../../contracts/body.js";
+import { matchesItem, sameItem } from "../../contracts/items.js";
+import type { ItemSelector, StackExpectation, ItemValue, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import type { CallFailure, JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
-import { fail, selectorNames, stripNamespace } from "./targets.js";
+import { fail } from "./targets.js";
 
 export interface TransferSelection {
 	direction: "from" | "to";
@@ -23,8 +17,8 @@ export interface TransferAmounts {
 	remaining: Record<string, number>;
 }
 
-export function windowItem(value: JsonValue | null): WindowItemValue | null {
-	return value as unknown as WindowItemValue | null;
+export function windowItem(value: JsonValue | null): ItemValue | null {
+	return value as unknown as ItemValue | null;
 }
 
 export function windowRegion(snapshot: WindowSnapshot, name: "container" | "player"): number[] {
@@ -33,43 +27,26 @@ export function windowRegion(snapshot: WindowSnapshot, name: "container" | "play
 	return region.slots;
 }
 
-function at(snapshot: WindowSnapshot, slot: number): WindowItemValue | null {
+function at(snapshot: WindowSnapshot, slot: number): ItemValue | null {
 	const entry = snapshot.slots.find((candidate) => candidate.slot === slot);
 	if (entry == null) fail("WRONG_STATE", `window slot ${slot} is unknown`);
 	return windowItem(entry.item);
 }
 
-export function matchesWindowItem(selector: string | ItemSelector, item: WindowItemValue): boolean {
-	if (!selectorNames(selector).includes(stripNamespace(item.name))) return false;
-	if (typeof selector === "string") return true;
-	if (selector.components !== undefined) {
-		if (item.components == null)
-			fail("WRONG_STATE", `components of ${item.name} are unknown`, {
-				hint: "read a supported component snapshot before selecting by components",
-			});
-		if (!isDeepStrictEqual(selector.components, item.components)) return false;
-	}
-	if (selector.minDurability != null) {
-		if (item.durability == null) fail("WRONG_STATE", `remaining durability of ${item.name} is unknown`);
-		if (item.durability < selector.minDurability) return false;
-	}
-	return true;
-}
-
-function sameStack(a: WindowItemValue, b: WindowItemValue): boolean {
-	return a.name === b.name && a.durability === b.durability && isDeepStrictEqual(a.components, b.components);
-}
-
-function expectation(item: WindowItemValue | null): StackExpectation {
+function expectation(item: ItemValue | null): StackExpectation {
 	if (item == null) return { item: null, count: 0 };
 	return {
-		item: { name: item.name, ...(item.components != null ? { components: item.components } : {}) },
+		item: {
+			name: item.name,
+			...(item.components != null ? { components: item.components } : {}),
+			...(item.durability != null ? { minDurability: item.durability } : {}),
+		},
 		count: item.count,
 	};
 }
 
 interface WorkItem {
-	item: WindowItemValue;
+	item: ItemValue;
 	remaining: number;
 }
 
@@ -79,8 +56,8 @@ function manifest(snapshot: WindowSnapshot, input: TransferSelection): WorkItem[
 	const items = source
 		.map((slot) => at(snapshot, slot))
 		.filter(
-			(item): item is WindowItemValue =>
-				item != null && (input.all === true || (input.item != null && matchesWindowItem(input.item, item))),
+			(item): item is ItemValue =>
+				item != null && (input.all === true || (input.item != null && matchesItem(input.item, item))),
 		);
 	if (items.length === 0) fail("NOT_FOUND", "the selected source has no matching item");
 	let left = input.count ?? items.reduce((total, item) => total + item.count, 0);
@@ -105,15 +82,15 @@ export function transferRoom(
 	const items = source
 		.map((slot) => at(snapshot, slot))
 		.filter(
-			(item): item is WindowItemValue =>
-				item != null && (input.all === true || (input.item != null && matchesWindowItem(input.item, item))),
+			(item): item is ItemValue =>
+				item != null && (input.all === true || (input.item != null && matchesItem(input.item, item))),
 		);
 	const same = items.some((item) =>
 		destination.some((slot) => {
 			const existing = at(snapshot, slot);
 			return (
 				existing != null &&
-				sameStack(item, existing) &&
+				sameItem(item, existing) &&
 				existing.stackSize != null &&
 				existing.count < existing.stackSize
 			);
@@ -166,15 +143,15 @@ export async function transferWindow(
 			while (entry.remaining > 0) {
 				const sourceSlot = source.find((slot) => {
 					const item = at(snapshot, slot);
-					return item != null && sameStack(item, entry.item);
+					return item != null && sameItem(item, entry.item);
 				});
 				if (sourceSlot == null) fail("MISSING_MATERIAL", `source ran out of ${entry.item.name}`);
-				const sourceItem = at(snapshot, sourceSlot) as WindowItemValue;
+				const sourceItem = at(snapshot, sourceSlot) as ItemValue;
 				let targetSlot = destination.find((slot) => {
 					const target = at(snapshot, slot);
 					return (
 						target != null &&
-						sameStack(target, sourceItem) &&
+						sameItem(target, sourceItem) &&
 						target.stackSize != null &&
 						target.count < target.stackSize
 					);
@@ -187,13 +164,13 @@ export async function transferWindow(
 				const quantity = Math.min(sourceItem.count, entry.remaining, room);
 				await click(sourceSlot);
 				const held = windowItem(snapshot.cursor);
-				if (held == null || !sameStack(held, sourceItem) || held.count !== sourceItem.count)
+				if (held == null || !sameItem(held, sourceItem) || held.count !== sourceItem.count)
 					fail("CONFLICT", "source stack changed while picking it up", { dispatch: "sent" });
 				const place = async (button: number, expected: number): Promise<void> => {
 					const beforeCount = at(snapshot, targetSlot)?.count ?? 0;
 					await click(targetSlot, button);
 					const afterTarget = at(snapshot, targetSlot);
-					const delta = afterTarget != null && sameStack(afterTarget, sourceItem) ? afterTarget.count - beforeCount : 0;
+					const delta = afterTarget != null && sameItem(afterTarget, sourceItem) ? afterTarget.count - beforeCount : 0;
 					if (delta !== expected)
 						fail("TARGET_NOT_MET", `expected ${expected} ${sourceItem.name} at destination, observed ${delta}`, {
 							dispatch: "sent",

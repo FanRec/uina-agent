@@ -2,13 +2,16 @@
  * 能力面装配：声明 + 实现（唯一目录）。
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §3–§4。
- * 组合根只拿到 descriptors/readers/callables 三样：World 用 readers 读查询，
+ * 组合根拿到描述符、validators、readers 与 callables：World 先校验再读查询，
  * Runtime 用 callables 执行动作，目录（describe/search）后续直接消费 descriptors。
  * 重复 ref 在这里显式失败——两套同名实现会让目录与执行分叉。
  */
 
-import type { NativeCallable, QueryDescriptor, QueryReader } from "../contracts/capabilities.js";
+import { createRequire } from "node:module";
+import type { ValidateFunction } from "ajv";
+import type { NativeCallable, QueryDescriptor, QueryReader, QueryValidator } from "../contracts/capabilities.js";
 import type { ExactRef, JsonValue, Ref } from "../contracts/values.js";
+import { callFailure } from "../contracts/values.js";
 import type { CapabilityDeps } from "./deps.js";
 import { attackCallable } from "./actions/combat.js";
 import { chatCallable } from "./actions/chat.js";
@@ -32,9 +35,20 @@ export interface BuiltCapabilities {
 	queries: QueryDescriptor[];
 	/** World 读取表：只含有当前/静态读取方式的查询。 */
 	readers: ReadonlyMap<ExactRef, QueryReader>;
+	/** World executes this boundary before any current/static/history dispatch. */
+	validators: ReadonlyMap<ExactRef, QueryValidator>;
 	callables: NativeCallable<JsonValue, JsonValue>[];
 	refs: Ref[];
 }
+
+interface AjvLike {
+	compile(schema: Record<string, unknown>): ValidateFunction;
+	errorsText(errors?: ValidateFunction["errors"]): string;
+}
+const AjvCtor = createRequire(import.meta.url)("ajv") as new (options: {
+	strict: boolean;
+	allErrors: boolean;
+}) => AjvLike;
 
 export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 	const specs: QuerySpec[] = [
@@ -46,9 +60,26 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		containerLastQuery,
 	];
 	const readers = new Map<ExactRef, QueryReader>();
+	const validators = new Map<ExactRef, QueryValidator>();
+	const ajv = new AjvCtor({ strict: false, allErrors: true });
 	for (const spec of specs) {
+		const { ref, input } = spec.descriptor;
+		if (validators.has(ref)) throw new Error(`duplicate query ref: ${ref}`);
+		const validate = ajv.compile(input as Record<string, unknown>);
+		validators.set(ref, (raw) => {
+			const normalized = raw ?? {};
+			if (!validate(normalized))
+				throw callFailure({
+					code: "INVALID_INPUT",
+					source: "input",
+					message: `${ref} input rejected: ${ajv.errorsText(validate.errors)}`,
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: true,
+				});
+			return normalized;
+		});
 		if (spec.reader != null) {
-			if (readers.has(spec.descriptor.ref)) throw new Error(`duplicate query ref: ${spec.descriptor.ref}`);
 			readers.set(spec.descriptor.ref, spec.reader);
 		}
 	}
@@ -75,6 +106,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 	return {
 		queries: specs.map((spec) => spec.descriptor),
 		readers,
+		validators,
 		callables,
 		refs: [...seen],
 	};

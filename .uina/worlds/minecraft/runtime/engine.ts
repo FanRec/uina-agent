@@ -565,7 +565,14 @@ export class RuntimeEngine {
 		switch (entry.kind) {
 			case "run": {
 				const live = this.runs.get(entry.objectRef);
-				const value = live != null ? runSnapshotOf(live) : snapshotFromRow(this.recoveredRuns.get(entry.objectRef));
+				const recovered = this.recoveredRuns.get(entry.objectRef);
+				const value =
+					live != null
+						? runSnapshotOf(live)
+						: snapshotFromRow(
+								recovered,
+								recovered?.segment != null ? this.recoveredSegments.get(recovered.segment) : undefined,
+							);
 				return { kind: "run", record: ref, value: plain(value) };
 			}
 			case "segment": {
@@ -883,7 +890,8 @@ export class RuntimeEngine {
 		callState.closed = true;
 		const cancelled = callState.closedByParent != null || state.stopped;
 		const reason: "returned" | "threw" | "cancelled" = threw == null ? "returned" : cancelled ? "cancelled" : "threw";
-		const strays = [...callState.children].filter((child) => !child.closed);
+		// closed seals admissions; execution remains running until descendant cleanup settles.
+		const strays = [...callState.children].filter((child) => child.execution === "running");
 		for (const child of strays) {
 			child.closedByParent = { call: callState.call, reason };
 		}
@@ -891,16 +899,19 @@ export class RuntimeEngine {
 		callState.abort.abort();
 		await Promise.all(strays.map((child) => child.settled));
 		// §5.5 step 4：不可变完成截面入队（不逐 Call 等盘）
-		callState.execution =
-			threw == null ? "returned" : callState.closedByParent != null || state.stopped ? "interrupted" : "threw";
-		if (threw == null) {
+		const interrupted = callState.closedByParent != null || state.stopped;
+		callState.execution = interrupted ? "interrupted" : threw == null ? "returned" : "threw";
+		callState.effects = this.queue.effectsForCall(callState.call);
+		if (interrupted) {
+			callState.outcome = "cancelled";
+			if (threw != null) callState.error = failureData(threw);
+		} else if (threw == null) {
 			callState.value = value ?? null;
 			callState.outcome = this.callHasUnknownEffects(callState) ? "unknown" : "succeeded";
 		} else {
 			callState.error = failureData(threw);
-			callState.outcome = callState.execution === "interrupted" ? "cancelled" : "failed";
+			callState.outcome = "failed";
 		}
-		callState.effects = this.queue.effectsForCall(callState.call);
 		this.queue.enqueue({ kind: "call", row: callRowOf(callState) });
 		callState.settledResolve();
 		if (threw != null) throw threw;
@@ -1188,9 +1199,14 @@ export class RuntimeEngine {
 	// ---- 五态与效果归属 ----
 
 	private callHasUnknownEffects(callState: CallState): boolean {
-		for (const effect of callState.effects) {
+		// Query current receipts instead of child outcomes: a handled failure does not erase
+		// its effects, and a later confirmed receipt may resolve an earlier unknown one.
+		for (const effect of this.queue.effectsForCall(callState.call)) {
 			const attribution = this.queue.effectRecord(effect);
 			if (attribution != null && attribution.latest.completion !== "met") return true;
+		}
+		for (const child of callState.children) {
+			if (this.callHasUnknownEffects(child)) return true;
 		}
 		return false;
 	}

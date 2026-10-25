@@ -5,7 +5,7 @@ import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/mi
  * 静态知识整形（contracts/knowledge.ts、capabilities §3 item/recipe）。
  *
  * 数据来源固定为 minecraft-data 形状：这里用一份最小注册表锁住四个易错点：
- * 精准采集掉落不算普通掉落、requiredTool 取最弱工具、镜像配方的去重、
+ * 精准采集掉落不算普通掉落、harvest 保留注册表允许工具集合、镜像配方的去重、
  * 缺失类别用 sourcesComplete=false 如实表达（不把空列表解释成"无法获得"）。
  */
 
@@ -92,7 +92,9 @@ describe("item：物品知识", () => {
 		expect(pickaxe?.sources.some((source) => source.kind === "craft")).toBe(true);
 		expect(pickaxe?.sourcesComplete).toBe(false);
 		const cobble = knowledge.item("cobblestone");
-		expect(cobble?.sources).toEqual([{ kind: "block", block: "stone", requiredTool: "wooden_pickaxe" }]);
+		expect(cobble?.sources).toEqual([
+			{ kind: "block", block: "stone", harvest: { kind: "tools", names: ["wooden_pickaxe", "iron_pickaxe"] } },
+		]);
 		const apple = knowledge.item("apple");
 		expect(apple?.sources).toEqual([{ kind: "entity", entity: "zombie" }]);
 	});
@@ -105,8 +107,11 @@ describe("item：物品知识", () => {
 });
 
 describe("blockDrops：普通挖掘掉落", () => {
-	test("精准采集专属掉落不算普通掉落；requiredTool 取最弱工具", () => {
-		expect(knowledge.blockDrops("stone")).toEqual({ items: ["cobblestone"], requiredTool: "wooden_pickaxe" });
+	test("精准采集专属掉落不算普通掉落；harvest 保留注册表允许工具集合", () => {
+		expect(knowledge.blockDrops("stone")).toEqual({
+			items: ["cobblestone"],
+			harvest: { kind: "tools", names: ["wooden_pickaxe", "iron_pickaxe"] },
+		});
 	});
 
 	test("没有掉落数据返回 null（不伪造空列表）", () => {

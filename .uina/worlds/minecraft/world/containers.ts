@@ -17,23 +17,8 @@ export interface ContainerEvidence {
 	fact: Fact<ClientWindowObservation>;
 }
 
-function invalid(message: string): never {
-	throw callFailure({
-		code: "INVALID_INPUT",
-		source: "input",
-		message,
-		dispatch: "not_sent",
-		effects: [],
-		recoverable: false,
-	});
-}
-
 function object(value: unknown): value is Record<string, unknown> {
 	return value != null && typeof value === "object" && !Array.isArray(value);
-}
-
-function grid(value: unknown): value is Vec3 {
-	return object(value) && Object.keys(value).length === 3 && [value.x, value.y, value.z].every(Number.isInteger);
 }
 
 /** Only unqualified/current-relative coordinates require a live self; explicit dimensions work offline. */
@@ -42,25 +27,15 @@ export function resolveContainerQuery(
 	binding: { world: string; worldRevision: string },
 	facts: ClientFactsPort,
 ): ContainerQueryParams {
-	if (!object(input) || Object.keys(input).length !== 1 || !("at" in input) || !object(input.at))
-		invalid("container.last requires { at: GridPos }");
-	const at = input.at;
+	// World has already validated the descriptor schema; only coordinate resolution belongs here.
+	const { at } = input as unknown as { at: Vec3 | { rel: Vec3 } | { position: Vec3; dimension: string } };
 	let block: Vec3;
 	let dimension: string;
 	if ("position" in at) {
-		if (
-			Object.keys(at).length !== 2 ||
-			!grid(at.position) ||
-			typeof at.dimension !== "string" ||
-			at.dimension.length === 0
-		)
-			invalid("container.last position requires integer coordinates and a dimension");
 		block = at.position;
 		dimension = at.dimension;
 	} else {
 		const relative = "rel" in at;
-		if (relative ? Object.keys(at).length !== 1 || !grid(at.rel) : !grid(at))
-			invalid("container.last coordinates must be integer block positions");
 		const self = facts.sample((view) => view.self()).value.value;
 		if (self == null)
 			throw callFailure({
@@ -72,7 +47,7 @@ export function resolveContainerQuery(
 				recoverable: true,
 			});
 		dimension = self.place.dimension;
-		const point = (relative ? at.rel : at) as unknown as Vec3;
+		const point = "rel" in at ? at.rel : at;
 		block = relative
 			? {
 					x: Math.floor(self.place.position.x) + point.x,

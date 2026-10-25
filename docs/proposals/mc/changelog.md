@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-10-25 · 审查修复与 Driver 写入路径收敛
+
+- 按连接的 DriverProtocol 集中物品编码、同步协议写入与服务端通知；先实现 Java 1.21.11，其他版本的相关操作明确拒绝，后续版本沿窄端口接入。
+- 玩家库存和容器共用服务端快照/槽位期望/串行点击确认；装备、丢弃移除原生异步库存链。BodySession 收口资格与停止，库存、采矿、牌面各自持有局部操作资源。
+- ItemValue 与选择器统一；采集工具由实际 harvestTools 集合判断，移除材质排序猜测。toss 改为 `{receipt,removed,remaining}`，drop 分别保留确认离包与地面观察进度。
+- 采矿不再把客户端预测空气当服务端破坏；牌面取消后不再提交。查询恢复统一 schema 入口，导航禁放置覆盖全部耗材移动，Runtime 修复直接/嵌套未知效果的成功误报。
+- 真服首轮暴露 Goto 欧氏完成复查与 GoalNear 节点判据不一致；先增加真实依赖失败回归，再统一 nodeGap，修正容器动作及继发历史读取失败。
+- 本轮工程：`pnpm typecheck`（9 条边界）、MC 显式 **24 文件 / 176 项**、`pnpm build` 通过。最终 Paper 1.21.11 上 `pnpm dev:mc:repair` 与构建产物各 **15/15 PASS**，独立 Temp 数据根，含真实 max_damage/max_stack_size 覆盖、取消与完整关闭重开历史。取舍、独立审查五项修复和日志归属见 [Driver 修复实施](driver-repair-implementation.md)。
+
 ## 2026-10-24 · 批 2 窗口与容器落地
 
 - 能力面 **9 查询 + 11 动作 → 10 查询 + 13 动作**：新增 container/transfer/container.last；支持双向精确量、固定 all 清单、nearest 三候选、实体容器、部分 moved/remaining。下一批为 craft/smelt。

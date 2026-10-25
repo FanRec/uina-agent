@@ -1,18 +1,18 @@
 import { describe, expect, test } from "vitest";
-import type { WindowItemValue, WindowSession, WindowSnapshot } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { ItemValue, WindowSession, WindowSnapshot } from "../../.uina/worlds/minecraft/contracts/body.js";
 import { transferWindow } from "../../.uina/worlds/minecraft/capabilities/shared/window-transfer.js";
 import { containerCallable, transferCallable } from "../../.uina/worlds/minecraft/capabilities/actions/containers.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { CapabilityDeps } from "../../.uina/worlds/minecraft/capabilities/deps.js";
 import { fact, self } from "./mc-capability-harness.js";
 
-function stack(name: string, count: number, stackSize = 64): WindowItemValue {
+function stack(name: string, count: number, stackSize = 64): ItemValue {
 	return { name, count, stackSize, components: [], durability: null };
 }
 
-function windowFixture(container: (WindowItemValue | null)[], player: (WindowItemValue | null)[]) {
+function windowFixture(container: (ItemValue | null)[], player: (ItemValue | null)[]) {
 	let revision = 1;
-	let cursor: WindowItemValue | null = null;
+	let cursor: ItemValue | null = null;
 	const items = structuredClone([...container, ...player]);
 	const clicks: number[] = [];
 	let unknown = false;
@@ -87,6 +87,15 @@ function windowFixture(container: (WindowItemValue | null)[], player: (WindowIte
 }
 
 describe("窗口搬移：服务端快照上的固定清单", () => {
+	test("an unknown component stack does not hide a later proven match", async () => {
+		const unknown = stack("dirt", 2);
+		unknown.components = null;
+		const f = windowFixture([unknown, stack("dirt", 3)], [null]);
+		expect(
+			await transferWindow(f.session, { direction: "from", item: { name: "dirt", components: [] }, count: 1 }),
+		).toEqual({ moved: { dirt: 1 }, remaining: {} });
+		expect(f.items[0]?.count).toBe(2);
+	});
 	test("存入精确数量，余量回原槽，光标清空", async () => {
 		const f = windowFixture([null, null], [stack("dirt", 12), null]);
 		expect(await transferWindow(f.session, { direction: "to", item: "dirt", count: 5 })).toEqual({

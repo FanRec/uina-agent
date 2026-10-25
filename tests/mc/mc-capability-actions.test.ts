@@ -6,7 +6,7 @@ import { failureOf, makeHarness, type HarnessState } from "./mc-capability-harne
  * 动作层行为（capabilities §4）：先查证再动手、拿身体前失败、完成按观察结算。
  *
  * 替身见 mc-capability-harness.ts：只替换世界读数与身体调用，不建第二套玩法。
- * - mine：派发后只认客户端空气；未加载不算 air；
+ * - mine：只认 Driver 服务端确认；本地空气不能替代回执；
  * - place：目标已占用且 replace=false 在取身体之前 CONFLICT；
  * - eat/attack/use：可预判的失败不占身体队列；
  * - 记录实际调用顺序，证明"没做多余的事"。
@@ -16,8 +16,32 @@ describe("mine@1", () => {
 	// self 在 10,64,10；相邻格才在射程内（mine 不寻路）。
 	const NEAR = { x: 10, y: 64, z: 11 };
 	const NEAR_KEY = "10,64,11";
+	test("local air cannot override an unknown Driver receipt", async () => {
+		const state: HarnessState = {
+			blocks: new Map([[NEAR_KEY, { name: "oak_log", properties: {} }]]),
+			inventory: { slots: [], counts: {} },
+		};
+		const h = makeHarness(state, { onDig: () => state.blocks.set(NEAR_KEY, { name: "air", properties: {} }) });
+		const withBody = h.ctx.withBody;
+		h.ctx.withBody = (work) =>
+			withBody((scope) =>
+				work({
+					...scope,
+					player: {
+						...scope.player,
+						dig: async (target) => {
+							await scope.player.dig(target);
+							return { effect: "eff:unknown", dispatch: "sent", completion: "unknown", evidence: [] };
+						},
+					},
+				}),
+			);
+		const error = await failureOf(h.callable("mine@1").invoke(h.ctx, { at: NEAR, collect: false }));
+		expect(error.code).toBe("TARGET_NOT_MET");
+		expect(error.effects).toContain("eff:unknown");
+	});
 
-	test("派发后客户端变空气即完成；掉落只报观察到的增量", async () => {
+	test("Driver 服务端回执确认即完成；掉落只报观察到的增量", async () => {
 		const state: HarnessState = {
 			blocks: new Map([[NEAR_KEY, { name: "oak_log", properties: {} }]]),
 			inventory: {
@@ -68,7 +92,7 @@ describe("mine@1", () => {
 				held: { name: "wooden_pickaxe", count: 1 },
 			},
 		};
-		const harness = makeHarness(state);
+		const harness = makeHarness(state, { digCompletion: "unknown" });
 		const err = await failureOf(harness.callable("mine@1").invoke(harness.ctx, { at: NEAR } as JsonValue));
 		expect(err.code).toBe("TARGET_NOT_MET");
 		expect(err.dispatch).toBe("sent");

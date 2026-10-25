@@ -9,7 +9,7 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuiltCapabilities } from "../capabilities/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
@@ -85,6 +85,7 @@ export interface DevHarness {
 	ns: string;
 	worldOwner: Ref;
 	activation: Ref;
+	dataRoot: string;
 	host: ClientHost;
 	facts: FactsSource;
 	world: MinecraftWorld;
@@ -99,12 +100,17 @@ export async function openHarness(
 	options: {
 		binding?: { world: Ref; worldRevision: Ref };
 		callables?: NativeCallable<JsonValue, JsonValue>[];
+		/** Dedicated validation data; explicit option wins over MC_DEV_DATA_DIR and the normal local default. */
+		dataRoot?: string;
 	} = {},
 ): Promise<DevHarness> {
 	const log = (message: string): void => console.log(`[mc-${label}] ${message}`);
 	const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-	const worldDataDir = join(repoRoot, ".uina", "world-data", "minecraft");
+	const worldDataDir = resolve(
+		options.dataRoot ?? process.env.MC_DEV_DATA_DIR ?? join(repoRoot, ".uina", "world-data", "minecraft"),
+	);
 	mkdirSync(worldDataDir, { recursive: true });
+	log(`data root: ${worldDataDir}`);
 
 	// per-boot 命名空间：禁冒号；绑定身份每次启动显式生成（不猜旧身份）
 	const ns = `${label}-${Date.now().toString(36)}`;
@@ -155,6 +161,7 @@ export async function openHarness(
 	const world = new MinecraftWorld({
 		facts,
 		readers: capabilities.readers,
+		validators: capabilities.validators,
 		dbPath: join(worldDataDir, "world-history.db"),
 		binding: { binding, world: worldRef, worldRevision },
 		namespace: ns,
@@ -196,6 +203,7 @@ export async function openHarness(
 		ns,
 		worldOwner,
 		activation,
+		dataRoot: worldDataDir,
 		host,
 		facts,
 		world,

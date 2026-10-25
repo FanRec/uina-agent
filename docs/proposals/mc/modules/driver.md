@@ -499,11 +499,11 @@ Driver 不根据一组资源名字自动推断这些前置条件，更不决定�
 6. 完成、取消或异常结算。
 7. 本地预测与服务端事实分别记录。
 
-Mineflayer 的挖掘流程存在异步 `lookAt()` 和本地完成预测。恢复后必须重新核验资格。
+当前实现由 Body 的独立 mining 操作持有开始、计时、结束、取消和监听；只复用客户端 digTime 计算，不调用原生 dig 的本地置空气路径。瞄准异步恢复后、每次实际写入前重新核验资格。开始派发前登记服务端单块/批量方块更新，只有同连接、化身和目标位置的空气更新确认 met；ACK 不能证明破坏。结束后 5 秒内无确认保留 unknown，明确的目标未达成回包记 not_met。
 
 不能把本地目标块变成空气当作服务端确认。
 
-默认 dig 可瞄准目标；与现有视角协同的 dig 使用公开合同的 preserve 选项，复用上游 ignore-look 路径且不得暗中覆盖视角。进入和恢复时检查有关目标、手持前置条件与当前观测；不能把“不自动瞄准”解释为保证持续可挖。是否移动、维持瞄准或换目标由协调者决定，Driver 不增加挖掘路线策略。
+默认 dig 可瞄准目标；与现有视角协同的 dig 使用公开合同的 preserve 选项跳过瞄准，不得暗中覆盖视角。进入和恢复时检查有关目标、手持前置条件与当前观测；不能把“不自动瞄准”解释为保证持续可挖。是否移动、维持瞄准或换目标由协调者决定，Driver 不增加挖掘路线策略。
 
 原始 `dig` 不承诺掉落已进入背包。
 
@@ -532,7 +532,9 @@ lookAt/ControlInput.lookAt 接受连续 PointTarget 或 EntityRef，由 Driver �
 
 装备操作如果涉及窗口和槽位修改，使用同一受控库存路径。equip/endUse/lookAt 均返回 EffectReceipt，不吞掉清理或释放蓄力的后果。
 
-丢弃（`toss(name, count)`）走窗口外转移（destination -999）：只按名字选物，可丢域是主背包+快捷栏（9..44），护甲/副手不参与；数量不足在派发前报 `MISSING_MATERIAL`。1.21.11 没有事务回执，且客户端先本地改槽再发包，因此回执只到 `dispatch:"sent"`、`completion:"unknown"`——"东西是否真的落地"必须由能力层用地面掉落物实体判定，不能拿本地库存差额当证据。
+丢弃（`toss(selector, count)`）与装备、容器共用服务端确认的库存点击路径，不进入上游异步 clickWindow/moveSlotItem/toss 链。可丢域是主背包+快捷栏（9..44），护甲/副手不参与；数量不足在派发前报 `MISSING_MATERIAL`。选择器完整保留 components、剩余耐久和 substitutions，未知信息不能满足约束。有可验证匹配项仍可使用，无匹配且信息不可核验时明确失败。
+
+返回 `TossOutcome={receipt,removed,remaining}`；removed 只累计服务端确认移出的各名称数量，余量回原槽且光标核验为空后才完整返回。部分失败的 progress 保留同字段，未知点击不重试。该回执证明离开自身库存；是否落地、被别人拾取或目标收到仍由领域观察区分。
 
 结束物品使用可能产生真实效果，例如释放已蓄力的弓。
 
@@ -797,7 +799,9 @@ PVP 内部依赖 Pathfinder 的事实不必为了形式解耦而重写。由两�
 
 ### 9.5 Inventory / Window
 
-批 2 实现落在 driver/window/session.ts 与 driver/mineflayer/window.ts：不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、旧 revision、失效窗口在发送前拒绝。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
+玩家库存与容器共用 driver/window/session.ts 的快照、期望、串行点击和确认；driver/mineflayer/protocol.ts 负责连接级编解码和同步协议写入。本轮适配 Java 1.21.11，后续版本以相同 DriverProtocol 窄端口接入，未支持版本的操作明确失败。Body 的 inventory、mining、sign 模块各持有自己的局部资源，BodySession 保留资格及停止屏障。
+
+不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、旧 revision、失效窗口在发送前拒绝。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
 
 块容器在强制看向目标后等待一个真实 physicsTick，继续时复验资格再派发。它既让视角越过实际物理/发包边界，也避免真服 Paper 已观察到的连续 block-use 静默突发丢包；不另建基于服务器配置的速率管理器。真实窗口当前值与历史同源，publishWindow 只移交服务端观察，关闭清当前值而保留旧证据。
 

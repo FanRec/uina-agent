@@ -3,8 +3,8 @@
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
  * 这里只做"读 + 成形"：不造值——读不到就 null + unknown 条目，不猜默认值。
- * players/map 在 I1 明确未实现，一律 null + unknown；实体 metadata 与
- * item components 未捕获，同样如实为 null。
+ * players/map 在 I1 明确未实现，一律 null + unknown；库存来自协议捕获的
+ * 服务端快照，物品组件/耐久按统一 ItemValue 保留，未捕获字段如实未知。
  * 全部构建发生在 sample() 的同一同步边界内，闭包不外泄。
  */
 
@@ -33,6 +33,7 @@ import type {
 	WindowSnapshot,
 } from "../../contracts/body.js";
 import type { Fact, FactSource, Vec3 } from "../../contracts/values.js";
+import { protocolFor } from "../mineflayer/protocol.js";
 import { fromMineflayerVec3, toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 
 export interface FactViewContext {
@@ -210,29 +211,26 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 
 function inventoryFact(ctx: FactViewContext): Fact<ClientInventoryValue | null> {
 	const { bot, stamp } = ctx;
-	const win = bot.inventory;
-	if (win == null || win.slots == null) return absent<ClientInventoryValue>("inventory window not received");
-
-	const slots: ClientSlotValue[] = [];
-	for (let i = 0; i < win.slots.length; i++) {
-		const item = win.slots[i];
-		if (item == null) {
-			slots.push({ slot: i, known: true, item: null });
-			continue;
-		}
-		slots.push({ slot: i, known: true, item: { name: item.name, count: item.count, components: null } });
-	}
-	const unknown: string[] = ["item components not captured in I1"];
+	const snapshot = protocolFor(bot).playerSnapshot();
+	if (snapshot == null) return absent<ClientInventoryValue>("authoritative inventory has not arrived");
+	const unknown: string[] = [];
+	const slots: ClientSlotValue[] = snapshot.slots.map((entry) => ({
+		slot: entry.slot,
+		known: true,
+		item: entry.item as unknown as import("../../contracts/body.js").ItemValue | null,
+	}));
+	if (slots.some((slot) => slot.item != null && slot.item.components == null))
+		unknown.push("some item components unavailable");
 	const value: ClientInventoryValue = {
-		revision: stamp.sequence,
+		revision: snapshot.revision,
 		layout: {
-			slotCount: win.slots.length,
+			slotCount: snapshot.layout.slotCount,
 			regions: [
 				{ name: "crafting", slots: [0, 1, 2, 3, 4] },
 				{ name: "armor", slots: [5, 6, 7, 8] },
 				{ name: "main", slots: range(9, 35) },
 				{ name: "hotbar", slots: range(36, 44) },
-				{ name: "offhand", slots: win.slots.length > 45 ? [45] : [] },
+				{ name: "offhand", slots: snapshot.layout.slotCount > 45 ? [45] : [] },
 			],
 		},
 		slots,

@@ -5,7 +5,7 @@
  * World 订阅/采样；不得向脚本或跨进程发送 read 函数/活 view。
  */
 
-import type { BlockStateValue, BlockTarget, EntityRef, SignValue, WindowSnapshot } from "./body.js";
+import type { ItemValue, BlockStateValue, BlockTarget, EntityRef, SignValue, WindowSnapshot } from "./body.js";
 
 /** 真实打开目标与服务端窗口快照；由 Driver 捕获，沿现有证据队列保存。 */
 export interface ClientWindowObservation {
@@ -167,14 +167,8 @@ export type ClientEventPayload =
 			reason: string | null;
 	  };
 
-export interface ClientItemValue {
-	name: string;
-	count: number;
-	components: JsonValue | null;
-}
-
 export type ClientSlotValue = { slot: number } & (
-	| { known: true; item: ClientItemValue | null }
+	| { known: true; item: ItemValue | null }
 	| { known: false; item: null }
 );
 

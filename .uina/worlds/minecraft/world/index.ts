@@ -21,7 +21,7 @@ import type {
 	Ref,
 } from "../contracts/values.js";
 import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { QueryReader } from "../contracts/capabilities.js";
+import type { QueryReader, QueryValidator } from "../contracts/capabilities.js";
 import type {
 	DomainRecord,
 	EventPage,
@@ -39,6 +39,7 @@ export interface MinecraftWorldOptions {
 	facts: ClientFactsPort;
 	/** 查询读取表（能力面声明生成；组合根装配）。 */
 	readers: ReadonlyMap<ExactRef, QueryReader>;
+	validators: ReadonlyMap<ExactRef, QueryValidator>;
 	/** world-history.db 路径（.uina/world-data/minecraft/ 下，Host 提供数据根）。 */
 	dbPath: string;
 	/** 当前绑定投影（§4.2；I1 每进程生成显式分区，不猜旧身份）。 */
@@ -114,6 +115,7 @@ export class MinecraftWorld implements WorldPort {
 	private readonly history: HistoryIngest;
 	private readonly binding: MinecraftWorldOptions["binding"];
 	private readonly readers: ReadonlyMap<ExactRef, QueryReader>;
+	private readonly validators: ReadonlyMap<ExactRef, QueryValidator>;
 	private readonly eventScope: EventScope;
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
@@ -122,6 +124,11 @@ export class MinecraftWorld implements WorldPort {
 		this.facts = options.facts;
 		this.binding = options.binding;
 		this.readers = options.readers;
+		this.validators = options.validators;
+		const queryRefs: ExactRef[] = [...options.readers.keys(), EVENTS_REF, CONTAINER_LAST_REF];
+		for (const ref of queryRefs) {
+			if (typeof options.validators?.get(ref) !== "function") throw new Error(`query validator is missing: ${ref}`);
+		}
 		this.current = new CurrentReads(options.facts);
 		this.history = new HistoryIngest(options.facts, {
 			dbPath: options.dbPath,
@@ -132,24 +139,26 @@ export class MinecraftWorld implements WorldPort {
 	}
 
 	async read<T>(query: WorldQuery): Promise<Observation<T>> {
+		const input = this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader?.kind === "current") {
-			const observation = await this.current.read<T>(query.input, reader.read);
+			const observation = await this.current.read<T>(input, reader.read);
 			// 派生结果（如 recipe 的 plan）读当前库存但不发布观察水位。
 			return reader.cursor === "none" ? { ...observation, cursor: null } : observation;
 		}
 		if (reader?.kind === "static") {
-			return { ...(reader.read(query.input) as Fact<T>), cursor: null };
+			return { ...(reader.read(input) as Fact<T>), cursor: null };
 		}
-		if (query.ref === EVENTS_REF) return await this.readEvents<T>(query.input);
+		if (query.ref === EVENTS_REF) return await this.readEvents<T>(input);
 		if (query.ref === CONTAINER_LAST_REF) {
-			const params = resolveContainerQuery(query.input, this.binding, this.facts);
+			const params = resolveContainerQuery(input, this.binding, this.facts);
 			return containerObservation<T>(await this.history.readContainer(params));
 		}
 		throw unknownQuery(query.ref, this.readers);
 	}
 
 	async watch(query: WorldQuery, _after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
+		this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader == null) {
 			if (query.ref === EVENTS_REF || query.ref === CONTAINER_LAST_REF) {
@@ -188,6 +197,12 @@ export class MinecraftWorld implements WorldPort {
 			});
 		}
 		return this.current.watch(signal);
+	}
+
+	private validateQuery(query: WorldQuery): JsonValue {
+		const validate = this.validators.get(query.ref);
+		if (validate === undefined) throw unknownQuery(query.ref, this.readers);
+		return validate(query.input);
 	}
 
 	/** events@1：分区内历史页；提交屏障 + worker 单消息读取保证页内一致（§8.5）。 */

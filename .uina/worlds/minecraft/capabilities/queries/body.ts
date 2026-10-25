@@ -6,16 +6,14 @@
  * 读不到的字段一律进 unknown（health/food 不填 0，耐久不编造）。
  */
 
+import type { ItemValue } from "../../contracts/body.js";
 import type { ClientInventoryValue, ClientFactView } from "../../contracts/client-facts.js";
 import type { Fact } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 import type { QuerySpec } from "../shared/query.js";
 
-interface SlotItem {
-	name: string;
-	count: number;
-}
+type SlotItem = ItemValue;
 
 export interface GearView {
 	held?: SlotItem;
@@ -27,7 +25,7 @@ function gearOf(inventory: ClientInventoryValue): GearView {
 	const slotItem = (index: number): SlotItem | undefined => {
 		const slot = inventory.slots.find((entry) => entry.slot === index);
 		const item = slot?.item;
-		return item == null ? undefined : { name: item.name, count: item.count };
+		return item == null ? undefined : { ...item };
 	};
 	const selected = inventory.selectedSlot;
 	const held = selected == null ? undefined : slotItem(36 + selected);
@@ -78,15 +76,13 @@ const selfQuery: QuerySpec = {
 			const self = view.self();
 			if (self.value == null) return self as Fact<unknown>;
 			const inventory = view.inventory();
-			const unknown = [...self.unknown];
+			const unknown = [...self.unknown, ...inventory.unknown];
 			if (inventory.value == null) {
 				unknown.push("inventory not received; held/armor unknown");
 				return factOf({ ...self.value, armor: {} }, { unknown, source: self.source, basis: self.basis });
 			}
 			const gear = gearOf(inventory.value);
-			if (inventory.value.slots.some((slot) => slot.item != null)) {
-				unknown.push("item durability/components not captured in the current view");
-			}
+
 			return factOf({ ...self.value, ...gear }, { unknown, source: self.source, basis: self.basis });
 		},
 	},
@@ -125,14 +121,13 @@ const inventoryQuery: QuerySpec = {
 			if (inventory.value == null) return inventory as Fact<unknown>;
 			const value = inventory.value;
 			const unknown = [...inventory.unknown];
-			const slots: { slot: number; name: string; count: number }[] = [];
+			const slots: (ItemValue & { slot: number })[] = [];
 			const counts: Record<string, number> = {};
 			for (const slot of value.slots) {
 				if (slot.item == null) continue;
-				slots.push({ slot: slot.slot, name: slot.item.name, count: slot.item.count });
+				slots.push({ slot: slot.slot, ...slot.item });
 				counts[slot.item.name] = (counts[slot.item.name] ?? 0) + slot.item.count;
 			}
-			if (slots.length > 0) unknown.push("item durability/components not captured in the current view");
 			// 可用空间只按主背包 + 快捷栏计（36 格）；护甲/副手/合成槽不参与搬运判断。
 			const carry = value.layout.regions.filter((region) => region.name === "main" || region.name === "hotbar");
 			const carrySlots = new Set(carry.flatMap((region) => region.slots));

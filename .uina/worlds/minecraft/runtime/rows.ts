@@ -114,7 +114,7 @@ export function summaryFromRow(row: RunRow): RunSummary {
 }
 
 /** 落库行 → 快照；行缺失时给出显式 unavailable 投影而非抛错。 */
-export function snapshotFromRow(row: RunRow | undefined): RunSnapshot {
+export function snapshotFromRow(row: RunRow | undefined, segment?: SegmentRow): RunSnapshot {
 	if (row == null) {
 		return {
 			run: "unavailable",
@@ -136,6 +136,7 @@ export function snapshotFromRow(row: RunRow | undefined): RunSnapshot {
 	return {
 		...summary,
 		...(row.value != null ? { value: JSON.parse(row.value) as JsonValue } : {}),
+		...(segment != null ? { interruptedChildren: JSON.parse(segment.interrupted_children) as Ref[] } : {}),
 	} as unknown as RunSnapshot;
 }
 

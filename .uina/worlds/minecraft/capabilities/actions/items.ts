@@ -14,7 +14,7 @@ import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { fail, matchesItem, stripNamespace } from "../shared/targets.js";
-import { readInventory, type InventorySnapshot } from "../shared/views.js";
+import { readInventory, type InventorySnapshot, type SlotView } from "../shared/views.js";
 
 const SLOTS: EquipSlot[] = ["hand", "offhand", "head", "chest", "legs", "feet"];
 const SLOT_INDEX: Record<EquipSlot, (selected: number | null) => number> = {
@@ -31,10 +31,12 @@ interface EquipInput {
 	slot?: EquipSlot;
 }
 
-function itemInSlot(inventory: InventorySnapshot, slot: EquipSlot): { name: string; count: number } | null {
+function itemInSlot(inventory: InventorySnapshot, slot: EquipSlot): Omit<SlotView, "slot"> | null {
 	const index = SLOT_INDEX[slot](inventory.selectedSlot ?? null);
 	const found = inventory.slots.find((entry) => entry.slot === index);
-	return found == null ? null : { name: found.name, count: found.count };
+	if (found == null) return null;
+	const { slot: _slot, ...item } = found;
+	return item;
 }
 
 const equipDescriptor: CallableDescriptor = {
@@ -74,7 +76,7 @@ const equipDescriptor: CallableDescriptor = {
 						type: "object",
 						properties: { name: { type: "string" }, count: { type: "integer" } },
 						required: ["name", "count"],
-						additionalProperties: false,
+						additionalProperties: true,
 					},
 				],
 			},
@@ -115,7 +117,12 @@ export function equipCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 			const previous = itemInSlot(before, slot);
 			return await ctx.withBody(async (scope: BodyCallScope) => {
 				if (raw.item == null) {
-					await scope.player.equip(null, slot);
+					const receipt = await scope.player.equip(null, slot);
+					if (receipt.completion !== "met")
+						fail("TARGET_NOT_MET", `emptying slot ${slot} has no confirmed server result`, {
+							dispatch: receipt.dispatch,
+							effects: [receipt.effect],
+						});
 					const after = await readInventory(scope.world);
 					const current = itemInSlot(after, slot);
 					if (current != null) {
@@ -128,7 +135,7 @@ export function equipCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 				}
 				const selector: ItemSelector = typeof raw.item === "string" ? { name: raw.item } : raw.item;
 				const receipt = await scope.player.equip(selector, slot);
-				if (receipt.completion === "unknown") {
+				if (receipt.completion !== "met") {
 					fail("TARGET_NOT_MET", `equip dispatched but slot ${slot} was not confirmed`, {
 						hint: "read inventory@1 to see the current slot content",
 						dispatch: receipt.dispatch,
@@ -170,7 +177,7 @@ function requestedFood(
 	knowledge: NonNullable<ReturnType<CapabilityDeps["knowledge"]>>,
 	requested: string | ItemSelector,
 ): { name: string } {
-	const match = inventory.slots.find((slot) => matchesItem(requested, { name: slot.name, count: slot.count }));
+	const match = inventory.slots.find((slot) => matchesItem(requested, slot));
 	if (match == null) {
 		const want = typeof requested === "string" ? requested : requested.name;
 		fail("NOT_FOUND", `${want} is not in the inventory`, {
@@ -278,7 +285,22 @@ export function eatCallable(deps: CapabilityDeps): NativeCallable<JsonValue, Jso
 					for (let bite = 0; bite < target; bite++) {
 						if (until === "full" && current.food != null && current.food >= 20) break;
 						const held = await readInventory(scope.world);
-						if (held.held?.name !== food.name) await scope.player.equip({ name: food.name }, "hand");
+						const selector: ItemSelector = {
+							...(typeof raw.food === "object" ? raw.food : {}),
+							name: food.name,
+							substitutions: [],
+						};
+						const currentHeld =
+							held.selectedSlot == null ? held.held : held.slots.find((slot) => slot.slot === held.selectedSlot! + 36);
+						if (currentHeld == null || !matchesItem(selector, currentHeld)) {
+							const receipt = await scope.player.equip(selector, "hand");
+							if (receipt.completion !== "met")
+								fail("TARGET_NOT_MET", "food equipment has no confirmed server result", {
+									dispatch: receipt.dispatch,
+									effects: [receipt.effect],
+									progress: { eaten },
+								});
+						}
 						const foodBefore = current.food;
 						await scope.player.drive({ keys: {}, use: { mode: "hold", hand: "main" } }, BITE_TICKS);
 						const settled = await pollUntil(

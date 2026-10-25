@@ -13,7 +13,7 @@
 
 import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { EntityRef, ItemSelector, SelfState } from "../../contracts/body.js";
-import type { ItemSource } from "../../contracts/knowledge.js";
+import type { ItemSource, HarvestRequirement } from "../../contracts/knowledge.js";
 import { callFailure, plain } from "../../contracts/values.js";
 import type { CallFailure, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
@@ -81,10 +81,10 @@ function isUnderfoot(position: Vec3, self: SelfState): boolean {
 	);
 }
 
-function blockSources(sources: ItemSource[]): { block: string; requiredTool: string | null }[] {
-	const blocks: { block: string; requiredTool: string | null }[] = [];
+function blockSources(sources: ItemSource[]): { block: string; harvest: HarvestRequirement }[] {
+	const blocks: { block: string; harvest: HarvestRequirement }[] = [];
 	for (const source of sources) {
-		if (source.kind === "block") blocks.push({ block: source.block, requiredTool: source.requiredTool });
+		if (source.kind === "block") blocks.push({ block: source.block, harvest: source.harvest });
 	}
 	return blocks;
 }
@@ -95,7 +95,7 @@ function isSkippable(err: unknown): boolean {
 	return code === "NOT_FOUND" || code === "UNREACHABLE" || code === "TIMEOUT";
 }
 
-/** 子调用失败 → 带上本次组合动作的累计进度；子调用的局部进度优先。 */
+/** 子调用失败 → 保留局部诊断字段，数量以本次组合动作的累计进度为准。 */
 function withProgress(err: unknown, progress: Progress): unknown {
 	const failure = err as CallFailure;
 	if (failure?.name !== "CallFailure") return err;
@@ -105,7 +105,7 @@ function withProgress(err: unknown, progress: Progress): unknown {
 		message: failure.message,
 		hint: failure.hint,
 		dispatch: failure.dispatch,
-		progress: { ...progress, ...(failure.progress ?? {}) },
+		progress: { ...(failure.progress ?? {}), ...progress },
 		effects: failure.effects ?? [],
 		recoverable: failure.recoverable,
 	});
@@ -182,12 +182,12 @@ function planDrop(matches: { name: string; count: number }[], total: number): { 
 	return plan;
 }
 
-function groundCount(entities: EntityEntryView[], names: string[]): number {
-	let total = 0;
-	for (const entity of entities) {
-		if (entity.item != null && names.includes(entity.item.name)) total += entity.item.count;
-	}
-	return total;
+function groundCounts(entities: EntityEntryView[], names: string[]): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const entity of entities)
+		if (entity.item != null && names.includes(entity.item.name))
+			counts[entity.item.name] = (counts[entity.item.name] ?? 0) + entity.item.count;
+	return counts;
 }
 
 export function dropCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
@@ -196,9 +196,7 @@ export function dropCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, J
 		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
 			const raw = input as unknown as DropInput;
 			const inventory = await readInventory(ctx.world);
-			const matches = carrySlotsOf(inventory).filter((slot) =>
-				matchesItem(raw.item, { name: slot.name, count: slot.count }),
-			);
+			const matches = carrySlotsOf(inventory).filter((slot) => matchesItem(raw.item, slot));
 			if (matches.length === 0) {
 				const wanted = typeof raw.item === "string" ? raw.item : raw.item.name;
 				fail("NOT_FOUND", `no ${wanted} in the main inventory`, {
@@ -227,33 +225,66 @@ export function dropCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, J
 				}
 			}
 			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			// 地面基线：丢之前先数一遍同名掉落物，之后只认增量（合并堆也照样计数）。
-			const baseline = groundCount(await trackedEntities(ctx.world, DROP_GROUND_RADIUS), names);
-			await ctx.withBody(async (scope: BodyCallScope) => {
-				if (toward != null) await scope.player.lookAt(toward);
-				for (const step of plan) await scope.player.toss(step.name, step.count);
-			});
-			const observed = await pollUntil(
-				() => trackedEntities(ctx.world, DROP_GROUND_RADIUS),
-				(entities) => groundCount(entities, names) >= baseline + declared,
-				{ timeoutMs: DROP_GROUND_TIMEOUT_MS, intervalMs: DROP_GROUND_INTERVAL_MS, signal: ctx.signal },
-			);
-			if (!observed.ok) {
-				// 本地库存已经按预测扣了，但那不是服务端确认；如实报"没看到东西落地"。
-				fail("TARGET_NOT_MET", `no dropped ${names.join("/")} appeared within ${DROP_GROUND_RADIUS} blocks`, {
-					hint: "the server may have rejected the click sequence, or the item was destroyed on landing",
-					dispatch: "sent",
-					progress: { dropped: {}, remaining: declared },
+			const baseline = groundCounts(await trackedEntities(ctx.world, DROP_GROUND_RADIUS), names);
+			const removed: Record<string, number> = {};
+			let dropped: Record<string, number> = {};
+			const remaining = (): number =>
+				Math.max(0, declared - Object.values(removed).reduce((sum, count) => sum + count, 0));
+			const observe = (entities: EntityEntryView[]): boolean => {
+				const counts = groundCounts(entities, names);
+				dropped = {};
+				for (const name of names) {
+					const count = Math.min(removed[name] ?? 0, Math.max(0, (counts[name] ?? 0) - (baseline[name] ?? 0)));
+					if (count > 0) dropped[name] = count;
+				}
+				return remaining() === 0 && names.every((name) => (dropped[name] ?? 0) >= (removed[name] ?? 0));
+			};
+			try {
+				await ctx.withBody(async (scope: BodyCallScope) => {
+					if (toward != null) await scope.player.lookAt(toward);
+					for (const step of plan) {
+						const selector: ItemSelector = {
+							...(typeof raw.item === "object" ? raw.item : {}),
+							name: step.name,
+							substitutions: [],
+						};
+						const outcome = await scope.player.toss(selector, step.count);
+						for (const [name, count] of Object.entries(outcome.removed)) removed[name] = (removed[name] ?? 0) + count;
+						if (outcome.receipt.completion !== "met" || outcome.remaining > 0)
+							fail("TARGET_NOT_MET", "drop has no fully confirmed inventory result; it will not be repeated", {
+								dispatch: outcome.receipt.dispatch,
+								effects: [outcome.receipt.effect],
+							});
+					}
+				});
+				const observed = await pollUntil(() => trackedEntities(ctx.world, DROP_GROUND_RADIUS), observe, {
+					timeoutMs: DROP_GROUND_TIMEOUT_MS,
+					intervalMs: DROP_GROUND_INTERVAL_MS,
+					signal: ctx.signal,
+				});
+				if (!observed.ok)
+					fail("TARGET_NOT_MET", `not every removed ${names.join("/")} appeared on the ground`, { dispatch: "sent" });
+				return plain({ dropped, remaining: 0, at: self.place.position, ...(toward != null ? { toward } : {}) });
+			} catch (err) {
+				const failure = err as CallFailure;
+				if (failure?.name !== "CallFailure") throw err;
+				const partial = failure.progress?.removed;
+				if (partial != null && typeof partial === "object" && !Array.isArray(partial))
+					for (const [name, count] of Object.entries(partial))
+						if (typeof count === "number") removed[name] = (removed[name] ?? 0) + count;
+				try {
+					observe(await trackedEntities(ctx.world, DROP_GROUND_RADIUS));
+				} catch {
+					/* Preserve the original failure when current observations are unavailable. */
+				}
+				throw withProgress(err, {
+					removed,
+					dropped,
+					remaining: remaining(),
+					at: plain(self.place.position),
+					...(toward != null ? { toward: plain(toward) } : {}),
 				});
 			}
-			const dropped: Record<string, number> = {};
-			for (const step of plan) dropped[step.name] = (dropped[step.name] ?? 0) + step.count;
-			return plain({
-				dropped,
-				remaining: 0,
-				at: self.place.position,
-				...(toward != null ? { toward } : {}),
-			});
 		},
 	};
 }
@@ -536,18 +567,17 @@ export function collectCallable(deps: CapabilityDeps): NativeCallable<JsonValue,
 			const start = await readInventory(ctx.world);
 			// 可预判的失败全部在移动之前：白跑 20 格才发现没镐，是这个动作最没价值的行为。
 			const requestedTool = raw.tool;
-			if (
-				requestedTool != null &&
-				!start.slots.some((slot) => matchesItem(requestedTool, { name: slot.name, count: slot.count }))
-			) {
+			if (requestedTool != null && !start.slots.some((slot) => matchesItem(requestedTool, slot))) {
 				const wanted = typeof requestedTool === "string" ? requestedTool : requestedTool.name;
 				fail("MISSING_MATERIAL", `requested tool ${wanted} is not in the inventory`, {
 					hint: `inventory holds: ${start.slots.map((slot) => slot.name).join(", ") || "nothing"}`,
 				});
 			}
-			const harvestable = sources.filter((source) => canHarvest(knowledge, start, source.block, undefined));
+			const harvestable = sources.filter((source) => canHarvest(knowledge, start, source.block, requestedTool));
 			if (harvestable.length === 0) {
-				const required = [...new Set(sources.map((source) => source.requiredTool).filter((name) => name != null))];
+				const required = [
+					...new Set(sources.flatMap((source) => (source.harvest.kind === "tools" ? source.harvest.names : []))),
+				];
 				fail("MISSING_TOOL", `no inventory tool can harvest any source block of ${item}`, {
 					hint: `required: ${required.join(", ") || "unknown"}`,
 				});

@@ -26,6 +26,7 @@ function harness(autoTick = true) {
 	const facts: DriverExecutionFact[] = [];
 	bot._client = client;
 	bot.currentWindow = null;
+	bot.inventory = windows.createWindow(0, "minecraft:inventory", "Inventory");
 	bot.registry = mfRequire("prismarine-registry")("1.21.11");
 	bot.version = "1.21.11";
 	bot.supportFeature = (name: string) => bot.registry.supportFeature(name);
@@ -153,6 +154,8 @@ describe("Driver window lifetime and server confirmation", () => {
 		h.bot.emit("physicsTick");
 		expect(h.writes).toHaveLength(0);
 		expect(h.bot.listenerCount("physicsTick")).toBe(0);
+		expect(h.bot.listenerCount("end")).toBe(1); // connection protocol capture outlives this operation
+		h.bot.emit("end", "test complete");
 		expect(h.bot.listenerCount("end")).toBe(0);
 	});
 
@@ -390,6 +393,8 @@ describe("Driver window lifetime and server confirmation", () => {
 		await window.close();
 		expect(h.bot.currentWindow).toBe(newer);
 		expect(h.observations).toHaveLength(count);
+		expect(h.client.listenerCount("window_items")).toBe(2);
+		h.bot.emit("end", "test complete");
 		expect(h.client.listenerCount("window_items")).toBe(1);
 	});
 

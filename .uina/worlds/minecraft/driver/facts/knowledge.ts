@@ -3,12 +3,13 @@
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.2、modules/capabilities.md §3 item/recipe。
  * 数据只来自 minecraft-data（经 prismarine-registry），不做网络补全、不猜掉落率：
- * - 方块掉落只取"普通挖掘"条目（silkTouch!==true），requiredTool 取 harvestTools 里最弱的工具；
+ * - 方块掉落只取"普通挖掘"条目（silkTouch!==true），harvest 保留 harvestTools 的实际成员；
  * - 配方只有合成（本版本数据无熔炼/交易），缺失类别用 sourcesComplete=false 如实表达；
  * - 燃料数据当前版本未提供，fuel 保持 null 而不是 0。
  */
 
 import type {
+	HarvestRequirement,
 	KnowledgeBlockDrops,
 	KnowledgeItem,
 	KnowledgeRecipe,
@@ -64,7 +65,7 @@ export interface RegistryLike {
 
 /** 工具类型/材质表：只覆盖原版工具命名，不匹配就如实 null。 */
 const TOOL_TYPES = ["pickaxe", "axe", "shovel", "hoe", "sword"] as const;
-const TOOL_TIERS = ["wooden", "stone", "iron", "golden", "diamond", "netherite"] as const;
+const TOOL_TIERS = ["wooden", "copper", "stone", "iron", "golden", "diamond", "netherite"] as const;
 
 function toolOf(item: ItemData): KnowledgeItem["tool"] {
 	if (typeof item.maxDurability !== "number") return null;
@@ -95,18 +96,16 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 
 	// 反向索引：物品 → 配方 / 方块掉落 / 实体掉落（构建一次，查询期只读）。
 	const recipesByOutput = new Map<string, KnowledgeRecipe[]>();
-	const blocksByDrop = new Map<string, { block: string; requiredTool: string | null }[]>();
+	const blocksByDrop = new Map<string, { block: string; harvest: HarvestRequirement }[]>();
 	const entitiesByDrop = new Map<string, string[]>();
 
-	const requiredToolOf = (block: BlockData): string | null => {
-		const tools = block.harvestTools;
-		if (tools == null) return null;
-		const ids = Object.keys(tools)
-			.map((id) => Number(id))
-			.filter((id) => Number.isFinite(id))
-			.sort((a, b) => a - b);
-		const weakest = ids.length > 0 ? itemsById[ids[0]] : undefined;
-		return weakest == null ? null : stripNamespace(weakest.name);
+	const harvestOf = (block: BlockData | undefined): HarvestRequirement => {
+		if (block == null) return { kind: "unknown" };
+		if (block.harvestTools == null) return { kind: "any" };
+		const ids = Object.entries(block.harvestTools).filter(([, allowed]) => allowed);
+		const names = ids.map(([id]) => itemsById[Number(id)]?.name);
+		if (names.some((name) => name == null)) return { kind: "unknown" };
+		return { kind: "tools", names: (names as string[]).map(stripNamespace) };
 	};
 
 	for (const [idText, recipes] of Object.entries(registry.recipes ?? {})) {
@@ -147,10 +146,10 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 
 	for (const [blockName, entry] of Object.entries(registry.blockLoot ?? {})) {
 		const block = stripNamespace(entry.block ?? blockName);
-		const requiredTool = requiredToolOf(registry.blocksByName[block] ?? { id: -1, name: block });
+		const harvest = harvestOf(registry.blocksByName[block]);
 		for (const item of normalDrops(entry)) {
 			const list = blocksByDrop.get(item) ?? [];
-			list.push({ block, requiredTool });
+			list.push({ block, harvest });
 			blocksByDrop.set(item, list);
 		}
 	}
@@ -182,7 +181,7 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 		if (recipesByOutput.has(name)) sources.push({ kind: "craft" });
 		for (const dropped of entitiesByDrop.get(name) ?? []) sources.push({ kind: "entity", entity: dropped });
 		for (const block of blocksByDrop.get(name) ?? []) {
-			sources.push({ kind: "block", block: block.block, requiredTool: block.requiredTool });
+			sources.push({ kind: "block", block: block.block, harvest: block.harvest });
 		}
 		const block = registry.blocksByName[name];
 		const food = registry.foodsByName?.[name];
@@ -211,7 +210,7 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 			if (entry == null) return null;
 			return {
 				items: normalDrops(entry),
-				requiredTool: requiredToolOf(registry.blocksByName[name] ?? { id: -1, name }),
+				harvest: harvestOf(registry.blocksByName[name]),
 			};
 		},
 		canonicalItemName: (name) => {

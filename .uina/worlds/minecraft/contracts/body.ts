@@ -144,12 +144,18 @@ export interface WindowSnapshot {
 }
 
 /** 窗口物品的纯值载荷；缺失组件/耐久不伪装为空或满值。 */
-export interface WindowItemValue {
+export interface ItemValue {
 	name: string;
 	count: number;
 	stackSize: number | null;
 	components: JsonValue | null;
 	durability: number | null;
+}
+
+export interface TossOutcome {
+	receipt: EffectReceipt;
+	removed: Record<string, number>;
+	remaining: number;
 }
 
 export interface StackExpectation {
@@ -214,7 +220,7 @@ export interface BodyOps {
 	 * 丢出指定数量的同名物品（窗口外转移，destination -999）。
 	 * 只作用于主背包+快捷栏（9..44）；不保证落地位置、不被他人拾取或目标收到。
 	 */
-	toss(item: string, count: number): Promise<EffectReceipt>;
+	toss(item: ItemSelector, count: number): Promise<TossOutcome>;
 	lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
 	writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt>;
 	openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;

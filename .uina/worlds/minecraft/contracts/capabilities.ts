@@ -95,6 +95,9 @@ export interface CallableDirectory {
 /** 查询 resolver：接收查询输入，从当前事实视图组装一个 Fact（组合根由 K1 声明生成注入）。 */
 export type QueryResolver = (view: import("./client-facts.js").ClientFactView, input: JsonValue) => Fact<unknown>;
 
+/** Compiled descriptor input boundary; returns normalized input or throws INVALID_INPUT. */
+export type QueryValidator = (input: JsonValue) => JsonValue;
+
 /**
  * 查询读取方式（world.md §8.2 三类）：
  * - current：当前提交边界的纯采样（cursor="observed" 有观察游标；"none" 为派生结果，

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 /**
  * Driver 侧测试替身：PlayerPortImpl + 窄 bot stub + 事实 sink。
  *
@@ -93,6 +94,12 @@ function makeSink(): { sink: DriverExecutionSink; facts: DriverExecutionFact[] }
  */
 export function makeBodyBot(overrides: Record<string, unknown> = {}): MineflayerBot {
 	return {
+		version: "1.21.11",
+		_client: Object.assign(new EventEmitter(), { write: (): void => {} }),
+		on: (): void => {},
+		removeListener: (): void => {},
+		entity: { yaw: 0, pitch: 0 },
+		currentWindow: null,
 		clearControlStates: (): void => {},
 		targetDigBlock: null,
 		usingHeldItem: false,

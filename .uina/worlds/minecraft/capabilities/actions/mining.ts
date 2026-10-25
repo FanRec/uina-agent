@@ -2,7 +2,7 @@
  * mine@1：破坏一格够得着的方块。
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §4 mine、driver §7.3。
- * 完成 = 该格在客户端世界变为空气；掉落只在短窗口内观察，观察不到就不报数量。
+ * 完成 = 服务端确认该格变为空气；掉落只在短窗口内观察，观察不到就不报数量。
  * 工具按方块真实掉落要求选择（知识数据），不匹配时在派发前拒绝，不让上游慢慢失败。
  * 不寻路：够不着就是 UNREACHABLE，站位由调用方用 goto@1 安排（§4 可达性归调用方）。
  */
@@ -16,12 +16,10 @@ import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
 import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
-import { fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
+import { fail, matchesItem, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { chooseTool } from "../shared/tools.js";
 import { itemCountOf, readBlockAt, readInventory, type InventorySnapshot } from "../shared/views.js";
 
-const BLOCK_CHECK_TIMEOUT_MS = 2000;
-const BLOCK_CHECK_INTERVAL_MS = 250;
 /** 服务端拾取结算有 delay；只在这个窗口里看背包增量，等不到就不报 dropped。 */
 const PICKUP_TIMEOUT_MS = 2500;
 const PICKUP_INTERVAL_MS = 200;
@@ -59,7 +57,7 @@ const descriptor: CallableDescriptor = {
 	completion: {
 		scope: "capability",
 		description:
-			"The target block became air in the client world; `dropped` is reported only when the pickup is observed within a short window",
+			"The server confirmed the target block became air; `dropped` is reported only when the pickup is observed within a short window",
 	},
 	errors: [
 		{ code: "NOT_FOUND", meaning: "the block is air or not loaded" },
@@ -127,29 +125,29 @@ export function mineCallable(deps: CapabilityDeps): NativeCallable<JsonValue, Js
 			return await ctx.withBody(async (scope: BodyCallScope) => {
 				const inventory = await readInventory(scope.world);
 				const tool = chooseTool(knowledge, inventory, block.name, raw.tool);
-				if (tool != null && inventory.held?.name !== tool) {
-					await scope.player.equip({ name: tool }, "hand");
+				const selector: ItemSelector | null =
+					tool == null ? null : { ...(typeof raw.tool === "object" ? raw.tool : {}), name: tool, substitutions: [] };
+				if (selector != null) {
+					const heldSlot =
+						inventory.selectedSlot == null
+							? null
+							: inventory.slots.find((slot) => slot.slot === inventory.selectedSlot! + 36);
+					if (heldSlot == null || !matchesItem(selector, heldSlot)) {
+						const equipped = await scope.player.equip(selector, "hand");
+						if (equipped.completion !== "met")
+							fail("TARGET_NOT_MET", "tool equipment has no confirmed server result", {
+								dispatch: equipped.dispatch,
+								effects: [equipped.effect],
+							});
+					}
 				}
-				await scope.player.dig({ place: placeOf(self, position), block: position });
-
-				// 只认客户端世界变空气；服务端保护/拒绝会在窗口结束时保持原状态。
-				const settled = await pollUntil(
-					async () => await readBlockAt(scope.world, position),
-					// 只认"客户端世界的空气"；读不到（未加载）不是空气。
-					(current) => current != null && current.name === "air",
-					{ timeoutMs: BLOCK_CHECK_TIMEOUT_MS, intervalMs: BLOCK_CHECK_INTERVAL_MS, signal: ctx.signal },
-				);
-				if (!settled.ok) {
-					fail(
-						"TARGET_NOT_MET",
-						`${block.name} at ${position.x},${position.y},${position.z} is still ${settled.last?.name ?? "unreadable"}`,
-						{
-							hint: "the server may protect this area, or the client never confirmed the break",
-							dispatch: "sent",
-							progress: { broken: false, at: position, block: block.name },
-						},
-					);
-				}
+				const receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
+				if (receipt.completion !== "met")
+					fail("TARGET_NOT_MET", "the server did not confirm the target block was broken", {
+						dispatch: receipt.dispatch,
+						effects: [receipt.effect],
+						progress: { broken: false, at: position, block: block.name },
+					});
 
 				let dropped: { name: string; count: number } | null = null;
 				if (raw.collect !== false && expected.length > 0 && knowledge != null) {

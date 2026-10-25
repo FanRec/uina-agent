@@ -26,7 +26,7 @@ flowchart LR
 
 - 文件：driver/window/ 下实现窗口及所需纯值转换；body/session.ts 只负责打开接入、资格检查、退役和 pending 操作屏障。
 - 消费现有 BodySession 的资格、signal、EffectRecorder、mintOp/mintEff。窗口 identity 用自己的 Operation ref 派生，不能复用网络 windowId。
-- 对外使用 contracts/body.ts 的 WindowSession；WindowSnapshot 的 item 纯值为 WindowItemValue：name/count/stackSize/components/durability，未知组件与剩余耐久保留 null。普通 close 要求空光标，失败清理显式 close({force:true})，身体退役可强制清理。
+- 对外使用 contracts/body.ts 的 WindowSession；WindowSnapshot 的 item 纯值为统一 ItemValue：name/count/stackSize/components/durability，未知组件与剩余耐久保留 null。普通 close 要求空光标，失败清理显式 close({force:true})，身体退役可强制清理。2026-10-25 的玩家库存、协议版本及取消修复见 [Driver 修复实施](driver-repair-implementation.md)，不再维护窗口专用物品类型。
 - 客户端乐观预测不能认证点击完成。每个业务点击只发送一次 stateId=-1 的同步 raw click，服务端处理后强制返回完整 window_items（含 carriedItem）；不再发第二次 no-op 同步，避免两个无请求 ID 的完整包串到后续点击。不使用上游 clickWindow 的异步预测链。返回 confirmed 只包含本次 mode-0 前态能解释的目标槽/光标后态；重复旧完整包不能认证本次处理，未知不自动重复点击。
 - expectedRevision、expectedSlots、expectedCursor 在预测/派发之前检查；串行化同一窗口在途点击；取消后旧异步路径不能改后来窗口，关闭只处理原窗口。关闭产生的光标后果如实记录。
 - 打开前捕获窗口响应监听，实际交互使用本资格；窗口打开需等真实内容到齐。方块与实体容器均遵循当前连接/化身/维度身份。

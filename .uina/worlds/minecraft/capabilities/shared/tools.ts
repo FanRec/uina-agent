@@ -1,87 +1,54 @@
-/**
- * 工具选择：一件方块该用哪把工具，以及"手上根本没有可用工具"的判定。
- *
- * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §4 mine（工具按方块真实掉落要求选）。
- * mine 在派发前用它决定装备什么；collect 在移动前用它判断"这一趟注定白跑"。
- * 只回答"用哪件"，不碰身体、不碰库存顺序。
- */
-
+/** Harvest eligibility comes from the version registry, never a guessed tier order. */
 import type { ItemSelector } from "../../contracts/body.js";
-import type { RegistryKnowledge } from "../../contracts/knowledge.js";
-import { fail, matchesItem } from "./targets.js";
-import type { InventorySnapshot } from "./views.js";
-
-/** 工具档位从低到高；索引即排名，非工具物品为 -1。 */
-const TIERS = ["wooden", "stone", "iron", "golden", "diamond", "netherite"];
-
-type ToolChoice =
-	| { kind: "tool"; name: string }
-	| { kind: "none"; required: string }
-	| { kind: "unknown" }
-	| { kind: "missing-requested"; name: string };
-
-/** 唯一的判断实现：显式指定优先，否则按 requiredTool 找同类型且档位足够的最强工具。 */
-function toolChoice(
-	knowledge: RegistryKnowledge | null,
-	inventory: InventorySnapshot,
-	blockName: string,
-	requested: string | ItemSelector | undefined,
-): ToolChoice {
-	if (requested != null) {
-		const name = typeof requested === "string" ? requested : requested.name;
-		const match = inventory.slots.some((slot) => matchesItem(requested, { name: slot.name, count: slot.count }));
-		return match ? { kind: "tool", name } : { kind: "missing-requested", name };
-	}
-	const drops = knowledge?.blockDrops(blockName) ?? null;
-	if (knowledge == null || drops == null) return { kind: "unknown" };
-	if (drops.requiredTool == null) return { kind: "unknown" };
-	const required = knowledge.item(drops.requiredTool);
-	const requiredType = required?.tool?.type ?? null;
-	const requiredRank = required?.tool?.tier == null ? -1 : TIERS.indexOf(required.tool.tier);
-	let best: { name: string; rank: number } | null = null;
-	for (const slot of inventory.slots) {
-		const tool = knowledge.item(slot.name)?.tool;
-		if (tool == null) continue;
-		if (requiredType != null && tool.type !== requiredType) continue;
-		const rank = tool.tier == null ? -1 : TIERS.indexOf(tool.tier);
-		if (best == null || rank > best.rank) best = { name: slot.name, rank };
-	}
-	if (best == null || best.rank < requiredRank) return { kind: "none", required: drops.requiredTool };
-	return { kind: "tool", name: best.name };
+import type { HarvestRequirement, RegistryKnowledge } from "../../contracts/knowledge.js";
+import { fail, matchesItem, stripNamespace } from "./targets.js";
+import type { InventorySnapshot, SlotView } from "./views.js";
+export function harvestRequirement(knowledge: RegistryKnowledge | null, block: string): HarvestRequirement {
+	return knowledge?.blockDrops(block)?.harvest ?? { kind: "unknown" };
 }
-
-/**
- * 选工具并给出可执行的失败：显式请求不在包里 → MISSING_MATERIAL；
- * 没有能采这件方块的工具 → MISSING_TOOL（hint 带 required）。
- * 返回 null 表示知识数据不足，无法判断——此时不换工具，也不报错。
- */
+function eligible(requirement: HarvestRequirement, name: string): boolean {
+	return (
+		requirement.kind === "any" || (requirement.kind === "tools" && requirement.names.includes(stripNamespace(name)))
+	);
+}
+function candidates(inventory: InventorySnapshot, requested?: string | ItemSelector): SlotView[] {
+	const slots = [...inventory.slots].sort((a, b) => a.slot - b.slot);
+	const selected = inventory.selectedSlot;
+	const held =
+		selected == null
+			? slots.find((slot) => slot.name === inventory.held?.name)
+			: slots.find((slot) => slot.slot === selected + 36);
+	return (held ? [held, ...slots.filter((slot) => slot !== held)] : slots).filter(
+		(slot) => requested == null || matchesItem(requested, slot),
+	);
+}
 export function chooseTool(
 	knowledge: RegistryKnowledge | null,
 	inventory: InventorySnapshot,
-	blockName: string,
-	requested: string | ItemSelector | undefined,
+	block: string,
+	requested?: string | ItemSelector,
 ): string | null {
-	const choice = toolChoice(knowledge, inventory, blockName, requested);
-	if (choice.kind === "missing-requested") {
-		fail("MISSING_MATERIAL", `requested tool ${choice.name} is not in the inventory`, {
-			hint: `inventory holds: ${inventory.slots.map((slot) => slot.name).join(", ") || "nothing"}`,
+	const requirement = harvestRequirement(knowledge, block);
+	const matches = candidates(inventory, requested);
+	if (requested != null && matches.length === 0)
+		fail("MISSING_MATERIAL", "requested tool has no verifiable matching inventory item");
+	if (requirement.kind === "unknown") fail("WRONG_STATE", `harvest requirements of ${block} are unknown`);
+	if (requirement.kind === "any" && requested == null) return null;
+	const match = matches.find((slot) => eligible(requirement, slot.name));
+	if (match == null)
+		fail("MISSING_TOOL", `no matching inventory tool can harvest ${block}`, {
+			hint: requirement.kind === "tools" ? `accepted tools: ${requirement.names.join(", ")}` : undefined,
 		});
-	}
-	if (choice.kind === "none") {
-		fail("MISSING_TOOL", `no inventory tool can harvest ${blockName}`, {
-			hint: `required: ${choice.required}`,
-		});
-	}
-	return choice.kind === "tool" ? choice.name : null;
+	return match.name;
 }
-
-/** 不抛错的版本：组合动作要一次判多个来源方块，不能因为一个不可采就中断。 */
 export function canHarvest(
 	knowledge: RegistryKnowledge | null,
 	inventory: InventorySnapshot,
-	blockName: string,
-	requested: string | ItemSelector | undefined,
+	block: string,
+	requested?: string | ItemSelector,
 ): boolean {
-	const choice = toolChoice(knowledge, inventory, blockName, requested);
-	return choice.kind === "tool" || choice.kind === "unknown";
+	const requirement = harvestRequirement(knowledge, block);
+	return requirement.kind === "any"
+		? requested == null || candidates(inventory, requested).length > 0
+		: candidates(inventory, requested).some((slot) => eligible(requirement, slot.name));
 }

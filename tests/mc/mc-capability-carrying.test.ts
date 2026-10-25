@@ -239,6 +239,89 @@ describe("pickup@1", () => {
 });
 
 describe("drop@1", () => {
+	test("a proven component match is selected after an unknown stack and passed intact to Driver", async () => {
+		const components = { added: [], removed: [] };
+		const state: HarnessState = {
+			blocks: new Map(),
+			inventory: {
+				slots: [
+					{ slot: 36, name: "dirt", count: 5, components: null },
+					{ slot: 37, name: "dirt", count: 2, components },
+				],
+				counts: { dirt: 7 },
+			},
+			entities: [],
+		};
+		let selected: unknown;
+		const h = makeHarness(state, {
+			onToss: (name, count, selector) => {
+				selected = selector;
+				state.entities?.push(itemEntity(52, name, count, { x: 10, y: 64, z: 10 }));
+			},
+		});
+		expect(await h.callable("drop@1").invoke(h.ctx, { item: { name: "minecraft:dirt", components } })).toMatchObject({
+			dropped: { dirt: 2 },
+			remaining: 0,
+		});
+		expect(selected).toEqual({ name: "dirt", components, substitutions: [] });
+	});
+	test("substitutions retain per-name removal progress when a later toss fails", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: { slots: [], counts: {} }, entities: [] };
+		give(state, "dirt", 1, 36);
+		give(state, "stone", 2, 37);
+		const selectors: unknown[] = [];
+		const h = makeHarness(state, {
+			onToss: (name, count, selector) => {
+				selectors.push(selector);
+				if (name === "stone")
+					throw callFailure({
+						code: "INTERRUPTED",
+						source: "environment",
+						message: "cancelled after one confirmed item",
+						dispatch: "sent",
+						effects: ["eff:partial"],
+						recoverable: false,
+						progress: { removed: { stone: 1 }, remaining: 1 },
+					});
+				state.entities?.push(itemEntity(50, name, count, { x: 10, y: 64, z: 10 }));
+			},
+		});
+		const error = await failureOf(
+			h.callable("drop@1").invoke(h.ctx, { item: { name: "dirt", substitutions: ["stone"] }, count: 3 }),
+		);
+		expect(error.progress).toMatchObject({ removed: { dirt: 1, stone: 1 }, dropped: { dirt: 1 }, remaining: 1 });
+		expect(selectors).toEqual([
+			{ name: "dirt", substitutions: [] },
+			{ name: "stone", substitutions: [] },
+		]);
+	});
+	test("ground confirmation must cover each removed name", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: { slots: [], counts: {} }, entities: [] };
+		give(state, "dirt", 1, 36);
+		give(state, "stone", 1, 37);
+		const h = makeHarness(state, {
+			onToss: (name) => {
+				if (name === "dirt") state.entities?.push(itemEntity(51, "dirt", 2, { x: 10, y: 64, z: 10 }));
+			},
+		});
+		const error = await failureOf(
+			h.callable("drop@1").invoke(h.ctx, { item: { name: "dirt", substitutions: ["stone"] }, count: 2 }),
+		);
+		expect(error.code).toBe("TARGET_NOT_MET");
+		expect(error.progress).toMatchObject({ removed: { dirt: 1, stone: 1 }, dropped: { dirt: 1 }, remaining: 0 });
+	});
+	test("unknown components do not authorize tossing a same-name stack", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: { slots: [], counts: {} }, entities: [] };
+		give(state, "dirt", 2);
+		const h = makeHarness(state, {
+			onToss: (name, count) => state.entities?.push(itemEntity(41, name, count, { x: 10, y: 64, z: 10 })),
+		});
+		const error = await failureOf(
+			h.callable("drop@1").invoke(h.ctx, { item: { name: "dirt", components: { added: [], removed: [] } }, count: 1 }),
+		);
+		expect(error.code).toBe("NOT_FOUND");
+		expect(h.calls).toEqual([]);
+	});
 	test("丢出声明数量：本地库存是预测，完成要看到地面掉落物", async () => {
 		const state: HarnessState = {
 			blocks: new Map(),
@@ -324,6 +407,6 @@ describe("drop@1", () => {
 		);
 		expect(err.code).toBe("TARGET_NOT_MET");
 		expect(err.dispatch).toBe("sent");
-		expect(err.progress).toMatchObject({ dropped: {}, remaining: 1 });
+		expect(err.progress).toMatchObject({ removed: { dirt: 1 }, dropped: {}, remaining: 0 });
 	});
 });

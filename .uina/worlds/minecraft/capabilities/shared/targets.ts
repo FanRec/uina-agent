@@ -107,27 +107,12 @@ export function matchBlockSpec(spec: BlockSpec, state: BlockStateValue | null): 
 	return true;
 }
 
-export interface ItemLike {
-	name: string;
-	count: number;
-	durability?: { used: number; max: number } | null;
-}
-
 export function selectorNames(selector: string | ItemSelector): string[] {
 	if (typeof selector === "string") return [stripNamespace(selector)];
 	return [stripNamespace(selector.name), ...(selector.substitutions ?? []).map(stripNamespace)];
 }
 
-/** 物品选择：名字（含 substitutions）+ 最小剩余耐久；components 匹配未实现时由 Driver 拒绝。 */
-export function matchesItem(selector: string | ItemSelector, item: ItemLike): boolean {
-	if (!selectorNames(selector).includes(stripNamespace(item.name))) return false;
-	if (typeof selector === "string") return true;
-	if (selector.minDurability != null) {
-		if (item.durability == null) return false;
-		if (item.durability.max - item.durability.used < selector.minDurability) return false;
-	}
-	return true;
-}
+export { matchesItem } from "../../contracts/items.js";
 
 /** 面名 → 单位法向。 */
 export function faceVector(face: "up" | "down" | "north" | "south" | "east" | "west"): Vec3 {

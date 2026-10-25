@@ -96,18 +96,14 @@ describe("PlayerPort 资格闸门", () => {
 
 describe("停止屏障", () => {
 	test("会话带未结算写操作关闭：同连接拒绝新资格，连接更换后疑虑作废", async () => {
-		// dig 挂在 await digging（无 recheck 的静默挂起点）：close 的 2s 结算期限到期
+		// A native view update can remain pending: close must not grant another owner
 		// 仍无法证明停止屏障 → barrierProven=false 锁存到当时连接。
 		const h = makeHarness({
-			blockAt: (): { name: string } => ({ name: "stone" }),
-			digTime: (): number => 500,
-			dig: (): Promise<never> => new Promise(() => {}),
-			targetDigBlock: { position: { x: 0, y: 64, z: 0 } },
-			stopDigging: (): void => {},
+			lookAt: (): Promise<never> => new Promise(() => {}),
 		});
 		const first = (await h.port.acquire(ownerT(1), openSignal())) as BodySessionImpl;
-		// 挂起中的 dig：promise 永不 settle；catch 仅防实现路径变化时的未处理拒绝噪音
-		void first.dig({ place: placeT(), block: { x: 0, y: 64, z: 0 } }).catch(() => {});
+		// 挂起中的视角更新：尚无结束证据，不能授予同一连接的新资格。
+		void first.lookAt({ x: 0, y: 64, z: 0 }).catch(() => {});
 		await first.close();
 
 		const err = await captureFailure(h.port.acquire(ownerT(2), openSignal()));

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import type { ClientFactNotice, ClientWindowObservation } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import { resolveContainerQuery } from "../../.uina/worlds/minecraft/world/containers.js";
+import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
 function observation(count = 3): ClientWindowObservation {
@@ -35,6 +36,14 @@ function observation(count = 3): ClientWindowObservation {
 		},
 	};
 }
+
+const validators = buildCapabilities({
+	knowledge: () => null,
+	runtime: () => {
+		throw new Error("unused");
+	},
+	gotoDirector: {} as never,
+}).validators;
 
 describe("window facts and container history", () => {
 	test("current window snapshots are isolated values; close and source resets retain captured evidence", () => {
@@ -111,11 +120,7 @@ describe("window facts and container history", () => {
 			resolveContainerQuery({ at: { x: 2, y: 64, z: 3 } }, { world: "w", worldRevision: "r" }, h.facts),
 		).toThrow();
 		expect(() =>
-			resolveContainerQuery(
-				{ at: { position: { x: 2.5, y: 64, z: 3 }, dimension: "nether" } },
-				{ world: "w", worldRevision: "r" },
-				h.facts,
-			),
+			validators.get("container.last@1")!({ at: { position: { x: 2.5, y: 64, z: 3 }, dimension: "nether" } }),
 		).toThrow(/integer/);
 		h.reconnect(
 			makeBot({
@@ -143,11 +148,13 @@ describe("window facts and container history", () => {
 import assert from "node:assert/strict";
 import { makeFactsHarness } from ${JSON.stringify(source("tests/mc/mc-fake.ts"))};
 import { MinecraftWorld } from ${JSON.stringify(source(".uina/worlds/minecraft/world/index.ts"))};
+import { buildCapabilities } from ${JSON.stringify(source(".uina/worlds/minecraft/capabilities/index.ts"))};
 const value = ${JSON.stringify(observation())};
 const dbPath = ${JSON.stringify(join(dir, "history.db"))};
 const binding = { binding: "bind:t:1", world: "world:t:1", worldRevision: "wrev:t:1" };
 const h = makeFactsHarness({ namespace: "capture-first" });
-const makeWorld = (facts, b = binding, path = dbPath) => new MinecraftWorld({ facts, readers: new Map(), dbPath: path, binding: b, namespace: "history" });
+const validators = buildCapabilities({ knowledge: () => null, runtime: () => { throw new Error("unused"); }, gotoDirector: {} }).validators;
+const makeWorld = (facts, b = binding, path = dbPath) => new MinecraftWorld({ facts, readers: new Map(), validators, dbPath: path, binding: b, namespace: "history" });
 const query = (dimension = "overworld", position = { x: 2, y: 64, z: 3 }) => ({ ref: "container.last@1", input: { at: { position, dimension } } });
 let world = makeWorld(h.facts);
 try {

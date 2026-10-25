@@ -101,7 +101,19 @@ export function decodeCursor(token: string, scope: EventScope): EventCursor {
 		typeof raw.partition !== "string" ||
 		typeof raw.limit !== "number" ||
 		typeof raw.pos !== "number" ||
-		typeof raw.upper !== "number"
+		typeof raw.upper !== "number" ||
+		!Number.isSafeInteger(raw.limit) ||
+		raw.limit < 1 ||
+		raw.limit > 200 ||
+		!Number.isSafeInteger(raw.pos) ||
+		raw.pos < 0 ||
+		!Number.isSafeInteger(raw.upper) ||
+		raw.upper < raw.pos ||
+		(raw.kinds !== null &&
+			(!Array.isArray(raw.kinds) ||
+				raw.kinds.length === 0 ||
+				raw.kinds.length > KINDS.length ||
+				!raw.kinds.every((kind) => KINDS.includes(kind))))
 	) {
 		invalid("events cursor has an unsupported shape", "tokens are opaque; do not construct them by hand");
 	}
@@ -116,53 +128,26 @@ export function decodeCursor(token: string, scope: EventScope): EventCursor {
 			recoverable: true,
 		});
 	}
-	const kinds =
-		raw.kinds == null
-			? null
-			: (raw.kinds as GameEventKind[]).filter((kind): kind is GameEventKind => KINDS.includes(kind));
 	return {
 		v: 1,
 		partition: raw.partition,
-		kinds: raw.kinds == null ? null : kinds,
-		limit: Math.max(1, Math.min(200, Math.floor(raw.limit))),
-		pos: Math.max(0, Math.floor(raw.pos)),
-		upper: Math.max(0, Math.floor(raw.upper)),
+		kinds: raw.kinds ?? null,
+		limit: raw.limit,
+		pos: raw.pos,
+		upper: raw.upper,
 	};
 }
 
-/** 请求级校验：cursor 与 kinds/after/limit 互斥（capabilities §3 events）。 */
+/** Descriptor-validated input: apply defaults and de-duplicate the requested filter. */
 export function parseEventInput(input: JsonValue): EventInput {
-	const raw = (input ?? {}) as Record<string, JsonValue>;
-	if (raw.cursor != null) {
-		for (const forbidden of ["kinds", "after", "limit"]) {
-			if (raw[forbidden] != null) {
-				invalid(
-					`events cursor cannot be combined with ${forbidden}`,
-					"the cursor already fixes the filter and page size",
-				);
-			}
-		}
-		if (typeof raw.cursor !== "string") invalid("events cursor must be a string");
-		return { kinds: null, limit: 0, cursorToken: raw.cursor, afterToken: null };
-	}
-	if (raw.after != null && typeof raw.after !== "string") invalid("events after must be a string");
-	const limit = raw.limit == null ? 50 : raw.limit;
-	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 200) {
-		invalid("events limit must be an integer within 1..200");
-	}
-	let kinds: GameEventKind[] | null = null;
-	if (raw.kinds != null) {
-		if (!Array.isArray(raw.kinds) || raw.kinds.length === 0) {
-			invalid("events kinds must be a non-empty array when present");
-		}
-		for (const kind of raw.kinds) {
-			if (typeof kind !== "string" || !KINDS.includes(kind as GameEventKind)) {
-				invalid(`unknown event kind: ${String(kind)}`, `known kinds: ${KINDS.join(", ")}`);
-			}
-		}
-		kinds = [...new Set(raw.kinds as GameEventKind[])];
-	}
-	return { kinds, limit, cursorToken: null, afterToken: typeof raw.after === "string" ? raw.after : null };
+	const raw = input as { cursor?: string; after?: string; limit?: number; kinds?: GameEventKind[] };
+	if (raw.cursor !== undefined) return { kinds: null, limit: 0, cursorToken: raw.cursor, afterToken: null };
+	return {
+		kinds: raw.kinds === undefined ? null : [...new Set(raw.kinds)],
+		limit: raw.limit ?? 50,
+		cursorToken: null,
+		afterToken: raw.after ?? null,
+	};
 }
 
 function sameKinds(a: GameEventKind[] | null, b: GameEventKind[] | null): boolean {

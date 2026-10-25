@@ -94,9 +94,13 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 ## Minecraft World
 
-当前 MC 在 `.uina/worlds/minecraft/`，实现 I1 原生闭环、K1 基础能力、采集与窗口容器，共 10 查询 + 13 动作。普通容器的打开/点击/关闭由 Driver 持有，mode-0 点击以服务端完整槽位/光标回包确认，World 沿既有 SQLite 证据链保留最后观察；历史不代表当前库存。实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers` 开发场景。
+当前 MC 在 `.uina/worlds/minecraft/`，实现 I1 原生闭环、K1 基础能力、采集与窗口容器，共 10 查询 + 13 动作。连接级 DriverProtocol 当前实现 Java 1.21.11；未来版本沿同一窄端口接入，未支持版本的相关操作明确失败。玩家库存与容器共用 mode-0 的服务端槽位/光标确认，装备、移槽、丢弃不进入上游异步预测写入链；ItemValue 与选择器保留有效组件、堆叠上限和剩余耐久。采矿只认实际服务端方块更新，Runtime 保留直接/嵌套未知效果；查询先执行统一 schema 校验。World 沿既有 SQLite 证据链保留最后容器观察，历史不代表当前库存。
 
-Program/Library、Host 持久回执、Executor/WorldDef 尚未实现，当前不能作为完整 `minecraft({action,params})` 主脑工具使用。现代普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
+实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`；本轮 `dev:mc:repair` 默认使用独立 Temp 数据根，覆盖工具/物品实例选择、正常动作、取消、导航与历史重开。实现及本轮验证记录见 [Driver 修复实施](proposals/mc/driver-repair-implementation.md)。
+
+本轮类型/9 条边界、MC 24 文件/176 项、构建通过；最终 Paper 1.21.11 源码与构建产物 repair 各 15/15 通过，分别使用独立数据根。其他版本尚未实现；历史脚本的旧 PASS 不作为本轮复跑结论。
+
+Program/Library、Host 持久回执、Executor/WorldDef 尚未实现，当前不能作为完整 `minecraft({action,params})` 主脑工具使用。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
 
 ## QQ World
 

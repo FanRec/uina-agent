@@ -28,6 +28,7 @@ import type {
 	SelfState,
 	SignText,
 	WindowSession,
+	TossOutcome,
 } from "../../contracts/body.js";
 import type { WorldQuery } from "../../contracts/world.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
@@ -37,7 +38,11 @@ import { plain } from "../../contracts/values.js";
 import type { ClientHostListener } from "../client-host.js";
 import { EffectRecorder, fail } from "../execution.js";
 import { toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
-import { activateContainerBlock, activateContainerEntity } from "../mineflayer/window.js";
+import { protocolFor } from "../mineflayer/protocol.js";
+import { runMining } from "./mining.js";
+import { runSign } from "./sign.js";
+import { runEquip, runToss } from "./inventory.js";
+import type { BodyOperationDeps } from "./operation.js";
 import { WindowSessionImpl } from "../window/session.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
@@ -71,31 +76,6 @@ export interface BodySessionDeps {
 const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
 /** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
 const DRIVE_STALL_MS = 2000;
-/** 告示牌：上游 update_sign 路径每行 45 个 UTF-16 单元；编辑资格与提交确认各自 2 秒（§7.6.1）。 */
-const SIGN_LINE_LIMIT = 45;
-const SIGN_EDITOR_MS = 2000;
-const SIGN_CONFIRM_MS = 2000;
-
-/** EquipSlot → mineflayer 目的地（simple_inventory.js 的 destination 名）。 */
-const DESTINATION: Record<EquipSlot, string> = {
-	hand: "hand",
-	offhand: "off-hand",
-	head: "head",
-	chest: "torso",
-	legs: "legs",
-	feet: "feet",
-};
-
-/** 校验装备结果的槽位：护甲 5..8、副手 45、主手随快捷栏选择。 */
-const SLOT_OF: Record<EquipSlot, (bot: MineflayerBot) => number> = {
-	hand: (bot) => 36 + bot.quickBarSlot,
-	offhand: () => 45,
-	head: () => 5,
-	chest: () => 6,
-	legs: () => 7,
-	feet: () => 8,
-};
-
 function isIntVec(v: Vec3): boolean {
 	return Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z);
 }
@@ -199,7 +179,7 @@ export class BodySessionImpl implements BodySession {
 				const eff = this.deps.mintEff();
 				const op = this.deps.mintOp();
 				try {
-					bot.deactivateItem();
+					protocolFor(bot).endUse();
 					this.recorder.record(eff, op, "body.endUse@1", "cleanup", "sent", "met", {
 						reason,
 						detail: "owned item use released during revocation; release side effects not confirmed",
@@ -291,6 +271,7 @@ export class BodySessionImpl implements BodySession {
 				recoverable: false,
 			});
 		}
+		protocolFor(bot).assertSupported();
 		return;
 	}
 
@@ -369,7 +350,7 @@ export class BodySessionImpl implements BodySession {
 						recoverable: true,
 					});
 				}
-				bot.activateItem(hand === "off");
+				protocolFor(bot).useItem(hand === "off" ? 1 : 0);
 				this.ownedUse.set(hand, op);
 			}
 
@@ -518,7 +499,7 @@ export class BodySessionImpl implements BodySession {
 		const eff = this.deps.mintEff();
 		const cleanupOp = this.deps.mintOp();
 		try {
-			bot.deactivateItem();
+			protocolFor(bot).endUse();
 			this.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "sent", "met", {
 				reason,
 				note: "held use released; release side effects (e.g. bow draw) not confirmed",
@@ -583,110 +564,30 @@ export class BodySessionImpl implements BodySession {
 		return entity;
 	}
 
-	async dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt> {
-		const aim = options?.aim ?? "target";
-		if (!isIntVec(target.block)) {
+	private checkBlockTarget(target: BlockTarget, bot: MineflayerBot): void {
+		this.recheck();
+		const self = this.deps.sampleSelf()?.value;
+		if (
+			!isIntVec(target.block) ||
+			target.place.dimension !== bot.game.dimension ||
+			(self != null &&
+				(self.place.world !== target.place.world || self.place.worldRevision !== target.place.worldRevision))
+		)
 			throw fail({
-				code: "INVALID_INPUT",
+				code: "REFERENCE_STALE",
 				source: "input",
-				message: "dig target must be integer block coordinates",
+				message: "block target does not belong to the current integer grid/world/dimension",
 				dispatch: "not_sent",
-				recoverable: true,
+				recoverable: false,
 			});
-		}
-		const op = this.deps.mintOp();
-		const eff = this.deps.mintEff();
+	}
+
+	async dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt> {
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
-			const block = bot.blockAt(toMineflayerVec3(target.block));
-			if (block == null) {
-				throw fail({
-					code: "NOT_FOUND",
-					source: "world",
-					message: `block ${target.block.x} ${target.block.y} ${target.block.z} is not loaded on the client`,
-					hint: "sample block/entities first or move closer",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			const waitTime = bot.digTime(block);
-			if (!Number.isFinite(waitTime)) {
-				throw fail({
-					code: "MISSING_TOOL",
-					source: "world",
-					message: `digging ${block.name} with the current held item would never finish`,
-					hint: "equip a proper tool first (equip)",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-
-			const onAbort = () => {
-				if (bot.targetDigBlock != null) {
-					try {
-						bot.stopDigging();
-					} catch {
-						// 取消派发失败按 unknown 结算
-					}
-				}
-			};
-			this.signal.addEventListener("abort", onAbort, { once: true });
-
-			try {
-				// aim=target → 上游即时转向；preserve → ignore-look 路径，不触碰视角（§7.3）
-				const digging = bot.dig(block, aim === "target" ? true : "ignore");
-				let failure: unknown = null;
-				try {
-					await digging;
-				} catch (err) {
-					failure = err;
-				}
-				// 上游 dig 是 async：开始挖掘的包在内部 await 之后才写，拒绝可能发生在写包之前
-				// 也可能之后（stopDigging/卸载），I1 不区分来源，如实记 unknown。
-				this.recorder.record(
-					eff,
-					op,
-					"body.dig@1",
-					"dispatch",
-					failure == null ? "sent" : "unknown",
-					"unknown",
-					plain({ target: target.block, aim, predictedMs: waitTime }),
-				);
-				if (failure != null) {
-					if (this.state !== "active") {
-						throw fail({
-							code: "CONTROL_INVALID",
-							source: "capability",
-							message: `dig aborted: body qualification ${this.state}`,
-							dispatch: "unknown",
-							effects: [eff],
-							recoverable: false,
-						});
-					}
-					throw fail({
-						code: "INTERRUPTED",
-						source: "environment",
-						message: `dig aborted: ${failure instanceof Error ? failure.message : String(failure)}`,
-						dispatch: "unknown",
-						effects: [eff],
-						recoverable: true,
-					});
-				}
-			} finally {
-				this.signal.removeEventListener("abort", onAbort);
-			}
-
-			// 上游在 finishDigging 里把目标格本地置空后 resolve（digging.js），
-			// 不等服务端 block update；本地预测完成与服务端确认在 I1 不可区分。
-			this.recorder.record(eff, op, "body.dig@1", "receipt", "sent", "met", {
-				completionContract:
-					"target became air in the client world (local finish prediction or server update; origin not distinguished in I1)",
-				confirmedBy: "client_block_update",
-			});
-			return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
+			this.checkBlockTarget(target, bot);
+			return await runMining(this.operationDeps(bot), target, options);
 		} finally {
 			this.exitOp();
 		}
@@ -784,7 +685,7 @@ export class BodySessionImpl implements BodySession {
 					recoverable: true,
 				});
 			}
-			bot.activateItem(hand === "off");
+			protocolFor(bot).useItem(hand === "off" ? 1 : 0);
 			this.ownedUse.set(hand, op);
 			this.recorder.record(eff, op, "body.useItem@1", "dispatch", "sent", "met", {
 				completionContract: "one protocol activation dispatched",
@@ -814,7 +715,7 @@ export class BodySessionImpl implements BodySession {
 				});
 				return { effect: eff, dispatch: "not_sent", completion: "met", evidence: [] };
 			}
-			bot.deactivateItem();
+			protocolFor(bot).endUse();
 			this.recorder.record(eff, op, "body.endUse@1", "receipt", "sent", "met", {
 				completionContract: "owned item use ended; release side effects not confirmed",
 				hadOwned,
@@ -838,7 +739,7 @@ export class BodySessionImpl implements BodySession {
 			const bot = this.botForWrite();
 			if ("networkId" in input.target) {
 				const entity = this.resolveEntity(bot, input.target);
-				bot.activateEntity(entity);
+				protocolFor(bot).activateEntity(entity.id, input.hand === "off" ? 1 : 0);
 				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "met", {
 					completionContract: "entity interaction dispatched",
 					entity: input.target.networkId,
@@ -916,12 +817,14 @@ export class BodySessionImpl implements BodySession {
 					recoverable: true,
 				});
 			}
-			await bot.activateBlock(
-				block,
-				direction == null ? undefined : toMineflayerVec3(direction),
-				cursorPos == null ? undefined : toMineflayerVec3(cursorPos),
+			await bot.lookAt(
+				toMineflayerVec3({ x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 }),
+				true,
 			);
 			this.recheck();
+			const f = direction ?? { x: 0, y: 1, z: 0 };
+			const face = f.y > 0 ? 1 : f.y < 0 ? 0 : f.z > 0 ? 3 : f.z < 0 ? 2 : f.x > 0 ? 5 : 4;
+			protocolFor(bot).activateBlock(target.block, face, input.hand === "off" ? 1 : 0, cursorPos);
 			this.recorder.record(
 				eff,
 				op,
@@ -941,251 +844,78 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
+	private operationDeps(bot: MineflayerBot): BodyOperationDeps {
+		return {
+			bot,
+			protocol: protocolFor(bot),
+			signal: this.signal,
+			guard: () => this.recheck(),
+			canCleanup: () =>
+				this.deps.bot() === bot &&
+				this.deps.host.state === "ready" &&
+				this.deps.host.identity?.connection === this.identity.connection &&
+				this.deps.host.identity?.incarnation === this.identity.incarnation,
+			recorder: this.recorder,
+			mintOp: this.deps.mintOp,
+			mintEff: this.deps.mintEff,
+		};
+	}
+
+	private async withInventory<T>(
+		work: (deps: BodyOperationDeps & { window: WindowSession; selectedSlot: number }) => Promise<T>,
+	): Promise<T> {
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			if (this.ownedWindow !== null || this.openingWindow || bot.currentWindow !== null)
+				throw fail({
+					code: "CONTROL_CONFLICT",
+					source: "capability",
+					message: "another inventory/window operation owns this body",
+					dispatch: "not_sent",
+					recoverable: false,
+				});
+			const deps = this.operationDeps(bot);
+			const window = new WindowSessionImpl({
+				...deps,
+				player: true,
+				operation: this.deps.mintOp(),
+				connection: this.identity.connection,
+				incarnation: this.identity.incarnation,
+				guard: () => {
+					this.recheck();
+					if (this.ownedWindow !== window)
+						throw fail({
+							code: "REFERENCE_STALE",
+							source: "capability",
+							message: "inventory operation retired",
+							dispatch: "not_sent",
+							recoverable: false,
+						});
+				},
+				enterOp: () => this.enterOp(),
+				exitOp: () => this.exitOp(),
+				onRetired: () => {
+					if (this.ownedWindow === window) this.ownedWindow = null;
+				},
+			});
+			this.ownedWindow = window;
+			try {
+				return await work({ ...deps, window, selectedSlot: bot.quickBarSlot });
+			} finally {
+				await window.close({ force: true });
+			}
+		} finally {
+			this.exitOp();
+		}
+	}
+
 	async equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt> {
-		// components 匹配未实现：静默忽略会选出语义不同的物品，宁可在 mint 之前拒绝（零事实）
-		if (item != null && item.components != null) {
-			throw fail({
-				code: "INVALID_INPUT",
-				source: "input",
-				message: "item component matching is not implemented in the body I1 scope",
-				hint: "select by name/substitutions/minDurability; component matching arrives with the inventory work package",
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		// 腾空只对手有意义：护甲位不能"腾空"，也不允许把物品丢到地上。
-		if (item == null && slot !== "hand" && slot !== "offhand") {
-			throw fail({
-				code: "INVALID_INPUT",
-				source: "input",
-				message: `cannot empty the ${slot} slot; only hand/offhand support item=null`,
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		const op = this.deps.mintOp();
-		const eff = this.deps.mintEff();
-		this.enterOp();
-		try {
-			const bot = this.botForWrite();
-			if (bot.currentWindow != null) {
-				throw fail({
-					code: "WRONG_STATE",
-					source: "world",
-					message: "a container window is open; equip requires the player window in I1",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			if (item == null) {
-				// 腾空该手：安全移动到空位，不得隐式丢弃（§7.6.1）
-				const heldSlot = slot === "hand" ? 36 + bot.quickBarSlot : 45;
-				const held = bot.inventory.slots[heldSlot];
-				if (held == null) {
-					this.recorder.record(eff, op, "body.equip@1", "receipt", "not_sent", "met", {
-						completionContract: "hand already empty",
-						slot,
-					});
-					return { effect: eff, dispatch: "not_sent", completion: "met", evidence: [] };
-				}
-				const empty = this.findEmptySlot(bot, heldSlot);
-				if (empty == null) {
-					throw fail({
-						code: "INVENTORY_FULL",
-						source: "world",
-						message: `no free slot in main+hotbar to move the held item (slot ${heldSlot})`,
-						hint: "free inventory space first",
-						dispatch: "not_sent",
-						effects: [eff],
-						recoverable: true,
-					});
-				}
-				await bot.moveSlotItem(heldSlot, empty);
-				this.recheck();
-				const confirmed = bot.inventory.slots[heldSlot] == null;
-				this.recorder.record(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
-					completionContract: "held slot emptied by controlled slot move",
-					from: heldSlot,
-					to: empty,
-					confirmed,
-				});
-				return {
-					effect: eff,
-					dispatch: "sent",
-					completion: confirmed ? "met" : "unknown",
-					evidence: [],
-				};
-			}
-			const found = this.findItem(bot, item);
-			if (found == null) {
-				throw fail({
-					code: "MISSING_MATERIAL",
-					source: "world",
-					message: `no inventory item matches ${item.name}${item.substitutions ? ` (or ${item.substitutions.join(", ")})` : ""}`,
-					hint: `inventory holds: ${this.inventoryNames(bot).join(", ") || "nothing"}`,
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			await bot.equip(found.item, DESTINATION[slot] as Parameters<MineflayerBot["equip"]>[1]);
-			this.recheck();
-			const confirmSlot = SLOT_OF[slot](bot);
-			const after = bot.inventory.slots[confirmSlot];
-			const confirmed = after != null && after.name === found.item.name;
-			this.recorder.record(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
-				completionContract: "target slot holds the requested item after controlled click sequence",
-				item: found.name,
-				slot,
-				confirmed,
-			});
-			return {
-				effect: eff,
-				dispatch: "sent",
-				completion: confirmed ? "met" : "unknown",
-				evidence: [],
-			};
-		} finally {
-			this.exitOp();
-		}
+		return this.withInventory((deps) => runEquip(deps, item, slot));
 	}
 
-	/**
-	 * 丢出指定数量的同名物品（§7.5）：窗口外转移，destination -999。
-	 *
-	 * 可丢域只有主背包+快捷栏（9..44）——上游 `transfer` 的 sourceStart/sourceEnd 就是
-	 * `window.inventoryStart..inventoryEnd`，护甲与副手里的同名物品根本搬不出去，所以
-	 * 可用量必须按同一槽域算，否则会把上游的 "Can't find …" 漏成 INTERNAL。
-	 *
-	 * 完成只报 unknown：1.21.11 没有事务回执，且 clickWindow 先本地 acceptClick 再发包，
-	 * 本地库存变化是乐观预测，不是服务端确认。是否真的落地由能力层用地面实体判定。
-	 */
-	async toss(item: string, count: number): Promise<EffectReceipt> {
-		if (item.length === 0) {
-			throw fail({
-				code: "INVALID_INPUT",
-				source: "input",
-				message: "item name must not be empty",
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		if (!Number.isInteger(count) || count < 1) {
-			throw fail({
-				code: "INVALID_INPUT",
-				source: "input",
-				message: `count must be a positive integer (got ${String(count)})`,
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		const op = this.deps.mintOp();
-		const eff = this.deps.mintEff();
-		this.enterOp();
-		try {
-			const bot = this.botForWrite();
-			if (bot.currentWindow != null) {
-				throw fail({
-					code: "WRONG_STATE",
-					source: "world",
-					message: "a container window is open; toss requires the player window in I1",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			const type = bot.registry.itemsByName[item]?.id;
-			if (typeof type !== "number") {
-				throw fail({
-					code: "NOT_FOUND",
-					source: "input",
-					message: `unknown item ${item}`,
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			const available = this.countInPlayerWindow(bot, item);
-			if (available < count) {
-				throw fail({
-					code: "MISSING_MATERIAL",
-					source: "world",
-					message: `only ${available} ${item} in the main inventory (asked ${count})`,
-					hint: "armor and offhand slots cannot be tossed; move the item to the main inventory first",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			this.recorder.record(eff, op, "body.toss@1", "dispatch", "sent", "unknown", {
-				completionContract: "window clicks for a drop are written; acknowledgement is not observable",
-				item,
-				count,
-				slotRange: "9..44",
-			});
-			// 上游不接受 AbortSignal，也没有可取消的中间态；recheck() 是唯一的撤销边界。
-			await bot.toss(type, null, count);
-			this.recheck();
-			this.recorder.record(eff, op, "body.toss@1", "receipt", "sent", "unknown", {
-				completionContract: "item leaves the player window; ground presence is judged by the capability",
-				item,
-				count,
-			});
-			return { effect: eff, dispatch: "sent", completion: "unknown", evidence: [] };
-		} finally {
-			this.exitOp();
-		}
-	}
-
-	/** 主背包+快捷栏（9..44）内的同名物品总数；toss 的可丢域。 */
-	private countInPlayerWindow(bot: MineflayerBot, name: string): number {
-		let total = 0;
-		for (let i = 9; i <= 44; i++) {
-			const slot = bot.inventory.slots[i];
-			if (slot != null && slot.name === name) total += slot.count;
-		}
-		return total;
-	}
-
-	/** 主背包+快捷栏（9..44）内排除 exclude 的第一个空位；不碰护甲/合成/副手格。 */
-	private findEmptySlot(bot: MineflayerBot, exclude: number): number | null {
-		const slots = bot.inventory.slots;
-		for (let i = 9; i <= 44; i++) {
-			if (i === exclude) continue;
-			if (slots[i] == null) return i;
-		}
-		return null;
-	}
-
-	private findItem(
-		bot: MineflayerBot,
-		selector: ItemSelector,
-	): { name: string; item: NonNullable<MineflayerBot["inventory"]["slots"][number]> } | null {
-		const names = [selector.name, ...(selector.substitutions ?? [])];
-		const slots = bot.inventory.slots;
-		for (let i = 0; i < slots.length; i++) {
-			const item = slots[i];
-			if (item == null) continue;
-			if (!names.includes(item.name)) continue;
-			if (selector.minDurability != null) {
-				const max = (item as unknown as { maxDurability?: number }).maxDurability;
-				const used = (item as unknown as { durabilityUsed?: number }).durabilityUsed;
-				if (typeof max === "number" && typeof used === "number" && max - used < selector.minDurability) {
-					continue;
-				}
-			}
-			return { name: item.name, item };
-		}
-		return null;
-	}
-
-	private inventoryNames(bot: MineflayerBot): string[] {
-		const names: string[] = [];
-		for (const item of bot.inventory.slots) {
-			if (item != null) names.push(item.name);
-		}
-		return names;
+	async toss(item: ItemSelector, count: number): Promise<TossOutcome> {
+		return this.withInventory((deps) => runToss(deps, item, count));
 	}
 
 	async lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt> {
@@ -1216,222 +946,14 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt> {
-		if (!isIntVec(target.block)) {
-			throw fail({
-				code: "INVALID_INPUT",
-				source: "input",
-				message: "writeSign target must be integer block coordinates",
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		for (const line of input.lines) {
-			if (line.length > SIGN_LINE_LIMIT) {
-				throw fail({
-					code: "INVALID_INPUT",
-					source: "input",
-					message: `sign line exceeds ${SIGN_LINE_LIMIT} UTF-16 units: ${line.length}`,
-					hint: "split the text yourself; the driver does not truncate or wrap",
-					dispatch: "not_sent",
-					recoverable: true,
-				});
-			}
-		}
-		const op = this.deps.mintOp();
-		const eff = this.deps.mintEff();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
-			const block = bot.blockAt(toMineflayerVec3(target.block));
-			if (block == null) {
-				throw fail({
-					code: "NOT_FOUND",
-					source: "world",
-					message: `block ${target.block.x} ${target.block.y} ${target.block.z} is not loaded on the client`,
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			if (!block.name.includes("sign")) {
-				throw fail({
-					code: "NOT_FOUND",
-					source: "world",
-					message: `${block.name} is not a sign`,
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			const properties = block.getProperties() as Record<string, string | number | boolean>;
-			if (String(properties.is_waxed) === "true") {
-				throw fail({
-					code: "WRONG_STATE",
-					source: "world",
-					message: "sign is waxed; it cannot be edited",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			if (bot.heldItem != null) {
-				throw fail({
-					code: "WRONG_STATE",
-					source: "capability",
-					message: "main hand must be empty before opening the sign editor",
-					hint: "use equip(null, hand) first; the driver does not drop items",
-					dispatch: "not_sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-
-			const face = this.facingVector(bot, target.block);
-			const wantFront = input.side === "front";
-			const editor = this.awaitSignEditor(bot, target.block, SIGN_EDITOR_MS);
-			await bot.activateBlock(block, toMineflayerVec3(face));
-			this.recheck();
-			const opened = await editor;
-			if (opened == null) {
-				this.recorder.record(eff, op, "body.writeSign@1", "dispatch", "sent", "unknown", {
-					completionContract: "sign editor did not open within the evidence window; no update_sign was sent",
-					target: plain(target.block),
-					side: input.side,
-				});
-				throw fail({
-					code: "TIMEOUT",
-					source: "world",
-					message: "sign editor did not open within 2000 ms",
-					hint: "stand closer to the requested face and retry",
-					dispatch: "sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-			if (opened.front !== wantFront) {
-				this.recorder.record(eff, op, "body.writeSign@1", "dispatch", "sent", "not_met", {
-					completionContract: "server opened the opposite face; update_sign was not sent",
-					target: plain(target.block),
-					side: input.side,
-					openedFront: opened.front,
-				});
-				throw fail({
-					code: "WRONG_STATE",
-					source: "world",
-					message: `server opened the ${opened.front ? "front" : "back"} face, requested ${input.side}`,
-					hint: "stand on the side you want to edit",
-					dispatch: "sent",
-					effects: [eff],
-					recoverable: true,
-				});
-			}
-
-			bot.updateSign(block, input.lines.join("\n"), !wantFront);
-			this.recheck();
-			// 牌面文本读不回来（本栈无 block-entity 解码）：同位置更新到达即视为写入确认，
-			// 不做文本比对，也不把本地预测当回执（§7.6.1）。
-			const confirmed = await this.awaitBlockEntity(bot, target.block, SIGN_CONFIRM_MS);
-			this.recorder.record(
-				eff,
-				op,
-				"body.writeSign@1",
-				"receipt",
-				"sent",
-				confirmed ? "met" : "unknown",
-				plain({
-					completionContract: confirmed
-						? "server sent a block-entity update for the edited sign"
-						: "update_sign dispatched; no block-entity update observed within 2000 ms",
-					target: plain(target.block),
-					side: input.side,
-					lines: input.lines,
-					confirmed,
-				}),
-			);
-			return {
-				effect: eff,
-				dispatch: "sent",
-				completion: confirmed ? "met" : "unknown",
-				evidence: [],
-			};
+			this.checkBlockTarget(target, bot);
+			return await runSign(this.operationDeps(bot), target, input);
 		} finally {
 			this.exitOp();
 		}
-	}
-
-	/** 从方块中心到玩家眼睛的主导轴向：即玩家所在的那一面。 */
-	private facingVector(bot: MineflayerBot, block: Vec3): Vec3 {
-		const eyeY = (bot.entity?.position.y ?? 0) + 1.62;
-		const dx = (bot.entity?.position.x ?? 0) - (block.x + 0.5);
-		const dy = eyeY - (block.y + 0.5);
-		const dz = (bot.entity?.position.z ?? 0) - (block.z + 0.5);
-		const ax = Math.abs(dx);
-		const ay = Math.abs(dy);
-		const az = Math.abs(dz);
-		if (ax >= ay && ax >= az) return { x: Math.sign(dx) || 1, y: 0, z: 0 };
-		if (ay >= az) return { x: 0, y: Math.sign(dy) || 1, z: 0 };
-		return { x: 0, y: 0, z: Math.sign(dz) || 1 };
-	}
-
-	/** 等待与目标位置匹配的 open_sign_entity；中止/断线/超时都结算为 null。 */
-	private awaitSignEditor(bot: MineflayerBot, target: Vec3, windowMs: number): Promise<{ front: boolean } | null> {
-		return new Promise<{ front: boolean } | null>((resolve) => {
-			let done = false;
-			const matches = (loc: { x: number; y: number; z: number } | null | undefined) =>
-				loc != null && loc.x === target.x && loc.y === target.y && loc.z === target.z;
-			const onOpen = (packet: { location?: { x: number; y: number; z: number }; isFrontText?: boolean }) => {
-				if (!matches(packet?.location)) return;
-				finish({ front: packet.isFrontText === true });
-			};
-			const onAbort = () => finish(null);
-			const onEnd = () => finish(null);
-			const timer = setTimeout(() => finish(null), windowMs);
-			const cleanup = () => {
-				clearTimeout(timer);
-				bot._client.removeListener("open_sign_entity", onOpen as never);
-				bot.removeListener("end", onEnd as never);
-				this.signal.removeEventListener("abort", onAbort);
-			};
-			function finish(value: { front: boolean } | null) {
-				if (done) return;
-				done = true;
-				cleanup();
-				resolve(value);
-			}
-			bot._client.on("open_sign_entity", onOpen as never);
-			bot.on("end", onEnd as never);
-			this.signal.addEventListener("abort", onAbort, { once: true });
-		});
-	}
-
-	/** 等待同位置 blockEntityData（服务端实际回送牌面更新）。 */
-	private awaitBlockEntity(bot: MineflayerBot, target: Vec3, windowMs: number): Promise<boolean> {
-		return new Promise<boolean>((resolve) => {
-			let done = false;
-			const onEntity = (block: { position?: { x: number; y: number; z: number } } | null) => {
-				const pos = block?.position;
-				if (pos == null || pos.x !== target.x || pos.y !== target.y || pos.z !== target.z) return;
-				finish(true);
-			};
-			const onAbort = () => finish(false);
-			const onEnd = () => finish(false);
-			const timer = setTimeout(() => finish(false), windowMs);
-			const cleanup = () => {
-				clearTimeout(timer);
-				bot.removeListener("blockEntityData", onEntity as never);
-				bot.removeListener("end", onEnd as never);
-				this.signal.removeEventListener("abort", onAbort);
-			};
-			function finish(value: boolean) {
-				if (done) return;
-				done = true;
-				cleanup();
-				resolve(value);
-			}
-			bot.on("blockEntityData", onEntity as never);
-			bot.on("end", onEnd as never);
-			this.signal.addEventListener("abort", onAbort, { once: true });
-		});
 	}
 
 	/** physicsTick precedes updatePosition in the installed plugin; awaiting resumes after that stack. */
@@ -1501,15 +1023,6 @@ export class BodySessionImpl implements BodySession {
 					code: "CONTROL_CONFLICT",
 					source: "capability",
 					message: "a window is already open or opening",
-					dispatch: "not_sent",
-					recoverable: false,
-				});
-			}
-			if (!bot.supportFeature("stateIdUsed")) {
-				throw fail({
-					code: "UNSUPPORTED_PROTOCOL",
-					source: "environment",
-					message: "container confirmation requires modern stateId window synchronization",
 					dispatch: "not_sent",
 					recoverable: false,
 				});
@@ -1636,8 +1149,8 @@ export class BodySessionImpl implements BodySession {
 				this.recheck();
 				if ("networkId" in target) {
 					this.resolveEntity(bot, target);
-					activateContainerEntity(bot, target.networkId);
-				} else activateContainerBlock(bot, target.block);
+					protocolFor(bot).activateEntity(target.networkId);
+				} else protocolFor(bot).activateBlock(target.block);
 			});
 			return window;
 		} finally {

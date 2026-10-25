@@ -12,6 +12,7 @@ import type { Fact, JsonValue, Vec3 } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
 import { BLOCK_SPEC_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import { resolveGrid, resolvePoint, specName, stripNamespace } from "../shared/targets.js";
+import { canHarvest, harvestRequirement } from "../shared/tools.js";
 import type { QuerySpec } from "../shared/query.js";
 
 export interface TerrainDeps {
@@ -23,27 +24,22 @@ function harvestOf(
 	blockName: string,
 	knowledge: RegistryKnowledge | null,
 	inventory: { name: string; count: number }[],
-): { harvest: { ok: boolean; requiredTool?: string } | null; unknown: string[] } {
-	if (knowledge == null) return { harvest: null, unknown: ["tool data unavailable: knowledge source not ready"] };
-	const drops = knowledge.blockDrops(blockName);
-	if (drops == null) return { harvest: null, unknown: [`no drop data for ${blockName}`] };
-	if (drops.requiredTool == null) return { harvest: { ok: true }, unknown: [] };
-	const required = knowledge.item(drops.requiredTool);
-	const requiredTier = required?.tool?.tier ?? null;
-	const requiredType = required?.tool?.type ?? null;
-	const tiers = ["wooden", "stone", "iron", "golden", "diamond", "netherite"];
-	const requiredRank = requiredTier == null ? -1 : tiers.indexOf(requiredTier);
-	let best = -1;
-	for (const item of inventory) {
-		const info = knowledge.item(item.name);
-		const tool = info?.tool;
-		if (tool == null) continue;
-		if (requiredType != null && tool.type !== requiredType) continue;
-		const rank = tool.tier == null ? -1 : tiers.indexOf(tool.tier);
-		if (rank > best) best = rank;
-	}
-	if (best < 0) return { harvest: { ok: false, requiredTool: drops.requiredTool }, unknown: [] };
-	return { harvest: { ok: best >= requiredRank, requiredTool: drops.requiredTool }, unknown: [] };
+): { harvest: { ok: boolean; requiredTools?: string[] } | null; unknown: string[] } {
+	const requirement = harvestRequirement(knowledge, blockName);
+	if (requirement.kind === "unknown")
+		return { harvest: null, unknown: [`harvest requirements of ${blockName} are unknown`] };
+	return {
+		harvest: {
+			ok: canHarvest(
+				knowledge,
+				{ slots: inventory.map((item, slot) => ({ ...item, slot })), counts: {} },
+				blockName,
+				undefined,
+			),
+			...(requirement.kind === "tools" ? { requiredTools: requirement.names } : {}),
+		},
+		unknown: [],
+	};
 }
 
 const blockQuery = (deps: TerrainDeps): QuerySpec => ({
