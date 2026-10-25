@@ -343,11 +343,27 @@ export function resolveCarriageReturns(text: string): string {
 		.split("\n")
 		.map((line) => {
 			if (!line.includes("\r")) return line;
-			let out = "";
-			for (const seg of line.split("\r")) {
-				out = out.length > seg.length ? seg + out.slice(seg.length) : seg;
+			const segments = line.split("\r");
+			// 终端覆盖语义：后段覆盖前段，超出部分保留前段尾巴。旧实现逐段重建
+			// out（O(段数 × 行长)，进度条日志会退化）；这里从右往左一次扫描：
+			// 结果 = 最后一段，再依次补上「比已覆盖边界更长」的早期段落的尾部。
+			let covered = segments[segments.length - 1]!.length;
+			let maxLen = covered;
+			for (let i = 0; i < segments.length - 1; i++) {
+				const len = segments[i]!.length;
+				if (len > maxLen) maxLen = len;
 			}
-			return out;
+			if (maxLen === covered) return segments[segments.length - 1]!;
+			const pieces: string[] = [segments[segments.length - 1]!];
+			for (let i = segments.length - 2; i >= 0 && covered < maxLen; i--) {
+				const len = segments[i]!.length;
+				if (len > covered) {
+					pieces.push(segments[i]!.slice(covered, len));
+					covered = len;
+				}
+			}
+			// pieces 按拥有者下标从高到低 push，恰好就是结果串从左到右的顺序
+			return pieces.join("");
 		})
 		.join("\n");
 }

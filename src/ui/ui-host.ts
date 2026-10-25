@@ -1758,10 +1758,11 @@ export class UIHost implements UIHostContextPort {
 
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
 		// 屏幕逐格显示的就是这份行：渲染器与鼠标/选区共用它，列模型才不会与屏幕分叉。
-		const displayRows = fullScreenRows.map((row) => normalizeFrameLine(row));
-		this.lastRenderedRows = displayRows;
-		const finalRows = this.mouseTracker.applyHighlight(displayRows, scrollStart);
-		this.renderer.renderFrame(finalRows);
+		// 行规范化唯一归属在 renderer.prepareRows（这里不再做第二遍 normalize）。
+		const prepared = this.renderer.prepareRows(fullScreenRows);
+		this.lastRenderedRows = prepared.rows;
+		const finalRows = this.mouseTracker.applyHighlight(prepared.rows, scrollStart);
+		this.renderer.renderPrepared(finalRows, prepared.cursor);
 	}
 
 	private handleResize(): void {

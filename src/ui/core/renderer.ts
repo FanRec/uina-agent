@@ -9,12 +9,18 @@
  */
 
 import { CURSOR_MARKER } from "./types.js";
-import { extractAnsiCode, normalizeFrameLine, truncateToWidth, visibleWidth } from "./utils.js";
+import { CELL_ANSI, normalizeFrameLine, scanCells, truncateToWidth, visibleWidth } from "./utils.js";
 import type { ProcessTerminal } from "./terminal.js";
 
 export interface CursorPosition {
 	row: number; // 相对活跃区域顶部的行号 (0-indexed)
 	col: number; // 所在行的显示列号 (1-indexed)
+}
+
+/** prepareRows 的产物：规范化后的行（未做宽度适配）与硬件光标目标位。 */
+export interface PreparedFrame {
+	rows: string[];
+	cursor: CursorPosition | null;
 }
 
 export class MainScreenRenderer {
@@ -37,15 +43,24 @@ export class MainScreenRenderer {
 	 * 保证 rows 的总高度恒定撑满视口，输入框永远锁定吸附在最底端 [rows.length - inputH, rows.length - 1]
 	 */
 	renderFrame(rows: string[]): void {
-		let cursorPos: CursorPosition | null = null;
-		// Every emitted row must fit the terminal, otherwise the terminal wraps it
-		// and the whole frame shifts (Pi: tui-main-screen.ts rendered-width check).
-		// Tabs are expanded first: a raw HT only moves the cursor without painting the
-		// cells it skips, so those cells keep the previous frame's text (looks like an
-		// overlap) or the default background (a hole in a card background).
-		const width = Math.max(1, this.terminal.columns);
+		const prepared = this.prepareRows(rows);
+		this.renderPrepared(prepared.rows, prepared.cursor);
+	}
 
-		const physicalRows: string[] = [];
+	/**
+	 * 阶段一：行规范化（本类是行规范化的唯一归属）。
+	 *
+	 * 顺序必须是 N -> S：normalizeFrameLine 展开制表符/落地回车/丢弃裸控制符，
+	 * keepSgrOnly 只留 SGR——反过来 S 会先吃掉 \t 与 \r，N 就无从展开。
+	 * 每行每帧只在这里规范化一次；调用方（UIHost）不得再做第二遍。
+	 *
+	 * Tabs are expanded first: a raw HT only moves the cursor without painting the
+	 * cells it skips, so those cells keep the previous frame's text (looks like an
+	 * overlap) or the default background (a hole in a card background).
+	 */
+	prepareRows(rows: readonly string[]): PreparedFrame {
+		let cursorPos: CursorPosition | null = null;
+		const prepared: string[] = [];
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
 			const markerIndex = line.indexOf(CURSOR_MARKER);
@@ -53,8 +68,24 @@ export class MainScreenRenderer {
 			if (markerIndex !== -1) {
 				const beforeMarker = line.slice(0, markerIndex);
 				const col = visibleWidth(beforeMarker) + 1;
-				cursorPos = { row: r, col: Math.min(col, width) };
+				cursorPos = { row: r, col: Math.min(col, Math.max(1, this.terminal.columns)) };
 			}
+			prepared.push(keepSgr(normalizeFrameLine(cleanLine)));
+		}
+		return { rows: prepared, cursor: cursorPos };
+	}
+
+	/**
+	 * 阶段二：宽度适配 + 差量写入。rows 必须来自 prepareRows（或其高亮变体）。
+	 */
+	renderPrepared(rows: readonly string[], cursor: CursorPosition | null): void {
+		// Every emitted row must fit the terminal, otherwise the terminal wraps it
+		// and the whole frame shifts (Pi: tui-main-screen.ts rendered-width check).
+		const width = Math.max(1, this.terminal.columns);
+		const cursorPos = cursor;
+
+		const physicalRows: string[] = [];
+		for (let r = 0; r < rows.length; r++) {
 			// Rows are padded to exactly the terminal width, which leaves the cursor in the
 			// "pending wrap" state. Advancing with CR LF from there moves down two rows on
 			// hosts that act on the wrap immediately (the classic double-spaced frame), so
@@ -63,7 +94,7 @@ export class MainScreenRenderer {
 			// Windows Terminal 会把下一行涂黑（真机黑条）。而正常路径每行已 pad 到
 			// 满宽，无需 erase。统一改为截断后重新绝对定位到行尾列再 \x1b[K，
 			// 使光标离开 pending-wrap 状态；尾部残留列由 K 以当前 bg 涂刷。
-			physicalRows.push(this.fitToWidth(normalizeFrameLine(this.sanitizeRow(cleanLine)), width));
+			physicalRows.push(this.fitToWidth(rows[r]!, width));
 		}
 
 		const fullRender = this.invalidated || this.previousPhysicalRows === null || this.previousWidth !== width;
@@ -114,27 +145,6 @@ export class MainScreenRenderer {
 		this.invalidated = false;
 	}
 
-	private sanitizeRow(line: string): string {
-		let out = "";
-		let index = 0;
-		while (index < line.length) {
-			const ansi = extractAnsiCode(line, index);
-			if (ansi) {
-				if (/^\x1b\[[0-9;]*m$/.test(ansi.code)) out += ansi.code;
-				index += ansi.length;
-				continue;
-			}
-			if (line[index] === "\x1b") {
-				index = skipControlSequence(line, index);
-				continue;
-			}
-			const code = line.charCodeAt(index);
-			if (code > 0x1f && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) out += line[index];
-			index++;
-		}
-		return out;
-	}
-
 	private fitToWidth(line: string, width: number): string {
 		return visibleWidth(line) > width ? truncateToWidth(line, width, "") : line;
 	}
@@ -144,24 +154,26 @@ function sameCursor(a: CursorPosition | null, b: CursorPosition | null): boolean
 	return a?.row === b?.row && a?.col === b?.col;
 }
 
-function skipControlSequence(text: string, start: number): number {
-	const introducer = text[start + 1];
-	if (introducer === "[") {
-		let index = start + 2;
-		while (index < text.length) {
-			const code = text.charCodeAt(index++);
-			if (code >= 0x40 && code <= 0x7e) break;
-		}
-		return index;
-	}
-	if (introducer === "]" || introducer === "_" || introducer === "P" || introducer === "^" || introducer === "X") {
-		let index = start + 2;
-		while (index < text.length) {
-			if (text[index] === "\x07") return index + 1;
-			if (text[index] === "\x1b" && text[index + 1] === "\\") return index + 2;
-			index++;
-		}
-		return index;
-	}
-	return Math.min(text.length, start + 2);
+const SGR_SEQUENCE = /^\x1b\[[0-9;]*m$/;
+
+/**
+ * 只保留 SGR 序列，剥掉其它一切转义（光标移动/清屏/OSC/APC/DCS/字符集）。
+ * 输入已过 normalizeFrameLine：行内无 \t\r 与裸控制符，孤立 ESC 也已被丢弃，
+ * 所以这里只需要按 scanCells 的 ANSI 单元做保留/整段丢弃的判定。
+ * 不用 format.keepSgrOnly：它的 esc 正则不覆盖 ST 终结的 DCS/APC/PM/SOS
+ * （无 BEL 时只剥掉单个 ESC 字节，payload 会漏进帧）。
+ */
+function keepSgr(text: string): string {
+	if (!text.includes("\x1b")) return text;
+	let out = "";
+	let last = 0;
+	let dropped = false;
+	scanCells(text, (start, end, width) => {
+		if (width !== CELL_ANSI) return; // 文本单元格原样保留
+		if (SGR_SEQUENCE.test(text.slice(start, end))) return; // SGR 保留
+		out += text.slice(last, start);
+		last = end;
+		dropped = true;
+	});
+	return dropped ? out + text.slice(last) : text;
 }
