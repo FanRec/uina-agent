@@ -1,16 +1,15 @@
 /**
- * World 当前读：纯当前 read/watch 最小实现（不读历史存储）。
+ * World 当前读：纯当前 read/watch（不读历史存储）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §6.1、§9.2–§9.4。
- * read = facts.sample 同步采样 + 注入的查询 resolver（返回 Fact）；cursor 取当前源
- * stamp（stream=source、epoch、sequence），查询参数校验归 K1 描述符（I1 查询无参）。
+ * read = facts.sample 同步采样 + 调用方给出的 resolver（返回 Fact）；cursor 取当前源
+ * stamp（stream=source、epoch、sequence）。静态知识查询不进这里（无观察源）。
  * watch 保守失效（§9.2）：当前源任何推进即 changed（changed=[] 不做精确分类），
  * epoch/source 断裂即 reset；首次 next 立即比较（§9.3）；同一水位只交付一次提示。
- * 历史依赖（events@1 等）不在 I1 范围。
  */
 
 import { callFailure } from "../contracts/values.js";
-import type { CallFailure, ExactRef, Fact, JsonValue, Observation, ObservationCursor } from "../contracts/values.js";
+import type { CallFailure, Fact, JsonValue, Observation, ObservationCursor } from "../contracts/values.js";
 import type {
 	ClientFactCapture,
 	ClientFactNotice,
@@ -19,18 +18,13 @@ import type {
 	ClientFactsPort,
 	ClientFactsSubscription,
 } from "../contracts/client-facts.js";
-import type { WorldChange, WorldQuery, WorldWatch } from "../contracts/world.js";
+import type { WorldChange, WorldWatch } from "../contracts/world.js";
 
-/** 查询 resolver：接收查询输入，从当前事实视图组装一个 Fact（组合根由 K1 声明生成注入）。 */
+/** 当前查询 resolver：从同一提交边界的事实视图组装一个 Fact。 */
 export type QueryResolver = (view: ClientFactView, input: JsonValue) => Fact<unknown>;
 
 function worldFailure(code: string, message: string, hint?: string): CallFailure {
 	return callFailure({ code, source: "world", message, hint, dispatch: "not_sent", effects: [], recoverable: false });
-}
-
-function unknownQuery(ref: string, resolvers: ReadonlyMap<ExactRef, QueryResolver>): CallFailure {
-	const available = [...resolvers.keys()].sort().join(", ") || "(none)";
-	return worldFailure("INVALID_INPUT", `unknown world query: ${ref}`, `available queries: ${available}`);
 }
 
 function abortError(): Error {
@@ -127,13 +121,7 @@ export class CurrentWatch implements WorldWatch {
 		if (relation === "epoch") return { kind: "reset", reason: "epoch_changed", cursor: { ...this.current } };
 		if (relation === "moved") return { kind: "changed", cursor: { ...this.current }, changed: [] };
 		return new Promise<WorldChange>((resolve, reject) => {
-			const wait: PendingWait = {
-				after: { ...after },
-				signal,
-				onAbort: () => {},
-				resolve,
-				reject,
-			};
+			const wait: PendingWait = { after: { ...after }, signal, onAbort: () => {}, resolve, reject };
 			wait.onAbort = () => {
 				this.waiters.delete(wait);
 				signal.removeEventListener("abort", wait.onAbort);
@@ -163,31 +151,21 @@ export class CurrentWatch implements WorldWatch {
 }
 
 export class CurrentReads {
-	constructor(
-		private readonly facts: ClientFactsPort,
-		private readonly resolvers: ReadonlyMap<ExactRef, QueryResolver>,
-	) {}
+	constructor(private readonly facts: ClientFactsPort) {}
 
-	async read<T>(query: WorldQuery): Promise<Observation<T>> {
-		const resolver = this.resolvers.get(query.ref);
-		if (resolver == null) throw unknownQuery(query.ref, this.resolvers);
+	async read<T>(input: JsonValue, resolver: QueryResolver): Promise<Observation<T>> {
 		let capture: ClientFactCapture<Fact<unknown>>;
 		try {
-			capture = this.facts.sample((view) => resolver(view, query.input));
+			capture = this.facts.sample((view) => resolver(view, input));
 		} catch (err) {
 			throw toReadFailure(err);
 		}
 		const fact = capture.value;
-		return {
-			...fact,
-			value: fact.value as T,
-			cursor: cursorOf(capture.stamp),
-		};
+		return { ...fact, value: fact.value as T, cursor: cursorOf(capture.stamp) };
 	}
 
-	async watch(query: WorldQuery, _after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
+	async watch(signal: AbortSignal): Promise<WorldWatch> {
 		if (signal.aborted) throw abortError();
-		if (!this.resolvers.has(query.ref)) throw unknownQuery(query.ref, this.resolvers);
 		let watch: CurrentWatch | null = null;
 		const subscription = this.facts.subscribe((notice) => {
 			watch?.handleNotice(notice);

@@ -92,6 +92,12 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 项目 TTS 扩展注册独立 `tts_generate({text})`：原样提交完整文本，使用部署中的 Vendor/语音预设与共享合成锁，等待完整 PCM WAV 后保存到 `<pi.cwd>/uina/tmp/`。成功模型正文只含普通文件 `resource` 和采样计算的 `durationMs`；失败不返回文件引用。临时件同目录独占写入并在校验后原子发布，不覆盖已有文件。生成不播放、不驱动字幕或口型，已发布文件不随回合结束、静音或扩展卸载清理。详见 [TTS 文件生成](voice-tts/tts-file-generation.md)。
 
+## Minecraft World
+
+当前 MC 在 `.uina/worlds/minecraft/`，实现 I1 原生闭环、K1 基础能力、采集与窗口容器，共 10 查询 + 13 动作。普通容器的打开/点击/关闭由 Driver 持有，mode-0 点击以服务端完整槽位/光标回包确认，World 沿既有 SQLite 证据链保留最后观察；历史不代表当前库存。实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers` 开发场景。
+
+Program/Library、Host 持久回执、Executor/WorldDef 尚未实现，当前不能作为完整 `minecraft({action,params})` 主脑工具使用。现代普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
+
 ## QQ World
 
 QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 14 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile / people / files / fetch / search / expressions）。绑定账号由 World 注入，模型不再填写 account。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`。授权词表仍为 8 个 grant 名，`requiredGrants` 检查所需集合：在线 inbox 需要 observation，同时修改 push 还需要 attention.manage；没有增加授权名称。

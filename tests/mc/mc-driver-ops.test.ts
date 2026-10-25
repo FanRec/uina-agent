@@ -106,7 +106,7 @@ describe("equip：未实现的匹配条件显式拒绝", () => {
 	test("带 components：INVALID_INPUT 且零事实（在 mint 之前拒绝）", async () => {
 		const h = makeBodyHarness({ inventory: { slots: [] } });
 		const session = (await h.port.acquire(ownerT(1), openSignal())) as BodySessionImpl;
-		const err = await captureFailure(session.equip({ name: "iron_sword", components: { damage: 1 } }, "main"));
+		const err = await captureFailure(session.equip({ name: "iron_sword", components: { damage: 1 } }, "hand"));
 		expect(err.code).toBe("INVALID_INPUT");
 		expect(err.source).toBe("input");
 		expect(err.dispatch).toBe("not_sent");

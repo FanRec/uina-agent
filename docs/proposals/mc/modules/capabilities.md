@@ -332,7 +332,7 @@ type ItemSource =
   | {kind: "trade"; profession: string | null};
 ```
 
-- 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。
+- 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。**当前 1.21.11 数据只有合成/方块/实体三类来源，没有熔炼与交易数据**，因此 `sourcesComplete` 恒为 false，`fuel` 恒为 null（不填 0）。
 - recipe 的 plan 仍只展开 craft/smelt 和当前库存差额；采集、击杀、交易等叶子由程序依据 sources 组织。知识查询不执行行动，不新增自动科技树规划器。
 - 用途：模型不确定"这东西能不能吃/当燃料/放成方块"时查一次，而不是试错。
 - **不可等待**：静态知识，`version: null`。
@@ -340,7 +340,7 @@ type ItemSource =
 ### recipe · `recipe@1`
 - 输入 `{ item: Name, count?: 1 }`
 - 返回 `{ recipes:[{ station, ingredients:[{ item, count }], output:{ item, count }, fuel? }], plan?: { steps:[{ item, count, action:"craft"|"smelt", station? }], need:{ [item]: number }, have:{ [item]: number }, missing:{ [item]: number } } }`
-- **不可等待**：`plan` 依赖背包，但它是派生计算，`version: null`；要等就等 `inventory@1`。
+- **不可等待**：`plan` 依赖背包，但它是派生计算，`version: null`；要等就等 `inventory@1`。当前数据版本只含合成配方（`station` 为 hand/crafting_table），熔炼配方缺失；`steps` 只列出本版本能合成的中间物，不伪造熔炼步骤。
 - `plan` 按当前背包实算：`need` 是总料，`have` 是现有，`missing` 是差额。多配方时取"缺得最少"的一条。
 - 例：`{ item:"iron_pickaxe" } → { plan:{ steps:[{item:"iron_ingot",count:3,action:"smelt"},{item:"stick",count:2,action:"craft"},{item:"iron_pickaxe",count:1,action:"craft",station:"crafting_table"}], missing:{ raw_iron:3, coal:1 } } }`
 
@@ -392,6 +392,8 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 - 输入 `{ kind?: "home"|"mine"|"farm"|"other", near?: number }`
 - 返回 `{ places:[{ name, at:{position,dimension}, kind, note?, savedAt }] }`
 
+实现说明：事件登记为 `client.event@1` 证据，沿既有接收/提交队列入库，复用 evidence 表与 rowid 顺序（不建第二份聊天队列）；`gaps` 返回分区内已知缺口，重复读取同一 gap ref 不代表新的丢失。Driver 只捕获本客户端的 chat/damage/death/connection，其他实体的受伤不记成自身事件。
+
 ### container.last · `container.last@1`
 - 输入 `{ at: Pos }`
 - 返回 `{ found, at?, type?, contents?: [{ slot, name, count }], counts?: { [item]: number }, observedAt?, source?: "window"|"event", complete?: boolean }`
@@ -418,13 +420,15 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 
 每个动作块给：签名、做什么、完成条件、返回、失败码。`P0/P1/P2` 是实施层级。
 
+**可达性归调用方**：除移动类动作外，破坏/放置/右键/攻击只作用于当前姿态够得着的目标——方块交互按"自眼位 4.5 格"判（place 量真正被点的支撑面，不量目标格），实体交互按 4 格判；够不着返回 `UNREACHABLE`，`hint` 带实测距离并指明先 `goto@1` 接近，动作内部不寻路。把导航塞进每个动作会和 `goto@1` 重复实现一套路径逻辑，也让"是否可达"混进动作自己的完成口径。`collect`/`tunnel`/`excavate` 这类本身就含行走的组合动作不受此限。这也是"掉落只在拾取半径内观察得到"的前提：想验证 `mine` 的 `dropped`，就先站到邻格。
+
 ### 移动
 
 #### goto · `goto@1` · act · P0
 - 输入 GotoInput；目标字段为 MoveTargetRequest（§2.2），与 route.plan 原样复用。tolerance 缺省 2（1..8），digThrough=false、placeToReach=true、sprint=true；maxTimeMs 缺省 120000。
 - 做：**在当前维度内**寻路走过去；路上卡住会跳、绕、必要时挖一格或搭一块（由 `digThrough`/`placeToReach` 控制）。不找传送门、不换交通方式——跨维度用 `transit`。
-- 完成：与 `at` 的直线距离 ≤ `tolerance`，且站在可站立方块上。
-- 返回 `{ at, distance, dug, placed, ticks }`
+- 完成：与 `at` 的直线距离 ≤ `tolerance`。站姿核验（是否站在可站立方块）随运动能力包补齐，当前不谎称已核验。
+- 返回 `{ at, distance, dug, placed, ticks }`；`dug` 是本次导航实测挖掘次数，`placed` 无法归属到本次导航，当前恒为 null。
 - 失败 `UNREACHABLE`（`hint` 带 `blockers`）、`TIMEOUT`、`INTERRUPTED`
 
 #### follow · `follow@1` · act · P1
@@ -478,8 +482,8 @@ type ExploreTarget =
 
 #### mine · `mine@1` · act · P0
 - 输入 `{ at: GridPos, tool?: Name|ItemSelector, collect?: true }`
-- 做：走近并破坏一格方块；自动选合适工具（有 `tool` 则用指定的）。
-- 完成：该格变为空气且掉落已捡（`collect:false` 则不捡）。
+- 做：破坏一格够得着的方块；自动选合适工具（有 `tool` 则用指定的）。工具按方块真实掉落要求选，选不出在派发前报 `MISSING_TOOL`。够不着报 `UNREACHABLE`，不自己走过去（§4 可达性归调用方）。
+- 完成：该格在客户端世界变为空气。掉落只在短窗口（约 1.5 秒）内观察背包增量，观察到才给 `dropped`；`collect:false` 不观察。读不到方块（未加载）不等于空气。
 - 返回 `{ broken, dropped?:{ name, count }, tool? }`
 - 失败 `NOT_FOUND`（那块是空气/未加载）、`UNREACHABLE`、`MISSING_TOOL`（`hint` 带 `required`）、`TARGET_NOT_MET`（服务器拒绝，如领地保护）、`INTERRUPTED`
 
@@ -490,6 +494,7 @@ type ExploreTarget =
 - 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 是实际破坏格数。
 - 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
 - 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
+- 实现：物品名先用静态知识反查方块来源（`item@1` 的 block sources），再用 `blocks@1` 取前沿；走的是一遍遍 `goto@1` + `mine@1(collect:false)` + 掉落观察，入不了包再 `pickup@1` 兜底。**不持身体**（Body 槽与 goto 槽互斥），每一步独立取放；子调用的 `CONTROL_CONFLICT` 原样上抛，不做跨 run 隔离。可预判的失败（无来源/没工具/背包满）全在移动之前判定。
 
 #### tunnel · `tunnel@1` · act · P1
 - 输入 `{ to: Pos, size?: "1x2"|"1x3"|"2x2"|"3x3" = "1x2", stairs?: "auto"|"never" = "auto", support?: true, maxTimeMs?: 180000 }`
@@ -539,8 +544,11 @@ Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、cl
 - 做：走到容器旁打开，读内容，关上。这次读取会写进 `container.last`（§3）。
 - 返回 `{ at, type, slots:[{ slot, name, count }], freeSlots, properties? }`
 - 失败 `NOT_FOUND`（那不是容器）、`UNREACHABLE`、`WRONG_STATE`（被占用/需要权限）
+- 批 2 已实现普通容器。自行调用可先导航；祖先身体委托时目标必须已在触及范围，需要移动在新副作用前报 `CONTROL_CONFLICT`，不释放祖先资格。工作站专用布局不算普通箱子，不支持时明确失败。
 
 #### transfer · `transfer@1` · act · P0
+
+批 2 已实现：主背包/快捷栏与普通方块或实体容器，两方向同一槽位算法，mode-0 左/右键与实际服务端完整快照确认。组件使用窗口快照的 `{added,removed}` patch，未知时不能满足组件约束；minDurability 比较实际剩余耐久。取消/失败清理强制关自己的窗口并保存未知光标后果。祖先身体的近距限制同 container。
 
 - 输入 TransferInput：`from` / `to` 恰一，端点为容器方块格、容器 EntityRef 或 `"nearest"`；未指定的一端是自身库存。选择物品用 `{item:Name|ItemSelector, count?:1..1024}`，或 `{all:true}`，两种形式互斥。`count` 省略时转移选定源中所有匹配物品。
 - `from` 表示容器 → 库存，`to` 表示库存 → 容器。当前不接受两端同时指定，不隐式开展箱到箱运输。
@@ -578,11 +586,14 @@ type EquipInput =
 - 不给 toward 时原地丢弃；给出玩家/实体时走近至可投掷距离、朝向目标后丢弃。目标失踪或不可达明确失败，不改成原地丢弃。目标引用与当前位置在派发前复核。
 - 完成：声明数量已从自身库存丢出；返回 `{dropped:{[item]:number}, remaining:0, at, toward?:EntityRef}`。只证明丢弃，不证明目标拾取、背包增加或交易完成。
 - 部分丢弃抛错并在 progress 保留 dropped/remaining/at/toward；派发未知不自动补丢。失败 `NOT_FOUND`、`MISSING_MATERIAL`、`UNREACHABLE`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。
+- 实现：数量与可丢量都按主背包+快捷栏（9..44）算，和 Driver 的 `toss` 同一槽域；完成不靠本地库存（窗口点击是乐观预测），而是看半径 4 内同名掉落物实体的数量增量是否达到声明值，达不到报 `TARGET_NOT_MET`。
 
 #### pickup · `pickup@1` · act · P1
 - 输入 `{ item?: Name, radius?: 4..16 = 8, maxTimeMs?: 30000 }`
 - 做：把地上的掉落物走过去捡起来。
-- 返回 `{ picked:{ [item]: number } }`；失败 `NOT_FOUND`、`INVENTORY_FULL`
+- 完成：至少有一件东西进了主背包；`picked` 报告本次观察到的全部增量（不只请求的那件，顺手捡到的也如实记）。够不着或已经消失的候选跳过，继续下一个。
+- 返回 `{ picked:{ [item]: number } }`；失败 `NOT_FOUND`（范围内没有匹配掉落物，或一个都没捡到）、`INVENTORY_FULL`（主背包装不下，移动之前判定）、`TIMEOUT`（预算用尽且一无所获）、`CONTROL_CONFLICT`/`DISCONNECTED`/`INTERRUPTED`
+- 实现：4 格外用 `goto@1`（tolerance 2）拉近距离，最后一两格改成 `lookAt` + `drive` 步进——GoalNear 在 1 格容差上经常直接 resolve 空路径，走路反而更稳。
 
 ### 制作
 
@@ -631,9 +642,9 @@ interface UseSignInput {
 ```
 
 - text 按 LF 分成最多四行，缺行补空，空字符串表示清空该面；不 trim、不截字、不把字串当 JSON/命令解析。side 缺省 front；版本不支持背面时明确 WRONG_STATE，不改写正面。每行长度按实际适配版本预校验，首个上游 updateSign 路径上限是 45 UTF-16 单元；describe 发布当前有效限制。
-- 写字前按牌子的实际朝向/挂载求解指定面的可站立交互位置，走近、核验当前方块/可用面/上蜡状态、用 equip(null) 腾空主手（没有安全槽位便失败，不丢物品），再用受控 body.writeSign 打开对应编辑面并提交。上蜡或无编辑资格明确失败；不自动拆牌、换牌或消耗其他物品。此过程不是 WindowSession.click。整体期限初始为 30 秒；编辑资格与提交确认各最多 2 秒，纳入整体期限且可取消，均为内部策略值。
+- 写字前按牌子的实际朝向/挂载求解指定面的可点击方向，在可达范围内核验当前方块/可用面/上蜡状态、用 equip(null) 腾空主手（没有安全槽位便失败，不丢物品），再用受控 body.writeSign 打开对应编辑面并提交；够不着报 `UNREACHABLE`，站位由调用方用 `goto@1` 安排（§4 可达性归调用方）。上蜡或无编辑资格明确失败；不自动拆牌、换牌或消耗其他物品。此过程不是 WindowSession.click。整体期限初始为 30 秒；编辑资格与提交确认各最多 2 秒，纳入整体期限且可取消，均为内部策略值。
 - 做：右键。目标可以是方块（`at`）、实体（`entity`）或空（用手里的东西）。同一个动作覆盖：打火石点火、桶取水、锄头翻地、种子播种、骨粉催熟、门/栅栏门开关、拉杆/按钮、床、剪刀、挤奶。
-- 完成：按 (手上物品, 目标) 组合判定的效果出现（内部一张效果表，与 Driver §7 对齐）。
+- 完成：观察到可核验变化——方块状态改变（例如门/拉杆/床）或物品数量改变（例如投掷/消耗）。当前没有逐组合的效果表：窗口类方块（容器/工作台/炉子/附魔台等）明确拒绝并指向 `container`/`craft`/`smelt`，没有可观察变化的组合报 `TARGET_NOT_MET` 而不是假装成功。
 - 普通右键返回 `{effect,at?,entity?,changed?:{[k]:JsonValue}}`。写牌成功返回 `{effect:"sign_written",at,side,lines:SignText,changed:boolean}`；同面已有相同且有当前服务端依据的文字可直接完成，changed=false。
 - 新写入只有取得派发后同位置/同面的服务端牌面观察且四行匹配才完成（证明目标文字成立，不排除其他玩家恰好做出相同改动）；单看本地 updateSign 返回或旧缓存不算成功。明确不同报 TARGET_NOT_MET；无法确认报 TIMEOUT/INTERRUPTED 并保留 sent/unknown 效果，不能自动再写或借新快照认证原派发因果。
 - 失败 NOT_FOUND、UNREACHABLE、WRONG_STATE（该组合没有效果）、TARGET_NOT_MET、MISSING_MATERIAL；写牌另可能 INVENTORY_FULL、TIMEOUT、INTERRUPTED，并保留实际效果。
@@ -677,8 +688,9 @@ await mc.call("chat@1", {text:"/list"});
 
 #### attack · `attack@1` · act · P0
 - 输入 `{ target: Name | EntityRef }`
-- 做：走近到攻击距离，打一次（带冷却与暴击判定）。
-- 返回 `{ hit, damage?, target:{ name, health? } }`；失败 `NOT_FOUND`、`UNREACHABLE`、`WRONG_STATE`（目标已死）
+- 做：在攻击距离内打一次（带冷却与暴击判定）；目标还不够近报 `UNREACHABLE`，不自己走过去（§4 可达性归调用方）。
+- 返回 `{ hit, target:{ name, health? } }`；`hit` 是证据而非承诺：true=窗口内观察到受击/死亡，false=窗口走完没有证据，null=窗口未走完（中止/断线）。miss 不是失败——攻击确实执行过。`damage`/`health` 当前协议不可得时省略或 null。
+- 失败 `NOT_FOUND`、`UNREACHABLE`、`WRONG_STATE`（目标已死）
 
 #### fight · `fight@1` · act · P0
 - 输入 `{ target?: Name | EntityRef, radius?: 8..32 = 16, stance?: "balanced"|"cautious"|"aggressive" = "balanced", weapon?: "auto"|"melee"|"ranged" = "auto", retreatHealth?: number, maxTimeMs?: 30000 }`

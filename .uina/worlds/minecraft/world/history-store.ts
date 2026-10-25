@@ -10,12 +10,27 @@
 
 import { Worker } from "node:worker_threads";
 import type { ClientFactNotice, ClientFactsPort, ClientFactsSubscription } from "../contracts/client-facts.js";
+import { callFailure } from "../contracts/values.js";
 import type { AppendItem, WorkerRequest, WorkerResponse } from "./sqlite-worker.js";
+import type { EventQueryParams, EventQueryResult } from "./events.js";
+import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
 
 /** opening 期缓冲上限：超过即显式 unavailable（RAM 接收不是无限缓存承诺，§13.1）。 */
 const MAX_OPENING_BUFFER = 8192;
 
 export type HistoryState = { state: "opening" } | { state: "ready" } | { state: "unavailable"; reason: string };
+
+function storeUnavailable(state: { reason: string }): Error {
+	return callFailure({
+		code: "STORE_UNAVAILABLE",
+		source: "world",
+		message: `world history is unavailable: ${state.reason}`,
+		hint: "current reads keep working; history-backed queries need the storage worker",
+		dispatch: "not_sent",
+		effects: [],
+		recoverable: false,
+	});
+}
 
 type QueueEntry = AppendItem | { kind: "streamEnd"; stream: string; fence: number };
 
@@ -28,6 +43,18 @@ export class HistoryIngest {
 	private _state: HistoryState = { state: "opening" };
 	private readonly receiver: string;
 	private settle!: (result: "ready" | "unavailable") => void;
+	/** 提交屏障与历史读取的往返登记（worker 串行处理，回执即此前消息已提交）。 */
+	private barrierSeq = 0;
+	private readSeq = 0;
+	private readonly barrierWaiters = new Map<number, () => void>();
+	private readonly readWaiters = new Map<
+		number,
+		{ resolve: (result: EventQueryResult) => void; reject: (err: Error) => void }
+	>();
+	private readonly containerWaiters = new Map<
+		number,
+		{ resolve: (result: ContainerEvidence | null) => void; reject: (err: Error) => void }
+	>();
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
 
@@ -39,7 +66,9 @@ export class HistoryIngest {
 		// 段1：订阅先行，不漏 Driver 材料（§13.1）；历史存储是证据消费者，
 		// 只有它的 ack 才能推进释放水线（只读 watch 不参与）。
 		this.subscription = facts.subscribe((notice) => this.onNotice(notice), { consumesEvidence: true });
-		this.worker = new Worker(new URL("./sqlite-worker.ts", import.meta.url));
+		// 源码用 .ts（tsx 装载），构建产物用同目录 .js；不按"文件存在就挑"猜版本。
+		const workerFile = import.meta.url.endsWith(".js") ? "./sqlite-worker.js" : "./sqlite-worker.ts";
+		this.worker = new Worker(new URL(workerFile, import.meta.url));
 		this.worker.on("message", (msg: WorkerResponse) => this.onWorkerMessage(msg));
 		this.worker.on("error", (err: Error) => this.fail(`storage worker error: ${err.message}`));
 		this.worker.on("exit", (code: number) => {
@@ -142,6 +171,23 @@ export class HistoryIngest {
 			}
 			return;
 		}
+		if (msg.type === "barrierReached") {
+			this.barrierWaiters.get(msg.id)?.();
+			this.barrierWaiters.delete(msg.id);
+			return;
+		}
+		if (msg.type === "eventsPage") {
+			const waiter = this.readWaiters.get(msg.id);
+			this.readWaiters.delete(msg.id);
+			waiter?.resolve(msg.result);
+			return;
+		}
+		if (msg.type === "containerLast") {
+			const waiter = this.containerWaiters.get(msg.id);
+			this.containerWaiters.delete(msg.id);
+			waiter?.resolve(msg.result);
+			return;
+		}
 		if (msg.type === "conflict") {
 			this.fail(`source protocol conflict: ${msg.message}`);
 			return;
@@ -154,10 +200,53 @@ export class HistoryIngest {
 
 	private fail(reason: string): void {
 		if (this.closed || this._state.state === "unavailable") return;
+		this.rejectPending(`history store unavailable: ${reason}`);
 		// 终态：不播种、不再 ACK，但订阅保持——接收继续运转（§13.1）。
 		this._state = { state: "unavailable", reason };
 		this.queue = [];
 		this.settle("unavailable");
+	}
+
+	private rejectPending(reason: string): void {
+		for (const resolve of this.barrierWaiters.values()) resolve();
+		this.barrierWaiters.clear();
+		for (const waiter of this.readWaiters.values()) waiter.reject(new Error(reason));
+		this.readWaiters.clear();
+		for (const waiter of this.containerWaiters.values()) waiter.reject(storeUnavailable({ reason }));
+		this.containerWaiters.clear();
+	}
+
+	/** 提交屏障：先把已接收材料发车，再等 worker 处理到这条消息为止（§6.2）。 */
+	async barrier(): Promise<void> {
+		if (this._state.state === "opening") await this.historyReady;
+		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
+		this.flush();
+		const id = ++this.barrierSeq;
+		await new Promise<void>((resolve) => {
+			this.barrierWaiters.set(id, resolve);
+			this.post({ type: "barrier", id });
+		});
+	}
+
+	/** 历史读取：屏障之后发一条读取消息，页内一致由 worker 单消息保证。 */
+	async readEvents(params: EventQueryParams): Promise<EventQueryResult> {
+		await this.barrier();
+		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
+		const id = ++this.readSeq;
+		return await new Promise<EventQueryResult>((resolve, reject) => {
+			this.readWaiters.set(id, { resolve, reject });
+			this.post({ type: "readEvents", id, params });
+		});
+	}
+
+	async readContainer(params: ContainerQueryParams): Promise<ContainerEvidence | null> {
+		await this.barrier();
+		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
+		const id = ++this.readSeq;
+		return await new Promise<ContainerEvidence | null>((resolve, reject) => {
+			this.containerWaiters.set(id, { resolve, reject });
+			this.post({ type: "readContainer", id, params });
+		});
 	}
 
 	private post(request: WorkerRequest): void {
@@ -170,8 +259,15 @@ export class HistoryIngest {
 
 	async close(): Promise<void> {
 		if (this.closed) return;
+		// Close follows all already captured evidence, even before its flush microtask.
+		try {
+			await this.barrier();
+		} catch {
+			/* Unavailable is already an explicit terminal state. */
+		}
 		this.closed = true;
 		this.subscription.close();
+		this.rejectPending("history store closed");
 		if (this._state.state === "ready") this.post({ type: "close" });
 		const worker = this.worker;
 		await new Promise<void>((resolve) => {

@@ -1,7 +1,9 @@
 /**
- * Minecraft World 组合：当前读 + 历史接收持久 + 可用性快照。
+ * Minecraft World 组合：当前读 + 静态知识 + 事件历史 + 可用性快照。
  *
- * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §4.2、§13.1。
+ * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §4.2、§8、§13.1。
+ * 读取按 §8.2 三类分派：current（facts.sample）/ static（版本知识，不建连接依赖）
+ * / history（events@1，走历史存储与提交屏障）。cur=null 只出现在没有观察源的查询。
  * 绑定由 World 拥有（组合根注入当前绑定投影，Driver 据此标注捕获 scope）；
  * 历史侧两段启动（§13.1）：句柄立即可用，historyReady 结算 ready/unavailable。
  * I1 不做领域记录（readRecord/writeRecord 显式失败，沿 writeSign 先例）；
@@ -9,16 +11,34 @@
  */
 
 import { callFailure } from "../contracts/values.js";
-import type { CallFailure, ExactRef, Observation, ObservationCursor, Ref } from "../contracts/values.js";
+import type {
+	CallFailure,
+	ExactRef,
+	Fact,
+	JsonValue,
+	Observation,
+	ObservationCursor,
+	Ref,
+} from "../contracts/values.js";
 import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { DomainRecord, WorldAvailabilityValue, WorldPort, WorldQuery, WorldWatch } from "../contracts/world.js";
-import { CurrentReads, type QueryResolver } from "./current.js";
+import type { QueryReader } from "../contracts/capabilities.js";
+import type {
+	DomainRecord,
+	EventPage,
+	WorldAvailabilityValue,
+	WorldPort,
+	WorldQuery,
+	WorldWatch,
+} from "../contracts/world.js";
+import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
+import { CurrentReads } from "./current.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
+import { EVENTS_REF, buildEventPage, eventScopeOf, resolveEventQuery, type EventScope } from "./events.js";
 
 export interface MinecraftWorldOptions {
 	facts: ClientFactsPort;
-	/** 当前查询 resolver 注册表（K1 声明生成；组合根装配）。 */
-	resolvers: ReadonlyMap<ExactRef, QueryResolver>;
+	/** 查询读取表（能力面声明生成；组合根装配）。 */
+	readers: ReadonlyMap<ExactRef, QueryReader>;
 	/** world-history.db 路径（.uina/world-data/minecraft/ 下，Host 提供数据根）。 */
 	dbPath: string;
 	/** 当前绑定投影（§4.2；I1 每进程生成显式分区，不猜旧身份）。 */
@@ -33,6 +53,19 @@ function unimplementedRecords(op: string): CallFailure {
 		source: "world",
 		message: `${op} is not implemented in world I1 scope`,
 		hint: "domain records arrive with the executor/program work packages (development-plan.md §4)",
+		dispatch: "not_sent",
+		effects: [],
+		recoverable: false,
+	});
+}
+
+function unknownQuery(ref: string, readers: ReadonlyMap<ExactRef, QueryReader>): CallFailure {
+	const available = [...readers.keys()].sort().join(", ") || "(none)";
+	return callFailure({
+		code: "INVALID_INPUT",
+		source: "world",
+		message: `unknown world query: ${ref}`,
+		hint: `available queries: ${available}, ${EVENTS_REF}, ${CONTAINER_LAST_REF}`,
 		dispatch: "not_sent",
 		effects: [],
 		recoverable: false,
@@ -80,26 +113,98 @@ export class MinecraftWorld implements WorldPort {
 	private readonly current: CurrentReads;
 	private readonly history: HistoryIngest;
 	private readonly binding: MinecraftWorldOptions["binding"];
+	private readonly readers: ReadonlyMap<ExactRef, QueryReader>;
+	private readonly eventScope: EventScope;
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
 
 	constructor(options: MinecraftWorldOptions) {
 		this.facts = options.facts;
 		this.binding = options.binding;
-		this.current = new CurrentReads(options.facts, options.resolvers);
+		this.readers = options.readers;
+		this.current = new CurrentReads(options.facts);
 		this.history = new HistoryIngest(options.facts, {
 			dbPath: options.dbPath,
 			receiverNamespace: options.namespace,
 		});
 		this.historyReady = this.history.historyReady;
+		this.eventScope = eventScopeOf(options.binding.binding, options.binding.world, options.binding.worldRevision);
 	}
 
-	read<T>(query: WorldQuery): Promise<Observation<T>> {
-		return this.current.read<T>(query);
+	async read<T>(query: WorldQuery): Promise<Observation<T>> {
+		const reader = this.readers.get(query.ref);
+		if (reader?.kind === "current") {
+			const observation = await this.current.read<T>(query.input, reader.read);
+			// 派生结果（如 recipe 的 plan）读当前库存但不发布观察水位。
+			return reader.cursor === "none" ? { ...observation, cursor: null } : observation;
+		}
+		if (reader?.kind === "static") {
+			return { ...(reader.read(query.input) as Fact<T>), cursor: null };
+		}
+		if (query.ref === EVENTS_REF) return await this.readEvents<T>(query.input);
+		if (query.ref === CONTAINER_LAST_REF) {
+			const params = resolveContainerQuery(query.input, this.binding, this.facts);
+			return containerObservation<T>(await this.history.readContainer(params));
+		}
+		throw unknownQuery(query.ref, this.readers);
 	}
 
-	watch(query: WorldQuery, after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
-		return this.current.watch(query, after, signal);
+	async watch(query: WorldQuery, _after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
+		const reader = this.readers.get(query.ref);
+		if (reader == null) {
+			if (query.ref === EVENTS_REF || query.ref === CONTAINER_LAST_REF) {
+				throw callFailure({
+					code: "INVALID_INPUT",
+					source: "world",
+					message: `${query.ref} is history and cannot be watched through ObservationCursor`,
+					hint: "wait for events with the fixed `after` token once waitUntil is implemented (program work package)",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+				});
+			}
+			throw unknownQuery(query.ref, this.readers);
+		}
+		if (reader.kind === "static") {
+			throw callFailure({
+				code: "INVALID_INPUT",
+				source: "world",
+				message: `${query.ref} is static knowledge and cannot be watched`,
+				hint: "wait on the underlying current facts instead (inventory/block)",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: false,
+			});
+		}
+		if (reader.cursor === "none") {
+			throw callFailure({
+				code: "INVALID_INPUT",
+				source: "world",
+				message: `${query.ref} is a derived value without an observation cursor`,
+				hint: "watch its underlying facts instead",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: false,
+			});
+		}
+		return this.current.watch(signal);
+	}
+
+	/** events@1：分区内历史页；提交屏障 + worker 单消息读取保证页内一致（§8.5）。 */
+	private async readEvents<T>(input: JsonValue): Promise<Observation<T>> {
+		const { params } = resolveEventQuery(input, this.eventScope);
+		const result = await this.history.readEvents(params);
+		const page: EventPage = buildEventPage(result, params);
+		const gaps = page.gaps;
+		return {
+			value: page as T,
+			observedAt: new Date().toISOString(),
+			source: "history",
+			coverage: gaps.length > 0 ? "partial" : "complete",
+			unknown: gaps.length > 0 ? [`${gaps.length} recorded gap(s) exist in this partition; see page.gaps`] : [],
+			evidence: page.events.map((event) => event.ref),
+			cursor: null,
+		};
 	}
 
 	async readRecord(_ref: Ref): Promise<DomainRecord> {

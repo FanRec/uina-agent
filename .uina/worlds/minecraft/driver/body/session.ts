@@ -4,8 +4,8 @@
  * 唯一定义来源：docs/proposals/mc/public-api.md §4、modules/driver.md §5–§7、§10、§13。
  * 状态机 active → revoking → quiesced → closed（§5.2）；revoking 不可逆；结束须新建资格。
  * 写入核验位置（I1 覆盖 §5.3 的 1/2/3/4）：操作入口、异步恢复后产生副作用前、
- * 控制状态修改前、修改插件目标前；位置 5/6（协议业务包、共享状态清理）随窗口
- * 与告示牌路径接入时补全。未实现操作（writeSign/openContainer/feedback）显式失败。
+ * 控制状态修改前、修改插件目标前；窗口另在同步协议写入和按代次清理时核验。
+ * feedback 尚未实现并显式失败。
  * 低层完成合同名（body.*@1）由 Driver 拥有；公开能力合同归 capabilities。
  * drive 的 Tick = 实际客户端物理模拟步（§7.2）：首个消费步开始计数，第 N 个
  * 消费步结束后、下一次模拟前撤销持续键/use（physicsTick 监听内同步撤销，
@@ -13,10 +13,12 @@
  */
 
 import type {
+	AttackOutcome,
 	BlockTarget,
 	BodySession,
 	ControlInput,
 	EntityRef,
+	EquipSlot,
 	FeedbackStream,
 	Hand,
 	ItemSelector,
@@ -28,12 +30,15 @@ import type {
 	WindowSession,
 } from "../../contracts/body.js";
 import type { WorldQuery } from "../../contracts/world.js";
+import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { DriverExecutionSink } from "../../contracts/runtime.js";
 import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { ClientHostListener } from "../client-host.js";
 import { EffectRecorder, fail } from "../execution.js";
 import { toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
+import { activateContainerBlock, activateContainerEntity } from "../mineflayer/window.js";
+import { WindowSessionImpl } from "../window/session.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
 type MFEntity = NonNullable<MineflayerBot["entities"][string]>;
@@ -53,6 +58,8 @@ export interface BodySessionDeps {
 	sink: DriverExecutionSink;
 	/** 组合根注入的自采样（复用同一事实源纯查询）；不可用时返回 null。 */
 	sampleSelf: () => Fact<SelfState | null> | null;
+	/** Authoritative window observations; current value is cleared on retirement. */
+	publishWindow?: (observation: ClientWindowObservation | null) => void;
 	bot: () => MineflayerBot | null;
 	/** Driver 级唯一发号：op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */
 	mintOp: () => Ref;
@@ -64,6 +71,30 @@ export interface BodySessionDeps {
 const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
 /** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
 const DRIVE_STALL_MS = 2000;
+/** 告示牌：上游 update_sign 路径每行 45 个 UTF-16 单元；编辑资格与提交确认各自 2 秒（§7.6.1）。 */
+const SIGN_LINE_LIMIT = 45;
+const SIGN_EDITOR_MS = 2000;
+const SIGN_CONFIRM_MS = 2000;
+
+/** EquipSlot → mineflayer 目的地（simple_inventory.js 的 destination 名）。 */
+const DESTINATION: Record<EquipSlot, string> = {
+	hand: "hand",
+	offhand: "off-hand",
+	head: "head",
+	chest: "torso",
+	legs: "legs",
+	feet: "feet",
+};
+
+/** 校验装备结果的槽位：护甲 5..8、副手 45、主手随快捷栏选择。 */
+const SLOT_OF: Record<EquipSlot, (bot: MineflayerBot) => number> = {
+	hand: (bot) => 36 + bot.quickBarSlot,
+	offhand: () => 45,
+	head: () => 5,
+	chest: () => 6,
+	legs: () => 7,
+	feet: () => 8,
+};
 
 function isIntVec(v: Vec3): boolean {
 	return Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z);
@@ -81,6 +112,8 @@ export class BodySessionImpl implements BodySession {
 	/** 使用状态归属：hand → 占用它的 Operation（一次激活/hold 建档，endUse/hold 结束释放）。 */
 	private readonly ownedUse = new Map<Hand, Ref>();
 	private pendingOps = 0;
+	private ownedWindow: WindowSessionImpl | null = null;
+	private openingWindow = false;
 	private barrierProven = true;
 	private readonly recorder: EffectRecorder;
 	private detachHost: () => void;
@@ -659,22 +692,79 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
-	async attack(target: EntityRef): Promise<EffectReceipt> {
+	async attack(target: EntityRef, options?: { evidenceMs?: number }): Promise<AttackOutcome> {
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
 			const entity = this.resolveEntity(bot, target);
+			const evidenceMs = Math.max(100, Math.min(options?.evidenceMs ?? 600, 5000));
+			// 先登记证据监听再派发：受击包可能在 dispatch 之后极早到达。
+			const hurt = this.awaitHurt(bot, target.networkId, evidenceMs);
 			bot.attack(entity);
-			this.recorder.record(eff, op, "body.attack@1", "dispatch", "sent", "met", {
-				completionContract: "one attack attempt dispatched",
-				target: target.networkId,
-			});
-			return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
+			const hit = await hurt;
+			// 派发已发生：hit 只是证据，不改变 dispatch 事实。
+			this.recorder.record(
+				eff,
+				op,
+				"body.attack@1",
+				"receipt",
+				"sent",
+				hit === true ? "met" : "unknown",
+				plain({
+					completionContract:
+						hit === true
+							? "target hurt/dead observed after the attack dispatch"
+							: "attack dispatched; no hurt observation within the evidence window",
+					target: target.networkId,
+					hit,
+					evidenceMs,
+				}),
+			);
+			return {
+				receipt: { effect: eff, dispatch: "sent", completion: hit === true ? "met" : "unknown", evidence: [] },
+				hit,
+			};
 		} finally {
 			this.exitOp();
 		}
+	}
+
+	/**
+	 * 受击证据窗口：entityHurt/entityDead 只按 networkId 归属，不把附近伤害当命中。
+	 * 窗口内无观察 = false（看过但没有）；中止/断线 = null（没看完，不得宣称未命中）。
+	 */
+	private awaitHurt(bot: MineflayerBot, networkId: number, windowMs: number): Promise<boolean | null> {
+		return new Promise<boolean | null>((resolve) => {
+			let done = false;
+			const onHurt = (entity: MFEntity | null) => {
+				if (entity?.id === networkId) finish(true);
+			};
+			const onDead = (entity: MFEntity | null) => {
+				if (entity?.id === networkId) finish(true);
+			};
+			const onAbort = () => finish(null);
+			const onEnd = () => finish(null);
+			const timer = setTimeout(() => finish(false), windowMs);
+			const cleanup = () => {
+				clearTimeout(timer);
+				bot.removeListener("entityHurt", onHurt as never);
+				bot.removeListener("entityDead", onDead as never);
+				bot.removeListener("end", onEnd as never);
+				this.signal.removeEventListener("abort", onAbort);
+			};
+			function finish(value: boolean | null) {
+				if (done) return;
+				done = true;
+				cleanup();
+				resolve(value);
+			}
+			bot.on("entityHurt", onHurt as never);
+			bot.on("entityDead", onDead as never);
+			bot.on("end", onEnd as never);
+			this.signal.addEventListener("abort", onAbort, { once: true });
+		});
 	}
 
 	async useItem(hand: Hand): Promise<EffectReceipt> {
@@ -851,7 +941,7 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
-	async equip(item: ItemSelector | null, hand: Hand): Promise<EffectReceipt> {
+	async equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt> {
 		// components 匹配未实现：静默忽略会选出语义不同的物品，宁可在 mint 之前拒绝（零事实）
 		if (item != null && item.components != null) {
 			throw fail({
@@ -859,6 +949,16 @@ export class BodySessionImpl implements BodySession {
 				source: "input",
 				message: "item component matching is not implemented in the body I1 scope",
 				hint: "select by name/substitutions/minDurability; component matching arrives with the inventory work package",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		// 腾空只对手有意义：护甲位不能"腾空"，也不允许把物品丢到地上。
+		if (item == null && slot !== "hand" && slot !== "offhand") {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `cannot empty the ${slot} slot; only hand/offhand support item=null`,
 				dispatch: "not_sent",
 				recoverable: true,
 			});
@@ -880,12 +980,12 @@ export class BodySessionImpl implements BodySession {
 			}
 			if (item == null) {
 				// 腾空该手：安全移动到空位，不得隐式丢弃（§7.6.1）
-				const heldSlot = hand === "main" ? 36 + bot.quickBarSlot : 45;
+				const heldSlot = slot === "hand" ? 36 + bot.quickBarSlot : 45;
 				const held = bot.inventory.slots[heldSlot];
 				if (held == null) {
 					this.recorder.record(eff, op, "body.equip@1", "receipt", "not_sent", "met", {
 						completionContract: "hand already empty",
-						hand,
+						slot,
 					});
 					return { effect: eff, dispatch: "not_sent", completion: "met", evidence: [] };
 				}
@@ -929,15 +1029,15 @@ export class BodySessionImpl implements BodySession {
 					recoverable: true,
 				});
 			}
-			await bot.equip(found.item, hand === "main" ? "hand" : "off-hand");
+			await bot.equip(found.item, DESTINATION[slot] as Parameters<MineflayerBot["equip"]>[1]);
 			this.recheck();
-			const heldSlot = hand === "main" ? 36 + bot.quickBarSlot : 45;
-			const after = bot.inventory.slots[heldSlot];
+			const confirmSlot = SLOT_OF[slot](bot);
+			const after = bot.inventory.slots[confirmSlot];
 			const confirmed = after != null && after.name === found.item.name;
 			this.recorder.record(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
-				completionContract: "hand slot holds the requested item after controlled click sequence",
+				completionContract: "target slot holds the requested item after controlled click sequence",
 				item: found.name,
-				hand,
+				slot,
 				confirmed,
 			});
 			return {
@@ -949,6 +1049,103 @@ export class BodySessionImpl implements BodySession {
 		} finally {
 			this.exitOp();
 		}
+	}
+
+	/**
+	 * 丢出指定数量的同名物品（§7.5）：窗口外转移，destination -999。
+	 *
+	 * 可丢域只有主背包+快捷栏（9..44）——上游 `transfer` 的 sourceStart/sourceEnd 就是
+	 * `window.inventoryStart..inventoryEnd`，护甲与副手里的同名物品根本搬不出去，所以
+	 * 可用量必须按同一槽域算，否则会把上游的 "Can't find …" 漏成 INTERNAL。
+	 *
+	 * 完成只报 unknown：1.21.11 没有事务回执，且 clickWindow 先本地 acceptClick 再发包，
+	 * 本地库存变化是乐观预测，不是服务端确认。是否真的落地由能力层用地面实体判定。
+	 */
+	async toss(item: string, count: number): Promise<EffectReceipt> {
+		if (item.length === 0) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "item name must not be empty",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		if (!Number.isInteger(count) || count < 1) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `count must be a positive integer (got ${String(count)})`,
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		const op = this.deps.mintOp();
+		const eff = this.deps.mintEff();
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			if (bot.currentWindow != null) {
+				throw fail({
+					code: "WRONG_STATE",
+					source: "world",
+					message: "a container window is open; toss requires the player window in I1",
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			const type = bot.registry.itemsByName[item]?.id;
+			if (typeof type !== "number") {
+				throw fail({
+					code: "NOT_FOUND",
+					source: "input",
+					message: `unknown item ${item}`,
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			const available = this.countInPlayerWindow(bot, item);
+			if (available < count) {
+				throw fail({
+					code: "MISSING_MATERIAL",
+					source: "world",
+					message: `only ${available} ${item} in the main inventory (asked ${count})`,
+					hint: "armor and offhand slots cannot be tossed; move the item to the main inventory first",
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			this.recorder.record(eff, op, "body.toss@1", "dispatch", "sent", "unknown", {
+				completionContract: "window clicks for a drop are written; acknowledgement is not observable",
+				item,
+				count,
+				slotRange: "9..44",
+			});
+			// 上游不接受 AbortSignal，也没有可取消的中间态；recheck() 是唯一的撤销边界。
+			await bot.toss(type, null, count);
+			this.recheck();
+			this.recorder.record(eff, op, "body.toss@1", "receipt", "sent", "unknown", {
+				completionContract: "item leaves the player window; ground presence is judged by the capability",
+				item,
+				count,
+			});
+			return { effect: eff, dispatch: "sent", completion: "unknown", evidence: [] };
+		} finally {
+			this.exitOp();
+		}
+	}
+
+	/** 主背包+快捷栏（9..44）内的同名物品总数；toss 的可丢域。 */
+	private countInPlayerWindow(bot: MineflayerBot, name: string): number {
+		let total = 0;
+		for (let i = 9; i <= 44; i++) {
+			const slot = bot.inventory.slots[i];
+			if (slot != null && slot.name === name) total += slot.count;
+		}
+		return total;
 	}
 
 	/** 主背包+快捷栏（9..44）内排除 exclude 的第一个空位；不碰护甲/合成/副手格。 */
@@ -1018,26 +1215,435 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
-	async writeSign(_target: BlockTarget, _input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt> {
-		throw fail({
-			code: "INTERNAL",
-			source: "capability",
-			message: "writeSign is not implemented in driver I1 scope",
-			hint: "sign editing arrives with the window/sign work package",
-			dispatch: "not_sent",
-			recoverable: false,
+	async writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt> {
+		if (!isIntVec(target.block)) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "writeSign target must be integer block coordinates",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		for (const line of input.lines) {
+			if (line.length > SIGN_LINE_LIMIT) {
+				throw fail({
+					code: "INVALID_INPUT",
+					source: "input",
+					message: `sign line exceeds ${SIGN_LINE_LIMIT} UTF-16 units: ${line.length}`,
+					hint: "split the text yourself; the driver does not truncate or wrap",
+					dispatch: "not_sent",
+					recoverable: true,
+				});
+			}
+		}
+		const op = this.deps.mintOp();
+		const eff = this.deps.mintEff();
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			const block = bot.blockAt(toMineflayerVec3(target.block));
+			if (block == null) {
+				throw fail({
+					code: "NOT_FOUND",
+					source: "world",
+					message: `block ${target.block.x} ${target.block.y} ${target.block.z} is not loaded on the client`,
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			if (!block.name.includes("sign")) {
+				throw fail({
+					code: "NOT_FOUND",
+					source: "world",
+					message: `${block.name} is not a sign`,
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			const properties = block.getProperties() as Record<string, string | number | boolean>;
+			if (String(properties.is_waxed) === "true") {
+				throw fail({
+					code: "WRONG_STATE",
+					source: "world",
+					message: "sign is waxed; it cannot be edited",
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			if (bot.heldItem != null) {
+				throw fail({
+					code: "WRONG_STATE",
+					source: "capability",
+					message: "main hand must be empty before opening the sign editor",
+					hint: "use equip(null, hand) first; the driver does not drop items",
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+
+			const face = this.facingVector(bot, target.block);
+			const wantFront = input.side === "front";
+			const editor = this.awaitSignEditor(bot, target.block, SIGN_EDITOR_MS);
+			await bot.activateBlock(block, toMineflayerVec3(face));
+			this.recheck();
+			const opened = await editor;
+			if (opened == null) {
+				this.recorder.record(eff, op, "body.writeSign@1", "dispatch", "sent", "unknown", {
+					completionContract: "sign editor did not open within the evidence window; no update_sign was sent",
+					target: plain(target.block),
+					side: input.side,
+				});
+				throw fail({
+					code: "TIMEOUT",
+					source: "world",
+					message: "sign editor did not open within 2000 ms",
+					hint: "stand closer to the requested face and retry",
+					dispatch: "sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			if (opened.front !== wantFront) {
+				this.recorder.record(eff, op, "body.writeSign@1", "dispatch", "sent", "not_met", {
+					completionContract: "server opened the opposite face; update_sign was not sent",
+					target: plain(target.block),
+					side: input.side,
+					openedFront: opened.front,
+				});
+				throw fail({
+					code: "WRONG_STATE",
+					source: "world",
+					message: `server opened the ${opened.front ? "front" : "back"} face, requested ${input.side}`,
+					hint: "stand on the side you want to edit",
+					dispatch: "sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+
+			bot.updateSign(block, input.lines.join("\n"), !wantFront);
+			this.recheck();
+			// 牌面文本读不回来（本栈无 block-entity 解码）：同位置更新到达即视为写入确认，
+			// 不做文本比对，也不把本地预测当回执（§7.6.1）。
+			const confirmed = await this.awaitBlockEntity(bot, target.block, SIGN_CONFIRM_MS);
+			this.recorder.record(
+				eff,
+				op,
+				"body.writeSign@1",
+				"receipt",
+				"sent",
+				confirmed ? "met" : "unknown",
+				plain({
+					completionContract: confirmed
+						? "server sent a block-entity update for the edited sign"
+						: "update_sign dispatched; no block-entity update observed within 2000 ms",
+					target: plain(target.block),
+					side: input.side,
+					lines: input.lines,
+					confirmed,
+				}),
+			);
+			return {
+				effect: eff,
+				dispatch: "sent",
+				completion: confirmed ? "met" : "unknown",
+				evidence: [],
+			};
+		} finally {
+			this.exitOp();
+		}
+	}
+
+	/** 从方块中心到玩家眼睛的主导轴向：即玩家所在的那一面。 */
+	private facingVector(bot: MineflayerBot, block: Vec3): Vec3 {
+		const eyeY = (bot.entity?.position.y ?? 0) + 1.62;
+		const dx = (bot.entity?.position.x ?? 0) - (block.x + 0.5);
+		const dy = eyeY - (block.y + 0.5);
+		const dz = (bot.entity?.position.z ?? 0) - (block.z + 0.5);
+		const ax = Math.abs(dx);
+		const ay = Math.abs(dy);
+		const az = Math.abs(dz);
+		if (ax >= ay && ax >= az) return { x: Math.sign(dx) || 1, y: 0, z: 0 };
+		if (ay >= az) return { x: 0, y: Math.sign(dy) || 1, z: 0 };
+		return { x: 0, y: 0, z: Math.sign(dz) || 1 };
+	}
+
+	/** 等待与目标位置匹配的 open_sign_entity；中止/断线/超时都结算为 null。 */
+	private awaitSignEditor(bot: MineflayerBot, target: Vec3, windowMs: number): Promise<{ front: boolean } | null> {
+		return new Promise<{ front: boolean } | null>((resolve) => {
+			let done = false;
+			const matches = (loc: { x: number; y: number; z: number } | null | undefined) =>
+				loc != null && loc.x === target.x && loc.y === target.y && loc.z === target.z;
+			const onOpen = (packet: { location?: { x: number; y: number; z: number }; isFrontText?: boolean }) => {
+				if (!matches(packet?.location)) return;
+				finish({ front: packet.isFrontText === true });
+			};
+			const onAbort = () => finish(null);
+			const onEnd = () => finish(null);
+			const timer = setTimeout(() => finish(null), windowMs);
+			const cleanup = () => {
+				clearTimeout(timer);
+				bot._client.removeListener("open_sign_entity", onOpen as never);
+				bot.removeListener("end", onEnd as never);
+				this.signal.removeEventListener("abort", onAbort);
+			};
+			function finish(value: { front: boolean } | null) {
+				if (done) return;
+				done = true;
+				cleanup();
+				resolve(value);
+			}
+			bot._client.on("open_sign_entity", onOpen as never);
+			bot.on("end", onEnd as never);
+			this.signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	/** 等待同位置 blockEntityData（服务端实际回送牌面更新）。 */
+	private awaitBlockEntity(bot: MineflayerBot, target: Vec3, windowMs: number): Promise<boolean> {
+		return new Promise<boolean>((resolve) => {
+			let done = false;
+			const onEntity = (block: { position?: { x: number; y: number; z: number } } | null) => {
+				const pos = block?.position;
+				if (pos == null || pos.x !== target.x || pos.y !== target.y || pos.z !== target.z) return;
+				finish(true);
+			};
+			const onAbort = () => finish(false);
+			const onEnd = () => finish(false);
+			const timer = setTimeout(() => finish(false), windowMs);
+			const cleanup = () => {
+				clearTimeout(timer);
+				bot.removeListener("blockEntityData", onEntity as never);
+				bot.removeListener("end", onEnd as never);
+				this.signal.removeEventListener("abort", onAbort);
+			};
+			function finish(value: boolean) {
+				if (done) return;
+				done = true;
+				cleanup();
+				resolve(value);
+			}
+			bot.on("blockEntityData", onEntity as never);
+			bot.on("end", onEnd as never);
+			this.signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	/** physicsTick precedes updatePosition in the installed plugin; awaiting resumes after that stack. */
+	private awaitContainerPhysicsBoundary(bot: MineflayerBot): Promise<void> {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				clearTimeout(timer);
+				bot.removeListener("physicsTick", onTick);
+				bot.removeListener("end", onEnd);
+				this.signal.removeEventListener("abort", onAbort);
+			};
+			const finish = (error?: CallFailure) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (error === undefined) resolve();
+				else reject(error);
+			};
+			const onTick = () => finish();
+			const onAbort = () =>
+				finish(
+					fail({
+						code: "INTERRUPTED",
+						source: "environment",
+						message: "container opening cancelled before the physics boundary",
+						dispatch: "not_sent",
+						recoverable: false,
+					}),
+				);
+			const onEnd = () =>
+				finish(
+					fail({
+						code: "DISCONNECTED",
+						source: "environment",
+						message: "client disconnected before container activation",
+						dispatch: "not_sent",
+						recoverable: false,
+					}),
+				);
+			const timer = setTimeout(
+				() =>
+					finish(
+						fail({
+							code: "TIMEOUT",
+							source: "environment",
+							message: "client physics loop stalled before container activation",
+							dispatch: "not_sent",
+							recoverable: true,
+						}),
+					),
+				DRIVE_STALL_MS,
+			);
+			bot.on("physicsTick", onTick);
+			bot.on("end", onEnd);
+			this.signal.addEventListener("abort", onAbort, { once: true });
+			if (this.signal.aborted) onAbort();
 		});
 	}
 
 	async openContainer(_target: BlockTarget | EntityRef): Promise<WindowSession> {
-		throw fail({
-			code: "INTERNAL",
-			source: "capability",
-			message: "openContainer is not implemented in driver I1 scope",
-			hint: "window sessions arrive with the window work package",
-			dispatch: "not_sent",
-			recoverable: false,
-		});
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			if (this.openingWindow || this.ownedWindow !== null || bot.currentWindow !== null) {
+				throw fail({
+					code: "CONTROL_CONFLICT",
+					source: "capability",
+					message: "a window is already open or opening",
+					dispatch: "not_sent",
+					recoverable: false,
+				});
+			}
+			if (!bot.supportFeature("stateIdUsed")) {
+				throw fail({
+					code: "UNSUPPORTED_PROTOCOL",
+					source: "environment",
+					message: "container confirmation requires modern stateId window synchronization",
+					dispatch: "not_sent",
+					recoverable: false,
+				});
+			}
+			this.openingWindow = true;
+			const target = structuredClone(_target);
+			let point: Vec3;
+			if ("networkId" in target) {
+				const entity = this.resolveEntity(bot, target);
+				if (target.appearance !== `ap:${entity.id}`) {
+					throw fail({
+						code: "REFERENCE_STALE",
+						source: "input",
+						message: "entity appearance does not match the tracked entity",
+						dispatch: "not_sent",
+						recoverable: false,
+					});
+				}
+				point = { x: entity.position.x, y: entity.position.y + 1, z: entity.position.z };
+			} else {
+				if (!isIntVec(target.block) || target.place.dimension !== bot.game.dimension) {
+					throw fail({
+						code: "REFERENCE_STALE",
+						source: "input",
+						message: "container target coordinates or dimension are invalid",
+						dispatch: "not_sent",
+						recoverable: false,
+					});
+				}
+				const self = this.deps.sampleSelf()?.value;
+				if (
+					self != null &&
+					(self.place.world !== target.place.world || self.place.worldRevision !== target.place.worldRevision)
+				) {
+					throw fail({
+						code: "REFERENCE_STALE",
+						source: "input",
+						message: "container target belongs to a different world revision",
+						dispatch: "not_sent",
+						recoverable: false,
+					});
+				}
+				const block = bot.blockAt(toMineflayerVec3(target.block));
+				if (block === null) {
+					throw fail({
+						code: "NOT_FOUND",
+						source: "world",
+						message: "container block is not loaded",
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
+				if (
+					!/^(chest|trapped_chest|ender_chest|barrel|hopper|dispenser|dropper|(?:[a-z_]+_)?shulker_box)$/.test(
+						block.name,
+					)
+				) {
+					throw fail({
+						code: "UNSUPPORTED_WINDOW",
+						source: "capability",
+						message: "target is not a supported plain container; dedicated workstation layouts are unsupported",
+						dispatch: "not_sent",
+						recoverable: false,
+					});
+				}
+				point = { x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 };
+			}
+			// force=true performs only a synchronous native look update; no pending look task can activate later.
+			await bot.lookAt(toMineflayerVec3(point), true);
+			this.recheck();
+			if (!("networkId" in target)) {
+				await this.awaitContainerPhysicsBoundary(bot);
+				this.recheck();
+			}
+			if (bot !== this.deps.bot() || bot.currentWindow !== null) {
+				throw fail({
+					code: "CONTROL_CONFLICT",
+					source: "capability",
+					message: "client or window changed while opening container",
+					dispatch: "not_sent",
+					recoverable: false,
+				});
+			}
+			const window = new WindowSessionImpl({
+				bot,
+				signal: this.signal,
+				operation: this.deps.mintOp(),
+				target,
+				connection: this.identity.connection,
+				incarnation: this.identity.incarnation,
+				recorder: this.recorder,
+				mintOp: this.deps.mintOp,
+				mintEff: this.deps.mintEff,
+				guard: () => {
+					this.recheck();
+					if (this.ownedWindow !== window || this.deps.bot() !== bot)
+						throw fail({
+							code: "REFERENCE_STALE",
+							source: "capability",
+							message: "window Operation no longer owns this client",
+							dispatch: "not_sent",
+							recoverable: false,
+						});
+				},
+				canCleanup: () => {
+					const identity = this.deps.host.identity;
+					return (
+						this.deps.bot() === bot &&
+						this.deps.host.state === "ready" &&
+						identity?.connection === this.identity.connection &&
+						identity.incarnation === this.identity.incarnation
+					);
+				},
+				enterOp: () => this.enterOp(),
+				exitOp: () => this.exitOp(),
+				onRetired: (unresolvedOpening) => {
+					if (unresolvedOpening) this.barrierProven = false;
+					if (this.ownedWindow === window) this.ownedWindow = null;
+				},
+				publishWindow: this.deps.publishWindow,
+			});
+			this.ownedWindow = window;
+			await window.open(() => {
+				this.recheck();
+				if ("networkId" in target) {
+					this.resolveEntity(bot, target);
+					activateContainerEntity(bot, target.networkId);
+				} else activateContainerBlock(bot, target.block);
+			});
+			return window;
+		} finally {
+			this.openingWindow = false;
+			this.exitOp();
+		}
 	}
 
 	async feedback(_sensors: Record<string, WorldQuery>): Promise<FeedbackStream> {

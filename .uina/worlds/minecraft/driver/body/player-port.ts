@@ -13,6 +13,7 @@
 
 import type { BodySession, ControlOwner, PlayerPort, SelfState } from "../../contracts/body.js";
 import type { DriverExecutionSink } from "../../contracts/runtime.js";
+import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { EffectReceipt, Fact, Ref } from "../../contracts/values.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
 import type { DriverControlArbiter } from "../control-arbiter.js";
@@ -26,6 +27,7 @@ export interface PlayerPortDeps {
 	sink: DriverExecutionSink;
 	/** 组合根注入的自采样（与 facts 同一事实源的纯查询）；不可用时返回 null。 */
 	sampleSelf: () => Fact<SelfState | null> | null;
+	publishWindow?: (observation: ClientWindowObservation | null) => void;
 	/** Driver 控制仲裁：Body 资格与受控独占操作（goto）单槽互斥。 */
 	arbiter: DriverControlArbiter;
 	/** Driver 级唯一发号：body:/op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */
@@ -127,6 +129,7 @@ export class PlayerPortImpl implements PlayerPort {
 				host: this.deps.host,
 				sink: this.deps.sink,
 				sampleSelf: this.deps.sampleSelf,
+				publishWindow: this.deps.publishWindow,
 				bot: this.deps.bot,
 				mintOp: this.deps.mintOp,
 				mintEff: this.deps.mintEff,
@@ -135,8 +138,7 @@ export class PlayerPortImpl implements PlayerPort {
 					this.deps.arbiter.releaseBody();
 					if (this.current === session) this.current = null;
 					if (!barrierProven) {
-						const id = this.deps.host.identity;
-						this.brokenBarrierConnection = id?.connection ?? null;
+						this.brokenBarrierConnection = identity.connection;
 					}
 					if (session.isRecorderFaulted) this.recorder.markFaulted();
 				},

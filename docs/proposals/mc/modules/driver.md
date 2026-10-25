@@ -1,6 +1,6 @@
 # Uina Minecraft World — Driver / 受控玩家详细设计
 
-**状态：终态设计，未实现。2026-10-18 清理了旧 Driver 源码与专属测试；本文后续的“当前实现”说明均为清理前的历史事实。**
+**状态：终态规格；当前已实现 I1/K1、批 1 toss 和批 2 普通容器 WindowSession。feedback、专用工作站及 Microsoft 登录仍缺。当前实现与真服边界见 dev/MC-WORLD.md；历史研究不代表所有终态能力已实现。**
 
 日期：2026-10-15（Asia/Shanghai），2026-10-17 修订。修订经过与理由见 [changelog](../changelog.md)，本文只写当前合同。
 
@@ -532,6 +532,8 @@ lookAt/ControlInput.lookAt 接受连续 PointTarget 或 EntityRef，由 Driver �
 
 装备操作如果涉及窗口和槽位修改，使用同一受控库存路径。equip/endUse/lookAt 均返回 EffectReceipt，不吞掉清理或释放蓄力的后果。
 
+丢弃（`toss(name, count)`）走窗口外转移（destination -999）：只按名字选物，可丢域是主背包+快捷栏（9..44），护甲/副手不参与；数量不足在派发前报 `MISSING_MATERIAL`。1.21.11 没有事务回执，且客户端先本地改槽再发包，因此回执只到 `dispatch:"sent"`、`completion:"unknown"`——"东西是否真的落地"必须由能力层用地面掉落物实体判定，不能拿本地库存差额当证据。
+
 结束物品使用可能产生真实效果，例如释放已蓄力的弓。
 
 不能统一把释放解释为无副作用清理。
@@ -794,6 +796,10 @@ PVP 内部依赖 Pathfinder 的事实不必为了形式解耦而重写。由两�
 不得让 PVP 与独立 Pathfinder 各自争夺同一 Bot 控制状态。
 
 ### 9.5 Inventory / Window
+
+批 2 实现落在 driver/window/session.ts 与 driver/mineflayer/window.ts：不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、旧 revision、失效窗口在发送前拒绝。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
+
+块容器在强制看向目标后等待一个真实 physicsTick，继续时复验资格再派发。它既让视角越过实际物理/发包边界，也避免真服 Paper 已观察到的连续 block-use 静默突发丢包；不另建基于服务器配置的速率管理器。真实窗口当前值与历史同源，publishWindow 只移交服务端观察，关闭清当前值而保留旧证据。
 
 库存点击可能在协议派发前修改本地预测对象。
 

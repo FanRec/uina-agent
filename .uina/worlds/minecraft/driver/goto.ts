@@ -46,6 +46,8 @@ export interface GotoRequest {
 	tolerance: number;
 	sprint: boolean;
 	digThrough: boolean;
+	/** 允许垫方块到达（pathfinder allow1by1towers）；不保证有材料。 */
+	placeToReach: boolean;
 	/** 墙钟上限；到点未达按 TIMEOUT 结算，不推断成功。 */
 	timeoutMs: number;
 }
@@ -56,9 +58,22 @@ export interface GotoOutcome {
 	at: Vec3;
 	/** 消耗的实际客户端物理步数。 */
 	ticks: number;
+	/** 本次导航中实际完成的挖掘次数（upstream diggingCompleted 计数）。 */
+	dug: number;
+	/** 本次导航中放置的方块数：当前栈无法归属放置来源，如实 null。 */
+	placed: null;
 }
 
 const QUIESCE_DEADLINE_MS = 2000;
+
+/** GoalNear 的判定口径：节点（整数格）之间的 3D 距离。 */
+function nodeGap(a: Vec3, b: Vec3): number {
+	return Math.hypot(
+		Math.floor(a.x) - Math.floor(b.x),
+		Math.floor(a.y) - Math.floor(b.y),
+		Math.floor(a.z) - Math.floor(b.z),
+	);
+}
 
 type GotoState = "idle" | "running" | "settling" | "done";
 
@@ -116,8 +131,12 @@ export class GotoDirector {
 		this.state = "running";
 		let bot: MineflayerBot | null = null;
 		let ticks = 0;
+		let dug = 0;
 		// 守卫：Operation 失效后每物理步封印写源，直到结算退役（§9.3 隔离）；
 		// 定义在 try 外以便 finally 注销（迟到信号不得透过旧守卫影响后续 Operation）。
+		const onDug = (): void => {
+			dug++;
+		};
 		const guard = (): void => {
 			ticks++;
 			if (this.state !== "running") return;
@@ -137,8 +156,38 @@ export class GotoDirector {
 					recoverable: true,
 				});
 			}
+			const current = fromMineflayerVec3(bot.entity.position);
+			if (current != null && nodeGap(current, request.at) <= request.tolerance) {
+				// 目标已成立时上游不会发 goal_reached：它照常 setGoal 然后一直"移动"，
+				// tolerance=1 且恰好隔一格是最常见的挂死形态。这里直接结算，不派发路径。
+				this.recorder.record(
+					eff,
+					op,
+					"body.goto@1",
+					"receipt",
+					"not_sent",
+					"met",
+					plain({
+						completionContract: "already within the GoalNear radius; no path was dispatched",
+						at: current,
+						ticks: 0,
+					}),
+				);
+				return {
+					receipt: { effect: eff, dispatch: "not_sent", completion: "met", evidence: [] },
+					at: current,
+					ticks: 0,
+					dug: 0,
+					placed: null,
+				};
+			}
 			loadPathfinderPlugin(bot);
-			configureMovements(bot, { sprint: request.sprint, digThrough: request.digThrough });
+			configureMovements(bot, {
+				sprint: request.sprint,
+				digThrough: request.digThrough,
+				placeToReach: request.placeToReach,
+			});
+			bot.on("diggingCompleted", onDug as never);
 
 			bot.on("physicsTick", guard as never);
 
@@ -172,6 +221,22 @@ export class GotoDirector {
 					});
 				}
 				const at = fromMineflayerVec3(bot.entity.position) ?? request.at;
+				// 上游 goto 在"空路径"时也会 resolve（lib/goto.js 的 noPathListener 先判
+				// path.length===0 再判 status，noPath 的空路径被当成正常结束）。
+				// 完成必须是 GoalNear 真实成立：这里按实际站位复核，不把 resolve 当到达。
+				const gap = Math.hypot(at.x - request.at.x, at.y - request.at.y, at.z - request.at.z);
+				if (gap > request.tolerance + 0.75) {
+					throw fail({
+						code: "UNREACHABLE",
+						source: "world",
+						message: `pathfinder stopped ${gap.toFixed(2)} blocks from the goal without a route`,
+						hint: "the upstream goto resolves on an empty path; retry with a nearer target or digThrough",
+						dispatch: "sent",
+						progress: plain({ ticks, at, target: request.at, gap }) as never,
+						effects: [eff],
+						recoverable: true,
+					});
+				}
 				this.recorder.record(
 					eff,
 					op,
@@ -184,9 +249,16 @@ export class GotoDirector {
 							"goal_reached: GoalNear proximity satisfied (standing check belongs to the capability layer)",
 						at,
 						ticks,
+						dug,
 					}),
 				);
-				return { receipt: { effect: eff, dispatch: "sent", completion: "met", evidence: [] }, at, ticks };
+				return {
+					receipt: { effect: eff, dispatch: "sent", completion: "met", evidence: [] },
+					at,
+					ticks,
+					dug,
+					placed: null,
+				};
 			}
 			throw this.mapOutcomeFailure(outcome, eff, ticks, bot, signal.aborted);
 		} finally {
@@ -194,7 +266,10 @@ export class GotoDirector {
 			this.state = "done";
 			// 守卫随 Operation 注销：调用结束后本 Operation 的 signal 已 abort，
 			// 陈旧守卫会在后续导航运行期误触发封印并 clearGoal（上游表现为 GoalChanged）。
-			if (bot != null) bot.removeListener("physicsTick", guard as never);
+			if (bot != null) {
+				bot.removeListener("physicsTick", guard as never);
+				bot.removeListener("diggingCompleted", onDug as never);
+			}
 		}
 	}
 

@@ -2,7 +2,7 @@
  * Client Facts：Driver → World 的当前事实入口（I1 子集）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
- * sample() 同步读取同一本地提交边界的只读纯值；不造值：players/map/window 返回
+ * sample() 同步读取同一本地提交边界的只读纯值；不造值：players/map 返回
  * null + unknown，实体 metadata/components 未捕获如实为 null。
  * sections() 经 bot.blockAt 逐格构建 palette+indices（与 mineflayer findBlocks
  * 同一扫描策略；代价随加载体量线性增长，I1 场景用小半径）。
@@ -22,12 +22,16 @@ import type {
 	ClientFactsPort,
 	ClientFactsSubscription,
 	ClientFactsSubscribeOptions,
+	ClientWindowObservation,
 } from "../../contracts/client-facts.js";
-import type { SelfState } from "../../contracts/body.js";
+import type { SelfState, WindowSnapshot } from "../../contracts/body.js";
+import { plain } from "../../contracts/values.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import type { ClientHost } from "../client-host.js";
 import { createView } from "./view.js";
-import type { MineflayerBot } from "../mineflayer/adapter.js";
+import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
+import { fromMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
+import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 
 export interface FactsBinding {
 	binding: Ref;
@@ -85,6 +89,9 @@ export class FactsSource implements ClientFactsPort {
 	private readonly nextStreamNo = refIssuerFrom(0);
 	private readonly listeners = new Map<Ref, EvidenceReceiver>();
 	private readonly pendingEvidence: PendingEvidence[] = [];
+	/** Gap identities remain replayable until durable ACK, just like their payload obligations. */
+	private readonly pendingGaps: Extract<ClientFactNotice, { kind: "evidence_gap" }>[] = [];
+	private readonly pendingEnds = new Map<Ref, ClientEvidenceMark>();
 	private stamp: ClientFactStamp;
 	/** 本次启动的命名空间（已校验）：证据流与证据 ref 都带它。 */
 	private readonly namespace: string;
@@ -93,7 +100,10 @@ export class FactsSource implements ClientFactsPort {
 	private evidenceStream: Ref;
 	private changedScheduled = false;
 	private attachedBot: MineflayerBot | null = null;
+	private windowFact: Fact<WindowSnapshot> | null = null;
 	private detachFns: (() => void)[] = [];
+	/** 按当前连接版本构建的静态知识缓存；换 bot 即失效。 */
+	private knowledgeCache: { bot: MineflayerBot; value: RegistryKnowledge } | null = null;
 
 	constructor(
 		private readonly host: ClientHost,
@@ -168,14 +178,37 @@ export class FactsSource implements ClientFactsPort {
 		options?: ClientFactsSubscribeOptions,
 	): ClientFactsSubscription {
 		const receiver = this.nextRef("recv");
+		const stamp = { ...this.stamp };
+		const evidenceThrough = { ...this._evidenceThrough };
+		const replay =
+			options?.consumesEvidence === true
+				? {
+						gaps: [...this.pendingGaps],
+						records: this.pendingEvidence.map((entry) => entry.record),
+						ends: [...this.pendingEnds.values()],
+					}
+				: null;
 		this.listeners.set(receiver, {
 			notify: listener,
 			consumesEvidence: options?.consumesEvidence === true,
 			durable: new Map(),
 		});
+		// Register before replay so concurrent capture and ACK observe this receiver.
+		if (replay != null) {
+			const notify = (notice: ClientFactNotice): void => {
+				try {
+					listener(notice);
+				} catch {
+					/* Subscribers cannot interrupt Driver capture. */
+				}
+			};
+			for (const gap of replay.gaps) notify(gap);
+			if (replay.records.length > 0) notify({ kind: "evidence", records: replay.records });
+			for (const through of replay.ends) notify({ kind: "evidence_end", through });
+		}
 		return {
-			stamp: { ...this.stamp },
-			evidenceThrough: { ...this._evidenceThrough },
+			stamp,
+			evidenceThrough,
 			acknowledge: (ack: ClientEvidenceAck) => {
 				const entry = this.listeners.get(receiver);
 				if (entry == null) return;
@@ -208,27 +241,68 @@ export class FactsSource implements ClientFactsPort {
 		}
 	}
 
+	/**
+	 * 静态知识（item@1/recipe@1/mine/eat 共用）：按连接版本构建一次，换 bot 即重建。
+	 * 未附着活连接时返回 null——知识随版本，不随世界；连接前没有版本可依据。
+	 */
+	knowledge(): RegistryKnowledge | null {
+		const bot = this.attachedBot;
+		if (bot == null) return null;
+		if (this.knowledgeCache?.bot !== bot) {
+			this.knowledgeCache = {
+				bot,
+				value: buildRegistryKnowledge(bot.registry as unknown as RegistryLike),
+			};
+		}
+		return this.knowledgeCache.value;
+	}
+
 	get evidenceThrough(): ClientEvidenceMark {
 		return { ...this._evidenceThrough };
 	}
 
-	/**
-	 * 释放已被全部证据接收方确认持久的材料（world.md §5.4）。
-	 * 只看当前流：换流后旧流的确认不授权新流的序号。
-	 * 没有证据接收方时不释放——构造前的捕获不能被静默丢弃，溢出如实报 gap。
-	 */
-	private releaseAckedEvidence(): void {
-		const stream = this.evidenceStream;
-		let minDurable = Number.POSITIVE_INFINITY;
-		for (const entry of this.listeners.values()) {
-			if (!entry.consumesEvidence) continue;
-			minDurable = Math.min(minDurable, entry.durable.get(stream) ?? 0);
+	/** 真实服务端窗口观察；关闭只清当前值，已捕获材料仍等待 durable ACK。 */
+	publishWindow(observation: ClientWindowObservation | null): void {
+		if (observation == null) {
+			this.windowFact = null;
+			this.commit();
+			return;
 		}
-		if (!Number.isFinite(minDurable)) return;
-		while (this.pendingEvidence.length > 0) {
-			const head = this.pendingEvidence[0].record.mark;
-			if (head.stream !== stream || head.sequence > minDurable) break;
-			this.pendingEvidence.shift();
+		if (this.attachedBot == null) return;
+		const value = JSON.parse(JSON.stringify(observation)) as ClientWindowObservation;
+		this.commit();
+		const unknown: string[] = [];
+		const snapshot = value.snapshot;
+		const slots = new Set(snapshot.slots.map((slot) => slot.slot));
+		if (slots.size !== snapshot.layout.slotCount) unknown.push("window slots are only partially observed");
+		if (
+			snapshot.slots.some((slot) => slot.item != null && (slot.item as { components?: unknown }).components == null)
+		) {
+			unknown.push("some window item components are unknown");
+		}
+		this.capture("client.window@1", plain(value), unknown, (record) => {
+			this.windowFact = { ...record.fact, value: snapshot, evidence: [record.ref] };
+		});
+	}
+
+	/** 每条材料按自己的流计算持久水线，旧流迟到 ACK 不授权新流。 */
+	private releaseAckedEvidence(): void {
+		const consumers = [...this.listeners.values()].filter((entry) => entry.consumesEvidence);
+		if (consumers.length === 0) return;
+		for (let i = this.pendingEvidence.length - 1; i >= 0; i--) {
+			const mark = this.pendingEvidence[i].record.mark;
+			if (consumers.every((entry) => (entry.durable.get(mark.stream) ?? 0) >= mark.sequence)) {
+				this.pendingEvidence.splice(i, 1);
+			}
+		}
+		for (let i = this.pendingGaps.length - 1; i >= 0; i--) {
+			const gap = this.pendingGaps[i];
+			if (consumers.every((entry) => (entry.durable.get(gap.stream) ?? 0) >= (gap.through ?? gap.after + 1)))
+				this.pendingGaps.splice(i, 1);
+		}
+		for (const [stream, mark] of this.pendingEnds) {
+			if (consumers.every((entry) => (entry.durable.get(stream) ?? 0) >= mark.sequence))
+				this.pendingEnds.delete(stream);
 		}
 	}
 
@@ -239,10 +313,15 @@ export class FactsSource implements ClientFactsPort {
 
 	private resetSource(reason: "connection_changed" | "incarnation_changed" | "source_rebuilt"): void {
 		// 旧流封口：只证明源捕获结束，不证明已收到/持久化（§4.1）。
-		if (this.pendingEvidence.length > 0) {
-			this.deliverNotice({ kind: "evidence_end", through: { ...this._evidenceThrough } });
+		if (
+			this.pendingEvidence.some((entry) => entry.record.mark.stream === this.evidenceStream) ||
+			this.pendingGaps.some((gap) => gap.stream === this.evidenceStream)
+		) {
+			const through = { ...this._evidenceThrough };
+			this.pendingEnds.set(through.stream, through);
+			this.deliverNotice({ kind: "evidence_end", through });
 		}
-		this.pendingEvidence.length = 0;
+		this.windowFact = null;
 		this.evidenceStream = this.openEvidenceStream();
 		this.evidenceSeq = refIssuerFrom(0);
 		this._evidenceThrough = { stream: this.evidenceStream, sequence: 0 };
@@ -280,9 +359,18 @@ export class FactsSource implements ClientFactsPort {
 		}
 	}
 
-	/** I1 选定证据：chat / connection 事件。 */
+	/** I1 选定证据：chat / damage / death / connection 事件。 */
 	private captureEvent(schema: "client.event@1", payload: JsonValue, unknowns: string[]): void {
-		if (this.host.bot == null) return;
+		if (this.attachedBot == null) return;
+		this.capture(schema, payload, unknowns);
+	}
+
+	private capture(
+		schema: CapturedClientFact["schema"],
+		payload: JsonValue,
+		unknowns: string[],
+		beforeNotify?: (record: CapturedClientFact) => void,
+	): CapturedClientFact {
 		const stream = this.evidenceStream;
 		const seq = this.evidenceSeq();
 		this._evidenceThrough = { stream, sequence: seq };
@@ -298,26 +386,30 @@ export class FactsSource implements ClientFactsPort {
 				connection: this.stamp.connection ?? undefined,
 				incarnation: this.stamp.incarnation ?? undefined,
 				source: "server",
-				coverage: "partial",
+				coverage: unknowns.length > 0 ? "partial" : "complete",
 				unknown: unknowns,
 				evidence: [],
 			},
 		};
+		beforeNotify?.(record);
 		this.pendingEvidence.push({ record });
 		this.deliverNotice({ kind: "evidence", records: [record] });
 		// 无接收方时缓冲有界；溢出如实发缺口（末端未知），不静默丢弃。
 		if (this.pendingEvidence.length > MAX_PENDING_EVIDENCE) {
-			const after = this.pendingEvidence[0].record.mark.sequence - 1;
-			this.pendingEvidence.shift();
-			this.deliverNotice({
+			const dropped = this.pendingEvidence.shift()!.record.mark;
+			const after = dropped.sequence - 1;
+			const gap: Extract<ClientFactNotice, { kind: "evidence_gap" }> = {
 				kind: "evidence_gap",
 				ref: this.nextRef("gap"),
-				stream,
+				stream: dropped.stream,
 				after,
 				through: null,
 				reason: "evidence buffer overflow without durable acknowledgement",
-			});
+			};
+			this.pendingGaps.push(gap);
+			this.deliverNotice(gap);
 		}
+		return record;
 	}
 
 	private attach(bot: MineflayerBot | null): void {
@@ -335,6 +427,56 @@ export class FactsSource implements ClientFactsPort {
 		on("entityDespawn", () => this.commit());
 		on("chunkColumnLoad", () => this.commit());
 		on("chunkColumnUnload", () => this.commit());
+		// 自身受伤：只认本客户端玩家的实体，不把附近实体受伤记成自己的。
+		const onHurt = (entity: { id?: number } | null, source: { id?: number } | null) => {
+			// 只认本客户端玩家：实体缺失或不是自己不记（不把附近伤害记成自身事件）。
+			const selfId = bot.entity?.id;
+			if (selfId == null || entity?.id !== selfId) return;
+			const actor = source?.id != null ? bot.entities[source.id] : undefined;
+			this.captureEvent(
+				"client.event@1",
+				{
+					kind: "damage",
+					// 协议只给伤害事件本身，不给数值/原因；如实 null。
+					amount: null,
+					healthAfter: typeof bot.health === "number" ? bot.health : null,
+					cause: null,
+					attacker:
+						actor == null
+							? null
+							: {
+									name: (actor as unknown as { name?: string }).name ?? null,
+									uuid: (actor as unknown as { uuid?: string }).uuid ?? null,
+									entity: null,
+								},
+				},
+				["damage amount and cause are not reported in this protocol path"],
+			);
+			this.commit();
+		};
+		bot.on("entityHurt", onHurt as never);
+		this.detachFns.push(() => bot.removeListener("entityHurt", onHurt as never));
+		const onDeath = () => {
+			const pos = fromMineflayerVec3(bot.entity?.position);
+			this.captureEvent(
+				"client.event@1",
+				plain({
+					kind: "death",
+					message: null,
+					place:
+						pos == null
+							? null
+							: {
+									...this.currentScope(),
+									position: pos,
+								},
+				}),
+				["death message not captured in I1"],
+			);
+			this.commit();
+		};
+		bot.on("death", onDeath);
+		this.detachFns.push(() => bot.removeListener("death", onDeath));
 		// 运行时发射为 (text, position, jsonMsg, sender)；类型只声明前三参，sender 走 rest。
 		const onMessageStr = (message: string, ...rest: unknown[]) => {
 			const sender = rest[2];
@@ -358,7 +500,15 @@ export class FactsSource implements ClientFactsPort {
 		};
 		bot.on("messagestr", onMessageStr as never);
 		this.detachFns.push(() => bot.removeListener("messagestr", onMessageStr as never));
-		on("end", () => this.resetSource("connection_changed"));
+		on("end", (reason?: string) => {
+			// 断线本身是事件：先入库再封流（流封口不影响已捕获载荷）。
+			this.captureEvent(
+				"client.event@1",
+				{ kind: "connection", state: "disconnected", reason: typeof reason === "string" ? reason : null },
+				[],
+			);
+			this.resetSource("connection_changed");
+		});
 		// 库存窗口提交：同一函数引用登记/移除。
 		const inv = bot.inventory;
 		if (inv != null) {
@@ -366,6 +516,7 @@ export class FactsSource implements ClientFactsPort {
 			inv.on("updateSlot", onSlotUpdate);
 			this.detachFns.push(() => inv.removeListener("updateSlot", onSlotUpdate));
 		}
+		this.captureEvent("client.event@1", { kind: "connection", state: "connected", reason: null }, []);
 		this.commit();
 	}
 
@@ -379,6 +530,7 @@ export class FactsSource implements ClientFactsPort {
 		}
 		this.detachFns = [];
 		this.attachedBot = null;
+		this.knowledgeCache = null;
 	}
 
 	private currentScope(): ClientFactScope {
@@ -395,6 +547,6 @@ export class FactsSource implements ClientFactsPort {
 	private buildView(): ClientFactView {
 		const bot = this.attachedBot;
 		if (bot == null) throw new Error("facts view requires live bot");
-		return createView({ bot, scope: this.currentScope(), stamp: { ...this.stamp } });
+		return createView({ bot, scope: this.currentScope(), stamp: { ...this.stamp }, window: this.windowFact });
 	}
 }

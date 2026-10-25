@@ -1,6 +1,6 @@
 # Runtime / Callable 详细设计
 
-日期：2026-10-18（Asia/Shanghai）。状态：终态实施规格，Runtime 未实现。旧 Minecraft Runtime/Driver/World 源码已清理，未经过真实 Minecraft 验收。
+日期：2026-10-18（Asia/Shanghai），2026-10-24 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。程序、决策续段、安全介入、核验器与交付处置尚未实现。
 
 跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 
@@ -334,11 +334,11 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 旧 executor/worlddef 入口已删除；当前没有 Minecraft 执行服务 | 依终态合同重新建立入口与组合根 |
-| Driver | 旧实现已清理；新 Runtime 调用与效果接线不存在 | 新实现强制注入真实 HostCallVerifier；未接通就拒绝写能力 |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复已实现；executor/worlddef 仍缺 | 开发入口直接装配正式执行模块，不能当作完整主脑入口 |
+| Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
 | Library | 旧 SQLite/CAS Assets 已清理；普通文件库尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
-| World | 旧查询、历史、Watch 与 Worker 实现已清理 | 按本文及 [World](world.md) 重建，不增加 Runtime 世界缓存 |
-| World Watch | 新实现尚不存在 | 首批所需依赖按 World 设计实现；时间条件由 Runtime 触发复查 |
+| World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
+| World Watch | 当前事实的保守失效 Watch 已实现；事件 Watch 尚缺 | 不把历史 container.last 当作当前库存或可等待条件 |
 | Uina 接入 | 通用 Host 持久回执尚未实现 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 

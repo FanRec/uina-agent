@@ -7,7 +7,7 @@
 
 import type { WorldPort, WorldReadPort } from "./world.js";
 import type { BodyOps } from "./body.js";
-import type { EffectReceipt, ExactRef, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
+import type { EffectReceipt, ExactRef, Fact, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
 
 export interface CallableDescriptor {
 	ref: ExactRef;
@@ -91,6 +91,24 @@ export interface CallableDirectory {
 	search(query: string, cursor?: string): Promise<{ items: SearchSummary[]; next?: string }>;
 	describe(selector: Selector | { kind: DiscoveryEntry["kind"]; name: string }): Promise<DiscoveryEntry>;
 }
+
+/** 查询 resolver：接收查询输入，从当前事实视图组装一个 Fact（组合根由 K1 声明生成注入）。 */
+export type QueryResolver = (view: import("./client-facts.js").ClientFactView, input: JsonValue) => Fact<unknown>;
+
+/**
+ * 查询读取方式（world.md §8.2 三类）：
+ * - current：当前提交边界的纯采样（cursor="observed" 有观察游标；"none" 为派生结果，
+ *   如 recipe 的 plan——它读当前库存但不发布观察水位）；
+ * - static：版本静态知识，不需要连接、没有观察游标；
+ * - 历史（events）由 World 自己的存储读取，不经此表。
+ */
+export type QueryReader =
+	| {
+			kind: "current";
+			read: (view: import("./client-facts.js").ClientFactView, input: JsonValue) => Fact<unknown>;
+			cursor?: "observed" | "none";
+	  }
+	| { kind: "static"; read: (input: JsonValue) => Fact<unknown> };
 
 export interface NativeCallable<I, O> {
 	descriptor: CallableDescriptor;

@@ -5,7 +5,13 @@
  * World 订阅/采样；不得向脚本或跨进程发送 read 函数/活 view。
  */
 
-import type { BlockStateValue, BlockTarget, SignValue, WindowSnapshot } from "./body.js";
+import type { BlockStateValue, BlockTarget, EntityRef, SignValue, WindowSnapshot } from "./body.js";
+
+/** 真实打开目标与服务端窗口快照；由 Driver 捕获，沿现有证据队列保存。 */
+export interface ClientWindowObservation {
+	target: BlockTarget | EntityRef;
+	snapshot: WindowSnapshot;
+}
 import type { ExactRef, Fact, JsonValue, Ref, Place, Vec3 } from "./values.js";
 
 export interface ClientFactStamp {
@@ -49,12 +55,53 @@ export interface ClientEntityValue {
 	position: Vec3 | null;
 	velocity: Vec3 | null;
 	metadata: { schema: ExactRef; value: JsonValue } | null;
+	/** 掉落物栈（只有 item 实体有）；未收到元数据或解析失败为 null，不猜。 */
+	item: { name: string; count: number } | null;
 }
 
 /** extent 仅保证当前 tracked 集合，不证明范围外不存在。 */
 export interface ClientEntitiesValue {
 	extent: "tracked";
 	entities: ClientEntityValue[];
+	/** 本客户端玩家自己的实体引用；查询侧据此排除自己。 */
+	selfRef: import("./body.js").EntityRef | null;
+}
+
+/**
+ * 当前环境读数（world@1 的基础载荷）：时间、天气、维度、生物群系与规则。
+ * 未收到/版本无该项一律 null + unknown，不用默认值补齐。
+ */
+export interface ClientWorldValue {
+	dimension: string;
+	/** 时间与天气读不到时为 null（unknown 说明原因），不填默认值。 */
+	timeOfDay: "day" | "noon" | "night" | "midnight" | "dawn" | "dusk" | null;
+	ticks: number | null;
+	dayCount: number | null;
+	weather: "clear" | "rain" | "thunder" | null;
+	biome: string | null;
+	difficulty: string | null;
+	gameMode: string | null;
+	spawn: Place | null;
+}
+
+/**
+ * 按名字搜方块的读取请求：radius 为水平半径（格），exclude 为调用方已处理位置。
+ * Driver 只按 section palette 跳过不含该名字的段，不做排序策略之外的选择。
+ */
+export interface ClientBlockSearchRequest {
+	name: string;
+	radius: number;
+	/** 返回候选上限（硬帽 4096）；超过即 capped=true。 */
+	limit: number;
+	exclude: Vec3[];
+}
+
+export interface ClientBlockSearchValue {
+	/** 按与采样点的距离升序（同距离按坐标稳定排序）；不含 exclude 命中。 */
+	matches: { position: Vec3; name: string }[];
+	scanned: { radius: number; chunksLoaded: number };
+	/** 命中数触到上限，matches 只是最近的一批。 */
+	capped: boolean;
 }
 
 export interface ClientListedPlayer {
@@ -209,6 +256,8 @@ export interface ClientFactView {
 	block(target: BlockTarget): Fact<ClientBlockValue>;
 	sections(targets: SectionTarget[]): Fact<ClientSectionsValue>;
 	entities(): Fact<ClientEntitiesValue>;
+	world(): Fact<ClientWorldValue>;
+	searchBlocks(request: ClientBlockSearchRequest): Fact<ClientBlockSearchValue>;
 	players(): Fact<ClientPlayersValue | null>;
 	map(id: number): Fact<ClientMapValue | null>;
 	inventory(): Fact<ClientInventoryValue | null>;

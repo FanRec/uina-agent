@@ -2,29 +2,31 @@
 
 Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游玩完整 Java 原版 Minecraft。
 
-更新时间：2026-10-22（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
+更新时间：2026-10-24（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
 
 ## 当前状态
 
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
-| Driver（受控玩家）、World（观察与记录） | I1 子集已实现：连接宿主、事实源、写入资格单槽、body/goto/chat、当前读 + sqlite 历史存储 | 2026-10-22 |
-| Runtime（Run / Segment / Call / Effect） | I1 子集已实现：受理、Call 组合、身体仲裁、记录结算与恢复 | 2026-10-22 |
-| 能力面（16 查询 + 35 动作） | 5 查询（self/inventory/block/blocks/entities）、2 动作（chat/goto）已实现；其余按 P0/P1/P2 分阶段 | 2026-10-22 |
+| Driver（受控玩家）、World（观察与记录） | K1 + 批 2：受控身体与导航、窗口会话/槽位校验/服务端点击确认、当前读与事件/容器观察历史；feedback、通用领域记录仍缺 | 2026-10-24 |
+| Runtime（Run / Segment / Call / Effect） | I1 子集已实现：受理、Call 组合、身体仲裁、记录结算与恢复（程序/决策/核验器仍缺） | 2026-10-23 |
+| 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器已实现：**10 查询 + 13 动作**；下一批为 craft / smelt；K3–K8 尚未实现 | 2026-10-24 |
 | Library（程序、蓝图与经验） | 未实现；按普通文件库设计 | 2026-10-19 |
 | Executor（Uina 接入、IPC、进程与通知） | 未实现；依赖通用 Host 回执；Windows 待 OS 验收 | 2026-10-19 |
-| Host 持久交付接缝 | 通用设计已写，本地首批已接线；完整 retire/append/强杀恢复未验收 | 2026-10-19 |
+| Host 持久交付接缝 | **未实现**（源码仍是 journal v3，无 receipt 类型）；设计见 delivery-receipts.md | 2026-10-23 |
 | Program（单文件 JS + 共享 worker/独立 guest） | 详细设计已写，未实现 | 2026-10-19 |
-| 真实 Minecraft 游玩验收 | I1 场景曾于 2026-10-19 真服 PASS；当前 checkout 未复验 | 2026-10-22 |
+| 真实 Minecraft 游玩验收 | 本轮 I1、K1（19 项）、窗口容器源码/产物（各 13 项）PASS；采集 11 项为批 1 当次真服记录。窗口容器含双向精确量、部分量、nearest/all、实体容器、旧 revision 和历史重建 | 2026-10-24 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
+
+批 2 设计、取舍与任务记录见 [窗口与容器实施](window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 
 ## 文档地图
 
 | 文档 | 是什么 | 读者 |
 |---|---|---|
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
-| [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、并行与 51 项能力覆盖 | 实施负责人，按依赖推进 |
+| [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、51 项能力覆盖；**§10 剩余施工总纲（实际开工批次与真服判据）** | 实施负责人，按依赖推进 |
 | [development-guide.md](development-guide.md) | 统一接缝、复用/重构、真实环境优先及适量验证 | 所有开发者，开工前阅读 |
 | [contracts.md](contracts.md) | 所有权、依赖与跨模块协作导航；算法链接所属模块 | 实现者（跨模块时） |
 | [public-api.md](public-api.md) | 公开类型与方法；§6 导航到 Program/Library 的权威定义 | 实现者（查类型） |

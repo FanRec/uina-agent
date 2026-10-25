@@ -61,7 +61,9 @@ interface HistoryProgress {
   alignment: "caught_up" | "behind" | "gapped" | "unknown";
 }
 interface Observation<T> extends Fact<T> {
-  cursor: ObservationCursor;
+  // null 只用于没有观察源的查询（静态知识 item/recipe、历史页 events）：
+  // 没有可比水位，程序侧对应 version=null。
+  cursor: ObservationCursor | null;
   history?: HistoryProgress[];
 }
 interface Progress { summary?: string; [key: string]: JsonValue | undefined }
@@ -191,6 +193,7 @@ Runtime 的 [调用与身体合同](modules/runtime.md#body) 唯一规定子 Cal
 
 ```typescript
 type Hand = "main" | "off";
+type EquipSlot = "hand" | "offhand" | "head" | "chest" | "legs" | "feet";
 type Key = "forward" | "back" | "left" | "right" | "jump" | "sprint" | "sneak";
 interface EntityRef { connection: Ref; incarnation: Ref; appearance: Ref; networkId: number }
 type PointTarget = Vec3 | {position: Vec3; dimension: string};
@@ -212,6 +215,7 @@ interface SelfState {
   maxHealth: number | null; saturation: number | null; oxygen: number | null;
   inWater: boolean | null; inLava: boolean | null;
   effects: StatusEffectValue[] | null; xpLevel: number | null;
+  look: { yaw: number; pitch: number } | null; // 弧度；未收到视角包为 null
 }
 type SignText = [string, string, string, string];
 interface SignFaceValue { lines: SignText; color: string | null; glowing: boolean | null }
@@ -243,6 +247,12 @@ interface WindowSnapshot {
   slots: { slot: number; item: JsonValue | null }[];
   cursor: JsonValue | null;
 }
+// slot.item/cursor 的纯值载荷；组件使用当前版本的 {added,removed} patch，未知保持 null。
+interface WindowItemValue {
+  name: string; count: number; stackSize: number | null;
+  components: JsonValue | null; durability: number | null; // 实际剩余耐久
+}
+interface ClientWindowObservation { target: BlockTarget | EntityRef; snapshot: WindowSnapshot }
 interface StackExpectation { item: ItemSelector | null; count: number }
 interface WindowClickReceipt extends EffectReceipt {
   confirmed?: {slots: {slot: number; item: JsonValue | null}[]; cursor?: JsonValue | null};
@@ -255,16 +265,22 @@ interface WindowSession {
     expectedSlots: { slot: number; stack: StackExpectation }[];
     expectedCursor: StackExpectation;
   }): Promise<WindowClickReceipt>;
-  close(): Promise<void>;
+  close(options?: {force?: boolean}): Promise<void>;
+}
+interface AttackOutcome {
+  receipt: EffectReceipt;
+  // true=窗口内观察到受击/死亡；false=窗口走完但没有证据；null=窗口未走完（中止/断线）
+  hit: boolean | null;
 }
 interface BodyOps {
   drive(input: ControlInput, ticks: number): Promise<{ receipt: EffectReceipt; actualTicks: number; end: Fact<SelfState> }>;
   dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;
-  attack(target: EntityRef): Promise<EffectReceipt>;
+  attack(target: EntityRef, options?: {evidenceMs?: number}): Promise<AttackOutcome>;
   useItem(hand: Hand): Promise<EffectReceipt>; // 一次激活，持续使用由 drive/feedback 的 hold 表达
   endUse(): Promise<EffectReceipt>; // 结束所属的原生使用状态，可能释放蓄力效果
   interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;
-  equip(item: ItemSelector | null, hand: Hand): Promise<EffectReceipt>; // null=腾空该手，不得隐式丢弃
+  equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt>; // null 只允许 hand/offhand；不得隐式丢弃
+  toss(item: string, count: number): Promise<EffectReceipt>; // 只收物品名；可丢域=主背包+快捷栏(9..44)，回执 completion 只到 unknown
   lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
   writeSign(target: BlockTarget, input: {side: "front" | "back"; lines: SignText}): Promise<EffectReceipt>;
   openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;
@@ -309,13 +325,15 @@ interact 的 face/cursor 仅对方块有效：face 为轴向单位法向，curso
 
 dig 的 aim 默认 target，可调整视角；preserve 不自动瞄准，供同一协调者在移动/视角控制仍进行时挖掘，适配须检查实际目标/手持及可达条件，不能保证移动后仍可挖。该选项解决真实的视角组合缺口，不引入一般资源占用 API。attack 本身不暗中瞄准或清移动键；不满足游戏规则的主手挖掘/攻击/使用重叠仍按实际冲突报告。
 
-窗口绑定本次打开和当前身体段。revision 覆盖全部槽位与光标；click 在驱动同一串行步骤核验版本、当前槽位/光标与调用者的 StackExpectation 后派发，不符返回 WINDOW_CHANGED。count 是精确堆叠数，item=null 要求空且 count=0；非空按 ItemSelector 的组件/耐久/替代约定匹配，不声称物品全值相等。expectedSlots 至少覆盖本次直接操作的非负槽位，数量须为非负整数；具体点击模式检查其涉及的槽位（包括自动分配/交换的潜在目标）；不能用未声明槽位的假定代替现实，校验不产生自动换槽/重试。close 幂等且只关闭自己的代次；多人仍可能在协议到达前改变现实，多次点击不构成服务端事务。合法 button/mode 按客户端版本开放，不支持在派发前失败。
+窗口绑定本次打开和当前身体段。revision 覆盖全部槽位与光标；click 在驱动同一串行步骤核验版本、当前槽位/光标与调用者的 StackExpectation 后派发，不符返回 CONFLICT。count 是精确堆叠数，item=null 要求空且 count=0；非空按 ItemSelector 的组件/耐久/替代约定匹配，不声称物品全值相等。expectedSlots 至少覆盖本次直接操作的非负槽位，数量须为非负整数；具体点击模式检查其涉及的槽位（包括自动分配/交换的潜在目标）；不能用未声明槽位的假定代替现实，校验不产生自动换槽/重试。close 幂等且只关闭自己的代次；多人仍可能在协议到达前改变现实，多次点击不构成服务端事务。合法 button/mode 按客户端版本开放，不支持在派发前失败。
 
 click 的 confirmed 只含本次模式/前态与回执能确认的槽位后态和光标；不能把任意实时快照归因于本次点击。相关后态无法确认时 needsSnapshot=true，Program 在下一次 click 前要求显式 snapshot；已确认变化用于推进参照，其他槽位保留旧预期。
 
 窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 还覆盖类型、布局、属性及来源变化，不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。
 
-普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；作用域退出/停机不受此阻止，强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择并非现有 click 的别名；对应能力设计须在此补确切受控操作合同，经同一窗口适配执行，不向玩法公开 Bot，也不另建窗口能力目录。
+普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；失败清理显式 close({force:true})，作用域退出/停机同样强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择并非现有 click 的别名；对应能力设计须在此补确切受控操作合同，经同一窗口适配执行，不向玩法公开 Bot，也不另建窗口能力目录。
+
+批 2 的实际支持范围：stateIdUsed 的现代协议，普通容器布局（generic_9xN、generic_3x3、hopper、shulker_box），mode=0 的左/右键。每个业务点击仅发送一个 stateId=-1 的 window_click，服务端处理后返回完整 window_items；不另加第二次同步点击。只将符合本次 mode-0 前态的目标槽/光标后态列入 confirmed，其他槽位通过 snapshot 读取。未变化/不明回包不能证明本次点击已被处理，超时保持 unknown 且不自动重试。开箱前等待一个真实物理步并复验资格，避免连续开箱超过实际 Paper 的 block-use 突发门。打开已派发而未确认窗口时发生取消/超时，关闭屏障记为不明，同连接不再授予身体资格，须重连。
 
 <a id="client-facts"></a>
 
@@ -334,6 +352,8 @@ interface ClientFactView {
   block(target: BlockTarget): Fact<ClientBlockValue>;
   sections(targets: SectionTarget[]): Fact<ClientSectionsValue>;
   entities(): Fact<ClientEntitiesValue>;
+  world(): Fact<ClientWorldValue>;
+  searchBlocks(request: ClientBlockSearchRequest): Fact<ClientBlockSearchValue>;
   players(): Fact<ClientPlayersValue | null>;
   map(id: number): Fact<ClientMapValue | null>;
   inventory(): Fact<ClientInventoryValue | null>;
@@ -355,8 +375,23 @@ interface ClientEntityValue {
   position: Vec3 | null;
   velocity: Vec3 | null;
   metadata: { schema: ExactRef; value: JsonValue } | null;
+  /** 掉落物栈；只有 item 实体可能非 null（元数据未到/解析失败为 null）。 */
+  item: { name: string; count: number } | null;
 }
-interface ClientEntitiesValue { extent: "tracked"; entities: ClientEntityValue[] }
+interface ClientEntitiesValue { extent: "tracked"; entities: ClientEntityValue[]; selfRef: EntityRef | null }
+interface ClientWorldValue {
+  dimension: string;
+  timeOfDay: "day" | "noon" | "night" | "midnight" | "dawn" | "dusk" | null;
+  ticks: number | null; dayCount: number | null;
+  weather: "clear" | "rain" | "thunder" | null;
+  biome: string | null; difficulty: string | null; gameMode: string | null; spawn: Place | null;
+}
+interface ClientBlockSearchRequest { name: string; radius: number; limit: number; exclude: Vec3[] }
+interface ClientBlockSearchValue {
+  matches: {position: Vec3; name: string}[]; // 距采样点升序；已排除 exclude
+  scanned: {radius: number; chunksLoaded: number};
+  capped: boolean; // 触到上限，matches 只是最近一批
+}
 interface ClientListedPlayer {
   name: string; uuid: string | null; displayName: string | null;
   latencyMs: number | null; gameMode: string | null; entity: EntityRef | null;
@@ -458,6 +493,44 @@ durable ACK 是同域部署的唯一确认层；同域共享同一份不可变�
 
 sections 按整数 Section 坐标读取；单格局部索引为 y*256+z*16+x（各 0..15）。值遵循唯一基础 schema client.sections@1：{ sections: [{ target, revision, base, patches }] }；base 为 null 或 { palette: [{ name, properties }], indices }，indices 为 4096 个 palette 索引或 null（未知格），properties 为字符串属性映射；patches 是按源提交排序的 { index, state }，state 为同形 Block State 或 null（覆盖失效）。Fact/basis 保留真实来源/时间/依据，revision 是不可复用只读版本，不是活 Chunk。仅区域查询固定其请求 Section；小范围 block/self/inventory 不先创建 Section 版本。服务端地形历史与区域读共用必要基底，不各建全加载区快照缓存；未被活动区域读或证据引用的预测不默认追加长期版本链。展开/编码/压缩在关键路径外，跨域不能复用仍会改写/已 detach 的 buffer。无法短边界固定某区域则明确该查询失败/部分覆盖，不影响其他当前读，也不跨 Tick 拼扫冒充同点。见 [World §7](modules/world.md)。
 
+<a id="knowledge"></a>
+
+### 4.2 Driver → 能力：静态游戏知识
+
+```typescript
+type ItemSource =
+  | {kind: "craft" | "smelt"}
+  | {kind: "block"; block: string; requiredTool: string | null}
+  | {kind: "entity"; entity: string}
+  | {kind: "trade"; profession: string | null};
+interface KnowledgeItem {
+  name: string; displayName: string; stackSize: number;
+  placeAs: string | null;
+  tool: {type: string; tier: string | null; durability: number} | null;
+  food: {hunger: number; saturation: number} | null;
+  fuel: {ticks: number} | null;
+  sources: ItemSource[];
+  sourcesComplete: boolean; // false = 数据版本缺少掉落/交易等类别，不是"无法获得"
+}
+interface KnowledgeRecipe {
+  station: "hand" | "crafting_table" | "furnace";
+  ingredients: {item: string; count: number}[];
+  output: {item: string; count: number};
+  fuel?: {item: string; count: number};
+}
+interface KnowledgeBlockDrops { items: string[]; requiredTool: string | null }
+interface RegistryKnowledge {
+  dataVersion: string;
+  item(name: string): KnowledgeItem | null;
+  recipesFor(item: string): KnowledgeRecipe[];
+  blockDrops(block: string): KnowledgeBlockDrops | null;
+  canonicalItemName(name: string): string | null;
+  entityKind(name: string): "hostile" | "passive" | "player" | "other" | null;
+}
+```
+
+知识随连接版本固定（minecraft-data / prismarine-registry），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；requiredTool 取 harvestTools 中最弱的工具。当前数据版本没有熔炼与交易类别，sourcesComplete=false 如实表达。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表的位置。
+
 <a id="world"></a>
 
 ## 5. World 所有者：读取、变化订阅与领域记录
@@ -503,6 +576,17 @@ interface WorldAvailabilityValue {
 ```
 
 查询域值由同一 QueryDescriptor 声明，基础值复用 Driver schema；当前采样与可选反馈复用纯函数，不另建传感目录。world@1 的可用性采用 WorldAvailabilityValue，其游戏字段见能力描述。
+
+read 按查询类别分派（world.md §8.2）：current 走同步采样并给出 cursor；static（item/recipe 的知识部分）不依赖连接、cursor=null；history（events@1）在提交屏障后由存储读取。events 页形状：
+
+```typescript
+type GameEventKind = "chat" | "damage" | "death" | "connection";
+interface GameEventRecord { ref: Ref; receivedAt: string; dimension: string | null; payload: JsonValue; evidence: Ref[] }
+interface EventGap { ref: Ref; reason: string; after: string | null; through: string | null }
+interface EventPage { events: GameEventRecord[]; gaps: EventGap[]; next?: string; after?: string } // next/after 互斥
+```
+
+历史页的 cursor=null：它没有当前观察水位，增量位置是页内的不透明 `after` 令牌（见 [capabilities §3 events](modules/capabilities.md#events)）。watch 只支持 current 查询；events 的等待属于 Program waitUntil，静态与派生查询不可 watch。
 
 read 的切面、cursor/分页、当前与历史降级由 [World §6–§9/§13](modules/world.md) 定义。顺序为 read → 原样交出 cursor → watch → next；changed 后重读，reset 后旧游标失效。Watch 是复查提示，不是事件日志或主动游戏操作。
 

@@ -10,6 +10,9 @@ import type { EffectReceipt, Fact, JsonValue, Place, Ref, Vec3 } from "./values.
 
 export type Hand = "main" | "off";
 
+/** 可装备位：双手 + 四个护甲槽（capabilities §4 equip）。 */
+export type EquipSlot = "hand" | "offhand" | "head" | "chest" | "legs" | "feet";
+
 export type Key = "forward" | "back" | "left" | "right" | "jump" | "sprint" | "sneak";
 
 export interface EntityRef {
@@ -76,6 +79,8 @@ export interface SelfState {
 	inLava: boolean | null;
 	effects: StatusEffectValue[] | null;
 	xpLevel: number | null;
+	/** 视角（弧度）；未收到视角包时为 null。 */
+	look: { yaw: number; pitch: number } | null;
 }
 
 export type SignText = [string, string, string, string];
@@ -138,6 +143,15 @@ export interface WindowSnapshot {
 	cursor: JsonValue | null;
 }
 
+/** 窗口物品的纯值载荷；缺失组件/耐久不伪装为空或满值。 */
+export interface WindowItemValue {
+	name: string;
+	count: number;
+	stackSize: number | null;
+	components: JsonValue | null;
+	durability: number | null;
+}
+
 export interface StackExpectation {
 	item: ItemSelector | null;
 	count: number;
@@ -161,7 +175,17 @@ export interface WindowSession {
 		expectedSlots: { slot: number; stack: StackExpectation }[];
 		expectedCursor: StackExpectation;
 	}): Promise<WindowClickReceipt>;
-	close(): Promise<void>;
+	/** 普通关闭要求光标为空；失败/取消清理须显式 force，保留未知归还/丢弃后果。 */
+	close(options?: { force?: boolean }): Promise<void>;
+}
+
+/**
+ * 一次攻击的派发事实与命中证据。hit=null 表示证据窗口内没有可归属的受击观察，
+ * 不等于没打中（driver §7.4：低层只承诺派发，更强效果必须有证据来源）。
+ */
+export interface AttackOutcome {
+	receipt: EffectReceipt;
+	hit: boolean | null;
 }
 
 /**
@@ -178,14 +202,19 @@ export interface BodyOps {
 		end: Fact<SelfState>;
 	}>;
 	dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;
-	attack(target: EntityRef): Promise<EffectReceipt>;
+	attack(target: EntityRef, options?: { evidenceMs?: number }): Promise<AttackOutcome>;
 	/** 一次激活；持续使用由 drive/feedback 的 hold 表达。 */
 	useItem(hand: Hand): Promise<EffectReceipt>;
 	/** 结束所属的原生使用状态，可能释放蓄力效果；对已结束状态幂等。 */
 	endUse(): Promise<EffectReceipt>;
 	interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;
-	/** null=腾空该手，不得隐式丢弃。 */
-	equip(item: ItemSelector | null, hand: Hand): Promise<EffectReceipt>;
+	/** null=腾空该手（只允许 hand/offhand），不得隐式丢弃。 */
+	equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt>;
+	/**
+	 * 丢出指定数量的同名物品（窗口外转移，destination -999）。
+	 * 只作用于主背包+快捷栏（9..44）；不保证落地位置、不被他人拾取或目标收到。
+	 */
+	toss(item: string, count: number): Promise<EffectReceipt>;
 	lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
 	writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt>;
 	openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;

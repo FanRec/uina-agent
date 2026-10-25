@@ -15,6 +15,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
 import type { CapturedClientFact } from "../contracts/client-facts.js";
+import type { JsonValue } from "../contracts/values.js";
+import type { EventGap } from "../contracts/world.js";
+import type { EventQueryParams, EventQueryResult, EventRow } from "./events.js";
+import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
 
 export interface AppendEvidenceItem {
 	kind: "evidence";
@@ -37,6 +41,10 @@ export type WorkerRequest =
 	| { type: "open"; dbPath: string }
 	| { type: "append"; items: AppendItem[] }
 	| { type: "streamEnd"; stream: string; fence: number }
+	/** 提交屏障：worker 串行处理消息，回执即"此前消息都已提交"。 */
+	| { type: "barrier"; id: number }
+	| { type: "readEvents"; id: number; params: EventQueryParams }
+	| { type: "readContainer"; id: number; params: ContainerQueryParams }
 	| { type: "close" };
 
 export interface DurableAck {
@@ -47,6 +55,9 @@ export interface DurableAck {
 export type WorkerResponse =
 	| { type: "opened"; journalMode: string; synchronousMode: string; watermarks: Record<string, number> }
 	| { type: "durable"; acks: DurableAck[] }
+	| { type: "barrierReached"; id: number }
+	| { type: "eventsPage"; id: number; result: EventQueryResult }
+	| { type: "containerLast"; id: number; result: ContainerEvidence | null }
 	| { type: "conflict"; message: string }
 	| { type: "fatal"; message: string }
 	| { type: "closed" };
@@ -93,6 +104,10 @@ CREATE TABLE IF NOT EXISTS watermarks (
 	stream TEXT PRIMARY KEY,
 	durable_through INTEGER NOT NULL
 );
+-- rowid 是隐式列，不能直接建索引（SQLite 报 no such column: rowid）；
+-- 事件查询按 schema 过滤 + 隐式 rowid 排序，这里只给过滤列建索引。
+CREATE INDEX IF NOT EXISTS idx_evidence_schema ON evidence (schema);
+CREATE INDEX IF NOT EXISTS idx_streams_partition ON streams (binding, world, world_revision);
 `;
 
 /** 源协议冲突：同身份不同载荷（§5.3/§5.6）。 */
@@ -156,8 +171,9 @@ function ensureStream(db: DatabaseSync, record: CapturedClientFact): void {
 		existing.binding === record.scope.binding &&
 		existing.world === record.scope.world &&
 		existing.world_revision === record.scope.worldRevision &&
-		existing.source === record.stamp.source &&
-		existing.schema === record.schema;
+		existing.source === record.stamp.source;
+	// streams.schema describes the first record; evidence.schema is authoritative for each payload.
+	// One ordered source stream can contain both client.event@1 and client.window@1.
 	if (!sameIdentity) {
 		throw new SourceConflict(`stream ${record.mark.stream} 元数据与已登记不一致`);
 	}
@@ -305,6 +321,110 @@ function loadWatermarks(db: DatabaseSync): Record<string, number> {
 	return out;
 }
 
+/** 分区内事件最大 rowid（本次扫描上界）；没有事件时返回 0。 */
+function maxEventRowid(db: DatabaseSync, scope: EventQueryParams["scope"]): number {
+	const row = db
+		.prepare(
+			`SELECT COALESCE(MAX(e.rowid), 0) AS upper
+			 FROM evidence e JOIN streams s ON s.stream = e.stream
+			 WHERE e.schema = 'client.event@1' AND s.binding = ? AND s.world = ? AND s.world_revision = ?`,
+		)
+		.get(scope.binding, scope.world, scope.worldRevision) as Row | undefined;
+	return row == null ? 0 : Number(row.upper);
+}
+
+/** 分区内已知缺口；顺序按入账顺序，ref 稳定（重复读取同一 ref 不是新丢失）。 */
+function readEventGaps(db: DatabaseSync, scope: EventQueryParams["scope"]): EventGap[] {
+	const rows = db
+		.prepare(
+			`SELECT g.ref AS ref, g.after AS afterSeq, g.through AS throughSeq, g.reason AS reason
+			 FROM evidence_gaps g JOIN streams s ON s.stream = g.stream
+			 WHERE s.binding = ? AND s.world = ? AND s.world_revision = ?
+			 ORDER BY g.rowid ASC`,
+		)
+		.all(scope.binding, scope.world, scope.worldRevision) as Row[];
+	return rows.map((row) => ({
+		ref: String(row.ref),
+		reason: String(row.reason),
+		after: row.afterSeq == null ? null : String(row.afterSeq),
+		through: row.throughSeq == null ? null : String(row.throughSeq),
+	}));
+}
+
+/**
+ * 事件页读取：一条消息内完成（页内一致）。
+ * 无 after 时取最近 limit 条并保持接收顺序；有 after 时按 rowid 升序读至固定上界，
+ * limit+1 用于判断是否还有下一页。kind 过滤走 json_extract，不改变扫描上界。
+ */
+function readEvents(db: DatabaseSync, params: EventQueryParams): EventQueryResult {
+	const upper = params.upper ?? maxEventRowid(db, params.scope);
+	const kindArgs = params.kinds ?? [];
+	const kindClause =
+		params.kinds == null
+			? ""
+			: ` AND json_extract(e.fact, '$.value.kind') IN (${params.kinds.map(() => "?").join(", ")})`;
+	const where = `FROM evidence e JOIN streams s ON s.stream = e.stream
+		WHERE e.schema = 'client.event@1' AND s.binding = ? AND s.world = ? AND s.world_revision = ?
+		AND e.rowid <= ?${kindClause}`;
+	const select =
+		"SELECT e.rowid AS rowid, e.ref AS ref, e.observed_at AS observed_at, e.scope AS scope, e.fact AS fact";
+	const baseArgs = [params.scope.binding, params.scope.world, params.scope.worldRevision, upper, ...kindArgs];
+
+	let raw: Row[];
+	let hasMore = false;
+	if (params.afterRowid == null) {
+		// 最近窗口只取尾部；hasMore 不适用（尾部就是本次交付范围）。
+		raw = db.prepare(`${select} ${where} ORDER BY e.rowid DESC LIMIT ?`).all(...baseArgs, params.limit) as Row[];
+		raw.reverse();
+	} else {
+		raw = db
+			.prepare(`${select} ${where} AND e.rowid > ? ORDER BY e.rowid ASC LIMIT ?`)
+			.all(...baseArgs, params.afterRowid, params.limit + 1) as Row[];
+		if (raw.length > params.limit) {
+			hasMore = true;
+			raw = raw.slice(0, params.limit);
+		}
+	}
+
+	const rows: EventRow[] = raw.map((row) => {
+		const fact = JSON.parse(String(row.fact)) as { value?: JsonValue };
+		const scope = JSON.parse(String(row.scope)) as { dimension?: string | null };
+		return {
+			rowid: Number(row.rowid),
+			ref: String(row.ref),
+			observedAt: String(row.observed_at),
+			dimension: scope.dimension ?? null,
+			payload: (fact.value ?? null) as unknown as EventRow["payload"],
+		};
+	});
+	return { rows, gaps: readEventGaps(db, params.scope), upper, hasMore };
+}
+
+/** Latest committed observation in the explicit world/dimension/block, across capture bindings. */
+function readContainer(db: DatabaseSync, params: ContainerQueryParams): ContainerEvidence | null {
+	const row = db
+		.prepare(`SELECT e.ref, e.fact FROM evidence e JOIN streams s ON s.stream = e.stream
+		WHERE e.schema = 'client.window@1' AND s.world = ? AND s.world_revision = ?
+		AND json_extract(e.fact, '$.value.target.place.world') = ?
+		AND json_extract(e.fact, '$.value.target.place.worldRevision') = ?
+		AND json_extract(e.fact, '$.value.target.place.dimension') = ?
+		AND json_extract(e.fact, '$.value.target.block.x') = ?
+		AND json_extract(e.fact, '$.value.target.block.y') = ?
+		AND json_extract(e.fact, '$.value.target.block.z') = ?
+		ORDER BY e.rowid DESC LIMIT 1`)
+		.get(
+			params.world,
+			params.worldRevision,
+			params.world,
+			params.worldRevision,
+			params.dimension,
+			params.block.x,
+			params.block.y,
+			params.block.z,
+		) as Row | undefined;
+	return row == null ? null : { ref: String(row.ref), fact: JSON.parse(String(row.fact)) as ContainerEvidence["fact"] };
+}
+
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
@@ -338,6 +458,23 @@ port.on("message", (request: WorkerRequest) => {
 		if (request.type === "streamEnd") {
 			const acks = closeStream(db, request.stream, request.fence);
 			if (acks.length > 0) port.postMessage({ type: "durable", acks } satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "barrier") {
+			port.postMessage({ type: "barrierReached", id: request.id } satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "readEvents") {
+			const result = readEvents(db, request.params);
+			port.postMessage({ type: "eventsPage", id: request.id, result } satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "readContainer") {
+			port.postMessage({
+				type: "containerLast",
+				id: request.id,
+				result: readContainer(db, request.params),
+			} satisfies WorkerResponse);
 			return;
 		}
 		db.close();

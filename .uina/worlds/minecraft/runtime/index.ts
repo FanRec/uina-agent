@@ -91,7 +91,9 @@ export class MinecraftRuntime {
 		opts: MinecraftRuntimeOptions,
 	): Promise<{ runtime: MinecraftRuntime; start: MinecraftRuntimeStart }> {
 		const refs = new RuntimeRefs(opts.namespace);
-		const worker = new Worker(new URL("./runtime-db-worker.ts", import.meta.url));
+		// 源码用 .ts（tsx 装载），构建产物用同目录 .js。
+		const workerFile = import.meta.url.endsWith(".js") ? "./runtime-db-worker.js" : "./runtime-db-worker.ts";
+		const worker = new Worker(new URL(workerFile, import.meta.url));
 		const flags: LifecycleFlags = { closed: false };
 		// 两段启动段1：打开握手。fatal/conflict/意外退出都终结 open promise。
 		const opened = new Promise<OpenedInfo>((resolve, reject) => {

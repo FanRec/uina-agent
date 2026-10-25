@@ -136,7 +136,7 @@ describe("BodySession 资格失效后写拒绝", () => {
 			["attack", () => session.attack(entityT())],
 			["useItem", () => session.useItem("main")],
 			["endUse", () => session.endUse()],
-			["equip", () => session.equip({ name: "iron_sword" }, "main")],
+			["equip", () => session.equip({ name: "iron_sword" }, "hand")],
 			["lookAt", () => session.lookAt({ x: 0, y: 64, z: 0 })],
 			["interact", () => session.interact({ target: { place: placeT(), block: { x: 0, y: 64, z: 0 } }, hand: "main" })],
 		];

@@ -87,6 +87,6 @@ describe("证据释放水线", () => {
 		const gaps = consumer.gaps();
 		expect(gaps.length).toBeGreaterThan(0);
 		// 若旧高位被误当新流确认，前 100 条已被释放，缺口会从 100 起而不是从 0 起
-		expect(gaps[0]).toEqual({ stream: stream2, after: 0 });
+		expect(gaps.find((gap) => gap.stream === stream2)).toEqual({ stream: stream2, after: 0 });
 	});
 });

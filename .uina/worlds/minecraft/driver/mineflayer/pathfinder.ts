@@ -36,6 +36,7 @@ const pathfinderModule = createRequire(import.meta.url)("mineflayer-pathfinder")
 interface PathfinderMovements {
 	allowSprinting: boolean;
 	canDig: boolean;
+	allow1by1towers: boolean;
 }
 
 const { pathfinder, Movements } = pathfinderModule;
@@ -47,6 +48,8 @@ export type PathfinderGotoErrorName = "NoPath" | "Timeout" | "PathStopped" | "Go
 export interface PathfinderMovementsConfig {
 	sprint: boolean;
 	digThrough: boolean;
+	/** 允许垫方块到达；脚手架方块沿用上游默认（dirt/cobblestone）。 */
+	placeToReach: boolean;
 }
 
 /** 适配层内的插件装配面视图；仅本文件可见。 */
@@ -68,7 +71,7 @@ export function loadPathfinderPlugin(bot: MineflayerBot): void {
 
 /**
  * 以原语配置 Movements；实例不外泄（§9.1）。复用已装载实例，避免重置寻路共享状态。
- * placeToReach 语义（搭路方块开关）2.4.5 无独立旗标，归能力层经脚手架配置扩展。
+ * placeToReach 直接映射上游 allow1by1towers；脚手架方块沿用上游默认列表。
  */
 export function configureMovements(bot: MineflayerBot, config: PathfinderMovementsConfig): void {
 	const assembly = (bot as BotWithAssembly).pathfinder;
@@ -76,6 +79,7 @@ export function configureMovements(bot: MineflayerBot, config: PathfinderMovemen
 	const movements = existing instanceof Movements ? existing : new Movements(bot);
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
+	movements.allow1by1towers = config.placeToReach;
 	assembly?.setMovements(movements);
 }
 

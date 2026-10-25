@@ -77,9 +77,13 @@ export interface HistoryProgress {
 	alignment: "caught_up" | "behind" | "gapped" | "unknown";
 }
 
-/** World 查询结果 = Fact + 同点游标（+ 可选历史进度）。 */
+/**
+ * World 查询结果 = Fact + 同点游标（+ 可选历史进度）。
+ * cursor=null 只用于静态知识查询（item/recipe）：它们没有观察源，
+ * 也就没有可比较的水位（capabilities §2.5：这类查询的 version 恒为 null）。
+ */
 export interface Observation<T> extends Fact<T> {
-	cursor: ObservationCursor;
+	cursor: ObservationCursor | null;
 	history?: HistoryProgress[];
 }
 

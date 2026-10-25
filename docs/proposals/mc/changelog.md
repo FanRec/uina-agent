@@ -1,5 +1,52 @@
 # 设计变更记录
 
+## 2026-10-24 · 批 2 窗口与容器落地
+
+- 能力面 **9 查询 + 11 动作 → 10 查询 + 13 动作**：新增 container/transfer/container.last；支持双向精确量、固定 all 清单、nearest 三候选、实体容器、部分 moved/remaining。下一批为 craft/smelt。
+- Driver 增加独立 WindowSession 与窄线形适配：每次 mode-0 点击仅发一个 stateId=-1 的真实业务包，接完整服务端槽位/光标并比对本次前态，避免本地预测冒充完成。没有可归属变化则 unknown，不自动重发。期望必须覆盖直接点击槽，旧 revision 返回 CONFLICT；普通 close 要求空光标，失败清理显式 force。
+- 独立复查修正双完整回包串到后次点击、取消未打开窗口却假称屏障已过两处缺陷；后一种情况复用既有连接封闭机制，要求重连。真实 Paper 的 block-use 突发丢包通过看向目标后等待一个实际物理步解决，不另建限流框架。
+- World 复用 client.window@1/evidence 表保存观察，只聚合容器区域；同世界/存档代次/维度按位置查最后观察，不受临时 binding 变化阻断。实体容器观察不伪装成方块历史。补混合 schema、订阅前重放、reset 保留未确认材料、关闭前 flush。
+- 真服场景 `pnpm dev:mc:containers`：独立测试区、实际区块/平台/落脚核验，13 项；构建产物同场景也通过。MC 确定性回归 16 files / 125 tests；pnpm typecheck、pnpm build 通过。准备和游戏动作分开，工具等待超时的显式停止只发生在验收脚本。
+- 详细设计、替代方案与实施裁决见 [窗口容器实施记录](window-container-implementation.md)。本轮没有实现 Program/Library、Host 回执或正式 WorldDef。
+
+## 2026-10-24 · 批 1 采集闭环（collect / pickup / drop）落地
+
+- **能力面 9+8 → 9+11**：新增 `collect@1`（知识反查方块 → 前沿搜索 → goto/mine/pickup 组合）、`pickup@1`（候选实体 → 走到 → 库存增量结算）、`drop@1`（库存核对 → 可选走近/朝向 → toss → 地面实体复核）。
+- **Driver 补两块**：`BodyOps.toss(name, count)`（窗口外转移，可丢域只到主背包+快捷栏 9..44，回执只到 `unknown`）；`ClientEntityValue.item`（掉落物身份，走 `entity.getDroppedItem()`，不手写元数据索引）。
+- **两个真服暴露的底层缺陷顺手修掉**：①`searchBlocks` 按段**中心**排序，玩家站在段边界时脚下这段会排到后面，命中上限就把最近的方块漏掉——改成按段"最近点"排序，并在上限后只继续扫"仍可能更近"的段；②`goto` 目标已在 GoalNear 邻域内时上游不发 `goal_reached`，表现是 `tolerance=1` 且隔一格就永久挂住——改成先在驱动层按节点距离判定并在邻域内直接结算。
+- **`pickup` 的最后两格不用路径规划**：GoalNear 的 1 格容差在近距离经常 resolve 空路径（驱动层按 UNREACHABLE 结算），改成 `lookAt` + `drive` 步进，`goto` 只在 4 格外使用。
+- **`collect` 不持身体、不挖脚下那一格**：Body 槽与 goto 槽互斥，逐步取放；脚下那格留到没有别的可选时才挖（一格竖井会让后续每次 goto 都失败）。
+- 契约口径补齐：`mine@1` 的 `errors[]` 补 `WRONG_STATE`、`goto@1` 补 `WRONG_STATE`、`equip@1` 补 `TARGET_NOT_MET`；`pickup@1` 从两行补成完整的完成条件与失败码。
+- 真服：K2 场景 11 步 PASS（新世界）；K1 回归 19 步 PASS、I1 PASS。`tests/mc` 13 files / 93 tests。
+
+## 2026-10-24 · 剩余施工总纲（development-plan §10）
+
+- **把"能力分组"和"施工批次"分开**：K1–K8 是能力范围标签，不是批次。新增 §10 给 12 个批次，每批的交付物必须是"一条能在真服跑完的玩家任务 + 一个场景脚本"，批 0 = 已完成的 K1。
+- **显式登记六处与原 K 顺序的偏差**：①K2 拆成"采集闭环 / 窗口容器 / 生产链"三批（组合动作、窗口协议、生产逻辑三类风险不同量级）；②`drop@1` 需要新增 `BodyOps.toss`（Driver 目前明确不丢物品，原规划把它当纯能力层组合）；③K3 拆两批，`fight` 依赖 driver §8 反馈时序；④K4 内部改序，`tunnel/excavate` 先于 `region/places`；⑤新增批 4"自主游玩校准点"，用真实游玩重排后续批次（原规划没有使用驱动节点）；⑥K5 与 Library 的"只读蓝图"子集同批，不等整块 Library。
+- **待裁决四项**：熔炼数据自建最小表 vs 等上游（建议自建）；H 回执是否插队（建议不插，保持批 10）；K6 `players/map` 暂缓；Program guest 边界按 QuickJS。是否为 P1/P2 扩面推迟到批 4 的评估结果。
+- **技术债按触发条件挂起**（不提前还）：world 无保留/清理、事件 Watch、`ItemSelector.components`、`world.difficulty` 常 null、`vitest tests/mc` 过滤器误匹配。
+
+## 2026-10-23 · 真服复验：可达性归调用方、eat 归因、K1 场景全过
+
+- **"可达性归调用方"写进 §4 总则**：除移动类动作外，破坏/放置/右键/攻击只作用于当前姿态够得着的目标（方块交互自眼位 4.5 格，实体交互 4 格），够不着返回 `UNREACHABLE` 并提示先 `goto@1`，动作内部不寻路；`collect`/`tunnel`/`excavate` 这类本身含行走的组合动作不受此限。据此校正 mine/attack/use 三处"走近"表述——原文读起来像每个动作都要自己走过去，与实现（以及"导航只此一个入口"的取向）相反。
+- **射程判定收成一份实现**（`capabilities/shared/reach.ts`）：`BLOCK_REACH=4.5`（自眼位）、`ENTITY_REACH=4`、`blockReach/eyeOf`。mine/place/use(方块/牌子)/attack 全部改用它；此前 use 用"feet 到方块角 6 格"、place 根本没查、attack 自带 `ATTACK_RANGE=4`——同一件事三套口径，超射程的交互只会以 `TARGET_NOT_MET` 的形式晚到。place 量的是真正被点的支撑面，不是目标格。
+- **mine@1 补射程判定**：此前能在 4.5 格外派发挖掘，服务端要么拒绝、要么掉落不在拾取半径内而 `dropped` 恒缺省；现在派发前拒绝，`hint` 带实测距离。`dropped` 的可观察条件因此明确：**先站到被挖格上，再谈掉落**。
+- **eat@1 归因顺序**：点名的物品不在包里 → `NOT_FOUND`；在包里但不是食物 → `WRONG_STATE`；两者都排在"已经吃饱"之前。此前吃饱时传 `dirt` 会得到"food is already full"，状态掩盖了输入错误。
+- **真服结果（Paper 1.21.11 / 端口 25565 / UinaDev op）**：I1 复验 PASS；K1 场景 19 步 PASS——world/item/recipe/inventory/self、equip→place(dirt/sign/lever)→use(写牌/拉杆)、mine(掉落入包)、mine 越界拒绝、blocks/entities、attack(命中证据)、eat 非食物拒绝、eat 饥饿进食(food 0→5、面包 -1)、events 尾窗+after 正向分页+空增量页。
+- 分页口径澄清（不是代码缺陷）：**无 `after` 的读只给"最近 limit 条"+ `after`，不给 `next`**；`next` 只出现在 `after` 之后的正向分页。按"首读给 next"写场景会误判成 bug，改用 `after` 起步后 3 条消息稳定得到 page1(2)+`next` → page2(1)。
+
+## 2026-10-23 · K1 能力面收口（9 查询 + 8 动作）
+
+- **能力层重写为"一族一文件 + 共享工具"**：`capabilities/{queries,actions}/` 取代原来的两个大文件；`shared/` 收敛 schema 片段、目标换算、观察窗口、事实组装、实体解析、查询声明。重复 ref 在装配时显式失败。
+- **查询分三路读取**：`current`（同步采样）/ `static`（版本知识，不需要连接）/ `history`（events@1，提交屏障后读存储）。`Observation.cursor` 允许 null：静态与派生查询（recipe 的 plan）没有观察水位；events 的增量位置是页内不透明 `after` 令牌。
+- **blocks@1 名实对齐**：`blocks@1` 回到"按名搜方块"（World 负责排除/计数/截断，Driver 负责按 section palette 跳过扫描），`regions` 式的段读取不再占用这个名字；`block@1` 支持 `{at}` 与 `{below}`；`self@1` 从同一次库存采样补 held/armor；`inventory@1` 补 counts/usedSlots/freeSlots；`entities@1` 支持 radius/kind/limit 并排除自身（`ClientEntitiesValue.selfRef`）。
+- **Driver 新增事实与操作**：`world()` 环境读数（时间/天气/维度/群系/难度/模式，读不到为 null）、`searchBlocks()`（palette 跳过 + 近段优先 + 上限 capped）、`Static 知识`（registry-knowledge：物品/食物/工具/掉落/配方/实体分类）、damage/death/connection 事件捕获；`equip` 扩到护甲槽（EquipSlot）；`attack` 增加受击证据窗口（`AttackOutcome.hit: boolean|null`）；`writeSign` 真实路径（open_sign_entity 匹配 + update_sign + blockEntityData 确认，文本不可读时如实 unknown）。
+- **World 事件历史**：复用 evidence 表与 rowid 顺序（不建第二份聊天队列），新增事件读取消息与提交屏障；游标编码分区/过滤/位置/上界/页大小，分页固定上界，空页推进 after，分区不符报 SNAPSHOT_EXPIRED。
+- **完成口径如实**：mine 只认客户端空气（未加载不算 air），掉落只在短窗口内报观察到的增量；place 先查冲突/材料/支撑面再取身体；eat/attack/use 的可预判失败都在 `withBody` 之前；use 明确拒绝窗口类方块并指向 container/craft/smelt；attack 的 hit 不把"没看到"写成"打中"。
+- **构建接线**：`tsconfig.build.json` 纳入 `.uina/worlds/minecraft`，worker 路径按产物/源码双态解析；`dist` 内两个 worker 均有 .js 产物。
+- 数据版本事实：1.21.11 的 minecraft-data 只有合成/方块/实体三类来源，没有熔炼与交易数据，因此 item.sourcesComplete 恒为 false、fuel 恒为 null、recipe 只有合成配方；`sourcesComplete=false` 是数据覆盖说明，不是"无法获得"。
+- 验收：`tsc --noEmit`、`check:boundaries`（9 规则）、`tests/mc` 12 files / 76 tests 全绿；`tsc -p tsconfig.build.json` 全绿。**真服未复验**，本轮全部新路径只有确定性单测覆盖。
+
 ## 2026-10-22 · I1 原生化重构：K1 回退、缺陷修复与结构收口
 
 - **K1 能力子集整批回退**：`capabilities/{mine,place,knowledge,body-common}.ts`、`contracts/knowledge.ts`、`driver/registry-knowledge.ts` 删除，`package.json`、`public-api.md`、`modules/capabilities.md` 一并回到 10-21 之前的 I1 口径；不保留兼容层，也不把草图当后续基准（`KnowledgeSource`、`body.attack` 的 `targetHurt`、equip 护甲槽等增补随之作废）。现行实现是 5 查询（self/inventory/block/blocks/entities）+ 2 动作（chat/goto）。
