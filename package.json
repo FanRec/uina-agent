@@ -30,6 +30,7 @@
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
     "verify:file-events": "tsx scripts/verify-file-events.mts",
+    "bench:ui": "tsx scripts/bench-ui.mts",
     "diagnose:frames": "tsx scripts/diagnose-frame-log.mts"
   },
   "devDependencies": {
