@@ -263,7 +263,8 @@ export class TranscriptContainer implements Component {
 	invalidate(): void {
 		this.settledCaches.clear();
 		this.hoveredBlockCache.clear();
-		this.currentParagraphCache.clear();
+		// 段落缓存不清：键 = width + streaming + 块原文，内容寻址，跨失效安全
+		//（旧实现靠 commitCurrentTurn 的 invalidate 清缓存，掩盖了键缺 streaming 维度）
 	}
 
 	/** Rebuild only one settled turn's block; the rest of the cache stays valid. */
@@ -330,21 +331,59 @@ export class TranscriptContainer implements Component {
 		return false;
 	}
 
-	getLatestFailedTool(): Extract<TurnItem, { kind: "tool" }> | null {
+	/** 最新失败工具缓存：undefined = 待重算。ownerUid 供「±1 行提示」迁移时定点失效。 */
+	private latestFailedCache: { item: Extract<TurnItem, { kind: "tool" }>; ownerUid: number } | null | undefined =
+		undefined;
+
+	private resolveLatestFailed(): { item: Extract<TurnItem, { kind: "tool" }>; ownerUid: number } | null {
+		if (this.latestFailedCache !== undefined) return this.latestFailedCache;
+		let result: { item: Extract<TurnItem, { kind: "tool" }>; ownerUid: number } | null = null;
 		if (this.currentTurn) {
 			for (let i = this.currentTurn.items.length - 1; i >= 0; i--) {
 				const it = this.currentTurn.items[i]!;
-				if (it.kind === "tool" && it.status === "failed") return it;
+				if (it.kind === "tool" && it.status === "failed") {
+					result = { item: it, ownerUid: this.currentTurn.uid };
+					break;
+				}
 			}
 		}
-		for (let t = this.historyTurns.length - 1; t >= 0; t--) {
-			const turn = this.historyTurns[t]!;
-			for (let i = turn.items.length - 1; i >= 0; i--) {
-				const it = turn.items[i]!;
-				if (it.kind === "tool" && it.status === "failed") return it;
+		if (!result) {
+			for (let t = this.historyTurns.length - 1; t >= 0; t--) {
+				const turn = this.historyTurns[t]!;
+				for (let i = turn.items.length - 1; i >= 0; i--) {
+					const it = turn.items[i]!;
+					if (it.kind === "tool" && it.status === "failed") {
+						result = { item: it, ownerUid: turn.uid };
+						break;
+					}
+				}
+				if (result) break;
 			}
 		}
-		return null;
+		this.latestFailedCache = result;
+		return result;
+	}
+
+	getLatestFailedTool(): Extract<TurnItem, { kind: "tool" }> | null {
+		return this.resolveLatestFailed()?.item ?? null;
+	}
+
+	/**
+	 * 工具状态变更落地后调用：比较新旧「最新失败工具」，精确失效受影响的已结算块。
+	 * isNewestFailure 只影响 ±1 行提示，所以受影响面 = 旧 owner 块 + 新 owner 块，
+	 * 且 owner 在 currentTurn 的部分本来每帧重排、无需失效。
+	 */
+	private syncLatestFailedInvalidation(
+		prev: { item: Extract<TurnItem, { kind: "tool" }>; ownerUid: number } | null,
+	): void {
+		this.latestFailedCache = undefined;
+		const next = this.resolveLatestFailed();
+		if (prev?.item === next?.item && prev?.ownerUid === next?.ownerUid) return;
+		const currentUid = this.currentTurn?.uid;
+		if (prev && prev.ownerUid !== currentUid) this.invalidateTurn(prev.ownerUid);
+		if (next && next.ownerUid !== currentUid && next.ownerUid !== prev?.ownerUid) {
+			this.invalidateTurn(next.ownerUid);
+		}
 	}
 
 	toggleTool(
@@ -537,7 +576,7 @@ export class TranscriptContainer implements Component {
 			startedAt: Date.now(),
 			callId,
 		});
-		this.invalidate();
+		// 当前轮由 ensureModel 每帧无条件重排，无需任何失效信号
 	}
 
 	addToolDone(
@@ -550,6 +589,7 @@ export class TranscriptContainer implements Component {
 		attachments?: { images?: import("../../../core/content.js").ImageContent[]; details?: unknown },
 	): void {
 		result = sanitizeRenderText(result);
+		const prevFailed = this.resolveLatestFailed();
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
 			if (lastTurn) {
@@ -563,7 +603,8 @@ export class TranscriptContainer implements Component {
 					existingTool.status = status;
 					existingTool.result = result;
 					existingTool.elapsedMs = elapsedMs;
-					this.invalidate();
+					this.invalidateTurn(lastTurn.uid);
+					this.syncLatestFailedInvalidation(prevFailed);
 					return;
 				}
 			}
@@ -607,24 +648,22 @@ export class TranscriptContainer implements Component {
 				callId,
 			});
 		}
-		this.invalidate();
+		this.syncLatestFailedInvalidation(prevFailed);
 	}
 
 	addCompaction(record: CompactionCardData): void {
 		this.timeline.push({ kind: "compaction", record });
-		this.invalidate();
 	}
 
 	addPromptSnapshot(snapshot: PromptContextCardData): void {
+		// 轮内=尾部重排；timeline=尾部追加（buildSettledBlocks 按 builtItems 差额物化）
 		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: snapshot });
 		else this.timeline.push({ kind: "contextCard", card: snapshot });
-		this.invalidate();
 	}
 
 	addExternalInput(input: ExternalContextCardData): void {
 		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: input });
 		else this.timeline.push({ kind: "contextCard", card: input });
-		this.invalidate();
 	}
 
 	toggleContextCard(id?: string): boolean {
@@ -637,6 +676,7 @@ export class TranscriptContainer implements Component {
 			const item = this.timeline[index]!;
 			if (item.kind !== "contextCard" || !matches(item)) continue;
 			item.expanded = !item.expanded;
+			// static 块没有 uid/index 定位键，保持全量失效（低频用户操作）
 			this.invalidate();
 			return true;
 		}
@@ -647,7 +687,7 @@ export class TranscriptContainer implements Component {
 				const item = items[itemIndex]!;
 				if (item.kind !== "contextCard" || !matches(item)) continue;
 				item.expanded = !item.expanded;
-				this.invalidate();
+				this.invalidateTurn(turns[turnIndex]!.uid);
 				return true;
 			}
 		}
@@ -663,18 +703,15 @@ export class TranscriptContainer implements Component {
 		} else {
 			this.timeline.push({ kind: "customMessage", message: msg });
 		}
-		this.invalidate();
 	}
 
 	addNotice(text: string): void {
 		const formatted = `  ${C.blue}ℹ ${text}${C.reset}`;
 		this.timeline.push({ kind: "notice", text: formatted });
-		this.invalidate();
 	}
 
 	addError(text: string): void {
 		this.timeline.push({ kind: "error", text });
-		this.invalidate();
 	}
 
 	finishTurn(): void {
@@ -703,7 +740,6 @@ export class TranscriptContainer implements Component {
 				return;
 			}
 			this.timeline.push({ kind: "notice", text: `  \x1b[2m${notice}\x1b[0m` });
-			this.invalidate();
 		}
 	}
 
@@ -904,6 +940,8 @@ export class TranscriptContainer implements Component {
 		this.timeline.length = 0;
 		this.historyTurns.length = 0;
 		this.currentTurn = null;
+		this.currentParagraphCache.clear();
+		this.latestFailedCache = undefined;
 		this.invalidate();
 	}
 
@@ -987,7 +1025,7 @@ export class TranscriptContainer implements Component {
 			this.historyTurns.push(this.currentTurn);
 			this.timeline.push({ kind: "turn", turn: this.currentTurn });
 			this.currentTurn = null;
-			this.invalidate();
+			// 提交只是 timeline 尾部追加，settled 缓存按 builtItems 差额物化，无需全量重建
 		}
 	}
 
@@ -1062,11 +1100,16 @@ export class TranscriptContainer implements Component {
 		let isFirst = isFirstParagraph;
 
 		for (const { block, blankAfter } of parts) {
-			const cacheKey = `${width}:${block}`;
+			// streaming 必须进键：commit 后同一块文本会以 streaming=false 重渲染，
+			// 键缺维度会复用流式态渲染结果（旧实现靠 invalidate 清缓存掩盖）
+			const cacheKey = `${width}:${streaming ? 1 : 0}:${block}`;
 			let blockLines = this.currentParagraphCache.get(cacheKey);
 			if (!blockLines) {
 				blockLines = this.formatAssistantBlock(block, contentBudget, streaming);
-				if (this.currentParagraphCache.size >= 4096) this.currentParagraphCache.clear();
+				if (this.currentParagraphCache.size >= 4096) {
+					const oldest = this.currentParagraphCache.keys().next().value;
+					if (oldest !== undefined) this.currentParagraphCache.delete(oldest);
+				}
 				this.currentParagraphCache.set(cacheKey, blockLines);
 			}
 			// ● 前缀是轮次粒度（本轮首个文本 item 的首行），拼接时注入，不改缓存内容
