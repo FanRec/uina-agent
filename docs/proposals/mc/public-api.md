@@ -285,6 +285,9 @@ interface BodyOps {
   lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
   writeSign(target: BlockTarget, input: {side: "front" | "back"; lines: SignText}): Promise<EffectReceipt>;
   openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;
+  // 玩家自带窗口（window 0 的 2×2 合成格与结果槽）的作用域：期间独占身体，退出时强制关闭。
+  // 回调式是因为生命周期与身体资格是同一条作用域，交出裸会话会让调用方漏关而卡住身体。
+  withInventory<T>(work: (window: WindowSession) => Promise<T>): Promise<T>;
   feedback(sensors: Record<string, WorldQuery>): Promise<FeedbackStream>;
 }
 interface BodySession extends BodyOps { close(): Promise<void> }
@@ -330,7 +333,7 @@ dig 的 aim 默认 target，可调整视角；preserve 不自动瞄准，供同�
 
 click 的 confirmed 只含本次模式/前态与回执能确认的槽位后态和光标；不能把任意实时快照归因于本次点击。相关后态无法确认时 needsSnapshot=true，Program 在下一次 click 前要求显式 snapshot；已确认变化用于推进参照，其他槽位保留旧预期。
 
-窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 还覆盖类型、布局、属性及来源变化，不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。
+窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 覆盖类型、布局、槽位与光标的变化，**不随 `properties` 推进**（炉子进度每秒数次；revision 是点击的 CAS 前置条件，只约束点击真正依赖的内容），也不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。区域名由布局表统一定义：普通容器 `container`+`player`；玩家窗口 `result`/`crafting`/`armor`/`player`/`offhand`；工作台 `result`/`crafting`+`player`；熔炉 `input`/`fuel`/`result`+`player`。工作站窗口**不产出 `container` 区域**，按 `container` 取格的调用方必须显式失败而不是把 input 当普通格。
 
 普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；失败清理显式 close({force:true})，作用域退出/停机同样强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择并非现有 click 的别名；对应能力设计须在此补确切受控操作合同，经同一窗口适配执行，不向玩法公开 Bot，也不另建窗口能力目录。
 
@@ -517,9 +520,10 @@ interface KnowledgeItem {
 }
 interface KnowledgeRecipe {
   station: "hand" | "crafting_table" | "furnace";
-  ingredients: {item: string; count: number}[];
+  ingredients: {item: string; count: number}[]; // 一次制作/熔炼的账单；熔炼一条配方只挂一个原料
   output: {item: string; count: number};
-  fuel?: {item: string; count: number};
+  pattern?: (string | null)[][]; // 成形配方的摆格图案（行优先，null=空格）；无形状与熔炼配方省略
+  cookTicks?: number; // 熔炼一份产物的烹饪刻数；仅 furnace 配方有
 }
 interface KnowledgeBlockDrops { items: string[]; harvest: HarvestRequirement }
 interface RegistryKnowledge {
@@ -532,7 +536,7 @@ interface RegistryKnowledge {
 }
 ```
 
-知识随连接版本固定（minecraft-data / prismarine-registry），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；harvest 保留注册表的实际可采工具集合、无工具限制或未知，不用材质顺序猜测。block.harvest、mine、collect 共用可采性判断；自动选用当前合格手持，否则取槽序第一个合格工具。当前数据版本没有熔炼与交易类别，sourcesComplete=false 如实表达。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表的位置。
+知识随连接版本固定（minecraft-data / prismarine-registry + 版本固定的熔炼表），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；harvest 保留注册表的实际可采工具集合、无工具限制或未知，不用材质顺序猜测。block.harvest、mine、collect 共用可采性判断；自动选用当前合格手持，否则取槽序第一个合格工具。合成、方块、实体、熔炼四类来源齐备（熔炼来自 1.21.11 版本数据表），缺少交易类别，sourcesComplete 仍为 false 如实表达；`fuel.ticks` 来自手工最小燃料表，未收录的物品是 null（未知），不是 0。站别按实际非空格数判定（9 个同种材料的 shapeless 也是 3×3）。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表与版本数据表的位置。
 
 <a id="world"></a>
 

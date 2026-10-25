@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-10-25 · 批 3 生产链落地（craft@1 / smelt@1）
+
+- 新能力 **`craft@1`**：手持 2×2 与工作台 3×3 两条路径同一套摆格算法，配方按"缺料种类→总量→手持优先"选择，`station:"crafting_table"` 允许把 2×2 配方放到工作台做；3×3 先找 8 格内的工作台、没有就把背包里的放到相邻格并回读确认，**用完不拆走**。产物以 `inventory@1` 前后差值结算。
+- 新能力 **`smelt@1`**：`wait:true`（装料→等待→取回）与 `wait:false`（下料即返回，取货走 `transfer@1`）两种模式；原料由熔炼表反查，燃料量按烹饪刻数算，燃料刻数未知直接 `MISSING_MATERIAL`；连续两次读到服务端 `lit=0` 判停炉，不白等满 `maxTimeMs`。
+- **结果槽无需新协议面**：每批只摆"恰好一批"料，结果槽点击就是纯交换，沿用现有 `expectedClick` 推演。**mode-1（shift/quickMove）本批不开**，§10.7 的待裁决项由此关闭。
+- 窗口层：`driver/window/layout.ts` 成为布局唯一真源（玩家窗口/工作台/熔炉/普通容器），工作站窗口**不产出 `container` 区域**；`openContainer` 白名单加入 `crafting_table`/`furnace`；`BodyOps.withInventory` 交出玩家窗口作用域。
+- `WindowSnapshot.revision` 收窄为"只随槽位与光标推进"：炉子进度每秒数次，否则燃烧期间每次点击都撞 `CONFLICT`。
+- `container@1` 支持熔炉读数（`slots[].region` + `properties`），`container.last` 历史按"除玩家区外的全部区域"聚合；`transfer@1` 对熔炉只支持 `from`（取产物），`to` 明确拒绝。
+- 知识层：`KnowledgeRecipe` 增加 `pattern`（摆格图案）与 `cookTicks`，删除从未赋值的 `fuel`；`station` 判据改为实际非空格数（修掉 27 条同种材料 shapeless 的误判）；熔炼配方来自新表 `driver/facts/smelting.ts`（Paper 1.21.11 jar 抽取 73 条，`scripts/extract-mc-smelting.mjs` 可复现）；燃料刻数手工最小集，未收录保持 null。
+- 验证：MC 确定性回归 **26 files / 201 tests**；真服 `pnpm dev:mc:k3` **14/14 PASS**（原木→木板→工作台→木棍→木镐→熔炉→石镐→熔炼两种模式→铁镐，另含三条拒绝面与两条知识面）。能力面现为 **27/51（12 查询 + 15 动作）**，下一批为批 4 校准点。
+
 ## 2026-10-25 · 状态校正与批 3 前置登记
 
 - 提交归属校正：K1 收口、真服复验、批 1 采集、批 2 窗口容器四轮均已在 **d77d20f** 入库（84 files）；2026-10-25 修复与 Driver 收敛在 **6157834**。`dev/MC-WORLD.md`、[窗口容器实施记录](window-container-implementation.md) 与 [Driver 修复实施](driver-repair-implementation.md) 此前记作"未提交"，已更正。

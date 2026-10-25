@@ -333,17 +333,20 @@ type ItemSource =
   | {kind: "trade"; profession: string | null};
 ```
 
-- 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。**当前 1.21.11 数据只有合成/方块/实体三类来源，没有熔炼与交易数据**，因此 `sourcesComplete` 恒为 false，`fuel` 恒为 null（不填 0）。
+- 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。**批 3 起：合成、方块、实体、熔炼四类来源齐备（熔炼来自 1.21.11 版本数据表），只有交易缺失**，`sourcesComplete` 因此仍恒为 false；`fuel.ticks` 来自手工最小燃料表，未收录的物品保持 null（未知，不是 0）。
+- 燃料表只覆盖主线常用燃料（煤/木炭/煤炭块/木板/原木/木棍/竹/烈焰棒/岩浆桶/干海带块等），`smelt@1` 据此算燃料量；表中没有的物品不会出现在 `fuel` 里，也不按 0 处理。
 - recipe 的 plan 仍只展开 craft/smelt 和当前库存差额；采集、击杀、交易等叶子由程序依据 sources 组织。知识查询不执行行动，不新增自动科技树规划器。
 - 用途：模型不确定"这东西能不能吃/当燃料/放成方块"时查一次，而不是试错。
 - **不可等待**：静态知识，`version: null`。
 
 ### recipe · `recipe@1`
 - 输入 `{ item: Name, count?: 1 }`
-- 返回 `{ recipes:[{ station, ingredients:[{ item, count }], output:{ item, count }, fuel? }], plan?: { steps:[{ item, count, action:"craft"|"smelt", station? }], need:{ [item]: number }, have:{ [item]: number }, missing:{ [item]: number } } }`
-- **不可等待**：`plan` 依赖背包，但它是派生计算，`version: null`；要等就等 `inventory@1`。当前数据版本只含合成配方（`station` 为 hand/crafting_table），熔炼配方缺失；`steps` 只列出本版本能合成的中间物，不伪造熔炼步骤。
-- `plan` 按当前背包实算：`need` 是总料，`have` 是现有，`missing` 是差额。多配方时取"缺得最少"的一条。
-- 例：`{ item:"iron_pickaxe" } → { plan:{ steps:[{item:"iron_ingot",count:3,action:"smelt"},{item:"stick",count:2,action:"craft"},{item:"iron_pickaxe",count:1,action:"craft",station:"crafting_table"}], missing:{ raw_iron:3, coal:1 } } }`
+- 返回 `{ recipes:[{ station, ingredients:[{ item, count }], output:{ item, count }, pattern?, cookTicks? }], plan?: { steps:[{ item, count, action:"craft"|"smelt" }], need:{ [item]: number }, have:{ [item]: number }, missing:{ [item]: number } } }`
+- **不可等待**：`plan` 依赖背包，但它是派生计算，`version: null`；要等就等 `inventory@1`。
+- **批 3 起配方含熔炼**：`station` 为 hand/crafting_table/furnace；`pattern` 是成形配方的摆格图案（行优先，`null` 表示空格，`craft@1` 靠它摆 3×3），无形状配方与熔炼配方省略；`cookTicks` 是熔炼一份产物的烹饪刻数。一条熔炼配方只挂一个原料（多原料按条目展开），因此 `ingredients` 始终是真正的账单，不会被读成"任选其一即全都要"。
+- 站别判据是**实际非空格数**：9 个同种材料的 shapeless 也算 3×3（此前按"物品种类数"判断会误判 27 条）。
+- `plan` 按当前背包实算：`need` 是总料，`have` 是现有，`missing` 是差额。多配方时取"缺得最少"的一条；`steps.action` 按该中间物的配方站别给出 `craft` 或 `smelt`，燃料不计入 `need`（燃料选择交给 `smelt@1` 的 `fuel` 参数）。
+- 例：`{ item:"iron_pickaxe" } → { plan:{ steps:[{item:"iron_ingot",count:3,action:"smelt"},{item:"stick",count:2,action:"craft"}], missing:{ iron_ingot:3, stick:2 } } }`
 
 ### world · `world@1`
 - 输入 `{}`
@@ -544,9 +547,10 @@ Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、cl
 #### container · `container@1` · act · P0
 - 输入 `{ at: GridPos }`
 - 做：走到容器旁打开，读内容，关上。这次读取会写进 `container.last`（§3）。
-- 返回 `{ at, type, slots:[{ slot, name, count }], freeSlots, properties? }`
+- 返回 `{ at, type, slots:[{ region, slot, name, count }], freeSlots, properties }`
 - 失败 `NOT_FOUND`（那不是容器）、`UNREACHABLE`、`WRONG_STATE`（被占用/需要权限）
 - 批 2 已实现普通容器。自行调用可先导航；祖先身体委托时目标必须已在触及范围，需要移动在新副作用前报 `CONTROL_CONFLICT`，不释放祖先资格。工作站专用布局不算普通箱子，不支持时明确失败。
+- **批 3 增加熔炉**：业务槽按区域名给出（`input`/`fuel`/`result`，普通容器为 `container`），`properties` 原样带出（`"0"` 剩余燃烧刻数、`"1"` 燃料总刻数、`"2"` 烹饪进度、`"3"` 单件总刻数）；`freeSlots` 按业务槽算。工作台不是容器，报 `NOT_FOUND` 并指向 `craft@1`。`container.last` 的历史聚合同样按"除玩家区外的全部区域"求和，并带 `contents[].region`。
 
 #### transfer · `transfer@1` · act · P0
 
@@ -561,6 +565,7 @@ Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、cl
 - 返回 `{from, to, moved:{[item]:number}, remaining:{}, containersChecked}`。from/to 为实际容器身份与 `"inventory"`，不返回 `"nearest"`。不足时抛领域错误，progress 使用相同字段，remaining 保留本次固定清单中的差额；已转移部分不回滚。
 - 失败 `NOT_FOUND`（没有候选或没有匹配物品）、`MISSING_MATERIAL`（选定源不足指定数）、`INVENTORY_FULL`（目标空间不足，hint 指明哪一端）、`UNREACHABLE`、`CONFLICT`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。禁止把部分转移正常返回为完整目标。
 - 例：`{from:"nearest",item:"coal",count:16}`；`{to:{x:10,y:64,z:20},item:"iron_ingot",count:24}`；`{to:"nearest",all:true}`。
+- **批 3 增加熔炉端点（只到 `from`）**：炉子只有结果槽是纯交换格，因此 `from` 按 `result → player` 搬移（取产物与普通容器同一确认口径）；`to` 报 `WRONG_STATE` 并指向 `smelt@1`，避免把燃料塞进 input 槽。按名字搜 `nearest` 的候选**不含熔炉**，炉子只接受显式端点。
 
 ### 物品与装备
 
@@ -601,17 +606,23 @@ type EquipInput =
 
 #### craft · `craft@1` · act · P0
 - 输入 `{ item: Name, count?: 1..256 = 1, station?: "auto"|"hand"|"crafting_table" }`
-- 做：查配方 → 找附近工作台（`auto` 时没有就用背包里的放一个，用完拆走）→ 摆格子 → 取产物。3x3 配方自动处理。
+- 做：查配方 → 找附近工作台（`auto` 时没有就用背包里的放一个）→ 摆格子 → 取产物。3x3 配方自动处理。
 - 完成：背包里增加了 `count` 个该物品（多余产出也算）。
 - 返回 `{crafted, produced:{[item]:number}, consumed:{[item]:number}, remaining:0, at?:Pos}`；crafted 为目标物品实际新增数量，可因配方批量超额；不足抛错并带同名 progress 与 remaining。
-- 失败 `MISSING_MATERIAL`（`hint` 给差额）、`MISSING_TOOL`（需要工作台但没有也没材料做）、`INVENTORY_FULL`、`TIMEOUT`
+- 失败 `MISSING_MATERIAL`（`hint` 给差额）、`MISSING_TOOL`（需要工作台但没有也没材料做）、`INVENTORY_FULL`、`TIMEOUT`、`TARGET_NOT_MET`、`NOT_FOUND`
+- **批 3 实施办法**：配方来自 `recipe@1` 同一份知识，按"缺料种类→总量→手持优先"排序；`station:"hand"` 排除 3×3 配方，`station:"crafting_table"` 允许把 2×2 配方放到工作台做（原版允许），`auto` 按配方自己决定。手持走玩家窗口（window 0 的 2×2 格），3×3 先找 8 格内的工作台、没有就用背包里的放到四个水平相邻格并回读确认；**用完不拆走**。
+- 每批只摆"恰好一批"的料（一格一件），摆完先回读断言网格与配方一致，再点结果槽。这样结果槽点击就是"空光标取走产物、结果槽归空"的纯交换，沿用 Driver 现有确认口径——**不需要 mode-1 快速移动，也不放宽完成判定**。产物按 `inventory@1` 前后差值结算，不用点击次数冒充产量；差额在拿身体之前就报出来。
+- 例：`craft@1 {item:"iron_pickaxe"}` → `{crafted:1, produced:{iron_pickaxe:1}, consumed:{iron_ingot:3, stick:2}, remaining:0, at:{position,dimension}}`
 
 #### smelt · `smelt@1` · act · P0
 - 输入 `{ item: Name, count?: 1..256 = 1, fuel?: Name, at?: Pos, wait?: true, maxTimeMs?: 120000 }`
 - 做：找/放炉子 → 装燃料与原料 → `wait` 时等完成并取出；`wait:false` 时装好就返回。自行持有的身体在等待前释放，受委托时保留祖先身体；均关闭自己的窗口。计时只安排重新开炉复查，不能等待不可 watch 的 container.last 或把估计时间当成产物证明；实际取物前核验炉子和库存。
 - 完成（`wait:true`）：背包里增加 `count` 个产物。
-- 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input, fuel }, at }`；`wait:false` → `{ at, loaded:{ input, fuel, count }, readyAt, hint:"用 transfer@1 的 from 取出产物" }`
-- 失败 `MISSING_MATERIAL`（缺原料或燃料）、`WRONG_STATE`（炉子被占用/没有炉子且没有材料）、`TIMEOUT`、`INTERRUPTED`
+- 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input:{item,count}, fuel:{item,count} }, at }`；`wait:false` → `{ at, loaded:{ input:{item,count}, fuel:{item,count} }, readyAt, remaining?, hint }`（`readyAt` 是估算值，`remaining` 只在单轮装料装不下时出现）
+- 失败 `MISSING_MATERIAL`（缺原料或燃料，或燃料没有已知燃烧刻数）、`WRONG_STATE`（炉子被占用/没有炉子且没有材料）、`TIMEOUT`、`TARGET_NOT_MET`、`INTERRUPTED`
+- **批 3 实施办法**：原料由熔炼表反查（同一产物多个原料时优先背包里多的那种），燃料量按 `ceil(烹饪刻数×count / 燃料刻数)` 装；`fuel` 省略时从背包里挑已知刻数最高的燃料，指定的燃料没有已知刻数就报 `MISSING_MATERIAL`，**不拿猜的当刻数**。装料前先取走结果槽里的旧成品；input/fuel 槽里已有异名物品报 `WRONG_STATE`。
+- `wait:true` 轮询窗口快照（不依赖估计时间）：产物够数即取回；连续两次看到服务端报"没在烧"（属性 `"0"`=0）就判停炉并报 `TARGET_NOT_MET`，不会白等满 `maxTimeMs`。炉子里剩下的燃料属正常现象（上一轮的燃烧刻数没用完时，新燃料不会被消耗），不作为失败。
+- `wait:false` 取产物走 `transfer@1 {from:{position},item}`：炉子端点只开结果槽。
 
 #### brew · `brew@1` · act · P2
 - 输入 `{ potion: string, ingredient: Name, count?: 1, at?: Pos, wait?: true }`
@@ -889,6 +900,8 @@ P0/P1/P2 是范围与优先级分组，实际依赖、可并行工作及交付�
 
 事件/感知补全先验收：查询首次同步前 self 新字段为 null/unknown；同源聊天回调不重复入账，相同文本的两个包保留两 ref；发 `/list` 后增量读到实际回应但不自动认证成功；断线/重连/重启后 after 可读，观察 version 不冒充仍有效；源缺口、分页未读及清理过期均可解释。
 
+**批 3 状态（2026-10-25）**：第 1 条整链已真服 PASS（`pnpm dev:mc:k3`，14 步），`craft@1`/`smelt@1`（含 `wait:false` + `transfer@1` 取货）与 `recipe@1`/`item@1` 的熔炼面均已落地；能力面实际可用 27 项（12 查询 + 15 动作）。
+
 1. 空手 → 8 原木 → 工作台 → 木镐 → 3 圆石 → 石镐 → 3 粗铁 → 熔炼 → 铁镐（全链不写坐标）。
 2. transfer 向 nearest 存 24 铁锭、从 nearest 取 16 煤；不足和目标满都返回带差额的错误。
 3. 三只僵尸围上来：`fight` 打完或撤退，血量不下 6。
@@ -967,8 +980,8 @@ describe 使用文本与标签匹配。三条固定查询分别检查候选召�
 | `collect` | NOT_FOUND MISSING_TOOL INVENTORY_FULL UNREACHABLE TIMEOUT INTERRUPTED |
 | `mine` | NOT_FOUND UNREACHABLE MISSING_TOOL TARGET_NOT_MET INTERRUPTED |
 | `place` | MISSING_MATERIAL CONFLICT UNREACHABLE TARGET_NOT_MET WRONG_STATE |
-| `craft` | MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL TIMEOUT |
-| `smelt` | MISSING_MATERIAL WRONG_STATE TIMEOUT INTERRUPTED |
+| `craft` | NOT_FOUND MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL WRONG_STATE TARGET_NOT_MET CONFLICT INTERRUPTED |
+| `smelt` | NOT_FOUND MISSING_MATERIAL WRONG_STATE TARGET_NOT_MET TIMEOUT CONFLICT INTERRUPTED |
 | `transfer` | NOT_FOUND MISSING_MATERIAL INVENTORY_FULL UNREACHABLE CONFLICT TARGET_NOT_MET TIMEOUT INTERRUPTED |
 | `build` | MISSING_MATERIAL UNREACHABLE CONFLICT TIMEOUT INTERRUPTED |
 | `fight` | NOT_FOUND INTERRUPTED DISCONNECTED |
