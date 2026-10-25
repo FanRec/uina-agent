@@ -68,6 +68,7 @@ const window=new WindowFixture("minecraft:furnace",furnaceLayout(),slots,{
 sync(window);
 const fixture=makeHarness(state,{knowledge,openWindow:()=>window});
 const session = () => ({
+ async runScoped(scope,work){scope.guard();return work();},
  async openContainer(){opens++;return window;},
  async close(){closes++;active--;},
  async lookAt(){return {effect:"eff:look",dispatch:"sent",completion:"met",evidence:[]};}

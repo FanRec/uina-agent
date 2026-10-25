@@ -70,7 +70,7 @@ test("real managed bootstrap restores Runtime before game connection, binds owne
 		});
 		expect(executor.status().side).toMatchObject({
 			runtime: "ready",
-			program: null,
+			program: { workerCount: 1, residentGuests: 0 },
 			world: { binding: { state: "unbound" } },
 		});
 		expect(executor.status().actionsAllowed).toBe(true);

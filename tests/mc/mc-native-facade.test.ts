@@ -62,14 +62,14 @@ try {
  await facade.reconcile();assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'committed');assert.equal(emitted,0);
  const retry=await facade.execute('runs',{op:'retry',request},signal);assert.equal(retry.status,'succeeded');assert.equal(retry.details.kind,'found');
  const bad=await facade.execute('run',{selector:'chat',input:{text:'no'}},signal);assert.equal(bad.status,'failed');
- const code=await facade.execute('run',{code:'throw 1'},signal);assert.equal(code.status,'failed');
+ const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');
  const files=await facade.execute('library',{op:'list'},signal);assert.equal(files.status,'failed');
- const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,1);
+ const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,2);
  await facade.close();await executor.close();
  executor=await MinecraftExecutor.open({worldDataDir:root,config:{connection:{host:'127.0.0.1',port:1,username:'FacadeTest',authMode:'offline',version:'1.21.11'},binding:null},policy:{autoRecover:false,closeGraceMs:3000}});
  facade=new MinecraftFacade(executor,ctx,{shortWindowMs:2000,pollMs:20});facade.start();
  assert.equal((await executor.ledger.getRequest(request)).requestId,request);
- assert.equal((await executor.rpc('runtime.list',{activeOnly:false})).items.length,1);
+ assert.equal((await executor.rpc('runtime.list',{activeOnly:false})).items.length,2);
  assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'committed');
 }finally{await facade.close();await executor.close();}
 console.log('facade passed');

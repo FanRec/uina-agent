@@ -9,6 +9,9 @@ import { PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 import { captureFailure, ownerT, placeT } from "./mc-fake-driver.js";
+import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { createProgramHost } from "../../.uina/worlds/minecraft/runtime/program-host.js";
+import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 
 const require = createRequire(import.meta.url);
 const mfRequire = createRequire(require.resolve("mineflayer"));
@@ -132,6 +135,59 @@ async function input(window: WindowSession) {
 afterEach(() => vi.useRealTimers());
 
 describe("Driver window lifetime and server confirmation", () => {
+	test("suspended parent window keeps server observations and can revalidate after delegation", async () => {
+		const h = harness();
+		let suspended = false;
+		const window = await h.session.runScoped(
+			{
+				signal: new AbortController().signal,
+				owner: ownerT(1),
+				guard: () => {
+					if (suspended)
+						throw callFailure({
+							code: "BODY_SUSPENDED",
+							source: "capability",
+							message: "delegated",
+							dispatch: "not_sent",
+							effects: [],
+							recoverable: true,
+						});
+				},
+			},
+			() => h.session.openContainer(target),
+		);
+		suspended = true;
+		h.contents[0] = stone(3);
+		h.full();
+		await expect(window.snapshot()).rejects.toMatchObject({ code: "BODY_SUSPENDED" });
+		suspended = false;
+		expect((await window.snapshot()).value.slots[0]?.item).toMatchObject({ name: "stone", count: 3 });
+		await window.close();
+		await h.session.close();
+	});
+	test("guest can use the same window handle to return a nonempty cursor after close is refused", async () => {
+		const h = harness();
+		const resources = new Set<() => Promise<void>>();
+		const ctx = {
+			signal: new AbortController().signal,
+			world: { read: async () => ({ value: { place: placeT() } }) },
+			withBody: async (work: Function) => work({ ...ctx, player: h.session }),
+		} as unknown as CallContext;
+		const host = createProgramHost(ctx, resources, () => undefined);
+		const body = await host.acquireBody({});
+		const window = (await host.handleOp({
+			handle: body.handle,
+			op: "openContainer",
+			args: { target: { x: 0, y: 64, z: 0 } },
+		})) as { handle: string };
+		await host.handleOp({ handle: window.handle, op: "snapshot", args: {} });
+		await host.handleOp({ handle: window.handle, op: "click", args: { slot: 0 } });
+		await expect(host.closeHandle({ handle: window.handle })).rejects.toMatchObject({ code: "CURSOR_NOT_EMPTY" });
+		await host.handleOp({ handle: window.handle, op: "click", args: { slot: 0 } });
+		await host.closeHandle({ handle: window.handle });
+		await host.releaseBody({ handle: body.handle });
+		await h.session.close();
+	});
 	test("block activation waits for the actual physics step after look", async () => {
 		const h = harness(false);
 		const opening = h.session.openContainer(target);

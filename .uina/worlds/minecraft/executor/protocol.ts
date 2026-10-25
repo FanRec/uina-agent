@@ -36,10 +36,19 @@ const status = shaped({
 	connection: { enum: ["connecting", "syncing", "ready", "disconnected", "faulted"] },
 	runtime: { enum: ["ready", "unavailable"] },
 	world: { type: "object" },
-	program: { type: "null" },
+	program: { type: ["object", "null"] },
 	retirement: { type: ["object", "null"] },
 });
-const entry = object({ kind: { const: "call" }, selector: ref, input: any });
+const entry = {
+	oneOf: [
+		object({ kind: { const: "call" }, selector: ref, input: any }),
+		object({
+			kind: { const: "program" },
+			source: { oneOf: [object({ code: { type: "string" } }), object({ name: ref })] },
+			input: any,
+		}),
+	],
+};
 const schedule = {
 	oneOf: [
 		object({ kind: { const: "enqueue" } }),

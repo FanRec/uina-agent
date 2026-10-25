@@ -1,2 +1,4 @@
 allowBuilds:
   esbuild: true
+patchedDependencies:
+  quickjs-emscripten-core@0.32.0: patches/quickjs-emscripten-core@0.32.0.patch

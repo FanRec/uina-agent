@@ -24,6 +24,8 @@ import type { RpcMethod } from "../executor/protocol.js";
 import { RpcError } from "../executor/ipc.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
+import { createProgram } from "../program/index.js";
+import type { ProgramPort } from "../contracts/program.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,
@@ -55,6 +57,7 @@ export async function openExecutionSide(
 	};
 	const facts = new FactsSource(host, { ...binding, streamNamespace: namespace });
 	let runtime: MinecraftRuntime | null = null;
+	let program: ProgramPort | null = null;
 	let retirement: RetirementRequest | null = null;
 	let closing = false;
 	let closePromise: Promise<void> | null = null;
@@ -127,6 +130,14 @@ export async function openExecutionSide(
 		namespace,
 	});
 	try {
+		program = await createProgram({
+			dataRoot: init.worldDataDir,
+			onChanged: () => {
+				runtime?.programChanged();
+				options.onChanged?.();
+			},
+			onWorkerFault: (calls, reason) => runtime?.sealProgramCalls(calls, reason),
+		});
 		const opened = await MinecraftRuntime.open({
 			dbPath: join(init.worldDataDir, "runtime.db"),
 			storageId: init.storageId,
@@ -135,6 +146,8 @@ export async function openExecutionSide(
 			world,
 			playerPort,
 			callables: capabilities.callables,
+			queryRefs: capabilities.queries.map((q) => q.ref),
+			program,
 			ownerLifetimeMs: init.ownerLifetimeMs,
 			onChanged: options.onChanged,
 			unclean: init.unclean,
@@ -189,7 +202,7 @@ export async function openExecutionSide(
 			world: world.availability(),
 			runtime: getRuntime().availability(),
 			safety: { active: null, last: null },
-			program: null,
+			program: program!.capacity(),
 			faults: [
 				...faults,
 				{ code: "SAFETY_NOT_IMPLEMENTED", message: "default self-preservation is not delivered in batch 4" },
@@ -217,7 +230,12 @@ export async function openExecutionSide(
 					}
 				}
 				// Gate receipt may still say stopping. Runtime.close waits for the actual control barrier.
-				for (const shutdown of [() => getRuntime().close(), () => host.close(), () => world.close()]) {
+				for (const shutdown of [
+					() => getRuntime().close(),
+					() => program!.close(),
+					() => host.close(),
+					() => world.close(),
+				]) {
 					try {
 						await shutdown();
 					} catch (error) {
@@ -323,7 +341,12 @@ export async function openExecutionSide(
 		};
 	} catch (error) {
 		importantEvents.close();
-		await Promise.allSettled([host.close(), world.close(), ...(runtime ? [runtime.close()] : [])]);
+		await Promise.allSettled([
+			host.close(),
+			world.close(),
+			...(runtime ? [runtime.close()] : []),
+			...(program ? [program.close()] : []),
+		]);
 		throw error;
 	}
 }

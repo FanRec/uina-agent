@@ -1,8 +1,10 @@
 # Program（程序）详细设计
 
-日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**尚未实现，未经过真实 Minecraft 验收**。源码中的旧 Program/Assets 类型不代表本规格已接线。
+日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**批 7 执行子集已实现；源码/产物与模型验收见 [实施记录](../program-implementation.md)**。源码中的旧 Program/Assets 类型不代表本规格已接线。
 
 本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
+
+批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；waitUntil、decide/checkpoint/continue、feedback/loop 和 Library 管理/发现仍是后续合同。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
 
 ## 0. 最终体验与验收目标
 
@@ -379,7 +381,7 @@ Runtime 首先封闭本范围 RPC/动作准入，撤销有关控制并取消在�
 
 ## 6. 模块边界与修订落点
 
-Program 拥有语言隔离、shim、逻辑段与 guest 退役；Runtime 拥有真实 CallFrame、Body 委托、根决策转换、记录屏障和结果；Driver 拥有实际输入、窗口操作与反馈有效期；Library 拥有文件及元数据；World 拥有观察游标、历史与证据。这些游戏侧职责不向 Uina Core 引入游戏概念；可靠交付依赖尚待实现的 [Host 通用持久回执](../../runtime/delivery-receipts.md)。
+Program 拥有语言隔离、shim、逻辑段与 guest 退役；Runtime 拥有真实 CallFrame、Body 委托、根决策转换、记录屏障和结果；Driver 拥有实际输入、窗口操作与反馈有效期；Library 拥有文件及元数据；World 拥有观察游标、历史与证据。这些游戏侧职责不向 Uina Core 引入游戏概念；可靠交付消费批 5 已实现的 [Host 通用持久回执](../../runtime/delivery-receipts.md)。
 
 对应正文同步在 [Runtime](runtime.md)、[能力面](capabilities.md)、[Library](library.md)、[公开接口](../public-api.md)、[行为契约](../contracts.md) 与 [概要](../design.md)。历史取舍只在 [changelog](../changelog.md)，不作为第二套当前规则。
 
@@ -484,7 +486,7 @@ Program 通过注入的只读库入口解析名字，拥有执行快照、逻辑
 | 隔离与故障 | 单段 stop 不终止共享 worker 的其他段；worker 强杀前封准入，影响范围/未知效果/容量均可查 |
 | 模型学习闭环 | 只给短指南和发现入口，完成试做、保存、调用、局部修改；统计查阅次数、错误恢复轮数与真实任务结果 |
 
-这是未来验收要求，尚未运行。所有例子需以冻结 descriptor 和真实桥接复核，不能因本文有代码块就写成“已进 tests 全绿”。
+这是完整终态验收表；批 7 执行子集已运行，结果见实施记录，其余场景仍待后续批次。所有例子需以冻结 descriptor 和真实桥接复核，不能因本文有代码块就写成“已进 tests 全绿”。
 
 ### 8.2 分层验证
 
@@ -498,7 +500,7 @@ Program 通过注入的只读库入口解析名字，拥有执行快照、逻辑
 
 ## 9. 未验证项与扩展边界
 
-共享 pool、决策异常桥、窗口确认变化和完整控制桥尚未实现。QuickJS 版本、编译/销毁与 WASM 实例的峰值内存需在实际实现记录；个别调用的摘要固定不代表 native 实现或世界状态可重放。
+共享 Worker/独立 guest、窗口确认参照、已有 body 操作与执行材料已在批 7 实现；决策异常桥和完整反馈控制仍待后续批次。QuickJS 已固定 0.32.0，真实编译/销毁证据见实施记录；WASM 峰值 RSS 与长期负载仍需另行测量；个别调用的摘要固定不代表 native 实现或世界状态可重放。
 
 聊天等事件由 events@1 的历史/增量合同接入；其具体查询、分页、缺口和条件可等待性见能力面，不增第二套事件 API。跨 World 的库共享不在当前设计内，复制普通文件可作为人工复用；不增加隐式上层库或名称回退。
 

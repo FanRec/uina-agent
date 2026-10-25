@@ -48,6 +48,7 @@ function makePort(options: { delayMs?: number } = {}): { port: PlayerPort; stats
 			inFlight--;
 			stats.heldNow++;
 			return {
+				runScoped: async (_scope: unknown, work: () => Promise<unknown>) => work(),
 				close: async (): Promise<void> => {
 					stats.closes++;
 					stats.heldNow--;
@@ -261,6 +262,53 @@ async function runToEnd(
 }
 
 describe("RuntimeEngine：身体所有权的谱系语义", () => {
+	test("delegation suspends parent writes, rejects concurrent delegation and restores the same body", async () => {
+		let writes = 0,
+			release!: () => void,
+			entered!: () => void;
+		const inside = new Promise<void>((r) => {
+			entered = r;
+		});
+		const wait = new Promise<void>((r) => {
+			release = r;
+		});
+		const { port, stats } = makePort();
+		const acquire = port.acquire.bind(port);
+		port.acquire = async (owner, signal) =>
+			Object.assign(await acquire(owner, signal), {
+				lookAt: async () => {
+					writes++;
+					return null;
+				},
+			});
+		const child = makeCallable("t.delegated@1", async (ctx) =>
+			ctx.withBody(async (scope) => {
+				await scope.player.lookAt({ x: 0, y: 0, z: 0 });
+				entered();
+				await wait;
+				return null;
+			}),
+		);
+		const root = makeCallable("t.owner@1", async (ctx) =>
+			ctx.withBody(async (scope) => {
+				const pending = scope.call("t.delegated@1", {});
+				await inside;
+				await expect(scope.player.lookAt({ x: 1, y: 1, z: 1 })).rejects.toMatchObject({ code: "BODY_SUSPENDED" });
+				await expect(scope.call("t.delegated@1", {})).rejects.toMatchObject({ code: "BODY_BUSY" });
+				await expect(ctx.withBody(async () => null)).rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
+				release();
+				await pending;
+				await scope.player.lookAt({ x: 2, y: 2, z: 2 });
+				return null;
+			}),
+		);
+		const { engine } = makeEngine(port, [root, child]);
+		const done = await runToEnd(engine, "t.owner@1");
+		expect(done.outcome, JSON.stringify(done.error)).toBe("succeeded");
+		expect(writes).toBe(2);
+		expect(stats.acquires).toHaveLength(1);
+		expect(stats.closes).toBe(1);
+	});
 	test("根部 Promise.all 两个兄弟调用各自 withBody：排队而非双持有", async () => {
 		const { port, stats } = makePort({ delayMs: 5 });
 		const worker = makeCallable("t.worker@1", async (ctx) => {

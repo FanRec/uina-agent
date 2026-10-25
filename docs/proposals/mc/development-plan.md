@@ -1,8 +1,8 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，下一批为 **批 7：Program 执行闭环**。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；下一批为 **批 8：Library 文件与发现复用**。完整程序闭环 I2 在批 9，详见 §10。
 
-K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，本批开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在当前工作树接通正式原生模型入口，见 [实施记录](native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
+K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
 目标：完成当前设计的 **16 个查询、35 个动作**，以及支持它们的运行、控制、观察、文件复用与恢复机制。先后交付的是正式实现的一部分，最终范围不因首个可用流程缩减。
 
@@ -20,9 +20,9 @@ K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的�
 | Host/World 已有生命周期、工具、输入、图片与 HostDeliveryPort/receipt 接缝 | 批 6 直接消费正式端口，不以 emitEvent 返回代替持久接收 |
 | 会话为 journal v4；带标记 canonical 记录增量形成提交索引，旧 v3 明确拒绝 | H 已实现，保留真实旧日志；验收使用独立会话，见批 5 实施记录 |
 | 类型检查与构建均已包含 Minecraft（tsconfig.build 纳入 `.uina/worlds/minecraft`，Worker 路径按产物/源码双态解析） | 构建接线已完成；后续 Worker/WASM 资产按首次采用时补复制规则 |
-| package.json 固定 mineflayer=4.39.0、mineflayer-pathfinder=2.4.5、vec3=0.1.7；QuickJS 尚未列入依赖 | 引擎与 WASM/Worker 在批 7 接入；研究快照不自动等于安装版本 |
-| Executor/Companion 已受管装配原生执行侧，批 6 WorldDef/工具/可靠通知已接通，Program/Library 尚缺 | 批 6 接正式原生主脑入口；批 7–9 接程序与复用，不造临时模型桥 |
-| Runtime 只受理原生 call + enqueue；feedback、通用领域记录、事件 Watch 和效果核验器尚缺 | 按下文实际消费者补齐；原生集成不冒充完整 Runtime、Driver 或 I2 |
+| package.json 固定 mineflayer=4.39.0、mineflayer-pathfinder=2.4.5、vec3=0.1.7；QuickJS 0.32.0 已在批 7 锁定（含窄宿主补丁） | 批 7 已接引擎、WASM/Worker 与正式桥；证据和限制见 program-implementation.md |
+| Executor/Companion 已受管装配原生执行侧，批 6 WorldDef/工具/可靠通知已接通，Program 执行与最小只读材料已接入，Library 管理/发现尚缺 | 批 6 接正式原生主脑入口；批 7–9 接程序与复用，不造临时模型桥 |
+| Runtime 已受理原生 call / Program + enqueue；feedback、通用领域记录、事件 Watch 和效果核验器尚缺 | 按下文实际消费者补齐；原生集成不冒充完整 Runtime、Driver 或 I2 |
 
 不先建设完整通用平台。源码归属、控制交接、记录身份和加载方式先确定；具体算法、文件拆分与高级玩法细节在相应工作包中落定。
 
@@ -286,7 +286,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | **4 · Executor 平台底座（已实现）** | `executor/`、`companion/` 及 Windows x64 native：两个命名 Job、受管 bootstrap、启动身份、固定 IPC、Owner 门/心跳、关闭与退役；同步修正 Runtime 持久受理 | 已有 A/I1；Executor 平台合同 | 实际结果见 [实施记录](executor-platform-implementation.md)：真实 OS/Node、SQLite/Worker 和源码/产物受管入口；此批不宣称模型工具已可用，Windows 10 与 ARM 未验收 |
 | **5 · H 通用持久回执（已实现）** | 按既定规范同批完成 Host/Subject/Tool/Session receipt、inspect/retire、恢复索引与 journal v4；扩展上下文提供同一端口 | 既有 Host/Session；独立于批 4、Program 与玩法 | 临时 v4 会话走真实 Host/Subject/SessionStore：append 前后中断、同键去重、retire 竞争、回调丢失与回溯均有事实依据；旧 v3 明确拒绝，真实日志不迁移 |
 | **6 · 正式原生主脑闭环与首次校准（已实现）** | `worlddef/`、`companion/`、`executor/` 与必要 Runtime 交付接缝：配置/绑定、目录发现、查询、原生 run/chat、请求查证/停止/记录、短结果/后台可靠通知、BodyEndpoint；先支持已验收的 offline 1.21.11 范围 | 批 4 + 批 5 + 现有 R/D/W/25 项能力 | 源码/产物各经真实 WorldTool/Host 路径运行；工具取消只结束等待、显式 stop 才停止 Run，停用/急停撤销写源；完成通知由真实 Host receipt 确认，恢复不重放动作。随后真模型仅凭短指南完成发现、采集生产、缺料纠错与停止，记录首次校准 |
-| **7 · Program 执行闭环** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
+| **7 · Program 执行闭环（已实现）** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
 | **8 · Library 文件与发现复用** | `library/` 及发现装配：程序/经验/蓝图文件的命名、头/metadata、CRUD 与扫描；程序 compile-only 和 save from 复用批 7 的编译/精确源码接缝。蓝图解释和现场 Project 随施工包实现 | 批 7 的编译与执行材料；文件部分可独立实现 | 真实临时文件验证坏头、并发修改和来源追溯；模型完成试做→纠错→save from→局部改文件→新段复用。在途段仍用原字节；经验判断不冒充事实 |
 | **9 · 等待、决策与 I2 收口** | World 可等待查询（含 events 的合法增量等待）、必要保留/引用保护；Runtime/Program 的 waitUntil、decide/checkpoint、continue、决策传播与消费；补齐 replace_pending/preempt_current 及相关停止/交付竞争 | 批 6–8；对应 World/Runtime/Program 合同 | 程序等待时其他合法调用可推进；读→等待不漏变化，reset/unknown 可解释；决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实。经正式模型入口完成完整 I2 和第二次程序复用校准 |
 

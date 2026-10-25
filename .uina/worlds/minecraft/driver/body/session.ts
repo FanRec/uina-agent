@@ -12,6 +12,7 @@
  * 上游 simulatePlayer 在 emit 前读取 controlState，构成模拟前窄接缝）。
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	AttackOutcome,
 	BlockTarget,
@@ -85,7 +86,17 @@ function isIntVec(v: Vec3): boolean {
 export class BodySessionImpl implements BodySession {
 	readonly body: Ref;
 	readonly owner: ControlOwner;
-	readonly signal: AbortSignal;
+	private readonly scopes = new AsyncLocalStorage<
+		{ signal: AbortSignal; owner: ControlOwner; guard(): void; recorder: EffectRecorder } | undefined
+	>();
+	get signal(): AbortSignal {
+		return this.scopes.getStore()?.signal ?? this.abortController.signal;
+	}
+	runScoped<T>(scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }, work: () => Promise<T>): Promise<T> {
+		const signal = AbortSignal.any([scope.signal, this.abortController.signal]);
+		const recorder = new EffectRecorder({ record: (fact) => this.deps.sink.record({ ...fact, owner: scope.owner }) });
+		return this.scopes.run({ ...scope, signal, recorder }, work);
+	}
 
 	private state: BodySessionState = "active";
 	private closePromise: Promise<void> | null = null;
@@ -93,25 +104,31 @@ export class BodySessionImpl implements BodySession {
 	private readonly deps: BodySessionDeps;
 	private readonly abortController = new AbortController();
 	/** 使用状态归属：hand → 占用它的 Operation（一次激活/hold 建档，endUse/hold 结束释放）。 */
-	private readonly ownedUse = new Map<Hand, Ref>();
+	private readonly ownedUse = new Map<Hand, { operation: Ref; owner: ControlOwner; recorder: EffectRecorder }>();
 	private pendingOps = 0;
 	private ownedWindow: WindowSessionImpl | null = null;
 	private openingWindow = false;
 	private barrierProven = true;
-	private readonly recorder: EffectRecorder;
+	private readonly rootRecorder: EffectRecorder;
+	private get recorder(): EffectRecorder {
+		return this.scopes.getStore()?.recorder ?? this.rootRecorder;
+	}
+	private boundCheck(): () => void {
+		const scope = this.scopes.getStore();
+		return () => this.scopes.run(scope, () => this.recheck());
+	}
 	private detachHost: () => void;
 
 	constructor(body: Ref, owner: ControlOwner, deps: BodySessionDeps) {
 		this.body = body;
 		this.owner = owner;
 		this.deps = deps;
-		this.recorder = new EffectRecorder(deps.sink);
+		this.rootRecorder = new EffectRecorder({ record: (fact) => deps.sink.record({ ...fact, owner: this.owner }) });
 		const identity = deps.host.identity;
 		if (identity == null) {
 			throw new Error("body session requires a ready connection identity");
 		}
 		this.identity = identity;
-		this.signal = this.abortController.signal;
 		this.detachHost = deps.host.on((notice) => {
 			if (notice.kind === "disconnected") {
 				this.revoke("connection_lost");
@@ -190,16 +207,17 @@ export class BodySessionImpl implements BodySession {
 				}
 			}
 			if (bot.usingHeldItem && this.ownedUse.size > 0) {
+				const recorder = [...this.ownedUse.values()].at(-1)!.recorder;
 				const eff = this.deps.mintEff();
 				const op = this.deps.mintOp();
 				try {
 					protocolFor(bot).endUse();
-					this.recorder.record(eff, op, "body.endUse@1", "cleanup", "sent", "met", {
+					recorder.record(eff, op, "body.endUse@1", "cleanup", "sent", "met", {
 						reason,
 						detail: "owned item use released during revocation; release side effects not confirmed",
 					});
 				} catch {
-					this.recorder.record(eff, op, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
+					recorder.record(eff, op, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
 				}
 			}
 		}
@@ -222,6 +240,14 @@ export class BodySessionImpl implements BodySession {
 	// ---- 写入核验（§5.3） ----
 
 	private writeDenial(): CallFailure | null {
+		const scope = this.scopes.getStore();
+		if (scope) {
+			try {
+				scope.guard();
+			} catch (e) {
+				return e as CallFailure;
+			}
+		}
 		try {
 			this.deps.assertActionAllowed();
 		} catch (err) {
@@ -377,7 +403,11 @@ export class BodySessionImpl implements BodySession {
 					});
 				}
 				protocolFor(bot).useItem(hand === "off" ? 1 : 0);
-				this.ownedUse.set(hand, op);
+				this.ownedUse.set(hand, {
+					operation: op,
+					owner: this.scopes.getStore()?.owner ?? this.owner,
+					recorder: this.recorder,
+				});
 			}
 
 			// attack：只在本次输入安装时派发一次，不随 ticks 重复
@@ -448,6 +478,7 @@ export class BodySessionImpl implements BodySession {
 	 * 失败一律抛错并携带实际步数；短执行不包装为完整成功。
 	 */
 	private consumeTicks(bot: MineflayerBot, ticks: number, eff: Ref): Promise<number> {
+		const signal = this.signal;
 		return new Promise<number>((resolve, reject) => {
 			let consumed = 0;
 			let lastTickAt = Date.now();
@@ -455,7 +486,7 @@ export class BodySessionImpl implements BodySession {
 			const cleanup = () => {
 				bot.removeListener("physicsTick", onTick as never);
 				clearInterval(watchdog);
-				this.signal.removeEventListener("abort", onAbort);
+				signal.removeEventListener("abort", onAbort);
 			};
 			const settle = (fn: () => void) => {
 				if (settled) return;
@@ -503,7 +534,7 @@ export class BodySessionImpl implements BodySession {
 					),
 				);
 			};
-			this.signal.addEventListener("abort", onAbort, { once: true });
+			signal.addEventListener("abort", onAbort, { once: true });
 			bot.on("physicsTick", onTick as never);
 		});
 	}
@@ -519,19 +550,20 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	private releaseUse(bot: MineflayerBot, hand: Hand, op: Ref, reason: string): void {
-		if (this.ownedUse.get(hand) !== op) return; // 不清理无委托关系的其他操作资源
+		const use = this.ownedUse.get(hand);
+		if (use?.operation !== op) return; // 不清理无委托关系的其他操作资源
 		this.ownedUse.delete(hand);
 		if (!bot.usingHeldItem) return;
 		const eff = this.deps.mintEff();
 		const cleanupOp = this.deps.mintOp();
 		try {
 			protocolFor(bot).endUse();
-			this.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "sent", "met", {
+			use.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "sent", "met", {
 				reason,
 				note: "held use released; release side effects (e.g. bow draw) not confirmed",
 			});
 		} catch {
-			this.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
+			use.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
 		}
 	}
 
@@ -663,6 +695,7 @@ export class BodySessionImpl implements BodySession {
 	 * 窗口内无观察 = false（看过但没有）；中止/断线 = null（没看完，不得宣称未命中）。
 	 */
 	private awaitHurt(bot: MineflayerBot, networkId: number, windowMs: number): Promise<boolean | null> {
+		const signal = this.signal;
 		return new Promise<boolean | null>((resolve) => {
 			let done = false;
 			const onHurt = (entity: MFEntity | null) => {
@@ -679,7 +712,7 @@ export class BodySessionImpl implements BodySession {
 				bot.removeListener("entityHurt", onHurt as never);
 				bot.removeListener("entityDead", onDead as never);
 				bot.removeListener("end", onEnd as never);
-				this.signal.removeEventListener("abort", onAbort);
+				signal.removeEventListener("abort", onAbort);
 			};
 			function finish(value: boolean | null) {
 				if (done) return;
@@ -690,7 +723,7 @@ export class BodySessionImpl implements BodySession {
 			bot.on("entityHurt", onHurt as never);
 			bot.on("entityDead", onDead as never);
 			bot.on("end", onEnd as never);
-			this.signal.addEventListener("abort", onAbort, { once: true });
+			signal.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 
@@ -712,7 +745,11 @@ export class BodySessionImpl implements BodySession {
 				});
 			}
 			protocolFor(bot).useItem(hand === "off" ? 1 : 0);
-			this.ownedUse.set(hand, op);
+			this.ownedUse.set(hand, {
+				operation: op,
+				owner: this.scopes.getStore()?.owner ?? this.owner,
+				recorder: this.recorder,
+			});
 			this.recorder.record(eff, op, "body.useItem@1", "dispatch", "sent", "met", {
 				completionContract: "one protocol activation dispatched",
 				hand,
@@ -731,9 +768,13 @@ export class BodySessionImpl implements BodySession {
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
-			const hadOwned = this.ownedUse.size > 0;
-			this.ownedUse.clear();
-			if (!bot.usingHeldItem) {
+			const scopeOwner = this.scopes.getStore()?.owner;
+			const owned = [...this.ownedUse].filter(
+				([, use]) => scopeOwner === undefined || JSON.stringify(use.owner) === JSON.stringify(scopeOwner),
+			);
+			const hadOwned = owned.length > 0;
+			for (const [hand] of owned) this.ownedUse.delete(hand);
+			if (!hadOwned || !bot.usingHeldItem) {
 				// 已结束状态幂等，不重复发 release
 				this.recorder.record(eff, op, "body.endUse@1", "receipt", "not_sent", "met", {
 					completionContract: "no owned item use to end",
@@ -875,7 +916,7 @@ export class BodySessionImpl implements BodySession {
 			bot,
 			protocol: protocolFor(bot),
 			signal: this.signal,
-			guard: () => this.recheck(),
+			guard: this.boundCheck(),
 			canCleanup: () =>
 				this.deps.bot() === bot &&
 				this.deps.host.state === "ready" &&
@@ -902,6 +943,7 @@ export class BodySessionImpl implements BodySession {
 					recoverable: false,
 				});
 			const deps = this.operationDeps(bot);
+			const check = this.boundCheck();
 			const window = new WindowSessionImpl({
 				...deps,
 				player: true,
@@ -909,7 +951,7 @@ export class BodySessionImpl implements BodySession {
 				connection: this.identity.connection,
 				incarnation: this.identity.incarnation,
 				guard: () => {
-					this.recheck();
+					check();
 					if (this.ownedWindow !== window)
 						throw fail({
 							code: "REFERENCE_STALE",
@@ -989,13 +1031,14 @@ export class BodySessionImpl implements BodySession {
 
 	/** physicsTick precedes updatePosition in the installed plugin; awaiting resumes after that stack. */
 	private awaitContainerPhysicsBoundary(bot: MineflayerBot): Promise<void> {
+		const signal = this.signal;
 		return new Promise((resolve, reject) => {
 			let settled = false;
 			const cleanup = () => {
 				clearTimeout(timer);
 				bot.removeListener("physicsTick", onTick);
 				bot.removeListener("end", onEnd);
-				this.signal.removeEventListener("abort", onAbort);
+				signal.removeEventListener("abort", onAbort);
 			};
 			const finish = (error?: CallFailure) => {
 				if (settled) return;
@@ -1040,8 +1083,8 @@ export class BodySessionImpl implements BodySession {
 			);
 			bot.on("physicsTick", onTick);
 			bot.on("end", onEnd);
-			this.signal.addEventListener("abort", onAbort, { once: true });
-			if (this.signal.aborted) onAbort();
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
 		});
 	}
 
@@ -1137,6 +1180,7 @@ export class BodySessionImpl implements BodySession {
 					recoverable: false,
 				});
 			}
+			const check = this.boundCheck();
 			const window = new WindowSessionImpl({
 				bot,
 				signal: this.signal,
@@ -1148,7 +1192,7 @@ export class BodySessionImpl implements BodySession {
 				mintOp: this.deps.mintOp,
 				mintEff: this.deps.mintEff,
 				guard: () => {
-					this.recheck();
+					check();
 					if (this.ownedWindow !== window || this.deps.bot() !== bot)
 						throw fail({
 							code: "REFERENCE_STALE",

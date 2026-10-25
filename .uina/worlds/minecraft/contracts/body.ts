@@ -236,6 +236,8 @@ export interface BodyOps {
 }
 
 export interface BodySession extends BodyOps {
+	/** Trusted Runtime scope; all resumed writes recheck this qualification. */
+	runScoped<T>(scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }, work: () => Promise<T>): Promise<T>;
 	close(): Promise<void>;
 }
 

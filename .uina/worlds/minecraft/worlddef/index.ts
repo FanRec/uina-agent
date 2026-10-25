@@ -47,7 +47,10 @@ export function createMinecraftWorld(
 			Object.entries(actionSchemas).map(([name, parameters]) => [
 				name,
 				{
-					description: name === "run" ? "Run one exact native capability; accepted may continue in background" : name,
+					description:
+						name === "run"
+							? "Run an exact capability, named program or JavaScript code; accepted may continue in background"
+							: name,
 					parameters,
 					run: async (params, ctx) =>
 						facade

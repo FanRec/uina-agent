@@ -27,7 +27,9 @@ export interface Origin {
 	invocation?: Ref;
 }
 
-export type Entry = { kind: "call"; selector: Selector; input: JsonValue };
+export type Entry =
+	| { kind: "call"; selector: Selector; input: JsonValue }
+	| { kind: "program"; source: import("./program.js").SourceRequest; input: JsonValue };
 
 export type Schedule =
 	| { kind: "enqueue" }
@@ -169,6 +171,13 @@ export interface CallRecord {
 	/** 原生与子调用为 ExactRef；程序调用为 <name> 或 code:<digest 前 8 位>。 */
 	ref: Ref;
 	implementation: "native" | "program";
+	program?: {
+		name: string | null;
+		origin: "code" | "library";
+		digest: string;
+		snapshot: string;
+		diagnostic?: import("./program.js").ProgramDiagnostic;
+	};
 	digest: string;
 	access: "act";
 	input: JsonValue;
@@ -212,6 +221,8 @@ export interface SegmentRecord {
 // ---- 可信组合根注入（public-api §7.1）----
 
 export interface DriverExecutionFact {
+	/** Trusted Driver attribution, captured with the operation; never supplied by guest. */
+	owner?: ControlOwner;
 	effect: Ref;
 	operation: Ref;
 	contract: ExactRef;
@@ -306,7 +317,7 @@ export interface OwnerGateReceipt {
 }
 /** 可信本地升级口；launch 由组合根绑定，不由调用者提供。 */
 export interface ControlRetirement {
-	source: "runtime" | "driver";
+	source: "runtime" | "driver" | "program";
 	subject: Ref | null;
 	code: "CONTROL_ISOLATION_FAILED" | "EXECUTION_DOMAIN_UNRETIRED";
 	detail: string;

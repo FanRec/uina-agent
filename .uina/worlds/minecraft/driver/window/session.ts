@@ -164,9 +164,13 @@ export class WindowSessionImpl implements WindowSession {
 		if (this.retired) return false;
 		try {
 			this.deps.guard();
-		} catch {
-			this.retire(false);
-			return false;
+		} catch (error) {
+			// A delegated parent's window remains an observation source. Its public
+			// check() still rejects writes while suspended; identity replacement retires it below.
+			if ((error as { code?: string }).code !== "BODY_SUSPENDED") {
+				this.retire(false);
+				return false;
+			}
 		}
 		if (
 			this.native != null &&

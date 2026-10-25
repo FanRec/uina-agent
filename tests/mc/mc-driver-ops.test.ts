@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { captureFailure, makeBodyHarness, openSignal, ownerT } from "./mc-fake-driver.js";
 import type { BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/session.js";
+import { scopedBody } from "../../.uina/worlds/minecraft/runtime/scoped-body.js";
+import { EventEmitter } from "node:events";
 
 /**
  * 身体写操作的语义回归（driver.md §7）。
@@ -10,6 +12,27 @@ import type { BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/s
  */
 
 describe("drive：任何退出路径都撤销输入", () => {
+	test("a delegated drive once failure releases its own item use without closing the ancestor body", async () => {
+		const events = new EventEmitter();
+		const h = makeBodyHarness({
+			on: events.on.bind(events),
+			removeListener: events.removeListener.bind(events),
+			setControlState: () => {},
+			heldItem: { name: "bow", count: 1 },
+		});
+		const session = await h.port.acquire(ownerT(1), openSignal());
+		const view = scopedBody(session, { signal: openSignal(), owner: ownerT(2), guard: () => {} });
+		const pending = captureFailure(view.player.drive({ keys: {}, use: { mode: "once", hand: "main" } }, 1));
+		await new Promise((r) => setTimeout(r, 10));
+		events.emit("physicsTick");
+		expect((await pending).code).toBe("INTERNAL");
+		expect(h.bot.usingHeldItem).toBe(true);
+		await view.close();
+		expect(h.bot.usingHeldItem).toBe(false);
+		expect((session as BodySessionImpl).sessionState).toBe("active");
+		expect(h.facts.find((f) => f.contract === "body.endUse@1")?.owner).toEqual(ownerT(2));
+		await session.close();
+	});
 	test("中断退出：键位全部复位，hold 蓄力释放并留下清理事实", async () => {
 		const pressed = new Map<string, boolean>();
 		let deactivated = 0;

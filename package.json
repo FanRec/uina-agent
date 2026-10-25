@@ -24,6 +24,7 @@
     "dev:mc:executor": "tsx .uina/worlds/minecraft/dev/executor.ts",
     "dev:mc:native": "tsx .uina/worlds/minecraft/dev/native-host.ts",
     "dev:mc:model": "tsx .uina/worlds/minecraft/dev/native-host.ts --model",
+    "dev:mc:program": "tsx .uina/worlds/minecraft/dev/program.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "biome format . && pnpm check:boundaries && tsc --noEmit",
@@ -53,6 +54,7 @@
     "jiti": "^2.7.0",
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
+    "quickjs-emscripten": "0.32.0",
     "vec3": "0.1.7",
     "ws": "^8.21.3"
   }

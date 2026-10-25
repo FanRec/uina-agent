@@ -1,7 +1,7 @@
 /** Batch 6 acceptance via the real Host/WorldTool/managed process. --model uses existing Provider config. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UinaHost } from "../../../../src/host/host.js";
@@ -25,6 +25,7 @@ async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms
 	}
 }
 const modelMode = process.argv.includes("--model");
+const programMode = process.argv.includes("--program");
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-model-" : "uina-mc-native-"));
 console.log(`[mc-native] ${modelMode ? "REAL MODEL" : "controlled Provider, REAL Host/Paper"} data=${root}`);
 const configPath = join(root, "config.json");
@@ -188,11 +189,16 @@ try {
 	});
 	if (modelMode) {
 		console.log(`[mc-native] real model=${host.snapshot().modelName}`);
-		for (const task of [
-			"你在独立 Minecraft 生存验收区，附近有原木。仅使用 minecraft 工具和它的指南，自行发现需要的能力，采集两根原木并制作至少八块橡木木板。不要使用服务器指令、其他工具或管理员补料。完成后核对库存。",
-			"尝试制作一把铁镐，先核对缺料。如果当前材料不足，说明具体差额，然后改为采集原木、制作工作台及一把木镐，并核实实际产物。不要使用服务器指令或管理员补料。",
-			"查询你的位置，开始向 x 正方向四十格的导航。工具返回 accepted 后立即显式停止它，等待停止结论并读取固定记录。不要通过取消工具等待代替停止，不使用服务器指令。",
-		]) {
+		for (const task of programMode
+			? [
+					"仅使用 minecraft 工具，通过 run 的 code 提交一个普通 JS 程序：读库存，先尝试制作一把铁镐并捕获缺料错误，随后采集两根橡木原木并制作至少八块橡木木板，最后读取库存核验。自行 describe 所需能力，不使用服务器指令、补料或其他工具。必须实际提交程序，不能只逐条调用原生动作。",
+					"仅使用 minecraft，通过 run 的 code 提交一个会持续等待的程序，使用 mc.sleep 和 mc.progress。获得 accepted 后显式 runs.stop，再查询终态并读取调用记录。不要把取消工具等待当成停止，不使用服务器指令。",
+				]
+			: [
+					"你在独立 Minecraft 生存验收区，附近有原木。仅使用 minecraft 工具和它的指南，自行发现需要的能力，采集两根原木并制作至少八块橡木木板。不要使用服务器指令、其他工具或管理员补料。完成后核对库存。",
+					"尝试制作一把铁镐，先核对缺料。如果当前材料不足，说明具体差额，然后改为采集原木、制作工作台及一把木镐，并核实实际产物。不要使用服务器指令或管理员补料。",
+					"查询你的位置，开始向 x 正方向四十格的导航。工具返回 accepted 后立即显式停止它，等待停止结论并读取固定记录。不要通过取消工具等待代替停止，不使用服务器指令。",
+				]) {
 			await host.submitText(task, "direct");
 			await host.waitForIdle();
 			console.log(
@@ -201,6 +207,133 @@ try {
 		}
 		await step("real model checkpoints captured", async () => {
 			assert.ok(transcript.some((e) => (e as { type?: string }).type === "tool_result"));
+			if (programMode) {
+				assert.ok(
+					transcript.some((e) => {
+						const t = e as ToolResultEvent;
+						return (
+							t.type === "tool_result" &&
+							t.args.action === "run" &&
+							typeof (t.args.params as { code?: unknown })?.code === "string"
+						);
+					}),
+					"model must actually submit JavaScript",
+				);
+				assert.ok(
+					((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8,
+					"model program must produce real planks",
+				);
+				const list = await direct("runs", { op: "list", activeOnly: false });
+				const cancelled = (list.items as { run: string; phase: string; outcome?: string }[]).filter(
+					(r) => r.phase === "finished" && r.outcome === "cancelled",
+				);
+				let stoppedProgram = false;
+				for (const r of cancelled) {
+					const calls = await direct("runs", { op: "calls", run: r.run });
+					if ((calls.items as { implementation: string }[]).some((c) => c.implementation === "program"))
+						stoppedProgram = true;
+				}
+				assert.ok(stoppedProgram, "model must explicitly stop a Program Run");
+			}
+		});
+	} else if (programMode) {
+		const runCode = async (code: string, input: JsonValue = {}) => finish(await ask("run", { code, input }));
+		const succeeded = (r: unknown) =>
+			assert.equal((r as { snapshot: { outcome: string } }).snapshot.outcome, "succeeded", JSON.stringify(r));
+		await step("Program read/call, domain correction and real collect/craft", async () => {
+			const r = await runCode(`async function main(mc){
+        const before=await mc.read('inventory@1');
+        let missing=null;try{await mc.call('craft@1',{item:'iron_pickaxe',count:1});}catch(e){missing=e.code;}
+        await mc.call('collect@1',{item:'oak_log',count:2,radius:8});
+        await mc.call('craft@1',{item:'oak_planks',count:8});
+        const after=await mc.read('inventory@1');mc.progress({summary:'crafted',count:after.value.counts.oak_planks});
+        return {missing,before:before.value.counts,after:after.value.counts};
+      }`);
+			succeeded(r);
+			assert.ok(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8);
+			const record = await direct("runs", { op: "record", ref: r.snapshot.run });
+			assert.equal(
+				(record.record as { value: { value: { missing: string } } }).value.value.missing,
+				"MISSING_MATERIAL",
+			);
+		});
+		await step("one named program runs independently, nested and body-delegated", async () => {
+			const dir = join(context.worldDataDir!, "programs");
+			await mkdir(dir, { recursive: true });
+			const source = `async function main(mc,input){return mc.withBody(async b=>{await b.lookAt(input.at);return {pose:'observed'};});}`;
+			await writeFile(join(dir, "pose.js"), source);
+			const self = (await observe("self@1")).value as { place: { position: { x: number; y: number; z: number } } };
+			const input = { at: { ...self.place.position, y: self.place.position.y + 1 } };
+			succeeded(await finish(await ask("run", { selector: "pose", input })));
+			succeeded(await runCode(`async function main(mc,input){return mc.call('pose',input);}`, input));
+			const r = await runCode(`async function main(mc,input){return mc.withBody(b=>b.call('pose',input));}`, input);
+			succeeded(r);
+			const calls = await direct("runs", { op: "calls", run: r.snapshot.run });
+			const child = (calls.items as { ref: string; record: string }[]).find((c) => c.ref === "pose")!;
+			assert.ok(child);
+			const record = await direct("runs", { op: "record", ref: child.record });
+			const material = (record.record as { value: { program: { snapshot: string; digest: string } } }).value.program;
+			assert.equal(await readFile(material.snapshot, "utf8"), source);
+		});
+		await step("guest window reference supports consecutive confirmed take/put", async () => {
+			await command("/setblock 16001 200 16001 minecraft:air");
+			await command("/setblock 16001 200 16001 minecraft:chest");
+			await command("/item replace block 16001 200 16001 container.0 with minecraft:dirt 4");
+			const r = await runCode(`async function main(mc){return mc.withBody(async b=>{
+        const w=await b.openContainer({x:16001,y:200,z:16001});await w.snapshot();
+        const first=await w.click({slot:0});if(first.needsSnapshot)await w.snapshot();
+        let refused=null;try{await w.close();}catch(e){refused=e.code;}
+        const second=await w.click({slot:0});const after=await w.snapshot();await w.close();
+        return {first,second,refused,item:after.value.slots[0].item,cursor:after.value.cursor};
+      });}`);
+			succeeded(r);
+			const record = await direct("runs", { op: "record", ref: r.snapshot.run });
+			assert.deepEqual(
+				(record.record as { value: { value: { cursor: unknown; item: { count: number } } } }).value.value.cursor,
+				null,
+			);
+			assert.equal((record.record as { value: { value: { item: { count: number } } } }).value.value.item.count, 4);
+			assert.equal(
+				(record.record as { value: { value: { refused: string } } }).value.value.refused,
+				"CURSOR_NOT_EMPTY",
+			);
+		});
+		await step("background Program completion obtains a canonical Host receipt", async () => {
+			const r = await finish(
+				await ask("run", { code: "async function main(mc){await mc.sleep(1800);return {done:true};}" }),
+			);
+			succeeded(r);
+			const ref = (r.snapshot as { completionRef: string }).completionRef;
+			await until(
+				() => context.delivery!.inspect(ref),
+				(s) => s.kind === "committed",
+			);
+		});
+		await step("tool wait cancellation preserves Program; explicit stop retires guest", async () => {
+			const abort = new AbortController();
+			const pending = host.runToolDirect(
+				"minecraft",
+				{
+					action: "run",
+					params: {
+						code: "async function main(mc){await mc.withBody(async b=>{await b.lookAt({x:16000,y:201,z:16000});await mc.sleep(60000);});}",
+					},
+				},
+				abort.signal,
+			);
+			const timer = setTimeout(() => abort.abort(), 300);
+			const reply = await pending;
+			clearTimeout(timer);
+			const accepted = reply.details as { kind: string; snapshot: { run: string }; requestId: string };
+			assert.equal(accepted.kind, "accepted", JSON.stringify(reply));
+			assert.notEqual((await direct("runs", { op: "status", run: accepted.snapshot.run })).phase, "finished");
+			await direct("runs", { op: "stop", request: accepted.requestId });
+			const stopped = await direct("runs", { op: "wait", run: accepted.snapshot.run, timeoutMs: 10000 });
+			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
+			await until(
+				() => direct("runs", { op: "status" }),
+				(s) => (s.side as { program: { residentGuests: number } }).program.residentGuests === 0,
+			);
 		});
 	} else {
 		await step("discover from the actual descriptor catalogue", async () => {

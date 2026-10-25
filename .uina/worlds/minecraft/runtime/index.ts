@@ -59,6 +59,8 @@ export interface MinecraftRuntimeOptions {
 	world: WorldPort;
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
+	program?: import("../contracts/program.js").ProgramPort;
+	queryRefs?: string[];
 	environment?: { serverVersion: string; protocol: number };
 }
 
@@ -138,7 +140,7 @@ export class MinecraftRuntime {
 		}
 		const refs = new RuntimeRefs(opts.namespace);
 		// 源码用 .ts（tsx 装载），构建产物用同目录 .js。
-		const workerFile = import.meta.url.endsWith(".js") ? "./runtime-db-worker.js" : "./runtime-db-worker.ts";
+		const workerFile = import.meta.url.endsWith(".js") ? "./worker-entry.js" : "./worker-entry.ts";
 		const worker = new Worker(new URL(workerFile, import.meta.url));
 		const flags: LifecycleFlags = { closed: false };
 		// 两段启动段1：打开握手。fatal/conflict/意外退出都终结 open promise。
@@ -195,6 +197,8 @@ export class MinecraftRuntime {
 			world: opts.world,
 			playerPort: opts.playerPort,
 			callables: opts.callables,
+			program: opts.program,
+			queryRefs: opts.queryRefs,
 			worldOwner: opts.worldOwner,
 			environment: opts.environment,
 			ownerLifetimeMs: opts.ownerLifetimeMs,
@@ -287,6 +291,12 @@ export class MinecraftRuntime {
 	assertActionAllowed(): void {
 		this.engine.assertActionAllowed();
 		if (this.queue.faultReason != null) throw new Error(`runtime recorder unavailable: ${this.queue.faultReason}`);
+	}
+	sealProgramCalls(calls: string[], reason: string): void {
+		this.engine.sealProgramCalls(calls, reason);
+	}
+	programChanged(): void {
+		this.engine.programChanged();
 	}
 
 	lookup(requestId: Ref): SubmissionLookup {

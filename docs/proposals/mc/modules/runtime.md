@@ -336,15 +336,15 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v3 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../native-host-implementation.md)，程序/I2 仍缺 |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v4 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../native-host-implementation.md)，批 7 程序执行已接，I2 仍缺 |
 | Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
-| Library | 旧 SQLite/CAS Assets 已清理；普通文件库尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
+| Library | 旧 SQLite/CAS Assets 已清理；批 7 已有程序只读材料与共用头解析，文件管理尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
 | World Watch | 当前事实的保守失效 Watch 已实现；事件 Watch 尚缺 | 不把历史 container.last 当作当前库存或可等待条件 |
 | Uina 接入 | 批 5 Host 通用回执、批 6 原生 World/可靠交付已接通 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
-QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；真实 QuickJS、Host 交付与断电验收仍未完成，不能互相替代。
+QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；批 7 已有真实 QuickJS/Worker、Host/Session 与 Paper 程序执行验收，详见 [实施记录](../program-implementation.md)；断电、完整 I2 与长期运行仍未验收，不能互相替代。
 
 ### 9.2 技术取舍与待验证项
 

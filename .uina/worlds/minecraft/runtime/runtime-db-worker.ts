@@ -75,6 +75,7 @@ export interface SegmentRow {
 }
 
 export interface CallRow {
+	program?: string | null;
 	call: string;
 	run: string;
 	segment: string;
@@ -156,7 +157,7 @@ export type WorkerResponse =
 	| { type: "query_reply"; id: number; value?: unknown; error?: { code: string; message: string } }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "3";
+const SCHEMA_VERSION = "4";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -216,6 +217,7 @@ CREATE TABLE IF NOT EXISTS segments (
 	evidence TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS calls (
+	program TEXT,
 	call TEXT PRIMARY KEY,
 	run TEXT NOT NULL,
 	segment TEXT NOT NULL,
@@ -526,8 +528,9 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 		case "call": {
 			const r = mutation.row;
 			db.prepare(
-				"INSERT INTO calls (call, run, segment, parent, record, ref, implementation, digest, access, input, execution, outcome, value, closed_by_parent, error, progress, effects, evidence, completion) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(call) DO UPDATE SET record = excluded.record, execution = excluded.execution, outcome = excluded.outcome, value = excluded.value, closed_by_parent = excluded.closed_by_parent, error = excluded.error, progress = excluded.progress, effects = excluded.effects, evidence = excluded.evidence, completion = excluded.completion",
+				"INSERT INTO calls (program, call, run, segment, parent, record, ref, implementation, digest, access, input, execution, outcome, value, closed_by_parent, error, progress, effects, evidence, completion) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(call) DO UPDATE SET program = excluded.program, record = excluded.record, execution = excluded.execution, outcome = excluded.outcome, value = excluded.value, closed_by_parent = excluded.closed_by_parent, error = excluded.error, progress = excluded.progress, effects = excluded.effects, evidence = excluded.evidence, completion = excluded.completion",
 			).run(
+				r.program ?? null,
 				r.call,
 				r.run,
 				r.segment,

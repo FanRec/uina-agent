@@ -844,3 +844,8 @@ DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 saf
 | Uina/Executor | ID 持久化后 IPC；短任务真实直返、长任务至少一次持久交付；真实 Host 回执与停滞恢复；过滤过时 decision；重复不重放游戏 |
 
 这些是接口实现的验收要求，尚未执行的项目不能写成通过。解析/存储类、SQL 表、插件内部算法、完整原版函数目录及延迟常数由模块设计和实验决定；它们不应阻挡另一模块基于以上公开合同开发。
+
+
+## 批 7 实现说明（2026-10-25）
+
+当前执行子集见 [Program 实施记录](program-implementation.md)。Driver 的 BodySession 提供可信 Runtime 使用的 runScoped（局部取消、ControlOwner 与每次写入资格检查），不向 guest 暴露该入口。DriverExecutionFact 可携带该可信作用域捕获的 owner，晚事实保留首次效果归属。程序调用记录增加 program 来源、摘要、确切 snapshot 路径与失败诊断；Runtime schema v4，不自动迁移旧库，Host journal 仍 v4。Window 仍只支持 mode-0 左右点击；本批不开放等待/决策/反馈或 Library 管理接口。

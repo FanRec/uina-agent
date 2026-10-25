@@ -32,7 +32,7 @@ export interface ExecutionSideStatus {
 	world: WorldAvailabilityValue;
 	runtime: "ready" | "unavailable";
 	safety: { active: null; last: null };
-	program: null;
+	program: import("./program.js").ProgramCapacity | null;
 	faults: { code: string; message: string }[];
 	retirement: RetirementRequest | null;
 }

@@ -4,7 +4,7 @@
 
 批 4 有 Windows x64 双 Job、受管 bootstrap/Companion、固定 IPC、Owner/心跳/三门、停止/退役/恢复。批 5 有 journal v4、工具与输入 receipt、提交索引、来源绑定 inspect/retire、Mailbox 去重与 World 上下文接线。
 
-下一任务是 **批 7：Program 执行闭环**。Program/Library、等待/决策与完整 I2 按批 7–9 推进；其余玩法按实际依赖与校准收益选择。批 6 已有正式 minecraft 原生模型工具与真实模型校准，范围仍为现有 25 项能力。
+批 7 Program 执行闭环已实现（QuickJS/Worker、统一调用与身体委托、确切快照、只读程序材料）；见 `docs/proposals/mc/program-implementation.md`。下一任务是 **批 8：Library 文件与发现复用**。文件管理、等待/决策与完整 I2 按批 8–9 推进；其余玩法按实际依赖与校准收益选择。批 6 已有正式 minecraft 原生模型工具与真实模型校准，范围仍为现有 25 项能力。
 
 开工先读 [总规划 §10](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读 [公开合同](../../../docs/proposals/mc/public-api.md) 与所属模块。Host 回执行为见 [合同](../../../docs/proposals/runtime/delivery-receipts.md)，批 6 证据见 [实施记录](../../../docs/proposals/mc/native-host-implementation.md)。
 

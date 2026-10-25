@@ -83,11 +83,8 @@ export class MinecraftFacade {
 		}
 	}
 	private async run(params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
-		if (params.code !== undefined || typeof params.selector !== "string" || !params.selector.includes("@"))
-			throw new RpcError(
-				"PROGRAM_UNAVAILABLE",
-				"this stage supports exact native selectors; programs and code are not delivered",
-			);
+		if ((typeof params.code === "string") === (typeof params.selector === "string"))
+			throw new RpcError("INVALID_INPUT", "provide exactly one code or selector");
 		const schedule = params.schedule ?? { kind: "enqueue" };
 		if ((schedule as { kind?: string }).kind !== "enqueue")
 			throw new RpcError("SCHEDULE_UNAVAILABLE", "this stage supports enqueue only");
@@ -96,7 +93,16 @@ export class MinecraftFacade {
 		const requestId = randomUUID();
 		const request: RunRequest = {
 			requestId,
-			entry: { kind: "call", selector: params.selector, input: (params.input ?? {}) as JsonValue },
+			entry:
+				typeof params.code === "string"
+					? { kind: "program", source: { code: params.code }, input: (params.input ?? {}) as JsonValue }
+					: typeof params.selector === "string" && params.selector.includes("@")
+						? { kind: "call", selector: params.selector, input: (params.input ?? {}) as JsonValue }
+						: {
+								kind: "program",
+								source: { name: params.selector as string },
+								input: (params.input ?? {}) as JsonValue,
+							},
 			schedule: { kind: "enqueue" },
 		};
 		await this.executor.ledger.putRequest({

@@ -1,10 +1,10 @@
 /**
- * Runtime 执行引擎：受理、调用组合、身体仲裁、记录结算（I1 子集）。
+ * Runtime 执行引擎：原生/程序受理、调用组合、身体仲裁与记录结算。
  *
  * 唯一定义来源：docs/proposals/mc/modules/runtime.md §2（受理）、§3（调用与
  * 身体）、§4.3/§4.4（关闭/停止）、§5（记录与结算）、§5.6（五态）。
- * I1 范围：Entry 只支持原生 call、Schedule 只支持 enqueue；replace_pending/
- * preempt_current 显式 not_accepted；程序/决策/安全介入/交付处置留后续轮次。
+ * 批 7：支持原生与 Program；Schedule 只支持 enqueue。replace_pending/
+ * preempt_current、决策与安全介入仍未交付；固定报告复用既有持久回执。
  * 不做：逐 Call 等盘（普通子 Call 入队即返回）；恢复自动重放（恢复只读事实
  * 并按 §4.4 表结算未终结 Run）；效果核验器（ctx.verify 对未注册 verifier 如实
  * NOT_FOUND）。owner→effect 关联由引擎经记录队列归属槽建立（§5.4）。
@@ -14,7 +14,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
 import type { ControlOwner, PlayerPort } from "../contracts/body.js";
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../contracts/capabilities.js";
+import type { BodyCallScope, CallContext, NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
 	ControlRetirement,
@@ -43,9 +43,20 @@ import { toCallFailure } from "./failure.js";
 import { RuntimeOwner } from "./owner.js";
 import { RuntimeRefs } from "./refs.js";
 import { RecordQueue } from "./records.js";
-import { canonicalJson, callRowOf, projectSummary, runRowOf, segmentRowOf, summaryFromRow } from "./rows.js";
+import { canonicalJson, sha256Hex, callRowOf, projectSummary, runRowOf, segmentRowOf, summaryFromRow } from "./rows.js";
 import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
-import type { BodyLease, CallFrame, CallState, RunState, RunWaiter, SubmissionState } from "./state.js";
+import type {
+	BodyLease,
+	CallFrame,
+	CallState,
+	RunState,
+	RunWaiter,
+	SubmissionState,
+	ResolvedInvocation,
+} from "./state.js";
+import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
+import { createProgramHost } from "./program-host.js";
+import { scopedBody } from "./scoped-body.js";
 
 // ---- 纯值辅助 ----
 
@@ -57,6 +68,7 @@ interface AjvLike {
 const AjvCtor = createRequire(import.meta.url)("ajv") as new (options: {
 	strict: boolean;
 	allErrors: boolean;
+	addUsedSchema?: boolean;
 }) => AjvLike;
 
 function nowIso(): string {
@@ -92,6 +104,8 @@ export interface EngineOptions {
 	world: WorldPort;
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
+	program?: ProgramPort;
+	queryRefs?: string[];
 	worldOwner: Ref;
 	ownerLifetimeMs?: number;
 	monotonicNow?: () => number;
@@ -108,7 +122,7 @@ export class RuntimeEngine {
 	private readonly queue: RecordQueue;
 	private readonly opts: EngineOptions;
 	private readonly als = new AsyncLocalStorage<CallFrame>();
-	private readonly ajv = new AjvCtor({ strict: false, allErrors: true });
+	private readonly ajv = new AjvCtor({ strict: false, allErrors: true, addUsedSchema: false });
 	private readonly validatorCache = new Map<string, ValidateFunction>();
 	private readonly byRef = new Map<Ref, NativeCallable<JsonValue, JsonValue>>();
 	private readonly runs = new Map<Ref, RunState>();
@@ -332,28 +346,25 @@ export class RuntimeEngine {
 				message: `schedule ${request.schedule.kind} arrives with the executor/preemption work packages`,
 			});
 		}
-		if (request.entry.kind !== "call") {
-			return this.rejectSubmission(owner, request, intentJson, {
-				code: "UNSUPPORTED_ENTRY",
-				message: "program entries arrive with the program work package",
-			});
-		}
 		// 准备材料（§2.1 步骤 2）：解析 + 校验，失败不受理（确定性错误）
-		let callable: NativeCallable<JsonValue, JsonValue>;
+		const run = this.refs.run();
+		let callable: ResolvedInvocation;
 		try {
-			callable = this.resolveCallable(request.entry.selector);
+			callable =
+				request.entry.kind === "program"
+					? await this.prepareProgram(await this.requireProgram().resolve(request.entry.source), run)
+					: await this.resolveCallable(request.entry.selector, run);
 		} catch (err) {
 			const failure = toCallFailure(err);
 			return this.rejectSubmission(owner, request, intentJson, { code: failure.code, message: failure.message });
 		}
 		try {
-			this.validateInput(callable.descriptor, request.entry.input);
+			this.validateInput(callable, request.entry.input);
 		} catch (err) {
 			const failure = toCallFailure(err);
 			return this.rejectSubmission(owner, request, intentJson, { code: failure.code, message: failure.message });
 		}
 		// 唯一受理映射 + 初始记录
-		const run = this.refs.run();
 		const segment = this.refs.segment();
 		const call = this.refs.call();
 		const runRecord = this.refs.record();
@@ -386,6 +397,32 @@ export class RuntimeEngine {
 			waiters: new Set(),
 		};
 		this.runs.set(run, state);
+		if (this.opts.program)
+			state.programScope = this.opts.program.openSegment({
+				run,
+				segment,
+				signal: state.abort.signal,
+				...(callable.kind === "program" ? { entry: callable.program } : {}),
+			});
+		// Preparation awaited file/Worker I/O. A concurrent stop must still prevent acceptance.
+		if (this.submissionBarriers.has(request.requestId)) {
+			this.runs.delete(run);
+			await state.programScope?.close("stop");
+			return {
+				kind: "not_accepted",
+				requestId: request.requestId,
+				code: "REQUEST_CANCELLED",
+				message: "request stopped during preparation",
+			};
+		}
+		try {
+			this.owner.assertGeneration(origin, generation);
+		} catch (e) {
+			this.runs.delete(run);
+			await state.programScope?.close("stop");
+			const f = toCallFailure(e);
+			return this.rejectSubmission(owner, request, intentJson, { code: f.code, message: f.message });
+		}
 		// run 取消级联到根调用（§4.4 stop：内存关门先撤销控制）
 		state.abort.signal.addEventListener("abort", () => state.rootCall.abort.abort(), { once: true });
 		const submission: SubmissionState = {
@@ -407,7 +444,7 @@ export class RuntimeEngine {
 					owner,
 					request_id: request.requestId,
 					status: "accepted",
-					operation: callable.descriptor.ref,
+					operation: callable.ref,
 					segment,
 					run,
 					request: JSON.stringify(plain(request)),
@@ -886,6 +923,7 @@ export class RuntimeEngine {
 			} catch (err) {
 				rootThrew = toCallFailure(err);
 			}
+			await state.programScope?.close(state.stopped ? "stop" : rootThrew ? "failed" : "finished");
 			// §5.5 5-6：固定 H → flush → 终结论 → flush → 通知
 			await this.queue.flushThrough(this.queue.capture());
 			state.unknownEffects = this.queue.unknownEffectsFor(state.run);
@@ -927,18 +965,36 @@ export class RuntimeEngine {
 					effects: [],
 					recoverable: false,
 				});
-			const raw = await this.als.run({ call: callState, bodyLease: lease }, () =>
-				callState.callable.invoke(ctx, callState.input),
-			);
-			const validate = this.validatorFor(
-				callState.callable.descriptor.output,
-				`${callState.callable.descriptor.ref}:out`,
-			);
+			const invocation = callState.callable;
+			const raw = await this.als.run({ call: callState, bodyLease: lease }, async () => {
+				if (invocation.kind === "native") return invocation.native.invoke(ctx, callState.input);
+				const host = createProgramHost(ctx, callState.resources, (selector) =>
+					this.byRef.has(selector) ? "act" : this.opts.queryRefs?.includes(selector) ? "read" : undefined,
+				);
+				const result = await state.programScope!.invoke({
+					call: callState.call,
+					program: invocation.program,
+					input: callState.input,
+					checkpoint: null,
+					signal: callState.abort.signal,
+					host,
+				});
+				if (result.kind === "returned") return result.value;
+				if ("scope" in result.failure) callState.diagnostic = result.failure;
+				const f = result.failure;
+				throw callFailure({
+					...f,
+					dispatch: "dispatch" in f ? f.dispatch : "not_sent",
+					effects: "effects" in f ? f.effects : [],
+					recoverable: "recoverable" in f ? f.recoverable : true,
+				});
+			});
+			const validate = this.validatorFor(callState.callable.outputSchema, `${callState.callable.digest}:out`);
 			if (!validate(raw)) {
 				throw callFailure({
 					code: "INTERNAL",
 					source: "capability",
-					message: `output validation failed for ${callState.callable.descriptor.ref}`,
+					message: `output validation failed for ${callState.callable.ref}`,
 					dispatch: callState.effects.length > 0 ? "sent" : "not_sent",
 					effects: [...callState.effects],
 					recoverable: false,
@@ -959,6 +1015,7 @@ export class RuntimeEngine {
 		}
 		if (callState.parent == null) state.interruptedChildren = strays.map((child) => child.call);
 		callState.abort.abort();
+		await Promise.allSettled([...callState.resources].map((close) => close()));
 		await Promise.all(strays.map((child) => child.settled));
 		// §5.5 step 4：不可变完成截面入队（不逐 Call 等盘）
 		const interrupted = callState.closedByParent != null || state.stopped;
@@ -999,14 +1056,27 @@ export class RuntimeEngine {
 				recoverable: false,
 			});
 		}
-		const callable = this.resolveCallable(selector);
-		this.validateInput(callable.descriptor, input);
+		if (lease != null && lease.activeCall !== parent.call)
+			throw this.scopeError("BODY_BUSY", "another delegation is active");
+		const resolved = this.resolveCallable(selector, state.run, state);
+		const callable = resolved instanceof Promise ? await resolved : resolved;
+		this.validateInput(callable, input);
+		this.assertCallLive(parent);
+		if (lease != null && lease.activeCall !== parent.call)
+			throw this.scopeError("BODY_BUSY", "another delegation is active");
 		const call = this.refs.call();
 		const record = this.refs.record();
 		const child = this.createCallState(parent.run, parent.segment, call, record, parent, callable, input);
 		parent.children.add(child);
 		this.queue.enqueueAll([this.callMutation(child)]);
-		return this.executeCallBody(child, state, lease);
+		if (lease == null) return this.executeCallBody(child, state, null);
+		const previous = lease.activeCall;
+		lease.activeCall = child.call;
+		try {
+			return await this.executeCallBody(child, state, lease);
+		} finally {
+			lease.activeCall = previous;
+		}
 	}
 
 	private createCallState(
@@ -1015,7 +1085,7 @@ export class RuntimeEngine {
 		call: Ref,
 		record: Ref,
 		parent: CallState | null,
-		callable: NativeCallable<JsonValue, JsonValue>,
+		callable: ResolvedInvocation,
 		input: JsonValue,
 	): CallState {
 		let settledResolve: () => void = () => {};
@@ -1029,6 +1099,7 @@ export class RuntimeEngine {
 			parent: parent?.call ?? null,
 			record,
 			callable,
+			resources: new Set(),
 			input,
 			execution: "running",
 			outcome: null,
@@ -1102,13 +1173,21 @@ export class RuntimeEngine {
 		this.assertActionAllowed();
 		// 情况 a：委托谱系复用，重入不排队
 		if (lease != null) {
-			return work(this.bodyScopeOf(callState, state, lease));
+			this.assertLease(callState, lease);
+			return this.runBodyWork(callState, state, lease, work);
 		}
 		// 情况 c：本调用谱系后代持 Body（或正在 acquire）→ 派发申请前 CONTROL_CONFLICT
 		const blocking = this.bodyLeaseQueue.blockingCall();
-		if (blocking != null && this.isDescendantCall(blocking, callState.call)) {
+		if (
+			blocking != null &&
+			(this.isDescendantCall(blocking, callState.call) || this.isDescendantCall(callState.call, blocking))
+		) {
 			throw callFailure({
-				code: "CONTROL_CONFLICT",
+				code:
+					callState.callable.kind === "program" ||
+					(blocking !== callState.call && this.isDescendantCall(callState.call, blocking))
+						? "BODY_SCOPE_ACTIVE"
+						: "CONTROL_CONFLICT",
 				source: "capability",
 				message:
 					"a descendant call of this scope currently holds the body; use the delegated scope instead of acquiring again",
@@ -1139,7 +1218,12 @@ export class RuntimeEngine {
 		state.revision++;
 		this.queue.enqueue(this.runMutation(state));
 		try {
-			return await work(this.bodyScopeOf(callState, state, { session: grant.session }));
+			const owned: BodyLease = { session: grant.session, activeCall: callState.call, closed: false };
+			try {
+				return await this.runBodyWork(callState, state, owned, work);
+			} finally {
+				owned.closed = true;
+			}
 		} finally {
 			// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
 			try {
@@ -1165,8 +1249,74 @@ export class RuntimeEngine {
 		}
 	}
 
-	private bodyScopeOf(callState: CallState, state: RunState, lease: BodyLease): BodyCallScope {
-		return this.buildContext(callState, state, lease) as BodyCallScope;
+	private async runBodyWork<T>(
+		callState: CallState,
+		state: RunState,
+		lease: BodyLease,
+		work: (scope: BodyCallScope) => Promise<T>,
+	): Promise<T> {
+		const ctx = this.buildContext(callState, state, lease) as BodyCallScope;
+		const body = scopedBody(lease.session, {
+			signal: callState.abort.signal,
+			owner: { kind: "run", run: state.run, segment: state.segment, callId: callState.call },
+			guard: () => this.assertLease(callState, lease),
+		});
+		callState.resources.add(body.close);
+		try {
+			return await work({ ...ctx, player: body.player });
+		} finally {
+			await body.close();
+			callState.resources.delete(body.close);
+		}
+	}
+
+	private scopeError(code: string, message: string): CallFailure {
+		return callFailure({ code, message, source: "capability", dispatch: "not_sent", effects: [], recoverable: true });
+	}
+	private assertCallLive(call: CallState): void {
+		this.assertActionAllowed();
+		if (call.closed || call.abort.signal.aborted) throw this.scopeError("INTERRUPTED", "call scope is closed");
+	}
+	private assertLease(call: CallState, lease: BodyLease): void {
+		this.assertCallLive(call);
+		if (lease.closed) throw this.scopeError("CONTROL_INVALID", "body scope is closed");
+		if (lease.activeCall !== call.call) throw this.scopeError("BODY_SUSPENDED", "body delegated to a descendant call");
+	}
+	sealProgramCalls(calls: string[], _reason: string): void {
+		for (const id of calls) {
+			const call = this.findLiveCall(id);
+			if (call) {
+				call.closed = true;
+				call.abort.abort();
+			}
+		}
+	}
+	programChanged(): void {
+		const calls = this.opts.program?.capacity().calls ?? [];
+		for (const state of this.runs.values()) {
+			if (state.phase === "finished" || state.phase === "queued" || state.stopped) continue;
+			const root = calls.find((c) => c.call === state.rootCall.call);
+			const waiting = root?.waiting;
+			const phase = waiting ? "waiting" : "running";
+			if (
+				state.phase === phase &&
+				state.waiting?.kind === waiting?.kind &&
+				(state.waiting?.kind !== "host_call" || state.waiting.method === waiting?.method)
+			)
+				continue;
+			state.phase = phase;
+			state.waiting =
+				waiting?.kind === "host_call"
+					? { kind: "host_call", method: waiting.method ?? "call", sinceMs: waiting.sinceMs }
+					: waiting?.kind === "sleep"
+						? { kind: "sleep", sinceMs: waiting.sinceMs }
+						: waiting
+							? { kind: "idle", sinceMs: waiting.sinceMs }
+							: undefined;
+			state.revision++;
+			this.queue.enqueue(this.runMutation(state));
+			this.notifyChanged(state);
+		}
 	}
 
 	private isDescendantCall(candidateDescendant: Ref, ancestor: Ref): boolean {
@@ -1198,7 +1348,12 @@ export class RuntimeEngine {
 
 	// ---- 解析与校验 ----
 
-	private resolveCallable(selector: string): NativeCallable<JsonValue, JsonValue> {
+	private resolveCallable(
+		selector: string,
+		run: string,
+		state?: RunState,
+	): ResolvedInvocation | Promise<ResolvedInvocation> {
+		if (this.opts.queryRefs?.includes(selector)) throw this.scopeError("USE_MC_READ", "query capabilities use mc.read");
 		if (selector.includes("@")) {
 			const callable = this.byRef.get(selector);
 			if (callable == null) {
@@ -1212,19 +1367,46 @@ export class RuntimeEngine {
 					recoverable: false,
 				});
 			}
-			return callable;
+			return {
+				kind: "native",
+				native: callable,
+				ref: callable.descriptor.ref,
+				digest: sha256Hex(canonicalJson(plain(callable.descriptor))),
+				completion: callable.descriptor.completion,
+				inputSchema: callable.descriptor.input,
+				outputSchema: callable.descriptor.output,
+			};
 		}
-		throw callFailure({
-			code: "PROGRAM_UNAVAILABLE",
-			source: "input",
-			message: "programs are not delivered; native selectors require an exact @version",
-			dispatch: "not_sent",
-			effects: [],
-			recoverable: true,
-		});
+		const program = state?.programScope
+			? state.programScope.resolve(selector)
+			: this.requireProgram().resolve({ name: selector });
+		return program.then((p) => this.prepareProgram(p, run));
+	}
+	private requireProgram(): ProgramPort {
+		if (!this.opts.program) throw this.scopeError("PROGRAM_UNAVAILABLE", "Program is not installed in this Runtime");
+		return this.opts.program;
+	}
+	private async prepareProgram(program: ResolvedProgram, run: string): Promise<ResolvedInvocation> {
+		const port = this.requireProgram();
+		const validation = await port.validate(program);
+		if (!validation.ok) throw this.scopeError(validation.code, validation.message);
+		const snapshot = await port.writeSnapshot({ run, program });
+		return {
+			kind: "program",
+			program,
+			snapshot: snapshot.path,
+			ref: program.name ?? `code:${program.digest.slice(0, 8)}`,
+			digest: program.digest,
+			completion: {
+				scope: "execution",
+				description: "program returned; world goals depend on its actions and observations",
+			},
+			inputSchema: program.header.input ?? {},
+			outputSchema: program.header.output ?? {},
+		};
 	}
 
-	private validateInput(descriptor: CallableDescriptor, input: JsonValue): void {
+	private validateInput(descriptor: ResolvedInvocation, input: JsonValue): void {
 		if (!isJsonValue(input)) {
 			throw callFailure({
 				code: "INVALID_INPUT",
@@ -1235,7 +1417,7 @@ export class RuntimeEngine {
 				recoverable: true,
 			});
 		}
-		const validate = this.validatorFor(descriptor.input, `${descriptor.ref}:in`);
+		const validate = this.validatorFor(descriptor.inputSchema, `${descriptor.digest}:in`);
 		if (!validate(input)) {
 			const message = this.ajv.errorsText(validate.errors);
 			throw callFailure({

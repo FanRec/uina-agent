@@ -31,9 +31,6 @@ export function sha256Hex(text: string): string {
 }
 
 /** 描述符摘要：同一定义在不同实现/不同轮次必须得到同一 digest。 */
-function descriptorDigest(callable: { readonly descriptor: object }): string {
-	return sha256Hex(canonicalJson(plain(callable.descriptor) as JsonValue));
-}
 
 // ---- Run 投影 ----
 
@@ -45,7 +42,7 @@ export function projectSummary(state: RunState): RunSummary {
 		revision: state.revision,
 		segment: state.segment,
 		record: state.record,
-		completion: state.callable.descriptor.completion,
+		completion: state.callable.completion,
 		progress: plain(state.progress) as Progress,
 		progressComplete: true,
 		control: state.control,
@@ -63,6 +60,8 @@ export function projectSummary(state: RunState): RunSummary {
 		};
 	}
 	if (state.phase === "stopping") return { ...base, phase: "stopping" };
+	if (state.phase === "waiting")
+		return { ...base, phase: "waiting", waiting: state.waiting ?? { kind: "idle", sinceMs: 0 }, waitingComplete: true };
 	return { ...base, phase: state.phase };
 }
 
@@ -110,6 +109,13 @@ export function summaryFromRow(row: RunRow): RunSummary {
 		};
 	}
 	if (row.phase === "stopping") return { ...base, phase: "stopping" };
+	if (row.phase === "waiting")
+		return {
+			...base,
+			phase: "waiting",
+			waiting: JSON.parse(row.waiting ?? '{"kind":"idle","sinceMs":0}'),
+			waitingComplete: true,
+		};
 	return { ...base, phase: row.phase as "queued" | "running" };
 }
 
@@ -150,7 +156,7 @@ export function runRowOf(state: RunState): RunRow {
 		revision: state.revision,
 		segment: state.segment,
 		phase: state.phase,
-		waiting: null,
+		waiting: state.phase === "waiting" ? JSON.stringify(state.waiting) : null,
 		outcome: state.phase === "finished" ? (state.outcome ?? "unknown") : null,
 		value: state.phase === "finished" && state.value != null ? JSON.stringify(state.value) : null,
 		error: state.error != null ? JSON.stringify(state.error) : null,
@@ -159,8 +165,8 @@ export function runRowOf(state: RunState): RunRow {
 		unknown_effects: JSON.stringify(state.unknownEffects),
 		record: state.record,
 		progress: JSON.stringify(plain(state.progress)),
-		completion_scope: state.callable.descriptor.completion.scope,
-		completion_description: state.callable.descriptor.completion.description,
+		completion_scope: state.callable.completion.scope,
+		completion_description: state.callable.completion.description,
 	};
 }
 
@@ -172,7 +178,17 @@ export function segmentRowOf(state: RunState, environment: RunEnvironment | null
 		revision: state.phase === "finished" ? 2 : 1,
 		record: state.segmentRecord,
 		entry: JSON.stringify(
-			plain({ kind: "native", descriptor: root.callable.descriptor, digest: descriptorDigest(root.callable) }),
+			plain(
+				root.callable.kind === "native"
+					? { kind: "native", descriptor: root.callable.native.descriptor, digest: root.callable.digest }
+					: {
+							kind: "program",
+							name: root.callable.program.name,
+							origin: root.callable.program.origin,
+							digest: root.callable.digest,
+							snapshot: root.callable.snapshot,
+						},
+			),
 		),
 		input: JSON.stringify(root.input),
 		environment: environment != null ? JSON.stringify(environment) : null,
@@ -189,9 +205,19 @@ export function callRowOf(callState: CallState): CallRow {
 		segment: callState.segment,
 		parent: callState.parent,
 		record: callState.record,
-		ref: callState.callable.descriptor.ref,
-		implementation: "native",
-		digest: descriptorDigest(callState.callable),
+		ref: callState.callable.ref,
+		implementation: callState.callable.kind,
+		digest: callState.callable.digest,
+		program:
+			callState.callable.kind === "program"
+				? JSON.stringify({
+						name: callState.callable.program.name,
+						origin: callState.callable.program.origin,
+						digest: callState.callable.digest,
+						snapshot: callState.callable.snapshot,
+						...(callState.diagnostic ? { diagnostic: callState.diagnostic } : {}),
+					})
+				: null,
 		access: "act",
 		input: JSON.stringify(callState.input),
 		execution: callState.execution,
@@ -202,7 +228,7 @@ export function callRowOf(callState: CallState): CallRow {
 		progress: JSON.stringify(plain(callState.progress)),
 		effects: JSON.stringify(callState.effects),
 		evidence: "[]",
-		completion: JSON.stringify(plain(callState.callable.descriptor.completion)),
+		completion: JSON.stringify(plain(callState.callable.completion)),
 	};
 }
 
@@ -259,6 +285,7 @@ function readCallRow(row: CallRow): Record<string, JsonValue> {
 		record: row.record,
 		ref: row.ref,
 		implementation: row.implementation,
+		...(row.program != null ? { program: JSON.parse(row.program) as JsonValue } : {}),
 		digest: row.digest,
 		access: row.access,
 		input: JSON.parse(row.input) as JsonValue,

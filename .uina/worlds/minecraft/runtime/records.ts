@@ -86,7 +86,8 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 	record(fact: DriverExecutionFact): RecordTicket | null {
 		if (this.faulted != null) return null;
 		const slotOwner =
-			fact.contract === CHAT_CONTRACT ? this.chatOwner : (this.qualificationOwner ?? this.navigationOwner);
+			fact.owner ??
+			(fact.contract === CHAT_CONTRACT ? this.chatOwner : (this.qualificationOwner ?? this.navigationOwner));
 		if (slotOwner == null) {
 			this.fault(`cannot attribute effect ${fact.effect} (${fact.contract}) to a trusted control owner`);
 			return null;

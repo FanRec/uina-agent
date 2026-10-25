@@ -10,10 +10,29 @@ import type { BodySession } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { RunRequest, RunWaitReply } from "../contracts/runtime.js";
 import type { CallFailureData, JsonValue, Outcome, Progress, Ref } from "../contracts/values.js";
+import type { ProgramSegmentScope, ResolvedProgram, ProgramDiagnostic } from "../contracts/program.js";
+import type { CallableDescriptor } from "../contracts/capabilities.js";
+
+export type ResolvedInvocation = {
+	ref: string;
+	digest: string;
+	completion: CallableDescriptor["completion"];
+	inputSchema: import("../contracts/values.js").JsonSchema;
+	outputSchema: import("../contracts/values.js").JsonSchema;
+} & (
+	| { kind: "native"; native: NativeCallable<JsonValue, JsonValue> }
+	| {
+			kind: "program";
+			program: ResolvedProgram;
+			snapshot: string;
+	  }
+);
 
 /** 身体租约：一次 Call 帧内持有的 Body 会话（§3.3.1 单槽）。 */
 export interface BodyLease {
 	session: BodySession;
+	activeCall: Ref;
+	closed: boolean;
 }
 
 export interface CallFrame {
@@ -27,7 +46,9 @@ export interface CallState {
 	segment: Ref;
 	parent: Ref | null;
 	record: Ref;
-	callable: NativeCallable<JsonValue, JsonValue>;
+	callable: ResolvedInvocation;
+	diagnostic?: ProgramDiagnostic;
+	resources: Set<() => Promise<void>>;
 	input: JsonValue;
 	execution: "running" | "returned" | "threw" | "interrupted";
 	outcome: Outcome | null;
@@ -67,11 +88,13 @@ export interface RunState {
 	segment: Ref;
 	segmentRecord: Ref;
 	rootCall: CallState;
-	callable: NativeCallable<JsonValue, JsonValue>;
+	callable: ResolvedInvocation;
+	programScope?: ProgramSegmentScope;
 	request: RunRequest;
 	requestJson: string;
 	revision: number;
-	phase: "queued" | "running" | "stopping" | "finished";
+	phase: "queued" | "running" | "waiting" | "stopping" | "finished";
+	waiting?: import("../contracts/runtime.js").WaitState;
 	outcome: Outcome | null;
 	value: JsonValue | null;
 	error: { code: string; message: string } | null;
