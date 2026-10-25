@@ -13,6 +13,7 @@ import type {
 } from "../contracts/body.js";
 import type { ProgramHostApi, HandleRef } from "../contracts/program.js";
 import { callFailure, plain, type JsonValue, type Vec3 } from "../contracts/values.js";
+import type { WorldWatch } from "../contracts/world.js";
 import { matchesItem } from "../contracts/items.js";
 
 type BodyHandle = { kind: "body"; scope: BodyCallScope; release(): void; closed: Promise<void> };
@@ -26,6 +27,23 @@ type WindowHandle = {
 type Handle = BodyHandle | WindowHandle;
 function fail(code: string, message: string): never {
 	throw callFailure({ code, message, source: "program", dispatch: "not_sent", effects: [], recoverable: true });
+}
+function decodeVersion(token: string): import("../contracts/values.js").ObservationCursor {
+	let cursor: import("../contracts/values.js").ObservationCursor;
+	try {
+		cursor = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as typeof cursor;
+	} catch {
+		return fail("INVALID_INPUT", "invalid observation version");
+	}
+	if (
+		!cursor ||
+		typeof cursor.stream !== "string" ||
+		typeof cursor.epoch !== "string" ||
+		!Number.isSafeInteger(cursor.sequence) ||
+		cursor.sequence < 0
+	)
+		fail("INVALID_INPUT", "invalid observation version");
+	return cursor;
 }
 export function createProgramHost(
 	ctx: CallContext,
@@ -73,7 +91,7 @@ export function createProgramHost(
 			}
 			return ctx.call(selector, args);
 		},
-		read: async ({ targets }) => {
+		read: async ({ targets, after }) => {
 			live();
 			const values: Record<string, JsonValue> = {},
 				versions: Record<string, string | null> = {},
@@ -81,17 +99,86 @@ export function createProgramHost(
 			for (const [key, target] of Object.entries(targets)) {
 				if (access(target.ref) === "act" || !target.ref.includes("@"))
 					fail("USE_MC_CALL", "actions and programs use mc.call");
-				const value = await ctx.world.read<JsonValue>({
-					ref: target.ref as `${string}@${string}`,
-					input: target.input ?? {},
-				});
+				const value = await ctx.world
+					.read<JsonValue>({ ref: target.ref as `${string}@${string}`, input: target.input ?? {} })
+					.catch((error: unknown) => {
+						const code = (error as { code?: string } | null)?.code;
+						if (after?.[key] && (code === "DISCONNECTED" || code === "SOURCE_UNAVAILABLE")) return null;
+						throw error;
+					});
 				live();
+				if (value === null) return { kind: "invalidated", reason: "source_unavailable" };
+				if (after?.[key] && value.cursor) {
+					const previous = decodeVersion(after[key]!);
+					if (previous.stream !== value.cursor.stream) return { kind: "invalidated", reason: "stream_changed" };
+					if (previous.epoch !== value.cursor.epoch) return { kind: "invalidated", reason: "epoch_changed" };
+					if (previous.sequence > value.cursor.sequence) return { kind: "invalidated", reason: "cursor_expired" };
+				}
 				values[key] = value.value;
 				versions[key] = value.cursor ? Buffer.from(JSON.stringify(value.cursor)).toString("base64url") : null;
 				unknown[key] = value.unknown;
 			}
 			return { values, versions, unknown };
 		},
+		watch: async ({ targets, after, timeoutMs }) => {
+			live();
+			if (!targets || typeof targets !== "object" || Array.isArray(targets) || Object.keys(targets).length === 0)
+				fail("INVALID_INPUT", "wait targets must be a nonempty object");
+			if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0))
+				fail("INVALID_INPUT", "timeoutMs must be finite and non-negative");
+			const controller = new AbortController();
+			const signal = AbortSignal.any([ctx.signal, controller.signal]);
+			const watches: WorldWatch[] = [];
+			const deadline = timeoutMs === undefined ? undefined : performance.now() + timeoutMs;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const schedule = () => {
+				if (deadline === undefined) return;
+				const remaining = deadline - performance.now();
+				if (remaining <= 0) controller.abort("wait_deadline");
+				else timer = setTimeout(schedule, Math.min(remaining, 2147483647));
+			};
+			const close = async () => {
+				clearTimeout(timer);
+				controller.abort();
+				await Promise.allSettled(watches.map((w) => w.close()));
+			};
+			resources.add(close);
+			schedule();
+			try {
+				const pending: Promise<import("../contracts/program.js").WatchResult>[] = [];
+				for (const [key, target] of Object.entries(targets)) {
+					if (!target || typeof target.ref !== "string" || typeof after?.[key] !== "string")
+						fail("INVALID_INPUT", "each wait target requires an observation version");
+					const cursor = decodeVersion(after[key]!);
+					signal.throwIfAborted();
+					const watch = await ctx.world.watch(
+						{ ref: target.ref as `${string}@${string}`, input: target.input ?? {} },
+						cursor,
+						signal,
+					);
+					watches.push(watch);
+					// Install a rejection handler immediately while subsequent targets are being registered.
+					const next = watch
+						.next(cursor, signal)
+						.then((change) =>
+							change.kind === "reset"
+								? { status: "invalidated" as const, reason: change.reason }
+								: { status: "changed" as const },
+						);
+					void next.catch(() => {});
+					pending.push(next);
+				}
+				return await Promise.race(pending);
+			} catch (error) {
+				live();
+				if (controller.signal.reason === "wait_deadline") return { status: "timeout" };
+				throw error;
+			} finally {
+				await close();
+				resources.delete(close);
+			}
+		},
+
 		sleep: async ({ ms }) => {
 			live();
 			if (!Number.isFinite(ms) || ms < 0) fail("PROGRAM_INPUT_INVALID", "sleep ms must be finite and non-negative");

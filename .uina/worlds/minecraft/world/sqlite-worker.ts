@@ -12,6 +12,7 @@
  * §11.2：缺资产明确失败，不静默退化成内存实现）。
  */
 
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
 import type { CapturedClientFact } from "../contracts/client-facts.js";
@@ -53,16 +54,24 @@ export interface DurableAck {
 }
 
 export type WorkerResponse =
-	| { type: "opened"; journalMode: string; synchronousMode: string; watermarks: Record<string, number> }
-	| { type: "durable"; acks: DurableAck[] }
+	| {
+			type: "opened";
+			journalMode: string;
+			synchronousMode: string;
+			watermarks: Record<string, number>;
+			storage: string;
+			version: number;
+	  }
+	| { type: "durable"; acks: DurableAck[]; version: number }
 	| { type: "barrierReached"; id: number }
 	| { type: "eventsPage"; id: number; result: EventQueryResult }
+	| { type: "queryFailed"; id: number; code: string; message: string }
 	| { type: "containerLast"; id: number; result: ContainerEvidence | null }
 	| { type: "conflict"; message: string }
 	| { type: "fatal"; message: string }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -98,6 +107,7 @@ CREATE TABLE IF NOT EXISTS evidence_gaps (
 	through INTEGER,
 	ref TEXT NOT NULL,
 	reason TEXT NOT NULL,
+ visible_version INTEGER NOT NULL,
 	PRIMARY KEY (stream, after)
 );
 CREATE TABLE IF NOT EXISTS watermarks (
@@ -136,19 +146,38 @@ function openDatabase(dbPath: string): OpenedStorage {
 			`持久性配置未生效：journal_mode=${journalMode} synchronous=${syncLevel}（要求 WAL/FULL；不退化内存库）`,
 		);
 	}
-	db.exec(SCHEMA_SQL);
+	db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 	const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as Row | undefined;
 	if (versionRow == null) {
+		db.exec("BEGIN");
 		db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(SCHEMA_VERSION);
+		db.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run("storage_id", randomUUID());
+		db.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run("commit_version", "0");
+		db.exec(SCHEMA_SQL);
+		db.exec("COMMIT");
 	} else if (String(versionRow.value) !== SCHEMA_VERSION) {
 		db.close();
 		throw new Error(`历史库 schema 版本不兼容：库=${String(versionRow.value)} 期望=${SCHEMA_VERSION}`);
 	}
+	db.exec(SCHEMA_SQL);
 	return { db, journalMode: journalMode.toLowerCase(), synchronousMode: syncNames[syncLevel] ?? String(syncLevel) };
 }
 
+function historyIdentity(db: DatabaseSync): { storage: string; version: number } {
+	const meta = db.prepare("SELECT key,value FROM meta WHERE key IN ('storage_id','commit_version')").all() as Row[];
+	const values = Object.fromEntries(meta.map((row) => [String(row.key), String(row.value)]));
+	const version = Number(values.commit_version);
+	if (!values.storage_id || !Number.isSafeInteger(version) || version < 0)
+		throw new Error("invalid history identity/version");
+	return { storage: values.storage_id, version };
+}
+function bumpVersion(db: DatabaseSync, version: number): void {
+	if (!Number.isSafeInteger(version)) throw new Error("history commit version exhausted");
+	db.prepare("UPDATE meta SET value=? WHERE key='commit_version'").run(String(version));
+}
+
 /** 首个证据登记源流元数据（绑定、采集 schema、源身份、起点，§5.3）；重复登记必须一致。 */
-function ensureStream(db: DatabaseSync, record: CapturedClientFact): void {
+function ensureStream(db: DatabaseSync, record: CapturedClientFact, version: number): void {
 	const existing = db
 		.prepare("SELECT binding, world, world_revision, source, schema FROM streams WHERE stream = ?")
 		.get(record.mark.stream) as Row | undefined;
@@ -165,6 +194,7 @@ function ensureStream(db: DatabaseSync, record: CapturedClientFact): void {
 			record.fact.observedAt,
 			record.mark.sequence,
 		);
+		db.prepare("UPDATE evidence_gaps SET visible_version=? WHERE stream=?").run(version, record.mark.stream);
 		return;
 	}
 	const sameIdentity =
@@ -238,11 +268,13 @@ function appendBatch(db: DatabaseSync, items: AppendItem[]): DurableAck[] {
 	db.exec("BEGIN");
 	try {
 		const touched = new Set<string>();
+		const version = historyIdentity(db).version + 1;
+		let changed = false;
 		for (const item of items) {
 			if (item.kind === "evidence") {
 				const record = item.record;
 				touched.add(record.mark.stream);
-				ensureStream(db, record);
+				ensureStream(db, record, version);
 				const existing = db
 					.prepare("SELECT ref FROM evidence WHERE stream = ? AND seq = ?")
 					.get(record.mark.stream, record.mark.sequence) as Row | undefined;
@@ -254,6 +286,7 @@ function appendBatch(db: DatabaseSync, items: AppendItem[]): DurableAck[] {
 					}
 					continue;
 				}
+				changed = true;
 				db.prepare(
 					"INSERT INTO evidence (stream, seq, ref, schema, stamp, scope, fact, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 				).run(
@@ -280,15 +313,13 @@ function appendBatch(db: DatabaseSync, items: AppendItem[]): DurableAck[] {
 				}
 				continue;
 			}
-			db.prepare("INSERT INTO evidence_gaps (stream, after, through, ref, reason) VALUES (?, ?, ?, ?, ?)").run(
-				item.stream,
-				item.after,
-				item.through,
-				item.ref,
-				item.reason,
-			);
+			changed = true;
+			db.prepare(
+				"INSERT INTO evidence_gaps (stream, after, through, ref, reason,visible_version) VALUES (?, ?, ?, ?, ?,?)",
+			).run(item.stream, item.after, item.through, item.ref, item.reason, version);
 		}
 		const acks = computeAcks(db, touched);
+		if (changed) bumpVersion(db, version);
 		db.exec("COMMIT");
 		return acks;
 	} catch (err) {
@@ -334,20 +365,23 @@ function maxEventRowid(db: DatabaseSync, scope: EventQueryParams["scope"]): numb
 }
 
 /** 分区内已知缺口；顺序按入账顺序，ref 稳定（重复读取同一 ref 不是新丢失）。 */
-function readEventGaps(db: DatabaseSync, scope: EventQueryParams["scope"]): EventGap[] {
+function readEventGaps(db: DatabaseSync, params: EventQueryParams, upper: number): EventGap[] {
+	const scope = params.scope;
 	const rows = db
 		.prepare(
 			`SELECT g.ref AS ref, g.after AS afterSeq, g.through AS throughSeq, g.reason AS reason
 			 FROM evidence_gaps g JOIN streams s ON s.stream = g.stream
 			 WHERE s.binding = ? AND s.world = ? AND s.world_revision = ?
+ AND g.visible_version > ? AND g.visible_version <= ?
 			 ORDER BY g.rowid ASC`,
 		)
-		.all(scope.binding, scope.world, scope.worldRevision) as Row[];
+		.all(scope.binding, scope.world, scope.worldRevision, params.gapAfter, upper) as Row[];
 	return rows.map((row) => ({
 		ref: String(row.ref),
 		reason: String(row.reason),
-		after: row.afterSeq == null ? null : String(row.afterSeq),
-		through: row.throughSeq == null ? null : String(row.throughSeq),
+		// Source evidence sequence numbers cannot be passed as EventAfter tokens.
+		after: null,
+		through: null,
 	}));
 }
 
@@ -357,6 +391,10 @@ function readEventGaps(db: DatabaseSync, scope: EventQueryParams["scope"]): Even
  * limit+1 用于判断是否还有下一页。kind 过滤走 json_extract，不改变扫描上界。
  */
 function readEvents(db: DatabaseSync, params: EventQueryParams): EventQueryResult {
+	const identity = historyIdentity(db);
+	if (params.storage !== null && params.storage !== identity.storage)
+		throw Object.assign(new Error("events token belongs to another history database"), { code: "SNAPSHOT_EXPIRED" });
+	const gapUpper = params.gapUpper ?? identity.version;
 	const upper = params.upper ?? maxEventRowid(db, params.scope);
 	const kindArgs = params.kinds ?? [];
 	const kindClause =
@@ -397,7 +435,15 @@ function readEvents(db: DatabaseSync, params: EventQueryParams): EventQueryResul
 			payload: (fact.value ?? null) as unknown as EventRow["payload"],
 		};
 	});
-	return { rows, gaps: readEventGaps(db, params.scope), upper, hasMore };
+	return {
+		rows,
+		gaps: readEventGaps(db, params, gapUpper),
+		upper,
+		hasMore,
+		storage: identity.storage,
+		version: identity.version,
+		gapUpper,
+	};
 }
 
 /** Latest committed observation in the explicit world/dimension/block, across capture bindings. */
@@ -446,18 +492,19 @@ port.on("message", (request: WorkerRequest) => {
 				journalMode: opened.journalMode,
 				synchronousMode: opened.synchronousMode,
 				watermarks: loadWatermarks(opened.db),
+				...historyIdentity(opened.db),
 			} satisfies WorkerResponse);
 			return;
 		}
 		if (db == null) throw new Error("storage is not opened");
 		if (request.type === "append") {
 			const acks = appendBatch(db, request.items);
-			if (acks.length > 0) port.postMessage({ type: "durable", acks } satisfies WorkerResponse);
+			port.postMessage({ type: "durable", acks, version: historyIdentity(db).version } satisfies WorkerResponse);
 			return;
 		}
 		if (request.type === "streamEnd") {
 			const acks = closeStream(db, request.stream, request.fence);
-			if (acks.length > 0) port.postMessage({ type: "durable", acks } satisfies WorkerResponse);
+			port.postMessage({ type: "durable", acks, version: historyIdentity(db).version } satisfies WorkerResponse);
 			return;
 		}
 		if (request.type === "barrier") {
@@ -482,7 +529,14 @@ port.on("message", (request: WorkerRequest) => {
 		port.postMessage({ type: "closed" } satisfies WorkerResponse);
 		port.close();
 	} catch (err) {
-		if (err instanceof SourceConflict) {
+		if (request.type === "readEvents" && (err as { code?: string }).code === "SNAPSHOT_EXPIRED") {
+			port.postMessage({
+				type: "queryFailed",
+				id: request.id,
+				code: "SNAPSHOT_EXPIRED",
+				message: messageOf(err),
+			} satisfies WorkerResponse);
+		} else if (err instanceof SourceConflict) {
 			port.postMessage({ type: "conflict", message: messageOf(err) } satisfies WorkerResponse);
 		} else {
 			port.postMessage({ type: "fatal", message: messageOf(err) } satisfies WorkerResponse);

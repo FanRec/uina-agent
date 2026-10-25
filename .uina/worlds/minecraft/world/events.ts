@@ -28,7 +28,11 @@ export function eventScopeOf(binding: string, world: string, worldRevision: stri
 }
 
 export interface EventCursor {
-	v: 1;
+	v: 2;
+	storage: string;
+	kind: "after" | "page";
+	gapAfter: number;
+	gapUpper: number;
 	/** 历史分区键（eventScopeOf 的结果）；换分区后旧游标失效。 */
 	partition: string;
 	/** null = 不过滤（全部四类）。 */
@@ -57,6 +61,9 @@ export interface EventRow {
 
 export interface EventQueryParams {
 	scope: EventScope;
+	storage: string | null;
+	gapAfter: number;
+	gapUpper: number | null;
 	kinds: GameEventKind[] | null;
 	/** null = 最近窗口（倒序取尾部）。 */
 	afterRowid: number | null;
@@ -65,6 +72,9 @@ export interface EventQueryParams {
 }
 
 export interface EventQueryResult {
+	storage: string;
+	version: number;
+	gapUpper: number;
 	rows: EventRow[];
 	gaps: EventGap[];
 	upper: number;
@@ -97,7 +107,14 @@ export function decodeCursor(token: string, scope: EventScope): EventCursor {
 	const raw = parsed as Partial<EventCursor> | null;
 	if (
 		raw == null ||
-		raw.v !== 1 ||
+		raw.v !== 2 ||
+		typeof raw.storage !== "string" ||
+		!raw.storage ||
+		(raw.kind !== "after" && raw.kind !== "page") ||
+		!Number.isSafeInteger(raw.gapAfter) ||
+		raw.gapAfter! < 0 ||
+		!Number.isSafeInteger(raw.gapUpper) ||
+		raw.gapUpper! < raw.gapAfter! ||
 		typeof raw.partition !== "string" ||
 		typeof raw.limit !== "number" ||
 		typeof raw.pos !== "number" ||
@@ -129,7 +146,11 @@ export function decodeCursor(token: string, scope: EventScope): EventCursor {
 		});
 	}
 	return {
-		v: 1,
+		v: 2,
+		storage: raw.storage,
+		kind: raw.kind,
+		gapAfter: raw.gapAfter!,
+		gapUpper: raw.gapUpper!,
 		partition: raw.partition,
 		kinds: raw.kinds ?? null,
 		limit: raw.limit,
@@ -165,9 +186,13 @@ export function resolveEventQuery(
 	const parsed = parseEventInput(input);
 	if (parsed.cursorToken != null) {
 		const cursor = decodeCursor(parsed.cursorToken, scope);
+		if (cursor.kind !== "page") invalid("events cursor requires a next page token");
 		return {
 			params: {
 				scope,
+				storage: cursor.storage,
+				gapAfter: cursor.gapAfter,
+				gapUpper: cursor.gapUpper,
 				kinds: cursor.kinds,
 				afterRowid: cursor.pos,
 				upper: cursor.upper,
@@ -178,6 +203,7 @@ export function resolveEventQuery(
 	}
 	if (parsed.afterToken != null) {
 		const after = decodeCursor(parsed.afterToken, scope);
+		if (after.kind !== "after") invalid("events after requires a complete-window after token");
 		// 过滤条件由 token 固定：不能借同一次续读换 kinds（"全部"与显式列表都算换过滤）。
 		if (parsed.kinds != null && !sameKinds(parsed.kinds, after.kinds)) {
 			invalid("events after token fixes the kind filter", "start a new read without after to change kinds");
@@ -185,6 +211,9 @@ export function resolveEventQuery(
 		return {
 			params: {
 				scope,
+				storage: after.storage,
+				gapAfter: after.gapUpper,
+				gapUpper: null,
 				kinds: after.kinds,
 				afterRowid: after.pos,
 				upper: null,
@@ -194,7 +223,16 @@ export function resolveEventQuery(
 		};
 	}
 	return {
-		params: { scope, kinds: parsed.kinds, afterRowid: null, upper: null, limit: parsed.limit },
+		params: {
+			scope,
+			storage: null,
+			gapAfter: 0,
+			gapUpper: null,
+			kinds: parsed.kinds,
+			afterRowid: null,
+			upper: null,
+			limit: parsed.limit,
+		},
 		cursor: null,
 	};
 }
@@ -217,7 +255,11 @@ export function buildEventPage(result: EventQueryResult, params: EventQueryParam
 			events,
 			gaps: result.gaps,
 			next: encodeCursor({
-				v: 1,
+				v: 2,
+				storage: result.storage,
+				kind: "page",
+				gapAfter: params.gapAfter,
+				gapUpper: result.gapUpper,
 				partition: params.scope.partition,
 				kinds: params.kinds,
 				limit: params.limit,
@@ -232,7 +274,11 @@ export function buildEventPage(result: EventQueryResult, params: EventQueryParam
 		events,
 		gaps: result.gaps,
 		after: encodeCursor({
-			v: 1,
+			v: 2,
+			storage: result.storage,
+			kind: "after",
+			gapAfter: result.gapUpper,
+			gapUpper: result.gapUpper,
 			partition: params.scope.partition,
 			kinds: params.kinds,
 			limit: params.limit,

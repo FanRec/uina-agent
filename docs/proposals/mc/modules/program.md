@@ -4,7 +4,7 @@
 
 本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
-批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；waitUntil、decide/checkpoint/continue、feedback/loop 仍是后续合同；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
+批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；批 9A 已实现 waitUntil（见 [实施记录](../wait-implementation.md)）；decide/checkpoint/continue、feedback/loop 仍是后续合同；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
 
 ## 0. 最终体验与验收目标
 
@@ -445,13 +445,14 @@ interface ReadValues {
   versions: Record<string, string | null>;
   unknown: Record<string, string[]>;
 }
+type ReadResult = ReadValues | {kind: "invalidated"; reason: string};
 type WaitResult =
   | ({kind: "met"|"timeout"} & ReadValues)
   | {kind: "invalidated"; reason: string};
 type WatchResult = {status: "changed"|"timeout"} | {status: "invalidated"; reason: string};
 interface ProgramHostApi {
   call(input: {selector: string; args: JsonValue; delegateBody?: boolean}): Promise<JsonValue>;
-  read(input: {targets: Targets}): Promise<ReadValues>;
+  read(input: {targets: Targets; after?: Record<string, string>}): Promise<ReadResult>;
   watch(input: {targets: Targets; after: Record<string, string>; timeoutMs?: number}): Promise<WatchResult>;
   sleep(input: {ms: number}): Promise<null>;
   progress(input: {value: Progress}): Promise<null>; // shim 对外同步，本地覆盖合并后上送
@@ -463,7 +464,7 @@ interface ProgramHostApi {
 }
 ```
 
-mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 guest，watch 只搬运失效事实。ProgramHostApi 由 Runtime 绑定真实调用及委托，消息内 call id、delegateBody 只表示请求，不授权。
+mc.read 是单目标 read RPC 的薄包装，始终不传 after，获得 ReadValues；waitUntil 重读及到期末次读取携带上一轮版本，宿主只比较来源/epoch 连续性后才返回值，断裂返回 invalidated。predicate 留在 guest，watch 只搬运失效事实。ProgramHostApi 由 Runtime 绑定真实调用及委托，消息内 call id、delegateBody 只表示请求，不授权。
 
 首次未处理的 guest 决策由宿主在 invoke 边界关联当前 Call；传入父 guest 的原请求由错误桥保留关联，原样上抛不重写来源。shim 用内部标记区分决策异常，宿主不从任意用户字段接受 origin。ProgramPort.invoke 的 decision 分支对外始终带宿主关联的 origin；worker 内部的本地异常不要求自带可信来源。NEEDS_DECISION 是独立的控制请求结果，不混入 ProgramFailureCode。普通调用错误码另含 USE_MC_READ/USE_MC_CALL、BODY_SCOPE_ACTIVE/BODY_BUSY/BODY_SUSPENDED、STEP_ASYNC、WINDOW_CLOSED、ACCESS_DENIED、PREDICATE_INVALID；按当前调用局部处理，隔离失守才升级。
 

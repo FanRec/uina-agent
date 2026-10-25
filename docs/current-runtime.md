@@ -104,7 +104,9 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 批 5 已实现通用 Host 持久回执与 journal v4：工具/输入共享 receipt 标记、来源绑定的 inspect/retire、输入去重与 CAS 退役；committed 只由 canonical append 完成后生成。提交索引沿 Session reducer 增量恢复且跨回溯保留，内存会话标 volatile。ExtensionAPI.delivery(scope) 与 World context.delivery 复用同一端口；详见 [批 5 实施记录](proposals/mc/host-delivery-implementation.md)。批 6 已接正式 WorldDef、原生模型工具、固定报告/分页记录与 Host 回执可靠通知、BodyEndpoint；批 6 当时 Runtime schema v3、Executor ledger v2；批 7 已升级 Runtime v4 并接正式 Program 执行。默认关闭、仅支持显式 offline 1.21.11 配置；批 8 已接 Library 文件管理/统一发现与程序来源复用；continue 与高级调度明确不可用。源/产物与真实 deepseek-flash 校准见 [原生接入实施](proposals/mc/native-host-implementation.md)。旧数据库不自动迁移，验收使用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
 
-批 7 提供 `run {code,input}` 与命名程序，支持 `mc.read/call/progress/sleep/withBody`、console 及现有精细 body/window 操作；每 Call 独立 QuickJS runtime，共享 Worker，源码在段内固定并保存确切快照。父句柄委托期间挂起，取消和清理不依赖 guest 合作；Program 容量直接投影到状态。程序只读加载归 Library；批 8 已接完整文件管理/统一发现、确切 Call 来源保存和修改复用，见 [实施记录](proposals/mc/library-implementation.md)。等待/决策与反馈仍属后续批次。入口 `pnpm dev:mc:program`（真实模型加 `-- --model`），实施和验证边界见 [批 7 记录](proposals/mc/program-implementation.md)。
+批 7 提供 `run {code,input}` 与命名程序，支持 `mc.read/call/progress/sleep/withBody`、console 及现有精细 body/window 操作；每 Call 独立 QuickJS runtime，共享 Worker，源码在段内固定并保存确切快照。父句柄委托期间挂起，取消和清理不依赖 guest 合作；Program 容量直接投影到状态。程序只读加载归 Library；批 8 已接完整文件管理/统一发现、确切 Call 来源保存和修改复用，见 [实施记录](proposals/mc/library-implementation.md)。批 9A 已接 waitUntil、确切查询版本、events 增量 Watch、world_change 状态与停止清理；历史库 v2，旧 v1 拒绝自动迁移。决策/continue、调度、引用清理与反馈仍属后续批次。入口 `pnpm dev:mc:program`（真实模型加 `-- --model`），实施和验证边界见 [批 7 记录](proposals/mc/program-implementation.md)。
+
+Minecraft 批 9A 源码、产物与模型证据见 [等待实施记录](proposals/mc/wait-implementation.md)，正式入口 `pnpm dev:mc:wait`；保持 10 查询 + 15 动作，完整 I2 尚未收口。
 
 ## QQ World
 

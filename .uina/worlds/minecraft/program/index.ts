@@ -27,6 +27,7 @@ interface Active {
 	detach(): void;
 	resolve(value: InvokeResult): void;
 	pending: Map<number, string>;
+	worldTargets: Map<number, string[]>;
 	compute: number;
 	since: number;
 	retiring: boolean;
@@ -145,13 +146,30 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 					return;
 				}
 				if (a.retiring || a.signal.aborted) return;
-				const allowed = ["call", "read", "sleep", "acquireBody", "releaseBody", "handleOp", "closeHandle"] as const;
+				const allowed = [
+					"call",
+					"read",
+					"watch",
+					"sleep",
+					"acquireBody",
+					"releaseBody",
+					"handleOp",
+					"closeHandle",
+				] as const;
 				const method = allowed.find((m) => m === msg.method);
 				if (!method) {
 					abort(msg.id);
 					return;
 				}
 				a.pending.set(msg.rpc, method);
+				if (method === "watch") {
+					const targets = (msg.args as { targets?: Record<string, { ref: string }> }).targets;
+					if (targets && typeof targets === "object")
+						a.worldTargets.set(
+							msg.rpc,
+							Object.values(targets).map((t) => t.ref),
+						);
+				}
 				a.idle = false;
 				a.since = performance.now();
 				options.onChanged?.();
@@ -182,6 +200,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 					})
 					.then((reply) => {
 						a.pending.delete(msg.rpc);
+						a.worldTargets.delete(msg.rpc);
 						a.since = performance.now();
 						options.onChanged?.();
 						if (active.get(msg.id) !== a || a.retiring || a.signal.aborted || worker !== w) return;
@@ -293,6 +312,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 							signal: req.signal,
 							resolve,
 							pending: new Map(),
+							worldTargets: new Map(),
 							detach: () => {
 								req.signal.removeEventListener("abort", stop);
 								controller.signal.removeEventListener("abort", stop);
@@ -356,8 +376,11 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 										? ("idle" as const)
 										: [...a.pending.values()].every((v) => v === "sleep")
 											? ("sleep" as const)
-											: ("host_call" as const),
+											: [...a.pending.values()].every((v) => v === "watch")
+												? ("world_change" as const)
+												: ("host_call" as const),
 								method: [...a.pending.values()][0],
+								targets: [...new Set([...a.worldTargets.values()].flat())],
 								sinceMs: a.since,
 							},
 						}

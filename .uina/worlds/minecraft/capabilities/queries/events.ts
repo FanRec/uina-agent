@@ -42,7 +42,7 @@ export const eventsQuery: QuerySpec = {
 		input: EVENTS_INPUT,
 		output: { type: "object" },
 		access: "read",
-		watchable: false,
+		watchable: true,
 		feedback: false,
 		examples: [
 			{

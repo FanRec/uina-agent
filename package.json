@@ -25,6 +25,7 @@
     "dev:mc:native": "tsx .uina/worlds/minecraft/dev/native-host.ts",
     "dev:mc:model": "tsx .uina/worlds/minecraft/dev/native-host.ts --model",
     "dev:mc:program": "tsx .uina/worlds/minecraft/dev/program.ts",
+    "dev:mc:wait": "tsx .uina/worlds/minecraft/dev/wait.ts",
     "dev:mc:library": "tsx .uina/worlds/minecraft/dev/library.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",

@@ -1294,13 +1294,17 @@ export class RuntimeEngine {
 	programChanged(): void {
 		const calls = this.opts.program?.capacity().calls ?? [];
 		for (const state of this.runs.values()) {
-			if (state.phase === "finished" || state.phase === "queued" || state.stopped) continue;
+			if (state.phase === "finished" || (state.phase === "queued" && !this.startedRuns.has(state.run)) || state.stopped)
+				continue;
 			const root = calls.find((c) => c.call === state.rootCall.call);
 			const waiting = root?.waiting;
-			const phase = waiting ? "waiting" : "running";
+			const phase =
+				state.awaitingBody > 0 && waiting?.method === "acquireBody" ? "queued" : waiting ? "waiting" : "running";
 			if (
 				state.phase === phase &&
 				state.waiting?.kind === waiting?.kind &&
+				(state.waiting?.kind !== "world_change" ||
+					JSON.stringify([...state.waiting.targets].sort()) === JSON.stringify([...(waiting?.targets ?? [])].sort())) &&
 				(state.waiting?.kind !== "host_call" || state.waiting.method === waiting?.method)
 			)
 				continue;
@@ -1308,11 +1312,17 @@ export class RuntimeEngine {
 			state.waiting =
 				waiting?.kind === "host_call"
 					? { kind: "host_call", method: waiting.method ?? "call", sinceMs: waiting.sinceMs }
-					: waiting?.kind === "sleep"
-						? { kind: "sleep", sinceMs: waiting.sinceMs }
-						: waiting
-							? { kind: "idle", sinceMs: waiting.sinceMs }
-							: undefined;
+					: waiting?.kind === "world_change"
+						? {
+								kind: "world_change",
+								targets: (waiting.targets ?? []) as import("../contracts/values.js").ExactRef[],
+								sinceMs: waiting.sinceMs,
+							}
+						: waiting?.kind === "sleep"
+							? { kind: "sleep", sinceMs: waiting.sinceMs }
+							: waiting
+								? { kind: "idle", sinceMs: waiting.sinceMs }
+								: undefined;
 			state.revision++;
 			this.queue.enqueue(this.runMutation(state));
 			this.notifyChanged(state);

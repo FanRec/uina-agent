@@ -1,6 +1,6 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](library-implementation.md)；下一批为 **批 9：等待、决策与 I2 收口**。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](wait-implementation.md)；下一批为 **批 9B：决策、调度、引用清理与 I2 收口**。完整程序闭环 I2 在批 9，详见 §10。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -253,7 +253,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **默认下一任务为批 9**：接可等待查询、决策/continue 与调度，完成 I2；其余玩法按直接依赖与校准收益选择，不把全部未实现内容塞入一批。
+3. **默认下一任务为批 9B**：9A 已接可等待查询与 waitUntil；继续决策/continue、调度、引用保护与历史清理，完成 I2；其余玩法按直接依赖与校准收益选择，不把全部未实现内容塞入一批。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -288,7 +288,8 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | **6 · 正式原生主脑闭环与首次校准（已实现）** | `worlddef/`、`companion/`、`executor/` 与必要 Runtime 交付接缝：配置/绑定、目录发现、查询、原生 run/chat、请求查证/停止/记录、短结果/后台可靠通知、BodyEndpoint；先支持已验收的 offline 1.21.11 范围 | 批 4 + 批 5 + 现有 R/D/W/25 项能力 | 源码/产物各经真实 WorldTool/Host 路径运行；工具取消只结束等待、显式 stop 才停止 Run，停用/急停撤销写源；完成通知由真实 Host receipt 确认，恢复不重放动作。随后真模型仅凭短指南完成发现、采集生产、缺料纠错与停止，记录首次校准 |
 | **7 · Program 执行闭环（已实现）** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
 | **8 · Library 文件与发现复用（已实现）** | `library/` 及发现装配：程序/经验/蓝图文件的命名、头/metadata、CRUD 与扫描；程序 compile-only 和 save from 复用批 7 的编译/精确源码接缝。蓝图解释和现场 Project 随施工包实现 | 批 7 的编译与执行材料；文件部分可独立实现 | 真实临时文件验证坏头、并发修改和来源追溯；模型完成试做→纠错→save from→局部改文件→新段复用。在途段仍用原字节；经验判断不冒充事实 |
-| **9 · 等待、决策与 I2 收口** | World 可等待查询（含 events 的合法增量等待）、必要保留/引用保护；Runtime/Program 的 waitUntil、decide/checkpoint、continue、决策传播与消费；补齐 replace_pending/preempt_current 及相关停止/交付竞争 | 批 6–8；对应 World/Runtime/Program 合同 | 程序等待时其他合法调用可推进；读→等待不漏变化，reset/unknown 可解释；决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实。经正式模型入口完成完整 I2 和第二次程序复用校准 |
+| **9A · 可等待查询与程序等待（已实现）** | 当前查询的确切版本、events 合法增量等待、SQLite 提交版本与库身份、Program waitUntil、world_change 投影及停止清理；历史库 v2 | 批 6–8 | 实际范围、源码/产物真服与模型证据见 [实施记录](wait-implementation.md)；不计作完整 I2 |
+| **9B · 决策、调度与 I2 收口** | decide/checkpoint、continue、决策传播与消费；replace_pending/preempt_current；World 保留/引用保护与历史清理；相关停止/交付竞争 | 批 6–8 + 9A；对应 World/Runtime/Program 合同 | 决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实；引用与清理不制造悬空。经正式模型入口完成完整 I2 |
 
 批 6 是同一正式 World 的阶段性交付，具体可用范围与状态口径见 [Executor §3.1](modules/executor.md#31-配置与入口)。已声明应装配的模块或资产缺失仍启动失败，不能把损坏部署当成尚未交付。批 9 的 I2 不等待蓝图、完整战斗或全部活动，但仍须兑现所用 API 的正式合同；高频反馈与高级能力继续按下节补齐。
 
@@ -356,8 +357,8 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 | 剩余事项 | 何时、由谁补齐 |
 |---|---|
 | Runtime 交付记录、Owner 门、恢复与独立 Run 生命周期 | 批 4–6 随 E/H 正式接入落实；不得只包装 submit/wait 就称接入完成 |
-| replace_pending/preempt_current、waitUntil、decide/continue/checkpoint | 批 9 由 Runtime/Program/World 各自实现并集成，不把受理/决策状态复制到 Executor |
-| World 事件等待、历史保留、Runtime 引用保护 | 可等待查询在批 9 接齐；首次原生校准记录真实增长，持续运行所需清理/精确引用保护最晚在 I2 收口，不能永久只增不清 |
+| replace_pending/preempt_current、decide/continue/checkpoint | 批 9B 由 Runtime/Program/World 各自实现并集成，不把受理/决策状态复制到 Executor |
+| World 事件等待、历史保留、Runtime 引用保护 | 可等待查询已在 9A 接齐；持续运行所需清理/精确引用保护由 9B 在 I2 收口，不能永久只增不清 |
 | ctx.verify 与后续效果核验 | 首个需要显式复查 unknown 的真实能力工作包落地对应 verifier（默认空间/施工包），同步 Runtime 接缝；最终验收关闭缺口，不先建无人消费的注册框架 |
 | feedback、过期输入、默认自保与 safety 记录 | 高频反馈/自保工作包，随后 fight；含真实 guest 控制桥和控制撤销，不仅提供类型 |
 | goto 站姿/空间完成判据 | 路径/脱困工作包落实实际可站立判据，保留现有 GoalNear 的真实节点语义，不用欧氏距离误拒 |

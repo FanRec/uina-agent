@@ -59,7 +59,11 @@ describe("events 输入校验", () => {
 describe("events 游标", () => {
 	test("编码/解码往返保留分区、过滤、位置与上界", () => {
 		const token = encodeCursor({
-			v: 1,
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
 			partition: scope.partition,
 			kinds: ["chat", "damage"],
 			limit: 20,
@@ -68,7 +72,11 @@ describe("events 游标", () => {
 		});
 		const cursor = decodeCursor(token, scope);
 		expect(cursor).toEqual({
-			v: 1,
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
 			partition: scope.partition,
 			kinds: ["chat", "damage"],
 			limit: 20,
@@ -79,7 +87,18 @@ describe("events 游标", () => {
 
 	test("跨分区使用 → SNAPSHOT_EXPIRED", () => {
 		const other = eventScopeOf("bind:u", "wld:u", "wldrev:u");
-		const token = encodeCursor({ v: 1, partition: scope.partition, kinds: null, limit: 10, pos: 0, upper: 5 });
+		const token = encodeCursor({
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
+			partition: scope.partition,
+			kinds: null,
+			limit: 10,
+			pos: 0,
+			upper: 5,
+		});
 		const err = failureOf(() => decodeCursor(token, other));
 		expect(err.code).toBe("SNAPSHOT_EXPIRED");
 	});
@@ -89,7 +108,18 @@ describe("events 游标", () => {
 	});
 
 	test("decoded tokens reject malformed filters and numeric positions without coercing them", () => {
-		const base = { v: 1, partition: scope.partition, kinds: null, limit: 10, pos: 0, upper: 5 };
+		const base = {
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
+			partition: scope.partition,
+			kinds: null,
+			limit: 10,
+			pos: 0,
+			upper: 5,
+		};
 		for (const change of [
 			{ kinds: "chat" },
 			{ kinds: ["system"] },
@@ -104,12 +134,34 @@ describe("events 游标", () => {
 	});
 
 	test("after 不能换过滤：kinds 与 token 不一致 → INVALID_INPUT", () => {
-		const after = encodeCursor({ v: 1, partition: scope.partition, kinds: ["chat"], limit: 50, pos: 9, upper: 9 });
+		const after = encodeCursor({
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
+			partition: scope.partition,
+			kinds: ["chat"],
+			limit: 50,
+			pos: 9,
+			upper: 9,
+		});
 		expect(failureOf(() => resolveEventQuery({ after, kinds: ["damage"] }, scope)).code).toBe("INVALID_INPUT");
 	});
 
 	test("after 续读沿用 token 的过滤条件", () => {
-		const after = encodeCursor({ v: 1, partition: scope.partition, kinds: ["chat"], limit: 50, pos: 9, upper: 9 });
+		const after = encodeCursor({
+			v: 2,
+			storage: "db:test",
+			kind: "after",
+			gapAfter: 0,
+			gapUpper: 0,
+			partition: scope.partition,
+			kinds: ["chat"],
+			limit: 50,
+			pos: 9,
+			upper: 9,
+		});
 		const { params } = resolveEventQuery({ after, limit: 30 }, scope);
 		expect(params.kinds).toEqual(["chat"]);
 		expect(params.afterRowid).toBe(9);
@@ -128,8 +180,20 @@ describe("events 页成形", () => {
 	});
 
 	test("还有下一页：给 next（固定上界），不给 after", () => {
-		const params = { scope, kinds: null, afterRowid: 10, upper: 99, limit: 2 };
-		const page = buildEventPage({ rows: [row(11), row(12)], gaps: [], upper: 99, hasMore: true }, params);
+		const params = {
+			storage: "db:test",
+			gapAfter: 0,
+			gapUpper: null,
+			scope,
+			kinds: null,
+			afterRowid: 10,
+			upper: 99,
+			limit: 2,
+		};
+		const page = buildEventPage(
+			{ storage: "db:test", version: 1, gapUpper: 1, rows: [row(11), row(12)], gaps: [], upper: 99, hasMore: true },
+			params,
+		);
 		expect(page.after).toBeUndefined();
 		expect(page.next).toBeDefined();
 		const next = decodeCursor(page.next as string, scope);
@@ -139,13 +203,25 @@ describe("events 页成形", () => {
 	});
 
 	test("读完后 after 指向本次扫描上界（空页也推进）", () => {
-		const params = { scope, kinds: null, afterRowid: 10, upper: 20, limit: 5 };
-		const page = buildEventPage({ rows: [row(11)], gaps: [], upper: 20, hasMore: false }, params);
+		const params = {
+			storage: "db:test",
+			gapAfter: 0,
+			gapUpper: null,
+			scope,
+			kinds: null,
+			afterRowid: 10,
+			upper: 20,
+			limit: 5,
+		};
+		const page = buildEventPage(
+			{ storage: "db:test", version: 1, gapUpper: 1, rows: [row(11)], gaps: [], upper: 20, hasMore: false },
+			params,
+		);
 		const after = decodeCursor(page.after as string, scope);
 		expect(after.pos).toBe(20);
 		expect(after.upper).toBe(20);
 		const empty = buildEventPage(
-			{ rows: [], gaps: [], upper: 33, hasMore: false },
+			{ storage: "db:test", version: 1, gapUpper: 1, rows: [], gaps: [], upper: 33, hasMore: false },
 			{ ...params, afterRowid: 20, upper: null },
 		);
 		expect(decodeCursor(empty.after as string, scope).pos).toBe(33);
@@ -154,12 +230,15 @@ describe("events 页成形", () => {
 	test("gaps 原样透出，事件只保留 ref 作为证据", () => {
 		const page = buildEventPage(
 			{
+				storage: "db:test",
+				version: 1,
+				gapUpper: 1,
 				rows: [row(1)],
 				gaps: [{ ref: "gap:t:1", reason: "overflow", after: "3", through: null }],
 				upper: 1,
 				hasMore: false,
 			},
-			{ scope, kinds: null, afterRowid: null, upper: null, limit: 50 },
+			{ storage: "db:test", gapAfter: 0, gapUpper: null, scope, kinds: null, afterRowid: null, upper: null, limit: 50 },
 		);
 		expect(page.gaps).toHaveLength(1);
 		expect(page.events[0]?.ref).toBe("ev:t:1");

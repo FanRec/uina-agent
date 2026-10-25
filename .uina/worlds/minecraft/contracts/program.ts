@@ -55,13 +55,21 @@ export type InvokeResult =
 			failure: ProgramDiagnostic | import("./values.js").CallFailureData;
 	  };
 export type ProgramRetirement = { state: "retired"; stoppedAt: string } | { state: "unknown"; detail: string };
+export type Targets = Record<string, { ref: string; input?: JsonValue }>;
+export interface ReadValues {
+	values: Record<string, JsonValue>;
+	versions: Record<string, string | null>;
+	unknown: Record<string, string[]>;
+}
+/** Only waitUntil supplies after; ordinary mc.read always receives ReadValues. */
+export type ReadResult = ReadValues | { kind: "invalidated"; reason: string };
+export type WaitResult = ({ kind: "met" | "timeout" } & ReadValues) | { kind: "invalidated"; reason: string };
+export type WatchResult = { status: "changed" | "timeout" } | { status: "invalidated"; reason: string };
 export interface ProgramHostApi {
 	call(input: { selector: string; args: JsonValue; delegateBody?: boolean; handle?: string }): Promise<JsonValue>;
-	read(input: { targets: Record<string, { ref: string; input?: JsonValue }> }): Promise<{
-		values: Record<string, JsonValue>;
-		versions: Record<string, string | null>;
-		unknown: Record<string, string[]>;
-	}>;
+	read(input: { targets: Targets; after?: Record<string, string> }): Promise<ReadResult>;
+	watch(input: { targets: Targets; after: Record<string, string>; timeoutMs?: number }): Promise<WatchResult>;
+
 	sleep(input: { ms: number }): Promise<null>;
 	progress(input: { value: import("./values.js").Progress }): Promise<null>;
 	acquireBody(input: Record<string, never>): Promise<HandleRef>;
@@ -84,7 +92,12 @@ export interface ProgramCapacity {
 		worker: string;
 		state: "running" | "waiting" | "retiring" | "unknown";
 		pendingRpcs: number;
-		waiting?: { kind: "host_call" | "world_change" | "sleep" | "idle"; method?: string; sinceMs: number };
+		waiting?: {
+			kind: "host_call" | "world_change" | "sleep" | "idle";
+			method?: string;
+			targets?: string[];
+			sinceMs: number;
+		};
 		idleMs: number;
 		computeTotalMs: number;
 	}[];

@@ -1,6 +1,6 @@
 # Uina Minecraft World — 概要设计
 
-日期：2026-10-25（原概要 2026-10-18）。状态：终态概要，部分实现；当前 I1/K1、采集、窗口容器与生产链已落地，完整主脑接入、程序复用及其余玩法仍待实现。实时状态见 [README](README.md)，施工顺序唯一见 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)；历史 fake bot 或专项场景不证明完整设计已验收。
+日期：2026-10-25（原概要 2026-10-18）。状态：终态概要，部分实现；当前 I1/K1、采集、窗口容器与生产链已落地，正式主脑接入、程序执行、Library 复用和批 9A 等待已接通；决策/调度、引用清理及其余玩法仍待实现。实时状态见 [README](README.md)，施工顺序唯一见 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)；历史 fake bot 或专项场景不证明完整设计已验收。
 
 本文说明目标、组成与使用流程。行为合同由各模块唯一维护，[contracts](contracts.md) 只导航所有权与协作，[public-api](public-api.md) 定义跨模块类型。开发顺序见 [development-plan](development-plan.md)，统一施工与验证约定见 [development-guide](development-guide.md)。
 

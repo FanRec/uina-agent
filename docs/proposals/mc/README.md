@@ -14,7 +14,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | Library（程序、蓝图与经验） | 批 8 已实现三类文件 CRUD、来源保存与统一发现；蓝图解释/施工留 Construction，见 [实施记录](library-implementation.md) | 2026-10-25 |
 | Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；批 6 正式 WorldDef、原生工具、请求凭证、可靠通知与 BodyEndpoint 已接线。见 [原生接入实施](native-host-implementation.md) | 2026-10-25 |
 | Host 持久交付接缝 | **批 5 已实现**：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定；见 [实施记录](host-delivery-implementation.md) | 2026-10-25 |
-| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行子集、正式入口、快照与取消已实现，见 [实施记录](program-implementation.md)；等待/决策/反馈未交付 | 2026-10-25 |
+| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行子集、正式入口、快照与取消已实现，见 [实施记录](program-implementation.md)；9A 已接可等待查询与 waitUntil；决策/反馈未交付 | 2026-10-25 |
 | 真实 Minecraft 游玩验收 | 批 4 受管源码/产物各 **8/8**（含导航中关闭/过期/故障恢复）；MC **33 文件/270 项**。生产链 K3 各 **14/14**、production-repair 各 **7/7** 及 Driver repair/I1/K1/批 2 保留对应历史证据。批 6 已有真实 deepseek-flash 的采集/生产、缺料纠错和显式停止校准，见 [实施记录](native-host-implementation.md) | 2026-10-25 |
 
 批 7 审查收口：MC **38 文件/293 项**、Host 相关 **5 文件/27 项**、typecheck/build 通过；正式源码/产物程序真服场景各 **8/8**，真实 deepseek-flash 程序校准通过。证据与未验证范围见 [实施记录](program-implementation.md)。
@@ -23,7 +23,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
-**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，下一批为等待/决策与完整 I2。现有 25 项能力不等于全部 51 项设计完成。
+**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；下一批为 9B 决策/调度/引用清理与完整 I2。现有 25 项能力不等于全部 51 项设计完成。
 
 批 2 设计、取舍与任务记录见 [窗口与容器实施](window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 
@@ -118,3 +118,5 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 - 改动先改权威正文，再改本页索引；一轮改动追加到 changelog.md。
 - 已作废的机制不保留第二份完整描述：正文里留一句指针，细节去 git 历史。
 - 实现状态与验收要求分开；Program 验收见 program.md §8，Runtime 验收见 runtime.md §8。
+
+批 9A：确切查询版本、事件提交 Watch、Program waitUntil 与停止/身体生命周期已接通；能力仍为 25/51，历史库 v2，Runtime/Host 格式不变。完整证据见 [实施记录](wait-implementation.md)。

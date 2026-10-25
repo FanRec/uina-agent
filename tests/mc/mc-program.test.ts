@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { createProgramHost } from "../../.uina/worlds/minecraft/runtime/program-host.js";
+import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
 import type { ProgramHostApi, ProgramPort } from "../../.uina/worlds/minecraft/contracts/program.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -21,6 +23,7 @@ async function setup() {
 function host(overrides: Partial<ProgramHostApi> = {}): ProgramHostApi {
 	return {
 		call: async ({ args }) => args,
+		watch: async () => ({ status: "timeout" }),
 		read: async () => ({ values: { target: { count: 7 } }, versions: { target: null }, unknown: { target: [] } }),
 		sleep: async ({ ms }) => {
 			await new Promise((r) => setTimeout(r, ms));
@@ -340,4 +343,132 @@ test("an actual Worker exit seals its guests, reports crash and permits a fresh 
 	expect(notices).toEqual(["call:crash"]);
 	await scope.close("failed");
 	expect(await invoke(p, "async function main(){return 19;}")).toMatchObject({ kind: "returned", value: 19 });
+});
+
+test("waitUntil evaluates locally, validates predicates and re-reads at the deadline", async () => {
+	const { p } = await setup();
+	let reads = 0;
+	const h = host({
+		read: async () => ({ values: { n: ++reads }, versions: { n: "version" }, unknown: { n: [] } }),
+		watch: async () => ({ status: "timeout" }),
+	});
+	expect(
+		await invoke(p, "async function main(mc){return mc.waitUntil({n:{ref:'inventory@1'}},s=>s.n===1);}", h),
+	).toMatchObject({ kind: "returned", value: { kind: "met", values: { n: 1 } } });
+	reads = 0;
+	expect(
+		await invoke(
+			p,
+			"async function main(mc){return mc.waitUntil({n:{ref:'inventory@1'}},s=>s.n===2,{timeoutMs:0});}",
+			h,
+		),
+	).toMatchObject({ kind: "returned", value: { kind: "met", values: { n: 2 } } });
+	for (const predicate of ["()=>1", "async()=>true"]) {
+		expect(
+			await invoke(p, `async function main(mc){return mc.waitUntil({n:{ref:'inventory@1'}},${predicate});}`, h),
+		).toMatchObject({ kind: "failed", failure: { code: "PREDICATE_INVALID" } });
+	}
+	expect(
+		await invoke(
+			p,
+			"async function main(mc){return mc.waitUntil({n:{ref:'recipe@1'}},()=>true);}",
+			host({ read: async () => ({ values: { n: 1 }, versions: { n: null }, unknown: { n: [] } }) }),
+		),
+	).toMatchObject({ kind: "failed", failure: { code: "INVALID_INPUT" } });
+});
+
+test("waitUntil captures targets, preserves independent versions and drops values on invalidation", async () => {
+	const { p } = await setup();
+	const h = host({
+		read: async ({ targets }) => {
+			expect(targets).toEqual({ a: { ref: "inventory@1" }, b: { ref: "self@1" } });
+			return { values: { a: 1, b: 2 }, versions: { a: "va", b: "vb" }, unknown: { a: [], b: ["health"] } };
+		},
+		watch: async ({ after }) => {
+			expect(after).toEqual({ a: "va", b: "vb" });
+			return { status: "invalidated", reason: "epoch_changed" };
+		},
+	});
+	expect(
+		await invoke(
+			p,
+			`async function main(mc){const t={a:{ref:'inventory@1'},b:{ref:'self@1'}};const r=mc.waitUntil(t,()=>false);t.a.ref='recipe@1';return r;}`,
+			h,
+		),
+	).toEqual({
+		kind: "returned",
+		value: { kind: "invalidated", reason: "epoch_changed" },
+	});
+});
+
+test("four waiting guests allow a fifth supplier guest to run", async () => {
+	const { p } = await setup();
+	let count = 0;
+	const wakes: Array<() => void> = [];
+	const h = host({
+		read: async () => ({ values: { n: count }, versions: { n: String(count) }, unknown: { n: [] } }),
+		watch: async () => {
+			await new Promise<void>((r) => wakes.push(r));
+			return { status: "changed" };
+		},
+		call: async () => {
+			count = 8;
+			for (const wake of wakes) wake();
+			return null;
+		},
+	});
+	const waiters = Array.from({ length: 4 }, (_, i) =>
+		invoke(
+			p,
+			"async function main(mc){return mc.waitUntil({n:{ref:'inventory@1'}},s=>s.n>=8);}",
+			h,
+			new AbortController().signal,
+			`wait:${i}`,
+		),
+	);
+	await expect.poll(() => wakes.length).toBe(4);
+	expect(
+		await invoke(p, "async function main(mc){return mc.call('supply@1');}", h, new AbortController().signal, "supply"),
+	).toMatchObject({ kind: "returned" });
+	expect((await Promise.all(waiters)).every((r) => r.kind === "returned" && r.value !== null)).toBe(true);
+});
+
+test("waitUntil rejects a new source epoch before re-evaluating and at the final timeout read", async () => {
+	const { p } = await setup();
+	for (const [timeoutMs, gone] of [
+		[1000, false],
+		[0, false],
+		[1000, true],
+	] as const) {
+		let reads = 0;
+		const ctx = {
+			signal: new AbortController().signal,
+			world: {
+				read: async () => {
+					reads++;
+					if (gone && reads > 1) throw Object.assign(new Error("connection gone"), { code: "DISCONNECTED" });
+					return {
+						value: reads === 1 ? 0 : 1,
+						unknown: [],
+						cursor: { stream: "facts", epoch: reads === 1 ? "old" : "new", sequence: reads },
+					};
+				},
+				watch: async () => ({
+					next: async () => ({ kind: "changed", cursor: { stream: "facts", epoch: "old", sequence: 2 }, changed: [] }),
+					close: async () => {},
+				}),
+			},
+		} as unknown as CallContext;
+		const h = createProgramHost(ctx, new Set(), () => "read");
+		expect(
+			await invoke(
+				p,
+				`async function main(mc){return mc.waitUntil({n:{ref:'self@1'}},s=>s.n===1,{timeoutMs:${timeoutMs}});}`,
+				h,
+			),
+		).toEqual({
+			kind: "returned",
+			value: { kind: "invalidated", reason: gone ? "source_unavailable" : "epoch_changed" },
+		});
+	}
 });

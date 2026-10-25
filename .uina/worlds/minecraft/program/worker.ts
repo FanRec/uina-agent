@@ -233,6 +233,9 @@ function start(msg: Extract<ProgramWorkerRequest, { type: "invoke" }>): void {
 		});
 		g.ctx.setProp(g.ctx.global, "__uinaPost", post);
 		post.dispose();
+		const now = g.ctx.newFunction("__uinaNow", () => g.ctx.newNumber(performance.now()));
+		g.ctx.setProp(g.ctx.global, "__uinaNow", now);
+		now.dispose();
 		g.shim = g.ctx.unwrapResult(g.ctx.evalCode(SHIM, "uina-shim.js", { type: "global" }));
 		const mc = g.ctx.getProp(g.shim, "mc");
 		const input = injectJson(g, msg.input);

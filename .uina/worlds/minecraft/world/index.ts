@@ -21,7 +21,7 @@ import type {
 	Ref,
 } from "../contracts/values.js";
 import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { QueryReader, QueryValidator } from "../contracts/capabilities.js";
+import type { QueryDescriptor, QueryReader, QueryValidator } from "../contracts/capabilities.js";
 import type {
 	DomainRecord,
 	EventPage,
@@ -31,6 +31,7 @@ import type {
 	WorldWatch,
 } from "../contracts/world.js";
 import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
+import { checkCursor, queryStream, watchFailure } from "./watch.js";
 import { CurrentReads } from "./current.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
 import { EVENTS_REF, buildEventPage, eventScopeOf, resolveEventQuery, type EventScope } from "./events.js";
@@ -40,6 +41,7 @@ export interface MinecraftWorldOptions {
 	/** 查询读取表（能力面声明生成；组合根装配）。 */
 	readers: ReadonlyMap<ExactRef, QueryReader>;
 	validators: ReadonlyMap<ExactRef, QueryValidator>;
+	queries: QueryDescriptor[];
 	/** world-history.db 路径（.uina/world-data/minecraft/ 下，Host 提供数据根）。 */
 	dbPath: string;
 	/** 当前绑定投影（§4.2；I1 每进程生成显式分区，不猜旧身份）。 */
@@ -117,6 +119,9 @@ export class MinecraftWorld implements WorldPort {
 	private readonly readers: ReadonlyMap<ExactRef, QueryReader>;
 	private readonly validators: ReadonlyMap<ExactRef, QueryValidator>;
 	private readonly eventScope: EventScope;
+	private readonly watchable: Set<string>;
+	private readonly watches = new Set<WorldWatch>();
+	private closed = false;
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
 
@@ -125,6 +130,7 @@ export class MinecraftWorld implements WorldPort {
 		this.binding = options.binding;
 		this.readers = options.readers;
 		this.validators = options.validators;
+		this.watchable = new Set(options.queries.filter((q) => q.watchable).map((q) => q.ref));
 		const queryRefs: ExactRef[] = [...options.readers.keys(), EVENTS_REF, CONTAINER_LAST_REF];
 		for (const ref of queryRefs) {
 			if (typeof options.validators?.get(ref) !== "function") throw new Error(`query validator is missing: ${ref}`);
@@ -155,9 +161,11 @@ export class MinecraftWorld implements WorldPort {
 		const input = this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader?.kind === "current") {
-			const observation = await this.current.read<T>(input, reader.read);
+			const observation = await this.current.read<T>(query.ref, input, reader.read);
 			// 派生结果（如 recipe 的 plan）读当前库存但不发布观察水位。
-			return reader.cursor === "none" ? { ...observation, cursor: null } : observation;
+			return reader.cursor === "none" || !this.watchable.has(query.ref)
+				? { ...observation, cursor: null }
+				: observation;
 		}
 		if (reader?.kind === "static") {
 			return { ...(reader.read(input) as Fact<T>), cursor: null };
@@ -170,49 +178,46 @@ export class MinecraftWorld implements WorldPort {
 		throw unknownQuery(query.ref, this.readers);
 	}
 
-	async watch(query: WorldQuery, _after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
-		this.validateQuery(query);
-		const reader = this.readers.get(query.ref);
-		if (reader == null) {
-			if (query.ref === EVENTS_REF || query.ref === CONTAINER_LAST_REF) {
-				throw callFailure({
-					code: "INVALID_INPUT",
-					source: "world",
-					message: `${query.ref} is history and cannot be watched through ObservationCursor`,
-					hint: "wait for events with the fixed `after` token once waitUntil is implemented (program work package)",
-					dispatch: "not_sent",
-					effects: [],
-					recoverable: false,
-				});
-			}
-			throw unknownQuery(query.ref, this.readers);
+	async watch(query: WorldQuery, after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
+		const input = this.validateQuery(query);
+		checkCursor(after);
+		signal.throwIfAborted();
+		if (!this.watchable.has(query.ref)) throw watchFailure("INVALID_INPUT", `${query.ref} is not watchable`);
+		let inner: WorldWatch;
+		if (query.ref === EVENTS_REF) {
+			const observation = await this.readEvents<EventPage>(input);
+			if (!observation.cursor)
+				throw watchFailure(
+					"INVALID_INPUT",
+					"events waiting requires a fixed after and a complete page; read next pages first",
+				);
+			inner = this.history.watchEvents(queryStream(EVENTS_REF, input, this.eventScope.partition));
+		} else {
+			const reader = this.readers.get(query.ref);
+			if (reader?.kind !== "current" || reader.cursor === "none")
+				throw watchFailure("INVALID_INPUT", `${query.ref} has no watchable observation source`);
+			inner = await this.current.watch(query.ref, input, signal);
 		}
-		if (reader.kind === "static") {
-			throw callFailure({
-				code: "INVALID_INPUT",
-				source: "world",
-				message: `${query.ref} is static knowledge and cannot be watched`,
-				hint: "wait on the underlying current facts instead (inventory/block)",
-				dispatch: "not_sent",
-				effects: [],
-				recoverable: false,
-			});
+		const close = async () => {
+			signal.removeEventListener("abort", abort);
+			this.watches.delete(watch);
+			await inner.close();
+		};
+		const abort = () => {
+			void close();
+		};
+		const watch: WorldWatch = { next: (cursor, waitSignal) => inner.next(cursor, waitSignal), close };
+		if (this.closed || signal.aborted) {
+			await inner.close();
+			throw watchFailure("INTERRUPTED", "World or watch scope closed");
 		}
-		if (reader.cursor === "none") {
-			throw callFailure({
-				code: "INVALID_INPUT",
-				source: "world",
-				message: `${query.ref} is a derived value without an observation cursor`,
-				hint: "watch its underlying facts instead",
-				dispatch: "not_sent",
-				effects: [],
-				recoverable: false,
-			});
-		}
-		return this.current.watch(signal);
+		this.watches.add(watch);
+		signal.addEventListener("abort", abort, { once: true });
+		return watch;
 	}
 
 	private validateQuery(query: WorldQuery): JsonValue {
+		if (this.closed) throw watchFailure("INTERRUPTED", "World is closed");
 		const validate = this.validators.get(query.ref);
 		if (validate === undefined) throw unknownQuery(query.ref, this.readers);
 		return validate(query.input);
@@ -231,7 +236,10 @@ export class MinecraftWorld implements WorldPort {
 			coverage: gaps.length > 0 ? "partial" : "complete",
 			unknown: gaps.length > 0 ? [`${gaps.length} recorded gap(s) exist in this partition; see page.gaps`] : [],
 			evidence: page.events.map((event) => event.ref),
-			cursor: null,
+			cursor:
+				params.afterRowid !== null && params.upper === null && !page.next
+					? this.history.eventCursor(queryStream(EVENTS_REF, input, this.eventScope.partition), result.version)
+					: null,
 		};
 	}
 
@@ -254,6 +262,8 @@ export class MinecraftWorld implements WorldPort {
 	}
 
 	async close(): Promise<void> {
+		this.closed = true;
+		await Promise.all([...this.watches].map((w) => w.close()));
 		await this.history.close();
 	}
 }

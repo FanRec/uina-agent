@@ -597,7 +597,7 @@ interface EventGap { ref: Ref; reason: string; after: string | null; through: st
 interface EventPage { events: GameEventRecord[]; gaps: EventGap[]; next?: string; after?: string } // next/after 互斥
 ```
 
-历史页的 cursor=null：它没有当前观察水位，增量位置是页内的不透明 `after` 令牌（见 [capabilities §3 events](modules/capabilities.md#events)）。watch 只支持 current 查询；events 的等待属于 Program waitUntil，静态与派生查询不可 watch。
+批 9A：events 仅在输入固定 `after`、不是分页输入且本页没有 `next` 时提供历史提交观察 cursor，可经相同 watch 端口等待。最近窗口、分页、尚有 next 的结果 cursor=null。`after` 是持久增量位置，`next` 固定分页窗口，ObservationCursor 是查询失效版本，三者不能混用。当前查询的可等待性以 QueryDescriptor 为准；静态、派生查询和 container.last 不可等待。见 [批 9A 实施](wait-implementation.md)。
 
 read 的切面、cursor/分页、当前与历史降级由 [World §6–§9/§13](modules/world.md) 定义。顺序为 read → 原样交出 cursor → watch → next；changed 后重读，reset 后旧游标失效。Watch 是复查提示，不是事件日志或主动游戏操作。
 

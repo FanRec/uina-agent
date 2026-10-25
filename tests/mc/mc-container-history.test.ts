@@ -154,7 +154,7 @@ const dbPath = ${JSON.stringify(join(dir, "history.db"))};
 const binding = { binding: "bind:t:1", world: "world:t:1", worldRevision: "wrev:t:1" };
 const h = makeFactsHarness({ namespace: "capture-first" });
 const validators = buildCapabilities({ knowledge: () => null, runtime: () => { throw new Error("unused"); }, gotoDirector: {} }).validators;
-const makeWorld = (facts, b = binding, path = dbPath) => new MinecraftWorld({ facts, readers: new Map(), validators, dbPath: path, binding: b, namespace: "history" });
+const makeWorld = (facts, b = binding, path = dbPath) => new MinecraftWorld({ facts, readers: new Map(), validators, queries: [], dbPath: path, binding: b, namespace: "history" });
 const query = (dimension = "overworld", position = { x: 2, y: 64, z: 3 }) => ({ ref: "container.last@1", input: { at: { position, dimension } } });
 let world = makeWorld(h.facts);
 try {

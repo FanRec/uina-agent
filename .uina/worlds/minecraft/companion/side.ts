@@ -128,6 +128,7 @@ export async function openExecutionSide(
 		facts,
 		readers: capabilities.readers,
 		validators: capabilities.validators,
+		queries: capabilities.queries,
 		dbPath: join(init.worldDataDir, "world-history.db"),
 		binding,
 		namespace,

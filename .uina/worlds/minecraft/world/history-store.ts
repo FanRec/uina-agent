@@ -8,6 +8,8 @@
  * durable ACK 发布与待落盘队列移除在同一续体完成（§5.6）。
  */
 
+import { ObservationWatch } from "./watch.js";
+import type { ObservationCursor } from "../contracts/values.js";
 import { Worker } from "node:worker_threads";
 import type { ClientFactNotice, ClientFactsPort, ClientFactsSubscription } from "../contracts/client-facts.js";
 import { callFailure } from "../contracts/values.js";
@@ -42,6 +44,9 @@ export class HistoryIngest {
 	private closed = false;
 	private _state: HistoryState = { state: "opening" };
 	private readonly receiver: string;
+	private storage = "";
+	private version = 0;
+	private readonly watches = new Map<ObservationWatch, string>();
 	private settle!: (result: "ready" | "unavailable") => void;
 	/** 提交屏障与历史读取的往返登记（worker 串行处理，回执即此前消息已提交）。 */
 	private barrierSeq = 0;
@@ -156,12 +161,16 @@ export class HistoryIngest {
 	private onWorkerMessage(msg: WorkerResponse): void {
 		if (this.closed) return;
 		if (msg.type === "opened") {
+			this.storage = msg.storage;
+			this.version = msg.version;
 			this._state = { state: "ready" };
 			this.settle("ready");
 			this.scheduleFlush();
 			return;
 		}
 		if (msg.type === "durable") {
+			this.version = Math.max(this.version, msg.version);
+			for (const [watch, stream] of this.watches) watch.update(this.eventCursor(stream, this.version));
 			for (const ack of msg.acks) {
 				this.subscription.acknowledge({
 					receiver: this.receiver,
@@ -180,6 +189,21 @@ export class HistoryIngest {
 			const waiter = this.readWaiters.get(msg.id);
 			this.readWaiters.delete(msg.id);
 			waiter?.resolve(msg.result);
+			return;
+		}
+		if (msg.type === "queryFailed") {
+			const waiter = this.readWaiters.get(msg.id);
+			this.readWaiters.delete(msg.id);
+			waiter?.reject(
+				callFailure({
+					code: msg.code,
+					message: msg.message,
+					source: "world",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: true,
+				}),
+			);
 			return;
 		}
 		if (msg.type === "containerLast") {
@@ -204,6 +228,7 @@ export class HistoryIngest {
 		// 终态：不播种、不再 ACK，但订阅保持——接收继续运转（§13.1）。
 		this._state = { state: "unavailable", reason };
 		this.queue = [];
+		for (const watch of this.watches.keys()) void watch.close();
 		this.settle("unavailable");
 	}
 
@@ -239,6 +264,18 @@ export class HistoryIngest {
 		});
 	}
 
+	eventCursor(stream: string, version: number): ObservationCursor {
+		return { stream: JSON.stringify([this.storage, stream]), epoch: this.receiver, sequence: version };
+	}
+	watchEvents(stream: string): ObservationWatch {
+		if (this.closed || this._state.state !== "ready") throw storeUnavailable({ reason: "history watch unavailable" });
+		const watch = new ObservationWatch(this.eventCursor(stream, this.version), () => {
+			this.watches.delete(watch);
+		});
+		this.watches.set(watch, stream);
+		return watch;
+	}
+
 	async readContainer(params: ContainerQueryParams): Promise<ContainerEvidence | null> {
 		await this.barrier();
 		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
@@ -267,6 +304,7 @@ export class HistoryIngest {
 		}
 		this.closed = true;
 		this.subscription.close();
+		await Promise.all([...this.watches.keys()].map((w) => w.close()));
 		this.rejectPending("history store closed");
 		if (this._state.state === "ready") this.post({ type: "close" });
 		const worker = this.worker;
