@@ -72,6 +72,7 @@ async function main(): Promise<void> {
 			};
 			furnaceAt = { x: base.x + 2, y: base.y, z: base.z };
 			await s.command(`/clear ${user}`);
+			await s.command(`/setblock ${furnaceAt.x} ${furnaceAt.y} ${furnaceAt.z} minecraft:air`);
 			await s.command(`/setblock ${furnaceAt.x} ${furnaceAt.y} ${furnaceAt.z} minecraft:furnace`);
 			await s.command(`/give ${user} minecraft:oak_log 12`);
 			prepared = true;
@@ -171,6 +172,7 @@ async function main(): Promise<void> {
 			await s.command(`/give ${user} minecraft:raw_iron 3`);
 			await s.command(`/give ${user} minecraft:coal 1`);
 			const before = await count("iron_ingot");
+			const fuelBefore = await count("coal");
 			const result = await s.call(
 				"smelt@1",
 				{ item: "iron_ingot", count: 3, fuel: "coal", at: plain(furnaceAt), maxTimeMs: 60000 },
@@ -180,7 +182,14 @@ async function main(): Promise<void> {
 			const value = result.value as unknown as SmeltValue;
 			const after = await count("iron_ingot");
 			if (after - before !== 3) throw new Error(`delta ${after - before}`);
-			if (value.consumed.input.count !== 3 || value.consumed.fuel.count !== 1) throw new Error(JSON.stringify(value));
+			const fuelRemoved = fuelBefore - (await count("coal"));
+			if (
+				value.consumed.input.count !== 3 ||
+				value.consumed.fuel.count !== fuelRemoved ||
+				fuelRemoved < 0 ||
+				fuelRemoved > 1
+			)
+				throw new Error(JSON.stringify(value));
 			if (h.bot.currentWindow != null) throw new Error("furnace window left open");
 			const read = await s.call("container@1", { at: plain(furnaceAt) });
 			let leftover: ContainerValue["slots"] = [];

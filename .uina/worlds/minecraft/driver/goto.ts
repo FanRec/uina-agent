@@ -13,7 +13,7 @@
  * 不推断成功，结算 quiescence 有界，超期如实记 unknown。
  */
 
-import type { DriverExecutionSink } from "../contracts/runtime.js";
+import type { ControlRetirement, DriverExecutionSink } from "../contracts/runtime.js";
 import type { CallFailure, EffectReceipt, JsonValue, Ref, Vec3 } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
 import type { HostView } from "./body/session.js";
@@ -31,6 +31,8 @@ import {
 } from "./mineflayer/pathfinder.js";
 
 export interface GotoDeps {
+	assertActionAllowed: () => void;
+	requireRetirement?: (notice: ControlRetirement) => void;
 	host: HostView;
 	bot: () => MineflayerBot | null;
 	sink: DriverExecutionSink;
@@ -88,6 +90,7 @@ export class GotoDirector {
 	}
 
 	async goto(request: GotoRequest, signal: AbortSignal): Promise<GotoOutcome> {
+		this.deps.assertActionAllowed();
 		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",
@@ -140,7 +143,13 @@ export class GotoDirector {
 		const guard = (): void => {
 			ticks++;
 			if (this.state !== "running") return;
-			if (signal.aborted || this.deps.host.state !== "ready") {
+			let ownerAllowed = true;
+			try {
+				this.deps.assertActionAllowed();
+			} catch {
+				ownerAllowed = false;
+			}
+			if (!ownerAllowed || signal.aborted || this.deps.host.state !== "ready") {
 				this.seal(bot as MineflayerBot);
 				if (pathfinderGoalActive(bot as MineflayerBot)) clearGoal(bot as MineflayerBot);
 			}
@@ -436,6 +445,12 @@ export class GotoDirector {
 		if (bot != null && pathfinderGoalActive(bot)) clearGoal(bot);
 		const quiesced = await this.awaitQuiesced(bot);
 		if (bot != null && !quiesced) {
+			this.deps.requireRetirement?.({
+				source: "driver",
+				subject: eff,
+				code: "CONTROL_ISOLATION_FAILED",
+				detail: "navigation quiescence deadline exceeded",
+			});
 			this.seal(bot); // 期限兜底：保持封印至本调用结束
 		}
 		this.recorder.record(
@@ -472,6 +487,7 @@ export class GotoDirector {
 	}
 
 	private botForWrite(): MineflayerBot {
+		this.deps.assertActionAllowed();
 		if (this.deps.host.state !== "ready") {
 			throw fail({
 				code: "DISCONNECTED",

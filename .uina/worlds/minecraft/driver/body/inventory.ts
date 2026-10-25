@@ -51,7 +51,7 @@ async function click(
 		expectedSlots: slot === -999 ? [] : [{ slot, stack: expected(itemAt(snapshot, slot)) }],
 		expectedCursor: expected(snapshot.cursor as unknown as ItemValue | null),
 	});
-	if (receipt.completion !== "met" || receipt.needsSnapshot)
+	if (receipt.completion !== "met" || receipt.needsSnapshot || receipt.confirmed == null)
 		throw fail({
 			code: "TARGET_NOT_MET",
 			source: "capability",
@@ -62,7 +62,7 @@ async function click(
 		});
 	confirmed?.();
 	deps.guard();
-	return (await deps.window.snapshot()).value;
+	return receipt.confirmed;
 }
 function emptyCursor(snapshot: WindowSnapshot): void {
 	if (snapshot.cursor != null) throw failure("CURSOR_NOT_EMPTY", "inventory requires a confirmed empty cursor");

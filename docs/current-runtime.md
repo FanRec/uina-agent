@@ -96,11 +96,13 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 当前 MC 在 `.uina/worlds/minecraft/`，实现 I1 原生闭环、K1 基础能力、采集、窗口容器与合成/熔炼，共 **10 查询 + 15 动作（25 项）**；以实际目录装配为准，此前 12 查询的记载有误。连接级 DriverProtocol 当前实现 Java 1.21.11；未来版本沿同一窄端口接入，未支持版本的相关操作明确失败。玩家库存与容器共用 mode-0 的服务端槽位/光标确认，装备、移槽、丢弃不进入上游异步预测写入链；ItemValue 与选择器保留有效组件、堆叠上限和剩余耐久。采矿只认实际服务端方块更新，Runtime 保留直接/嵌套未知效果；查询先执行统一 schema 校验。World 沿既有 SQLite 证据链保留最后容器观察，历史不代表当前库存。
 
-实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`；本轮 `dev:mc:repair` 默认使用独立 Temp 数据根，覆盖工具/物品实例选择、正常动作、取消、导航与历史重开。实现及本轮验证记录见 [Driver 修复实施](proposals/mc/driver-repair-implementation.md)。
+实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`、`dev:mc:k3`、`dev:mc:production-repair`。`dev:mc:repair` 与 `dev:mc:production-repair` 默认使用独立 Temp 数据根；前者覆盖工具/物品实例选择、取消、导航与历史重开，后者覆盖满背包制作、组件匹配、弱燃料分批、等待期间并发身体动作及取消后取货。
 
-本轮类型/9 条边界、MC 24 文件/176 项、构建通过；最终 Paper 1.21.11 源码与构建产物 repair 各 15/15 通过，分别使用独立数据根。其他版本尚未实现；历史脚本的旧 PASS 不作为本轮复跑结论。
+生产链修复将合成、熔炼拆开，取货共用实例匹配与跨槽分装，进度累计服务端确认量。自有熔炼在世界等待前关窗并释放身体，复查重新申请；燃料批量受实际槽位与刻数约束。WindowClickReceipt.confirmed 直接携带确认时的服务端快照，避免确认后读取失败漏记。当前类型/9 条边界、MC 28 文件/236 项、构建通过；本轮真服验收与边界见 [生产链修复实施](proposals/mc/production-repair-implementation.md)。先前 [Driver repair](proposals/mc/driver-repair-implementation.md) 的源码/构建产物各 15/15 属于其历史验证。
 
-Program/Library、Host 持久回执、Executor/WorldDef 尚未实现，当前不能作为完整 `minecraft({action,params})` 主脑工具使用。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
+批 4 已实现 Windows x64 Executor 平台：双命名 Job、精确进程身份、受管 bootstrap/Companion、固定 JSON IPC、持久身份/launch 及本地门意图、心跳、关闭/退役与显式恢复。Runtime 使用 schema v2，固定 owner/storage，受理及开始先提交；Owner 独立三门与 Driver 写入检查共用同一权威。开发场景 `pnpm dev:mc:executor` 经正式受管入口验证，开发 harness 复用同一执行侧装配。证据见 [平台实施记录](proposals/mc/executor-platform-implementation.md)。
+
+Program/Library、Host 持久回执、WorldDef/模型工具与通知仍未实现，Host 会话仍为 journal v3；当前不能作为完整 `minecraft({action,params})` 主脑工具使用。旧 Runtime 库不自动迁移，验收用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
 
 ## QQ World
 

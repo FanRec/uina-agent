@@ -82,16 +82,59 @@ export async function windowClick(
 		expectedCursor: expectation(windowItem(state.snapshot.cursor)),
 	});
 	if (receipt.dispatch !== "not_sent") state.dispatched = true;
-	if (receipt.completion !== "met" || receipt.needsSnapshot) {
+	if (receipt.completion !== "met" || receipt.needsSnapshot || receipt.confirmed == null) {
 		fail("TARGET_NOT_MET", "window click has no confirmed server result; it will not be repeated", {
 			dispatch: receipt.completion === "not_met" ? "sent" : "unknown",
 			effects: [receipt.effect],
 		});
 	}
-	const next = (await window.snapshot()).value;
+	const next = receipt.confirmed;
 	if (next.window !== state.snapshot.window)
 		fail("REFERENCE_STALE", "window changed during the operation", { dispatch: "sent" });
 	state.snapshot = next;
+}
+
+function destinationSlot(snapshot: WindowSnapshot, slots: number[], held: ItemValue): number | undefined {
+	return (
+		slots.find((slot) => {
+			const item = windowSlot(snapshot, slot);
+			return item != null && sameItem(item, held) && item.stackSize != null && item.count < item.stackSize;
+		}) ?? slots.find((slot) => windowSlot(snapshot, slot) == null)
+	);
+}
+
+/** Place a bounded cursor quantity, recording each confirmed destination change before any later wait. */
+export async function placeCursor(
+	window: WindowSession,
+	state: WindowMoveState,
+	destination: number[],
+	count: number,
+	onPlaced: (item: ItemValue, count: number) => void | Promise<void>,
+): Promise<void> {
+	let remaining = count;
+	while (remaining > 0) {
+		const held = windowItem(state.snapshot.cursor);
+		if (held == null) fail("CONFLICT", "cursor emptied before the selected quantity was placed", { dispatch: "sent" });
+		const slot = destinationSlot(state.snapshot, destination, held);
+		if (slot == null) fail("INVENTORY_FULL", `destination has no room for ${held.name}`, { dispatch: "sent" });
+		const target = windowSlot(state.snapshot, slot);
+		const room = target == null ? held.count : (target.stackSize as number) - target.count;
+		const quantity = Math.min(remaining, held.count, room);
+		const place = async (button: 0 | 1, expected: number): Promise<void> => {
+			const before = windowSlot(state.snapshot, slot)?.count ?? 0;
+			await windowClick(window, state, slot, button);
+			const after = windowSlot(state.snapshot, slot);
+			const delta = after != null && sameItem(after, held) ? after.count - before : 0;
+			if (delta !== expected)
+				fail("TARGET_NOT_MET", `expected ${expected} ${held.name} at destination, observed ${delta}`, {
+					dispatch: "sent",
+				});
+			remaining -= delta;
+			await onPlaced(held, delta);
+		};
+		if (quantity === held.count || quantity === room) await place(0, quantity);
+		else for (let i = 0; i < quantity; i++) await place(1, 1);
+	}
 }
 
 interface WorkItem {
@@ -181,43 +224,31 @@ export async function transferWindow(
 				});
 				if (sourceSlot == null) fail("MISSING_MATERIAL", `source ran out of ${entry.item.name}`);
 				const sourceItem = windowSlot(state.snapshot, sourceSlot) as ItemValue;
-				let targetSlot = destination.find((slot) => {
+				if (destinationSlot(state.snapshot, destination, sourceItem) == null)
+					fail("INVENTORY_FULL", `destination has no room for ${sourceItem.name}`);
+				const room = destination.reduce((total, slot) => {
 					const target = windowSlot(state.snapshot, slot);
+					if (target == null) return total + (sourceItem.stackSize ?? sourceItem.count);
 					return (
-						target != null &&
-						sameItem(target, sourceItem) &&
-						target.stackSize != null &&
-						target.count < target.stackSize
+						total +
+						(sameItem(target, sourceItem) && target.stackSize != null
+							? Math.max(0, target.stackSize - target.count)
+							: 0)
 					);
-				});
-				targetSlot ??= destination.find((slot) => windowSlot(state.snapshot, slot) == null);
-				if (targetSlot == null) fail("INVENTORY_FULL", `destination has no room for ${sourceItem.name}`);
-				const previousTarget = windowSlot(state.snapshot, targetSlot);
-				const targetCount = previousTarget?.count ?? 0;
-				const room = previousTarget == null ? sourceItem.count : (previousTarget.stackSize as number) - targetCount;
+				}, 0);
 				const quantity = Math.min(sourceItem.count, entry.remaining, room);
 				await click(sourceSlot);
 				const held = windowItem(state.snapshot.cursor);
 				if (held == null || !sameItem(held, sourceItem) || held.count !== sourceItem.count)
 					fail("CONFLICT", "source stack changed while picking it up", { dispatch: "sent" });
-				const place = async (button: 0 | 1, expected: number): Promise<void> => {
-					const beforeCount = windowSlot(state.snapshot, targetSlot as number)?.count ?? 0;
-					await click(targetSlot as number, button);
-					const afterTarget = windowSlot(state.snapshot, targetSlot as number);
-					const delta = afterTarget != null && sameItem(afterTarget, sourceItem) ? afterTarget.count - beforeCount : 0;
-					if (delta !== expected)
-						fail("TARGET_NOT_MET", `expected ${expected} ${sourceItem.name} at destination, observed ${delta}`, {
-							dispatch: "sent",
-						});
-					moved[sourceItem.name] = (moved[sourceItem.name] ?? 0) + delta;
+				await placeCursor(window, state, destination, quantity, async (item, delta) => {
+					moved[item.name] = (moved[item.name] ?? 0) + delta;
 					entry.remaining -= delta;
-				};
-				if (quantity === held.count || quantity === room) await place(0, quantity);
-				else for (let i = 0; i < quantity; i++) await place(1, 1);
+					await options.onProgress?.(amounts());
+				});
 				if (state.snapshot.cursor != null) await click(sourceSlot);
 				if (state.snapshot.cursor != null)
 					fail("TARGET_NOT_MET", "cursor remainder could not be returned to its source slot", { dispatch: "sent" });
-				await options.onProgress?.(amounts());
 			}
 		}
 		return amounts();

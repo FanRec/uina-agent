@@ -251,8 +251,8 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ## 9. 现在可直接开工的任务
 
-1. **默认下一任务是批 4 的 E 平台底座**：真实 Windows Job、受管 Node bootstrap、私有 IPC、Owner 门与退出证明。先确认域外停止与所有权能够成立，再扩充业务装配。
-2. **批 5 的 H 可独立推进**：一次完成通用回执与 journal v4，使用临时会话验证，不迁移真实日志。E 与 H 的集成在批 6，不要求 H 等待 Program。
+1. **批 4 的 E 平台底座已实现**：Windows x64 双 Job、受管 bootstrap/Companion、固定 IPC、Owner 门和退出证明；证据与边界见 [实施记录](executor-platform-implementation.md)。正式 WorldDef/模型工具/可靠通知尚未实现。
+2. **默认下一任务是批 5 的 H**：一次完成通用回执与 journal v4，使用临时会话验证，不迁移真实日志。E 与 H 的集成在批 6，不要求 H 等待 Program。
 3. Program 引擎也具备独立开工条件，按批 7 的范围实现真实 QuickJS/Worker；不阻塞 E/H，也不提前宣布已接主脑。
 4. E/H 就绪后优先接通批 6 并用现有能力做模型校准；继续批 7–9 的程序闭环。玩法仅在已有接缝和具体收益成立时插入，不再固定等到某组全部做完。
 
@@ -285,7 +285,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 | 批 | 交付物与归属 | 直接前置 | 完成判据 |
 |---|---|---|---|
-| **4 · Executor 平台底座（下一任务）** | `executor/`、`companion/` 及必要 Windows native：两个命名 Job、受管 bootstrap、启动身份、私有 IPC、Owner 门/心跳、关闭与退役；业务请求复用现有 Runtime 端口 | 已有 A/I1；Executor 平台合同 | 真实 Node 进程验证目录/账号独占、双 Job/外部 Job、父强杀与后代回收、IPC 断开、退出不明拒绝接管；源码/产物使用同一正式入口。此批不宣称模型工具已可用 |
+| **4 · Executor 平台底座（已实现）** | `executor/`、`companion/` 及 Windows x64 native：两个命名 Job、受管 bootstrap、启动身份、固定 IPC、Owner 门/心跳、关闭与退役；同步修正 Runtime 持久受理 | 已有 A/I1；Executor 平台合同 | 实际结果见 [实施记录](executor-platform-implementation.md)：真实 OS/Node、SQLite/Worker 和源码/产物受管入口；此批不宣称模型工具已可用，Windows 10 与 ARM 未验收 |
 | **5 · H 通用持久回执** | 按既定规范同批完成 Host/Subject/Tool/Session receipt、inspect/retire、恢复索引与 journal v4；扩展上下文提供同一端口 | 既有 Host/Session；独立于批 4、Program 与玩法 | 临时 v4 会话走真实 Host/Subject/SessionStore：append 前后中断、同键去重、retire 竞争、回调丢失与回溯均有事实依据；旧 v3 明确拒绝，真实日志不迁移 |
 | **6 · 正式原生主脑闭环与首次校准** | `worlddef/`、`companion/`、`executor/` 与必要 Runtime 交付接缝：配置/绑定、目录发现、查询、原生 run/chat、请求查证/停止/记录、短结果/后台可靠通知、BodyEndpoint；先支持已验收的 offline 1.21.11 范围 | 批 4 + 批 5 + 现有 R/D/W/25 项能力 | 源码/产物各经真实 WorldTool/Host 路径运行；工具取消只结束等待、显式 stop 才停止 Run，停用/急停撤销写源；完成通知由真实 Host receipt 确认，恢复不重放动作。随后真模型仅凭短指南完成发现、采集生产、缺料纠错与停止，记录首次校准 |
 | **7 · Program 执行闭环** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
@@ -397,3 +397,7 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 | 工作台获取 | 附近 8 格先找，没有就用背包里的放到四个水平相邻格并回读确认；**用完不拆走** | 留在地上更接近真实玩法，省掉一次破坏与掉落确认 |
 
 真服还确认了一条与实现假设有关的服务端行为：**炉子里剩下的燃料是正常的**——上一轮的燃烧刻数没用完时，新放入的燃料不会被消耗，因此"炉内清空"只能要求 input/result 为空。
+
+### 10.7.2 生产链审查修复
+
+批 3 后续修复替换了初版的产量净差、长持身体等待和固定64燃料截断：合成/熔炼各自实现，搬运复用实例匹配与跨槽分装，确认时快照直接推进记账。熔炼等待前关闭窗口、释放自有身体，实际开炉复查后取货；累计进度覆盖失败和取消。燃料按实际槽位/刻数预算，自动选择一次固定一种，不建设混合燃料规划。当前验证证据和边界见 [生产链修复实施](production-repair-implementation.md)。

@@ -125,9 +125,9 @@ async function main(): Promise<void> {
 			h.bot.removeListener("messagestr", onMessage);
 		}
 	};
-	const submit = (selector: string, input: JsonValue) => {
+	const submit = async (selector: string, input: JsonValue) => {
 		const requestId = `req:${h.ns}:repair-${Date.now()}`;
-		const accepted = h.runtime.submit(
+		const accepted = await h.runtime.submit(
 			{ worldOwner: h.worldOwner, activation: h.activation },
 			{ requestId, entry: { kind: "call", selector, input }, schedule: { kind: "enqueue" } },
 		);
@@ -327,7 +327,7 @@ async function main(): Promise<void> {
 					stopping = h.runtime.stop({ requestId: `stop:${run}:editor`, target: { run } });
 			});
 			try {
-				run = submit("dev.repair.sign@1", { at: plain(sign) }).run;
+				run = (await submit("dev.repair.sign@1", { at: plain(sign) })).run;
 				await cancelled(run);
 				if (stopping === null) throw new Error("server never opened the sign editor");
 				await stopping;
@@ -361,7 +361,7 @@ async function main(): Promise<void> {
 		await s.step("stopping an active dig retires its delayed finish", async () => {
 			await resetItems();
 			await setBlock(ore, "minecraft:obsidian");
-			const { run } = submit("dev.repair.mine@1", { at: plain(ore) });
+			const { run } = await submit("dev.repair.mine@1", { at: plain(ore) });
 			await until(
 				async () => h.runtime.read(run),
 				(snapshot) => snapshot.progress.stage === "body-held",

@@ -15,6 +15,6 @@
 - [Driver](../../../docs/proposals/mc/modules/driver.md)、[World](../../../docs/proposals/mc/modules/world.md)、[能力面](../../../docs/proposals/mc/modules/capabilities.md)。
 - 通用 Host 交付依赖：[持久交付回执](../../../docs/proposals/runtime/delivery-receipts.md)。
 
-I1 入口 `pnpm dev:mc`；K1 `pnpm dev:mc:k1`；采集 `pnpm dev:mc:k2`；窗口容器 `pnpm dev:mc:containers`；生产链 `pnpm dev:mc:k3`；修复与协议确认 `pnpm dev:mc:repair`。当前确定性回归使用显式 tests/mc/*.test.ts 列表与 vmThreads，**26 files / 201 tests**（2026-10-25 实测）；实际真服记录见 dev/MC-WORLD.md。
+I1 入口 `pnpm dev:mc`；K1 `pnpm dev:mc:k1`；采集 `pnpm dev:mc:k2`；窗口容器 `pnpm dev:mc:containers`；生产链 `pnpm dev:mc:k3`；修复与协议确认 `pnpm dev:mc:repair`；生产链修复 `pnpm dev:mc:production-repair`（默认独立 Temp 数据根）。当前确定性回归使用显式 tests/mc/*.test.ts 列表与 vmThreads，**28 files / 236 tests**（2026-10-25 实测）；实际真服记录见 dev/MC-WORLD.md 与 docs/proposals/mc/production-repair-implementation.md。
 
 不要清理 `.uina/world-data/minecraft`、profile 数据或其他运行数据；规划修订与后续施工使用各自明确范围，验收不得以删除真实数据换取通过。

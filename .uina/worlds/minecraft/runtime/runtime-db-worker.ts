@@ -115,6 +115,7 @@ export interface RecordIndexRow {
 export interface ApplyItem {
 	ticket: { instance: string; sequence: number };
 	mutation:
+		| { kind: "owner_state"; gates: string; revision: number }
 		| { kind: "submission"; row: SubmissionRow }
 		| { kind: "stop_intent"; row: StopIntentRow }
 		| { kind: "run"; row: RunRow }
@@ -125,11 +126,12 @@ export interface ApplyItem {
 }
 
 export type WorkerRequest =
-	| { type: "open"; dbPath: string; storageId: string }
+	| { type: "open"; dbPath: string; storageId: string; worldOwner: string }
 	| { type: "apply"; items: ApplyItem[] }
 	| { type: "close" };
 
 export interface RecoveredRows {
+	ownerState?: { gates: string; revision: number };
 	submissions: SubmissionRow[];
 	stopIntents: StopIntentRow[];
 	runs: RunRow[];
@@ -152,7 +154,7 @@ export type WorkerResponse =
 	| { type: "fatal"; message: string }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -263,7 +265,7 @@ interface OpenedStorage {
 	synchronousMode: string;
 }
 
-function openDatabase(dbPath: string, storageId: string): OpenedStorage {
+function openDatabase(dbPath: string, storageId: string, worldOwner: string): OpenedStorage {
 	const db = new DatabaseSync(dbPath);
 	db.exec("PRAGMA journal_mode=WAL");
 	db.exec("PRAGMA synchronous=FULL");
@@ -278,20 +280,42 @@ function openDatabase(dbPath: string, storageId: string): OpenedStorage {
 			`持久性配置未生效：journal_mode=${journalMode} synchronous=${syncLevel}（要求 WAL/FULL；不退化内存库）`,
 		);
 	}
-	db.exec(SCHEMA_SQL);
-	const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as Row | undefined;
-	if (versionRow == null) {
-		db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(SCHEMA_VERSION);
-	} else if (String(versionRow.value) !== SCHEMA_VERSION) {
-		db.close();
-		throw new Error(`runtime 库 schema 版本不兼容：库=${String(versionRow.value)} 期望=${SCHEMA_VERSION}`);
+	// Inspect an existing schema before creating or changing any application table.
+	const hasMeta = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").get();
+	if (hasMeta != null) {
+		const prior = db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as Row | undefined;
+		if (prior == null || String(prior.value) !== SCHEMA_VERSION) {
+			db.close();
+			throw new Error(`runtime 库 schema 版本不兼容：库=${String(prior?.value)} 期望=${SCHEMA_VERSION}`);
+		}
 	}
-	const idRow = db.prepare("SELECT value FROM meta WHERE key = 'storage_id'").get() as Row | undefined;
-	if (idRow == null) {
-		db.prepare("INSERT INTO meta (key, value) VALUES ('storage_id', ?)").run(storageId);
-	} else if (String(idRow.value) !== storageId) {
-		db.close();
-		throw new Error(`runtime 库 storage_id 不符：库=${String(idRow.value)} 期望=${storageId}`);
+	if (hasMeta == null) {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			db.exec(SCHEMA_SQL);
+			const insert = db.prepare("INSERT INTO meta(key,value) VALUES(?,?)");
+			insert.run("schema_version", SCHEMA_VERSION);
+			insert.run("storage_id", storageId);
+			insert.run("world_owner", worldOwner);
+			insert.run("owner_gates", '["disabled"]');
+			insert.run("owner_gate_revision", "0");
+			db.exec("COMMIT");
+		} catch (err) {
+			db.exec("ROLLBACK");
+			db.close();
+			throw err;
+		}
+	} else {
+		const id = db.prepare("SELECT value FROM meta WHERE key='storage_id'").get() as Row | undefined;
+		const owner = db.prepare("SELECT value FROM meta WHERE key='world_owner'").get() as Row | undefined;
+		if (id == null || String(id.value) !== storageId) {
+			db.close();
+			throw new Error("runtime storage_id mismatch or missing");
+		}
+		if (owner == null || String(owner.value) !== worldOwner) {
+			db.close();
+			throw new Error("runtime world_owner mismatch or missing");
+		}
 	}
 	return { db, journalMode: journalMode.toLowerCase(), synchronousMode: syncNames[syncLevel] ?? String(syncLevel) };
 }
@@ -306,7 +330,10 @@ function loadWatermarks(db: DatabaseSync): Record<string, number> {
 function loadRecovered(db: DatabaseSync): RecoveredRows {
 	const all = (sql: string): Row[] => db.prepare(sql).all() as Row[];
 	const str = (v: string | number | bigint | Uint8Array | null): string | null => (v == null ? null : String(v));
+	const gates = db.prepare("SELECT value FROM meta WHERE key='owner_gates'").get() as Row;
+	const revision = db.prepare("SELECT value FROM meta WHERE key='owner_gate_revision'").get() as Row;
 	return {
+		ownerState: { gates: String(gates.value), revision: Number(revision.value) },
 		submissions: all("SELECT * FROM submissions").map((r) => ({
 			owner: String(r.owner),
 			request_id: String(r.request_id),
@@ -435,6 +462,11 @@ function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; t
 
 function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void {
 	switch (mutation.kind) {
+		case "owner_state": {
+			db.prepare("UPDATE meta SET value=? WHERE key='owner_gates'").run(mutation.gates);
+			db.prepare("UPDATE meta SET value=? WHERE key='owner_gate_revision'").run(String(mutation.revision));
+			return;
+		}
 		case "submission": {
 			const r = mutation.row;
 			db.prepare(
@@ -565,7 +597,7 @@ port.on("message", (request: WorkerRequest) => {
 	try {
 		if (request.type === "open") {
 			if (db != null) throw new Error("storage already opened");
-			const opened = openDatabase(request.dbPath, request.storageId);
+			const opened = openDatabase(request.dbPath, request.storageId, request.worldOwner);
 			db = opened.db;
 			port.postMessage({
 				type: "opened",

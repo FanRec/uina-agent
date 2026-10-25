@@ -12,7 +12,7 @@
  */
 
 import type { BodySession, ControlOwner, PlayerPort, SelfState } from "../../contracts/body.js";
-import type { DriverExecutionSink } from "../../contracts/runtime.js";
+import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { EffectReceipt, Fact, Ref } from "../../contracts/values.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
@@ -21,6 +21,8 @@ import { EffectRecorder, fail } from "../execution.js";
 import { BodySessionImpl, type HostView } from "./session.js";
 
 export interface PlayerPortDeps {
+	assertActionAllowed: () => void;
+	requireRetirement?: (notice: ControlRetirement) => void;
 	host: HostView;
 	bot: () => MineflayerBot | null;
 	/** DriverExecutionSink（public-api §7.1）；返回 null 时锁存 recorder fault 并封闭新副作用。 */
@@ -49,6 +51,7 @@ export class PlayerPortImpl implements PlayerPort {
 	}
 
 	async acquire(owner: ControlOwner, signal: AbortSignal): Promise<BodySession> {
+		this.deps.assertActionAllowed();
 		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",
@@ -126,6 +129,8 @@ export class PlayerPortImpl implements PlayerPort {
 		let session: BodySessionImpl;
 		try {
 			session = new BodySessionImpl(this.deps.mintBody(), owner, {
+				assertActionAllowed: this.deps.assertActionAllowed,
+				requireRetirement: this.deps.requireRetirement,
 				host: this.deps.host,
 				sink: this.deps.sink,
 				sampleSelf: this.deps.sampleSelf,
@@ -170,6 +175,7 @@ export class PlayerPortImpl implements PlayerPort {
 	}
 
 	async chat(text: string, signal: AbortSignal): Promise<EffectReceipt> {
+		this.deps.assertActionAllowed();
 		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",

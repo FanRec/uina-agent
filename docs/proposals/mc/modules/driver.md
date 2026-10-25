@@ -1162,7 +1162,7 @@ Window Session 绑定：
 - 收到相关协议状态。
 - 本次效果仍然未知。
 
-click 返回共享 WindowClickReceipt，confirmed 仅列本次操作可确认的槽位与光标后态。Program 只用这些变化推进参照视图，未受影响槽位保留原预期；不能将任意实时 snapshot 归因为自身操作。
+click 返回共享 WindowClickReceipt，confirmed 携带确认时的服务端 WindowSnapshot（含内容 revision）。消费者直接用该快照推进参照视图并登记确认量，不在已确认回执与记账之间再做一次可能因取消而失败的 snapshot。仅被点击槽与光标的转换归因于本次操作，其他槽位是同次服务端观察，不能推断全部变化都由本次点击产生。
 
 相关后态无法完整确认时 needsSnapshot=true，下次点击要求显式 snapshot。严格前态、潜在目标槽、光标与版本验证仍执行，不允许 expect:null 关闭检查；多次点击不构成服务端事务。此回执与 Program 参照推进属于待实现接线，不能由既有 fake bot 验收推定已经完成。
 

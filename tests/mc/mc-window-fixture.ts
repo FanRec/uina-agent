@@ -152,7 +152,14 @@ export class WindowFixture implements WindowSession {
 		this.revision++;
 		this.clicks++;
 		this.hooks.afterClick?.(this, input.slot, input.button);
-		return { effect: "eff:fixture", dispatch: "sent", completion: "met", needsSnapshot: false, evidence: [] };
+		return {
+			effect: "eff:fixture",
+			dispatch: "sent",
+			completion: "met",
+			needsSnapshot: false,
+			evidence: [],
+			confirmed: clone(this.value()),
+		};
 	}
 
 	async close(): Promise<void> {

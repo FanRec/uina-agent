@@ -12,7 +12,9 @@
  * 只到 furnace：blasting / smoking / campfire_cooking / stonecutting 不入表——能力与窗口布局都不支持。
  *
  * ## 手工段（FUEL_TICKS）
- * minecraft-data 没有燃烧刻数（FuelValues 是服务端 Java 硬编码），故取 vanilla 1.21 燃料表的最小集：
+ * minecraft-data 没有燃烧刻数；已用本地 Paper 1.21.11 jar 的 FuelValues.vanillaBurnTimes
+ * 字节码（javap -c -p）核对以下最小集。基准烹饪时长为 200，干海带块为 1 + 20 * 200；
+ * FuelValues 最后移除 NON_FLAMMABLE_WOOD，因此不包含绯红/诡异木板与菌柄。
  * 只列主线常用燃料，未列出的物品保持 null（未知），不猜、不按 0 处理。
  * 1.21.2 起每种燃料有独立的燃烧时长，本表按整件计（与时长相乘即总刻数）。
  */
@@ -228,7 +230,7 @@ export const FUEL_TICKS: Readonly<Record<string, number>> = {
 	coal: 1600,
 	coal_block: 16000,
 	charcoal: 1600,
-	dried_kelp_block: 4000,
+	dried_kelp_block: 4001,
 	lava_bucket: 20000,
 	stick: 100,
 	bamboo: 50,
@@ -236,23 +238,19 @@ export const FUEL_TICKS: Readonly<Record<string, number>> = {
 	bamboo_planks: 300,
 	birch_planks: 300,
 	cherry_planks: 300,
-	crimson_planks: 300,
 	dark_oak_planks: 300,
 	jungle_planks: 300,
 	mangrove_planks: 300,
 	oak_planks: 300,
 	pale_oak_planks: 300,
 	spruce_planks: 300,
-	warped_planks: 300,
 	acacia_log: 300,
 	birch_log: 300,
 	cherry_log: 300,
-	crimson_stem: 300,
 	dark_oak_log: 300,
 	jungle_log: 300,
 	mangrove_log: 300,
 	oak_log: 300,
 	pale_oak_log: 300,
 	spruce_log: 300,
-	warped_stem: 300,
 };

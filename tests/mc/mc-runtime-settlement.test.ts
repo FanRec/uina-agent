@@ -76,8 +76,16 @@ function harness(build: (queue: RecordQueue) => NativeCallable<JsonValue, JsonVa
 		callables: build(queue),
 		worldOwner: "owner:settlement",
 	});
-	const submit = (selector: ExactRef) => {
-		const reply = engine.submit(
+	const submit = async (selector: ExactRef) => {
+		const state = await engine.owner.attach({ worldOwner: "owner:settlement", activation: "act:settlement" });
+		await engine.owner.setGate({
+			requestId: "enable",
+			attachment: state.attachment,
+			gate: "disabled",
+			closed: false,
+			expectedRevision: state.gateRevision,
+		});
+		const reply = await engine.submit(
 			{ worldOwner: "owner:settlement", activation: "act:settlement" },
 			{ requestId: `req:${selector}`, entry: { kind: "call", selector, input: {} }, schedule: { kind: "enqueue" } },
 		);
@@ -115,7 +123,7 @@ describe("Runtime effect settlement", () => {
 				});
 			}),
 		]);
-		const summary = await h.finish(h.submit("direct@1"));
+		const summary = await h.finish(await h.submit("direct@1"));
 		expect(summary).toMatchObject({ outcome: "unknown", unknownEffects: ["eff:settlement"] });
 		expect(h.engine.readRecord(summary.record).value).toMatchObject({ value: { removed: 2 }, outcome: "unknown" });
 		const record = h.calls().find((item) => item.call === call);
@@ -141,7 +149,7 @@ describe("Runtime effect settlement", () => {
 				return "root value";
 			}),
 		]);
-		const summary = await h.finish(h.submit("root@1"));
+		const summary = await h.finish(await h.submit("root@1"));
 		expect(summary).toMatchObject({ outcome: "unknown", unknownEffectCount: 1 });
 		const root = h.calls().find((call) => call.parent === null)!;
 		const middle = h.calls().find((call) => call.parent === root.call)!;
@@ -166,7 +174,7 @@ describe("Runtime effect settlement", () => {
 				return "recovered";
 			}),
 		]);
-		const summary = await h.finish(h.submit("root@1"));
+		const summary = await h.finish(await h.submit("root@1"));
 		expect(summary.outcome).toBe("unknown");
 		const root = h.calls().find((call) => call.parent === null)!;
 		const child = h.calls().find((call) => call.parent === root.call)!;
@@ -210,7 +218,7 @@ describe("Runtime effect settlement", () => {
 				return "root";
 			}),
 		]);
-		const run = h.submit("root@1");
+		const run = await h.submit("root@1");
 		await childClosing;
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const phaseDuringCleanup = h.engine.read(run).phase;
@@ -230,7 +238,7 @@ describe("Runtime effect settlement", () => {
 				return "recovered";
 			}),
 		]);
-		expect(await h.finish(h.submit("root@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
+		expect(await h.finish(await h.submit("root@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
 	});
 
 	test("a confirmed latest receipt permits success even if the first receipt was unknown", async () => {
@@ -243,7 +251,7 @@ describe("Runtime effect settlement", () => {
 				}),
 			),
 		]);
-		expect(await h.finish(h.submit("confirmed@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
+		expect(await h.finish(await h.submit("confirmed@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
 	});
 
 	test("the parent uses a later confirmed child receipt rather than copying the child's old outcome", async () => {
@@ -262,7 +270,7 @@ describe("Runtime effect settlement", () => {
 				return "confirmed";
 			}),
 		]);
-		const summary = await h.finish(h.submit("root@1"));
+		const summary = await h.finish(await h.submit("root@1"));
 		expect(summary).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
 		const child = h.calls().find((call) => call.ref === "leaf@1")!;
 		expect(child.outcome).toBe("unknown");
@@ -278,7 +286,7 @@ describe("Runtime effect settlement", () => {
 				}),
 			),
 		]);
-		expect(await h.finish(h.submit("failed@1"))).toMatchObject({
+		expect(await h.finish(await h.submit("failed@1"))).toMatchObject({
 			outcome: "failed",
 			unknownEffects: ["eff:settlement"],
 			error: { code: "TARGET_NOT_MET" },
@@ -302,7 +310,7 @@ describe("Runtime effect settlement", () => {
 				}),
 			),
 		]);
-		const run = h.submit("cancelled@1");
+		const run = await h.submit("cancelled@1");
 		await ready;
 		await h.engine.stop({ requestId: "stop:settlement", target: { run } });
 		expect(await h.finish(run)).toMatchObject({ outcome: "cancelled", unknownEffects: ["eff:settlement"] });
@@ -323,7 +331,7 @@ describe("Runtime effect settlement", () => {
 				}),
 			),
 		]);
-		const run = h.submit("handled-stop@1");
+		const run = await h.submit("handled-stop@1");
 		await ready;
 		await h.engine.stop({ requestId: "stop:handled", target: { run } });
 		expect(await h.finish(run)).toMatchObject({ outcome: "cancelled", unknownEffects: ["eff:settlement"] });
@@ -346,9 +354,11 @@ const callables = [
 ];
 const options = {dbPath:${JSON.stringify(join(dir, "runtime.db"))},storageId:"settlement@1",namespace:"first",worldOwner:"owner:settlement",world:{},playerPort:{acquire:async()=>({close:async()=>{}})},callables};
 runtime = (await MinecraftRuntime.open(options)).runtime;
+const owner=await runtime.attach({worldOwner:"owner:settlement",activation:"act:settlement"});
+await runtime.setOwnerGate({requestId:"enable",attachment:owner.attachment,gate:"disabled",closed:false,expectedRevision:owner.gateRevision});
 let run, before, records, effect;
 try {
- const accepted=runtime.submit({worldOwner:"owner:settlement",activation:"act:settlement"},{requestId:"req:sqlite",entry:{kind:"call",selector:"root@1",input:{}},schedule:{kind:"enqueue"}});
+ const accepted=await runtime.submit({worldOwner:"owner:settlement",activation:"act:settlement"},{requestId:"req:sqlite",entry:{kind:"call",selector:"root@1",input:{}},schedule:{kind:"enqueue"}});
  assert.equal(accepted.kind,"accepted");run=accepted.snapshot.run;
  const reply=await runtime.wait(run,{timeoutMs:2000});assert.equal(reply.kind,"result");assert.equal(reply.snapshot.outcome,"unknown");
  before=runtime.read(run);records=runtime.readRecord(before.record);

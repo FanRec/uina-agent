@@ -32,7 +32,7 @@ import type {
 } from "../../contracts/body.js";
 import type { WorldQuery } from "../../contracts/world.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
-import type { DriverExecutionSink } from "../../contracts/runtime.js";
+import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
 import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { ClientHostListener } from "../client-host.js";
@@ -58,6 +58,8 @@ export interface HostView {
 }
 
 export interface BodySessionDeps {
+	assertActionAllowed: () => void;
+	requireRetirement?: (notice: ControlRetirement) => void;
 	host: HostView;
 	/** DriverExecutionSink（public-api §7.1）；返回 null 时锁存 recorder fault 并封闭新副作用。 */
 	sink: DriverExecutionSink;
@@ -86,6 +88,7 @@ export class BodySessionImpl implements BodySession {
 	readonly signal: AbortSignal;
 
 	private state: BodySessionState = "active";
+	private closePromise: Promise<void> | null = null;
 	private readonly identity: { connection: Ref; incarnation: Ref };
 	private readonly deps: BodySessionDeps;
 	private readonly abortController = new AbortController();
@@ -133,9 +136,13 @@ export class BodySessionImpl implements BodySession {
 
 	// ---- 生命周期 ----
 
-	async close(): Promise<void> {
-		if (this.state === "closed") return;
+	close(): Promise<void> {
+		if (this.closePromise != null) return this.closePromise;
 		this.revoke("session_close");
+		this.closePromise = this.finishClose();
+		return this.closePromise;
+	}
+	private async finishClose(): Promise<void> {
 		await this.awaitPendingSettled(2000);
 		if (this.pendingOps > 0) {
 			this.barrierProven = false; // §10.5：无法证明旧写入失效，不允许新主人复用该客户端
@@ -144,6 +151,13 @@ export class BodySessionImpl implements BodySession {
 		this.state = "closed";
 		this.detachHost();
 		this.detachHost = () => {};
+		if (!this.barrierProven)
+			this.deps.requireRetirement?.({
+				source: "driver",
+				subject: this.body,
+				code: "CONTROL_ISOLATION_FAILED",
+				detail: "Body close could not prove that all old writes retired",
+			});
 		this.deps.onClosed(this.barrierProven);
 	}
 
@@ -208,6 +222,18 @@ export class BodySessionImpl implements BodySession {
 	// ---- 写入核验（§5.3） ----
 
 	private writeDenial(): CallFailure | null {
+		try {
+			this.deps.assertActionAllowed();
+		} catch (err) {
+			this.revoke("owner_gate_closed");
+			return fail({
+				code: "OWNER_GATE_CLOSED",
+				source: "environment",
+				message: String(err),
+				dispatch: "not_sent",
+				recoverable: false,
+			});
+		}
 		if (this.recorder.isFaulted) {
 			return fail({
 				code: "INTERNAL",

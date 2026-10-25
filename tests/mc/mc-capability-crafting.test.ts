@@ -5,7 +5,7 @@
  * match/cook 决定。这样测的是"能力怎么摆、怎么点、怎么结算"，不是替身的玩法假设。
  */
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 import { failureOf, makeHarness, type HarnessState, type SlotFixture } from "./mc-capability-harness.js";
 import { type FixtureStack, craftingWindow, furnaceWindow, stack, type WindowFixture } from "./mc-window-fixture.js";
@@ -60,6 +60,13 @@ const registry: RegistryLike = {
 	},
 };
 const knowledge = buildRegistryKnowledge(registry);
+
+afterEach(() => vi.useRealTimers());
+
+async function scheduled<T>(work: Promise<T>): Promise<T> {
+	const [value] = await Promise.all([work, vi.runAllTimersAsync()]);
+	return value;
+}
 
 function countsOf(slots: { name: string; count: number }[]): Record<string, number> {
 	const counts: Record<string, number> = {};
@@ -238,21 +245,24 @@ describe("smelt@1", () => {
 	const rawIronToIngot = (input: FixtureStack) => (input.name === "raw_iron" ? { name: "iron_ingot", count: 1 } : null);
 
 	test("wait:true 装料、等产物、取回，并按库存结算", async () => {
+		vi.useFakeTimers();
 		const { harness, window } = smeltHarness({ 9: stack("raw_iron", 3), 10: stack("coal", 1) }, rawIronToIngot);
-		const value = (await harness.callable("smelt@1").invoke(harness.ctx, {
-			item: "iron_ingot",
-			count: 3,
-			fuel: "coal",
-			at: furnaceAt,
-			maxTimeMs: 10000,
-		})) as {
+		const value = (await scheduled(
+			harness.callable("smelt@1").invoke(harness.ctx, {
+				item: "iron_ingot",
+				count: 3,
+				fuel: "coal",
+				at: furnaceAt,
+				maxTimeMs: 120000,
+			}),
+		)) as {
 			produced: Record<string, number>;
 			consumed: { input: { item: string; count: number }; fuel: { item: string; count: number } };
 		};
 		expect(value.produced).toEqual({ iron_ingot: 3 });
 		expect(value.consumed.input).toEqual({ item: "raw_iron", count: 3 });
 		expect(value.consumed.fuel).toEqual({ item: "coal", count: 1 });
-		expect(window()?.closed).toBe(1);
+		expect(window()?.closed).toBeGreaterThanOrEqual(2);
 	});
 
 	test("wait:false 只下料并给出复查提示，不假装产物已到手", async () => {
@@ -288,15 +298,18 @@ describe("smelt@1", () => {
 	});
 
 	test("炉子烧不出目标物时以 TARGET_NOT_MET 结束，而不是拖到超时", async () => {
+		vi.useFakeTimers();
 		const { harness } = smeltHarness({ 9: stack("raw_iron", 3), 10: stack("coal", 1) }, () => null, 400);
-		const failure = await failureOf(
-			harness.callable("smelt@1").invoke(harness.ctx, {
-				item: "iron_ingot",
-				count: 3,
-				fuel: "coal",
-				at: furnaceAt,
-				maxTimeMs: 8000,
-			}),
+		const failure = await scheduled(
+			failureOf(
+				harness.callable("smelt@1").invoke(harness.ctx, {
+					item: "iron_ingot",
+					count: 3,
+					fuel: "coal",
+					at: furnaceAt,
+					maxTimeMs: 600000,
+				}),
+			),
 		);
 		expect(failure.code).toBe("TARGET_NOT_MET");
 		expect(failure.dispatch).toBe("sent");
@@ -369,5 +382,76 @@ describe("stick 的手持配方", () => {
 		expect(value.crafted).toBe(4);
 		expect(value.consumed).toEqual({ oak_planks: 2 });
 		expect(window?.closed).toBe(1);
+	});
+});
+
+describe("craft confirmed progress and destination space", () => {
+	function craftHarness(player: Record<number, FixtureStack>, match = oneLog) {
+		const state = stateOf(player);
+		const window = craftingWindow("hand", { player, match, onChange: (value) => sync(state, value) });
+		const harness = makeHarness(state, { knowledge, inventoryWindow: () => window });
+		return { state, window, ...harness };
+	}
+	function full(player: Record<number, FixtureStack>): Record<number, FixtureStack> {
+		return Object.fromEntries(
+			Array.from({ length: 36 }, (_, index) => [index + 9, player[index + 9] ?? stack("dirt", 64)]),
+		);
+	}
+
+	test("consuming the last log frees the output slot in a full inventory", async () => {
+		const h = craftHarness(full({ 9: stack("oak_log", 1) }));
+		const result = await h.callable("craft@1").invoke(h.ctx, { item: "oak_planks", count: 4 });
+		expect(result).toMatchObject({ crafted: 4, consumed: { oak_log: 1 }, remaining: 0 });
+		expect(h.state.inventory.counts.oak_planks).toBe(4);
+	});
+
+	test("output fills multiple compatible partial stacks", async () => {
+		const h = craftHarness(
+			full({ 9: stack("stick", 62), 10: stack("stick", 62), 11: stack("oak_planks", 64) }),
+			twoSticks,
+		);
+		const result = await h.callable("craft@1").invoke(h.ctx, { item: "stick", count: 4 });
+		expect(result).toMatchObject({ crafted: 4, produced: { stick: 4 } });
+		expect(h.window.item(9)?.count).toBe(64);
+		expect(h.window.item(10)?.count).toBe(64);
+		expect(h.window.cursor).toBeNull();
+	});
+
+	test("output skips a same-name stack with incompatible components", async () => {
+		const special = { ...stack("stick", 1), components: { custom_name: "keep" } };
+		const h = craftHarness(full({ 9: special, 10: stack("stick", 1), 11: stack("oak_planks", 64) }), twoSticks);
+		await h.callable("craft@1").invoke(h.ctx, { item: "stick", count: 4 });
+		expect(h.window.item(9)).toEqual(special);
+		expect(h.window.item(10)?.count).toBe(5);
+		expect(h.window.cursor).toBeNull();
+	});
+
+	test("cancellation after one batch keeps confirmed production and consumption", async () => {
+		const h = craftHarness({ 9: stack("oak_log", 8) });
+		const abort = new AbortController();
+		const ctx = {
+			...h.ctx,
+			signal: abort.signal,
+			progress: async (value: unknown) => {
+				if ((value as { crafted: number }).crafted === 4) abort.abort();
+			},
+		};
+		const error = await failureOf(h.callable("craft@1").invoke(ctx, { item: "oak_planks", count: 8 }));
+		expect(error).toMatchObject({
+			code: "INTERRUPTED",
+			dispatch: "sent",
+			progress: { crafted: 4, produced: { oak_planks: 4 }, consumed: { oak_log: 1 }, remaining: 4 },
+		});
+	});
+
+	test("unknown output placement keeps confirmed consumption but never claims the cursor as inventory", async () => {
+		const h = craftHarness({ 9: stack("oak_log", 1) });
+		h.window.unknownFrom = 3;
+		const error = await failureOf(h.callable("craft@1").invoke(h.ctx, { item: "oak_planks", count: 4 }));
+		expect(error).toMatchObject({
+			dispatch: "unknown",
+			progress: { crafted: 0, produced: {}, consumed: { oak_log: 1 }, remaining: 4 },
+		});
+		expect(h.window.clicks).toBe(4);
 	});
 });

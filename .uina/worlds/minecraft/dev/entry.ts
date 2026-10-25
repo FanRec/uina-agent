@@ -36,8 +36,8 @@ async function main(): Promise<void> {
 	log(`world availability: ${JSON.stringify(mcWorld.availability())}`);
 
 	const origin = { worldOwner, activation };
-	const submitRun = (requestId: Ref, selector: string, input: JsonValue): Ref => {
-		const acceptance = rt.submit(origin, {
+	const submitRun = async (requestId: Ref, selector: string, input: JsonValue): Promise<Ref> => {
+		const acceptance = await rt.submit(origin, {
 			requestId,
 			entry: { kind: "call", selector, input },
 			schedule: { kind: "enqueue" },
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 		at: Vec3,
 		opts: { tolerance: number; timeoutMs: number; digThrough?: boolean },
 	): Promise<Extract<RunSummary, { phase: "finished" }>> => {
-		const run = submitRun(requestId, "goto@1", {
+		const run = await submitRun(requestId, "goto@1", {
 			at: { x: at.x, y: at.y, z: at.z },
 			tolerance: opts.tolerance,
 			...(opts.digThrough === true ? { digThrough: true } : {}),
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
 		log(`blocks@1 stone: count=${blocks1.value?.count ?? 0} truncated=${String(blocks1.value?.truncated)}`);
 
 		// 2. chat@1 run
-		const chatRun = submitRun(`req:${ns}:chat`, "chat@1", { text: "Uina I1: capability loop online" });
+		const chatRun = await submitRun(`req:${ns}:chat`, "chat@1", { text: "Uina I1: capability loop online" });
 		const chatReply = await rt.wait(chatRun, { timeoutMs: 20000 });
 		if (chatReply.kind !== "result" || chatReply.snapshot.phase !== "finished") {
 			fail(`chat run not finished: ${JSON.stringify(chatReply)}`);
@@ -212,7 +212,7 @@ async function main(): Promise<void> {
 			y: Math.floor(arrivedAtSettled.y),
 			z: Math.floor(arrivedAtSettled.z),
 		};
-		const farRun = submitRun(`req:${ns}:goto-far`, "goto@1", {
+		const farRun = await submitRun(`req:${ns}:goto-far`, "goto@1", {
 			at: { x: farTarget.x, y: farTarget.y, z: farTarget.z },
 			tolerance: 3,
 			digThrough: true,

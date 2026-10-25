@@ -288,3 +288,26 @@ export type SafetyInterventionRecord = {
 			outcome: Outcome;
 	  }
 );
+
+/** Runtime 所有的独立动作门；解除一项不解除其他原因。 */
+export type OwnerGate = "disabled" | "emergency" | "owner_lost";
+export interface OwnerState {
+	attachment: Ref;
+	gates: OwnerGate[];
+	gateRevision: number;
+	validForMs: number;
+}
+export interface OwnerGateReceipt {
+	requestId: Ref;
+	state: OwnerState;
+	persistence: "confirmed" | "unknown";
+	control: "stopping" | "stopped" | "unknown";
+	error?: string;
+}
+/** 可信本地升级口；launch 由组合根绑定，不由调用者提供。 */
+export interface ControlRetirement {
+	source: "runtime" | "driver";
+	subject: Ref | null;
+	code: "CONTROL_ISOLATION_FAILED" | "EXECUTION_DOMAIN_UNRETIRED";
+	detail: string;
+}

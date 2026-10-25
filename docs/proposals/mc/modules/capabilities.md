@@ -611,17 +611,18 @@ type EquipInput =
 - 返回 `{crafted, produced:{[item]:number}, consumed:{[item]:number}, remaining:0, at?:Pos}`；crafted 为目标物品实际新增数量，可因配方批量超额；不足抛错并带同名 progress 与 remaining。
 - 失败 `MISSING_MATERIAL`（`hint` 给差额）、`MISSING_TOOL`（需要工作台但没有也没材料做）、`INVENTORY_FULL`、`TIMEOUT`、`TARGET_NOT_MET`、`NOT_FOUND`
 - **批 3 实施办法**：配方来自 `recipe@1` 同一份知识，按"缺料种类→总量→手持优先"排序；`station:"hand"` 排除 3×3 配方，`station:"crafting_table"` 允许把 2×2 配方放到工作台做（原版允许），`auto` 按配方自己决定。手持走玩家窗口（window 0 的 2×2 格），3×3 先找 8 格内的工作台、没有就用背包里的放到四个水平相邻格并回读确认；**用完不拆走**。
-- 每批只摆"恰好一批"的料（一格一件），摆完先回读断言网格与配方一致，再点结果槽。这样结果槽点击就是"空光标取走产物、结果槽归空"的纯交换，沿用 Driver 现有确认口径——**不需要 mode-1 快速移动，也不放宽完成判定**。产物按 `inventory@1` 前后差值结算，不用点击次数冒充产量；差额在拿身体之前就报出来。
+- 每批只摆一批料（一格一件），回读网格后点结果槽，沿用 Driver 的 mode-0 服务端确认。原料消耗与产物入包分别累计；取货复用窗口搬运的实例匹配，先填组件/耐久一致的余量槽，再用空槽，允许分装。空间根据消耗原料后的快照判断，不能用调用前的满背包拒绝本可完成的制作。失败/取消的 progress 保留 `crafted/produced/consumed/remaining`，未知点击不重放。
 - 例：`craft@1 {item:"iron_pickaxe"}` → `{crafted:1, produced:{iron_pickaxe:1}, consumed:{iron_ingot:3, stick:2}, remaining:0, at:{position,dimension}}`
 
 #### smelt · `smelt@1` · act · P0
 - 输入 `{ item: Name, count?: 1..256 = 1, fuel?: Name, at?: Pos, wait?: true, maxTimeMs?: 120000 }`
 - 做：找/放炉子 → 装燃料与原料 → `wait` 时等完成并取出；`wait:false` 时装好就返回。自行持有的身体在等待前释放，受委托时保留祖先身体；均关闭自己的窗口。计时只安排重新开炉复查，不能等待不可 watch 的 container.last 或把估计时间当成产物证明；实际取物前核验炉子和库存。
-- 完成（`wait:true`）：背包里增加 `count` 个产物。
+- 完成（`wait:true`）：本次新批次累计确认取回 `count` 个产物；等待期间其他动作使用背包，不扣减本次已确认取回量。
 - 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input:{item,count}, fuel:{item,count} }, at }`；`wait:false` → `{ at, loaded:{ input:{item,count}, fuel:{item,count} }, readyAt, remaining?, hint }`（`readyAt` 是估算值，`remaining` 只在单轮装料装不下时出现）
 - 失败 `MISSING_MATERIAL`（缺原料或燃料，或燃料没有已知燃烧刻数）、`WRONG_STATE`（炉子被占用/没有炉子且没有材料）、`TIMEOUT`、`TARGET_NOT_MET`、`INTERRUPTED`
-- **批 3 实施办法**：原料由熔炼表反查（同一产物多个原料时优先背包里多的那种），燃料量按 `ceil(烹饪刻数×count / 燃料刻数)` 装；`fuel` 省略时从背包里挑已知刻数最高的燃料，指定的燃料没有已知刻数就报 `MISSING_MATERIAL`，**不拿猜的当刻数**。装料前先取走结果槽里的旧成品；input/fuel 槽里已有异名物品报 `WRONG_STATE`。
-- `wait:true` 轮询窗口快照（不依赖估计时间）：产物够数即取回；连续两次看到服务端报"没在烧"（属性 `"0"`=0）就判停炉并报 `TARGET_NOT_MET`，不会白等满 `maxTimeMs`。炉子里剩下的燃料属正常现象（上一轮的燃烧刻数没用完时，新燃料不会被消耗），不作为失败。
+- 原料由熔炼表反查；批量受实际原料/燃料槽堆叠上限和燃烧刻数共同限制，并计入可确认的炉内余燃料与剩余燃烧刻数。`fuel` 省略时在首次实际开炉后，优先复用炉内已知燃料，其次从当时窗口的背包选择；一次调用固定一种新添燃料，不规划混合燃料，耗尽后按实际进度报缺料。表外燃料保持未知，四种不可燃下界木材不作为燃料。已知余火足够时允许燃料槽保留空桶而不再添料；没有选定燃料且本次装入量为零时 `fuel.item=null`。`wait:false` 只装一批燃料足够的原料，未装入的请求量以 `remaining` 返回。
+- 装料、世界等待、复查取货分段进行，每次退出关闭自己的窗口。自有身体在等待前释放，委托身体保留祖先归属；烹饪时间只安排复查，不证明完成。复查重新核验同一世界/维度/连接资格、炉子及槽位；实际产物仍由服务端快照与取货确认。所有批次共用整次截止时间，冲突、取消及未知点击停止后续业务写入。
+- `produced` 按本次确认入包累计，旧成品清理不抵扣新批次的数量。`consumed` 是本次从背包确认投入炉子的原料/燃料，不代表已经燃烧；`loaded` 是累计确认装入量，不能解释成炉内当前存量。部分失败的 progress 保留 `produced/consumed/loaded/remaining/at`，逐次搬运即登记，不被后续批次覆盖。
 - `wait:false` 取产物走 `transfer@1 {from:{position},item}`：炉子端点只开结果槽。
 
 #### brew · `brew@1` · act · P2

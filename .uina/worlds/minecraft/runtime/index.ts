@@ -14,6 +14,10 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
+	ControlRetirement,
+	OwnerGate,
+	OwnerGateReceipt,
+	OwnerState,
 	DriverExecutionSink,
 	Origin,
 	RunRequest,
@@ -39,6 +43,11 @@ export interface MinecraftRuntimeOptions {
 	/** per-boot 发号命名空间（与 FactsBinding.streamNamespace 同源约定）。 */
 	namespace: string;
 	worldOwner: Ref;
+	ownerLifetimeMs?: number;
+	monotonicNow?: () => number;
+	unclean?: boolean;
+	oldControlRetired?: boolean;
+	requireRetirement?: (notice: ControlRetirement) => void;
 	world: WorldPort;
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
@@ -46,6 +55,9 @@ export interface MinecraftRuntimeOptions {
 }
 
 export interface MinecraftRuntimeStart {
+	ownerGates: OwnerGate[];
+	ownerGateRevision: number;
+	recoveredControlRetired: boolean;
 	journalMode: string;
 	synchronousMode: string;
 	recoveredCounts: {
@@ -78,7 +90,7 @@ export class MinecraftRuntime {
 	private readonly queue: RecordQueue;
 	private readonly engine: RuntimeEngine;
 	private readonly flags: LifecycleFlags;
-	private closed = false;
+	private closePromise: Promise<void> | null = null;
 
 	private constructor(worker: Worker, queue: RecordQueue, engine: RuntimeEngine, flags: LifecycleFlags) {
 		this.worker = worker;
@@ -90,6 +102,16 @@ export class MinecraftRuntime {
 	static async open(
 		opts: MinecraftRuntimeOptions,
 	): Promise<{ runtime: MinecraftRuntime; start: MinecraftRuntimeStart }> {
+		if (opts.unclean === true && opts.oldControlRetired !== true) {
+			const notice: ControlRetirement = {
+				source: "runtime",
+				subject: null,
+				code: "EXECUTION_DOMAIN_UNRETIRED",
+				detail: "unclean recovery requires proof that the old control domain retired",
+			};
+			opts.requireRetirement?.(notice);
+			throw new Error(notice.detail);
+		}
 		const refs = new RuntimeRefs(opts.namespace);
 		// 源码用 .ts（tsx 装载），构建产物用同目录 .js。
 		const workerFile = import.meta.url.endsWith(".js") ? "./runtime-db-worker.js" : "./runtime-db-worker.ts";
@@ -115,7 +137,12 @@ export class MinecraftRuntime {
 			});
 		});
 		try {
-			worker.postMessage({ type: "open", dbPath: opts.dbPath, storageId: opts.storageId } satisfies WorkerRequest);
+			worker.postMessage({
+				type: "open",
+				dbPath: opts.dbPath,
+				storageId: opts.storageId,
+				worldOwner: opts.worldOwner,
+			} satisfies WorkerRequest);
 		} catch (err) {
 			flags.closed = true;
 			void worker.terminate();
@@ -146,6 +173,11 @@ export class MinecraftRuntime {
 			callables: opts.callables,
 			worldOwner: opts.worldOwner,
 			environment: opts.environment,
+			ownerLifetimeMs: opts.ownerLifetimeMs,
+			monotonicNow: opts.monotonicNow,
+			unclean: opts.unclean,
+			oldControlRetired: opts.oldControlRetired,
+			requireRetirement: opts.requireRetirement,
 		});
 		worker.on("message", (msg: WorkerResponse) => {
 			if (msg.type === "durable") queue.onDurable(msg.instance, msg.through);
@@ -156,12 +188,21 @@ export class MinecraftRuntime {
 		worker.on("exit", (code: number) => {
 			if (!flags.closed) queue.onFault(`storage worker exited unexpectedly (code ${code})`);
 		});
-		engine.recover(info.recovered);
-		await queue.flushThrough(queue.capture());
+		try {
+			engine.recover(info.recovered);
+			await queue.flushThrough(queue.capture());
+		} catch (err) {
+			flags.closed = true;
+			await worker.terminate();
+			throw err;
+		}
 		const runtime = new MinecraftRuntime(worker, queue, engine, flags);
 		return {
 			runtime,
 			start: {
+				ownerGates: engine.owner.state().gates,
+				ownerGateRevision: engine.owner.state().gateRevision,
+				recoveredControlRetired: opts.oldControlRetired === true,
 				journalMode: info.journalMode,
 				synchronousMode: info.synchronousMode,
 				recoveredCounts: {
@@ -191,8 +232,35 @@ export class MinecraftRuntime {
 
 	// ---- 受理与查询面 ----
 
-	submit(origin: Origin, request: RunRequest): Acceptance {
+	submit(origin: Origin, request: RunRequest): Promise<Acceptance> {
 		return this.engine.submit(origin, request);
+	}
+
+	attach(origin: Origin): Promise<OwnerState> {
+		return this.engine.owner.attach(origin);
+	}
+	heartbeat(attachment: Ref): Promise<OwnerState> {
+		return this.engine.owner.heartbeat(attachment);
+	}
+	setOwnerGate(request: {
+		requestId: Ref;
+		attachment: Ref;
+		gate: OwnerGate;
+		closed: boolean;
+		expectedRevision?: number;
+	}): Promise<OwnerGateReceipt> {
+		return this.engine.owner.setGate(request);
+	}
+	availability(): "ready" | "unavailable" {
+		return this.closePromise == null && this.queue.faultReason == null ? "ready" : "unavailable";
+	}
+	inspectOwner(): OwnerState | null {
+		const state = this.engine.owner.state();
+		return state.attachment === "" ? null : state;
+	}
+	assertActionAllowed(): void {
+		this.engine.assertActionAllowed();
+		if (this.queue.faultReason != null) throw new Error(`runtime recorder unavailable: ${this.queue.faultReason}`);
 	}
 
 	lookup(requestId: Ref): SubmissionLookup {
@@ -233,15 +301,25 @@ export class MinecraftRuntime {
 
 	// ---- 收尾 ----
 
-	async close(): Promise<void> {
-		if (this.closed) return;
-		this.closed = true;
-		this.flags.closed = true;
+	close(): Promise<void> {
+		if (this.closePromise != null) return this.closePromise;
+		// shutdown synchronously revokes admissions/control before returning its Promise.
+		const stopping = this.engine.shutdown();
+		this.closePromise = this.finishClose(stopping);
+		return this.closePromise;
+	}
+	private async finishClose(stopping: Promise<void>): Promise<void> {
 		let flushError: Error | null = null;
+		try {
+			await stopping;
+		} catch (err) {
+			flushError = err instanceof Error ? err : new Error(String(err));
+		}
+		this.flags.closed = true;
 		try {
 			await this.queue.flushAll();
 		} catch (err) {
-			flushError = err instanceof Error ? err : new Error(String(err));
+			flushError ??= err instanceof Error ? err : new Error(String(err));
 		}
 		try {
 			this.worker.postMessage({ type: "close" } satisfies WorkerRequest);

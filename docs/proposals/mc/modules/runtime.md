@@ -336,7 +336,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复已实现；executor/worlddef 仍缺 | 开发入口直接装配正式执行模块，不能当作完整主脑入口 |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；Executor 平台已接，WorldDef 仍缺 | `submit` 为异步持久受理；schema v2 固定 owner/storage，旧库明确拒绝。受管入口证据见 [实施记录](../executor-platform-implementation.md)，不等于完整主脑入口 |
 | Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
 | Library | 旧 SQLite/CAS Assets 已清理；普通文件库尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
@@ -344,7 +344,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | Uina 接入 | 通用 Host 持久回执尚未实现 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
-QuickJS/worker 的微基准与进程监管研究只说明局部可行性，不证明本次共享池方案。没有实际引擎、进程树、真实游戏或断电验收；本次也不为设计修订运行无关产品测试。
+QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；真实 QuickJS、Host 交付与断电验收仍未完成，不能互相替代。
 
 ### 9.2 技术取舍与待验证项
 

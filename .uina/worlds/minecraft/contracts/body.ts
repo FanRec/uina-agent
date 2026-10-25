@@ -168,10 +168,8 @@ export interface StackExpectation {
 }
 
 export interface WindowClickReceipt extends EffectReceipt {
-	confirmed?: {
-		slots: { slot: number; item: JsonValue | null }[];
-		cursor?: JsonValue | null;
-	};
+	/** Authoritative response snapshot; only the clicked slot/cursor transition is attributed to this click. */
+	confirmed?: WindowSnapshot;
 	needsSnapshot: boolean;
 }
 

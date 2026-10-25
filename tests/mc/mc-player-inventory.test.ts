@@ -36,6 +36,7 @@ function harness(version = "1.21.11") {
 		"body:inventory",
 		{ kind: "run", run: "r", segment: "s", callId: "c" },
 		{
+			assertActionAllowed: () => {},
 			host: { state: "ready", identity: { connection: "con", incarnation: "inc" }, on: () => () => {} },
 			bot: () => bot as unknown as MineflayerBot,
 			sampleSelf: () => null,

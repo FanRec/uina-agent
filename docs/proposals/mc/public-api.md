@@ -256,7 +256,7 @@ interface TossOutcome { receipt: EffectReceipt; removed: Record<string, number>;
 interface ClientWindowObservation { target: BlockTarget | EntityRef; snapshot: WindowSnapshot }
 interface StackExpectation { item: ItemSelector | null; count: number }
 interface WindowClickReceipt extends EffectReceipt {
-  confirmed?: {slots: {slot: number; item: JsonValue | null}[]; cursor?: JsonValue | null};
+  confirmed?: WindowSnapshot; // 确认时的服务端完整快照；本次点击只归因被点击槽与光标的转换
   needsSnapshot: boolean;
 }
 interface WindowSession {
@@ -331,7 +331,7 @@ dig 的 aim 默认 target，可调整视角；preserve 不自动瞄准，供同�
 
 窗口绑定本次打开和当前身体段。revision 覆盖全部槽位与光标；click 在驱动同一串行步骤核验版本、当前槽位/光标与调用者的 StackExpectation 后派发，不符返回 CONFLICT。count 是精确堆叠数，item=null 要求空且 count=0；非空按 ItemSelector 的组件/耐久/替代约定匹配，不声称物品全值相等。expectedSlots 至少覆盖本次直接操作的非负槽位，数量须为非负整数；具体点击模式检查其涉及的槽位（包括自动分配/交换的潜在目标）；不能用未声明槽位的假定代替现实，校验不产生自动换槽/重试。close 幂等且只关闭自己的代次；多人仍可能在协议到达前改变现实，多次点击不构成服务端事务。合法 button/mode 按客户端版本开放，不支持在派发前失败。
 
-click 的 confirmed 只含本次模式/前态与回执能确认的槽位后态和光标；不能把任意实时快照归因于本次点击。相关后态无法确认时 needsSnapshot=true，Program 在下一次 click 前要求显式 snapshot；已确认变化用于推进参照，其他槽位保留旧预期。
+click 的 confirmed 是确认时的完整服务端快照，供消费者直接推进内容 revision 与观察值。只有被点击槽与光标的 mode-0 转换归因于本次点击，其他槽位只是同次观察。相关后态无法确认时 needsSnapshot=true；当前实现封闭该窗口的后续业务点击并要求关闭，不用另一次读取洗白未知或重放业务点击。
 
 窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 覆盖类型、布局、槽位与光标的变化，**不随 `properties` 推进**（炉子进度每秒数次；revision 是点击的 CAS 前置条件，只约束点击真正依赖的内容），也不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。区域名由布局表统一定义：普通容器 `container`+`player`；玩家窗口 `result`/`crafting`/`armor`/`player`/`offhand`；工作台 `result`/`crafting`+`player`；熔炉 `input`/`fuel`/`result`+`player`。工作站窗口**不产出 `container` 区域**，按 `container` 取格的调用方必须显式失败而不是把 input 当普通格。
 
@@ -339,7 +339,7 @@ click 的 confirmed 只含本次模式/前态与回执能确认的槽位后态�
 
 当前受控协议实现为 Java 1.21.11。版本差异集中在按连接创建、随连接退役的 DriverProtocol；未来版本实现相同窄端口，不让能力/World/Runtime 添加协议分支。其他版本的相关写入明确报 UNSUPPORTED_PROTOCOL。
 
-玩家库存与普通容器（generic_9xN、generic_3x3、hopper、shulker_box）共用 mode=0 左/右键的快照与确认实现；只有玩家库存内部丢弃操作允许目标 -999。每个业务点击仅发送一个 stateId=-1 的 window_click，服务端处理后返回完整 window_items；不另加第二次同步点击。只将符合本次 mode-0 前态的目标槽/光标后态列入 confirmed，其他槽位通过 snapshot 读取。未变化/不明回包不能证明本次点击已被处理，超时保持 unknown 且不自动重试。开箱前等待一个真实物理步并复验资格，避免连续开箱超过实际 Paper 的 block-use 突发门。打开已派发而未确认窗口时发生取消/超时，关闭屏障记为不明，同连接不再授予身体资格，须重连。
+玩家库存、普通容器（generic_9xN、generic_3x3、hopper、shulker_box）、工作台与熔炉共用 mode=0 左/右键的快照与确认实现；只有玩家库存内部丢弃操作允许目标 -999。每个业务点击仅发送一个 stateId=-1 的 window_click，服务端处理后返回完整 window_items；不另加第二次同步点击。目标槽/光标必须符合本次 mode-0 前态，才以 confirmed 返回同次服务端快照，避免确认后再次读取造成取消竞争漏记。未变化/不明回包不能证明本次点击已被处理，超时保持 unknown 且不自动重试。开箱前等待一个真实物理步并复验资格，避免连续开箱超过实际 Paper 的 block-use 突发门。打开已派发而未确认窗口时发生取消/超时，关闭屏障记为不明，同连接不再授予身体资格，须重连。
 
 <a id="client-facts"></a>
 
@@ -538,6 +538,8 @@ interface RegistryKnowledge {
 
 知识随连接版本固定（minecraft-data / prismarine-registry + 版本固定的熔炼表），不是观察事实：没有 observedAt、没有水位，连接前不可用。方块掉落只取普通挖掘条目（silkTouch!==true），概率掉落保留在列表里而不折算概率；harvest 保留注册表的实际可采工具集合、无工具限制或未知，不用材质顺序猜测。block.harvest、mine、collect 共用可采性判断；自动选用当前合格手持，否则取槽序第一个合格工具。合成、方块、实体、熔炼四类来源齐备（熔炼来自 1.21.11 版本数据表），缺少交易类别，sourcesComplete 仍为 false 如实表达；`fuel.ticks` 来自手工最小燃料表，未收录的物品是 null（未知），不是 0。站别按实际非空格数判定（9 个同种材料的 shapeless 也是 3×3）。组合根把 RegistryKnowledge 注入能力层；Driver 是唯一接触客户端注册表与版本数据表的位置。
 
+生产动作的领域数量见 [能力合同](modules/capabilities.md)：`craft@1` 的 `crafted/produced`、`smelt@1` 的 `produced` 累计本次服务端确认入包量，失败与取消保留确认量和剩余请求，不能从整次库存净差重建。熔炼 `consumed` 指确认投入炉子的材料，`loaded` 指累计装入量；`wait:false` 只装一批可供足燃料的原料，容量不足的余量用 `remaining` 表达。自有身体在世界等待前释放，取货重新申请；祖先委托继续保留祖先身体。
+
 <a id="world"></a>
 
 ## 5. World 所有者：读取、变化订阅与领域记录
@@ -614,6 +616,8 @@ writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持�
 <a id="executor"></a>
 
 ## 7. Uina ↔ Executor：确定的受理、查询、结果与事件
+
+当前批 4 仅落实平台实际使用的 `Origin/OwnerState/OwnerGateReceipt`、异步持久受理与现有原生读取/停止端口；实现见 `contracts/runtime.ts`、`contracts/executor.ts` 及 [平台实施记录](executor-platform-implementation.md)。下面的完整 `ExecutorClient/RunReply` 仍含批 6–9 待实现部分，不因底层 IPC 可用而宣称全部可用。Runtime 库 schema v2；Host journal 的 v4 属于批 5，本批仍为 v3。
 
 > **程序入口（2026-10-18）**：程序以 `{ kind: "program"; source: SourceRequest; input }` 提交，`source` 是 `{name}` 或 `{code}`；Runtime 受理时把它解析成确切字节（快照与头注释见 [program.md §3](modules/program.md)）。执行端口不在本文（见 §6 对照表）：段记录只记程序的名字/来源/摘要/快照，不记源码。
 

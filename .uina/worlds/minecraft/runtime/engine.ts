@@ -17,6 +17,8 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
+	ControlRetirement,
+	Origin,
 	RunRequest,
 	RunSummary,
 	RunWaitReply,
@@ -38,6 +40,7 @@ import type {
 import { callFailure, plain } from "../contracts/values.js";
 import { BodyLeaseQueue, type BodyGrant } from "./body-queue.js";
 import { toCallFailure } from "./failure.js";
+import { RuntimeOwner } from "./owner.js";
 import { RuntimeRefs } from "./refs.js";
 import { RecordQueue } from "./records.js";
 import {
@@ -105,6 +108,11 @@ export interface EngineOptions {
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
 	worldOwner: Ref;
+	ownerLifetimeMs?: number;
+	monotonicNow?: () => number;
+	unclean?: boolean;
+	oldControlRetired?: boolean;
+	requireRetirement?: (notice: ControlRetirement) => void;
 	environment?: { serverVersion: string; protocol: number };
 }
 
@@ -136,6 +144,14 @@ export class RuntimeEngine {
 	// 身体：单槽 FIFO 队列独占 acquire，归属槽与授予/释放配对收在队列内（§3.3.1）
 	private readonly bodyLeaseQueue: BodyLeaseQueue;
 	// chat 旁路串行化：单写协议通道 + 归属槽无竞争
+	readonly owner: RuntimeOwner;
+	private readonly pendingSubmissions = new Map<string, { intent: string; promise: Promise<Acceptance> }>();
+	private readonly uncertainSubmissions = new Set<string>();
+	private readonly activeRuns = new Set<Promise<void>>();
+	private readonly startedRuns = new Set<Ref>();
+	private readonly stopBarriers = new Set<Promise<StopReceipt>>();
+	private shutdownPromise: Promise<void> | null = null;
+	private isolationFailed = false;
 	private chatGate: Promise<void> = Promise.resolve();
 
 	constructor(opts: EngineOptions) {
@@ -148,6 +164,14 @@ export class RuntimeEngine {
 			onRelease: () => this.queue.setQualificationOwner(null),
 			// Run 停止后不再授予；排队/在途期间的停止由授予前复验拦下（§2.2）
 			isOwnerLive: (owner) => owner.kind !== "run" || this.runs.get(owner.run)?.stopped !== true,
+		});
+		this.owner = new RuntimeOwner({
+			worldOwner: opts.worldOwner,
+			queue: opts.queue,
+			lifetimeMs: opts.ownerLifetimeMs,
+			now: opts.monotonicNow,
+			onClose: () => this.stopAll(),
+			control: () => this.controlState(),
 		});
 		for (const callable of opts.callables) {
 			const existing = this.byRef.get(callable.descriptor.ref);
@@ -165,6 +189,7 @@ export class RuntimeEngine {
 	// ---- 恢复（只读事实 + 未终结 Run 结算，不自动重放） ----
 
 	recover(rows: RecoveredRows): void {
+		this.owner.recover(rows.ownerState, this.opts.unclean === true);
 		for (const row of rows.records) {
 			this.recordIndex.set(row.record, { kind: row.kind, objectRef: row.object_ref });
 		}
@@ -177,7 +202,17 @@ export class RuntimeEngine {
 				run: row.run,
 				segment: row.segment,
 				record: row.record,
-				requestJson: row.request,
+				requestJson:
+					row.status === "cancelled"
+						? row.request
+						: canonicalJson(
+								plain(
+									(() => {
+										const request = JSON.parse(row.request) as RunRequest;
+										return { entry: request.entry, schedule: request.schedule };
+									})(),
+								),
+							),
 				error: row.error == null ? null : (JSON.parse(row.error) as { code: string; message: string }),
 			};
 			this.submissions.set(submissionKey(row.owner, row.request_id), state);
@@ -213,7 +248,12 @@ export class RuntimeEngine {
 				revision: row.revision + 1,
 				phase: "finished",
 				waiting: null,
-				outcome: stoppedByIntent ? "cancelled" : "unknown",
+				outcome:
+					row.phase === "queued"
+						? "not_started"
+						: stoppedByIntent && this.opts.oldControlRetired === true
+							? "cancelled"
+							: "unknown",
 				value: null,
 				error: stoppedByIntent
 					? null
@@ -221,7 +261,7 @@ export class RuntimeEngine {
 							code: "runtime_restart",
 							message: "recovered unfinished run after restart; the effect tail may be missing",
 						}),
-				control: "unknown",
+				control: this.opts.oldControlRetired === true ? "stopped" : "unknown",
 			};
 			this.queue.enqueue({ kind: "run", row: next });
 			this.recoveredRuns.set(row.run, next);
@@ -230,7 +270,30 @@ export class RuntimeEngine {
 
 	// ---- 受理（§2.1，I1 子集） ----
 
-	submit(origin: { worldOwner: Ref; activation: Ref }, request: RunRequest): Acceptance {
+	submit(origin: Origin, request: RunRequest): Promise<Acceptance> {
+		const key = submissionKey(origin.worldOwner, request.requestId);
+		const intent = canonicalJson(plain({ entry: request.entry, schedule: request.schedule }));
+		const pending = this.pendingSubmissions.get(key);
+		if (pending != null) {
+			if (pending.intent !== intent)
+				return Promise.resolve({
+					kind: "not_accepted",
+					requestId: request.requestId,
+					code: "REQUEST_CONFLICT",
+					message: "requestId is preparing a different intent",
+				});
+			return pending.promise;
+		}
+		const promise = this.submitPrepared(origin, request).catch((err: unknown): Acceptance => {
+			this.uncertainSubmissions.add(key);
+			return { kind: "unknown", requestId: request.requestId, reason: String(err) };
+		});
+		this.pendingSubmissions.set(key, { intent, promise });
+		void promise.finally(() => this.pendingSubmissions.delete(key));
+		return promise;
+	}
+
+	private async submitPrepared(origin: Origin, request: RunRequest): Promise<Acceptance> {
 		const owner = origin.worldOwner;
 		const key = submissionKey(owner, request.requestId);
 		const intentJson = canonicalJson(plain({ entry: request.entry, schedule: request.schedule }));
@@ -256,6 +319,8 @@ export class RuntimeEngine {
 					message: "requestId already accepted with a different intent",
 				};
 			}
+			if (this.uncertainSubmissions.has(key))
+				return { kind: "unknown", requestId: request.requestId, reason: "acceptance commit could not be confirmed" };
 			if (existing.status === "rejected" && existing.error != null) {
 				return { kind: "not_accepted", requestId: request.requestId, ...existing.error };
 			}
@@ -286,6 +351,14 @@ export class RuntimeEngine {
 				};
 			}
 			return { kind: "unknown", requestId: request.requestId, reason: "accepted submission without a readable run" };
+		}
+		let generation: number;
+		try {
+			this.assertActionAllowed();
+			generation = this.owner.capture(origin);
+		} catch (err) {
+			const failure = toCallFailure(err);
+			return { kind: "not_accepted", requestId: request.requestId, code: failure.code, message: failure.message };
 		}
 		// I1 范围检查
 		if (request.schedule.kind !== "enqueue") {
@@ -388,7 +461,16 @@ export class RuntimeEngine {
 			{ kind: "record_index", row: { record: segmentRecord, kind: "segment", object_ref: segment } },
 			{ kind: "record_index", row: { record: callRecord, kind: "call", object_ref: call } },
 		]);
-		void this.runRun(state);
+		// No callable or Driver dispatch can begin before acceptance is confirmed.
+		await this.queue.flushThrough(this.queue.capture());
+		try {
+			this.owner.assertGeneration(origin, generation);
+		} catch {
+			this.sealRun(state);
+		}
+		const execution = this.runRun(state);
+		this.activeRuns.add(execution);
+		void execution.finally(() => this.activeRuns.delete(execution));
 		return { kind: "accepted", requestId: request.requestId, segment, snapshot: projectSummary(state) };
 	}
 
@@ -432,6 +514,9 @@ export class RuntimeEngine {
 	// ---- 查询面 ----
 
 	lookup(requestId: Ref): SubmissionLookup {
+		const key = submissionKey(this.opts.worldOwner, requestId);
+		if (this.pendingSubmissions.has(key) || this.uncertainSubmissions.has(key))
+			return { kind: "unavailable", reason: "submission commit is not confirmed" };
 		const submission = this.byRequestId.get(requestId);
 		if (submission == null) return { kind: "not_found", requestId };
 		if (submission.status === "cancelled") {
@@ -773,6 +858,89 @@ export class RuntimeEngine {
 		};
 	}
 
+	assertActionAllowed(): void {
+		this.owner.assertAllowed();
+		if (this.isolationFailed)
+			throw callFailure({
+				code: "CONTROL_ISOLATION_FAILED",
+				source: "environment",
+				message: "old control isolation could not be proved",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: false,
+			});
+	}
+	controlState(): StopReceipt["control"] {
+		if (this.isolationFailed || [...this.runs.values()].some((state) => state.control === "unknown")) return "unknown";
+		return [...this.runs.values()].some((state) => state.phase !== "finished" && state.stopped)
+			? "stopping"
+			: "stopped";
+	}
+	private sealRun(state: RunState): void {
+		state.stopped = true;
+		state.rootCall.closed = true;
+		if (state.phase !== "finished") state.phase = "stopping";
+		if (state.control === "active") state.control = "stopping";
+		this.bodyLeaseQueue.cancelRun(state.run);
+		state.abort.abort();
+	}
+	private stopAll(): void {
+		const closing: Promise<void>[] = [];
+		for (const state of this.runs.values()) {
+			if (state.phase === "finished" || state.stopped) continue;
+			// stop performs its control closure before its first await.
+			if (this.startedRuns.has(state.run)) closing.push(state.rootCall.settled);
+			const stopping = this.stop({ requestId: this.refs.stopIntent(), target: { run: state.run } });
+			this.stopBarriers.add(stopping);
+			void stopping.finally(() => this.stopBarriers.delete(stopping));
+		}
+		if (closing.length !== 0) {
+			const timer = setTimeout(() => {
+				this.isolationFailed = true;
+				this.opts.requireRetirement?.({
+					source: "runtime",
+					subject: null,
+					code: "CONTROL_ISOLATION_FAILED",
+					detail: "stopped calls did not retire within the control isolation deadline",
+				});
+			}, 2000);
+			timer.unref();
+			void Promise.all(closing).then(() => clearTimeout(timer));
+		}
+	}
+	shutdown(): Promise<void> {
+		if (this.shutdownPromise != null) return this.shutdownPromise;
+		this.owner.shutdown();
+		this.shutdownPromise = (async () => {
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			const complete = Promise.all([...this.pendingSubmissions.values()].map((item) => item.promise)).then(async () => {
+				await Promise.all([...this.activeRuns, ...this.stopBarriers]);
+				await this.chatGate;
+			});
+			try {
+				await Promise.race([
+					complete,
+					new Promise<never>((_, reject) => {
+						timeout = setTimeout(() => reject(new Error("active execution did not retire during shutdown")), 2000);
+					}),
+				]);
+				if (this.isolationFailed) throw new Error("control isolation could not be proved");
+			} catch (err) {
+				this.isolationFailed = true;
+				this.opts.requireRetirement?.({
+					source: "runtime",
+					subject: null,
+					code: "EXECUTION_DOMAIN_UNRETIRED",
+					detail: String(err),
+				});
+				throw err;
+			} finally {
+				if (timeout != null) clearTimeout(timeout);
+			}
+		})();
+		return this.shutdownPromise;
+	}
+
 	// ---- 能力接入接缝（组合根注入能力实现） ----
 
 	/**
@@ -803,6 +971,16 @@ export class RuntimeEngine {
 		});
 		await previous;
 		try {
+			this.assertActionAllowed();
+			if (frame.call.closed || frame.call.abort.signal.aborted || signal.aborted)
+				throw callFailure({
+					code: "INTERRUPTED",
+					source: "environment",
+					message: "chat call is closed",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+				});
 			return await this.queue.runWithChatOwner(owner, () => this.opts.playerPort.chat(text, signal));
 		} finally {
 			release();
@@ -811,6 +989,7 @@ export class RuntimeEngine {
 
 	/** 受控独占导航（goto）作用域：独占期内效果事实归属给定 owner。 */
 	async runNavigation<T>(owner: ControlOwner, fn: () => Promise<T>): Promise<T> {
+		this.assertActionAllowed();
 		this.queue.setNavigationOwner(owner);
 		try {
 			return await fn();
@@ -825,8 +1004,11 @@ export class RuntimeEngine {
 		const root = state.rootCall;
 		try {
 			if (state.awaitingBody === 0) this.setPhase(state, "running");
+			// Persist the start boundary before invocation: a recovered queued Run truly never ran.
+			await this.queue.flushThrough(this.queue.capture());
 			let rootThrew: CallFailure | null = null;
 			try {
+				this.startedRuns.add(state.run);
 				await this.executeCallBody(root, state, null);
 			} catch (err) {
 				rootThrew = toCallFailure(err);
@@ -841,7 +1023,7 @@ export class RuntimeEngine {
 			state.completionRef = this.refs.completion();
 			state.revision++;
 			state.phase = "finished";
-			if (state.stopped) state.control = "stopped";
+			if (state.stopped && state.control !== "unknown") state.control = "stopped";
 			this.queue.enqueueAll([
 				{ kind: "segment", row: segmentRowOf(state, this.opts.environment ?? null) },
 				{ kind: "run", row: runRowOf(state) },
@@ -865,6 +1047,16 @@ export class RuntimeEngine {
 		let value: JsonValue | undefined;
 		let threw: CallFailure | null = null;
 		try {
+			this.assertActionAllowed();
+			if (state.stopped || callState.abort.signal.aborted || callState.closed)
+				throw callFailure({
+					code: "INTERRUPTED",
+					source: "environment",
+					message: "call stopped before execution",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+				});
 			const raw = await this.als.run({ call: callState, bodyLease: lease }, () =>
 				callState.callable.invoke(ctx, callState.input),
 			);
@@ -1041,6 +1233,7 @@ export class RuntimeEngine {
 		lease: BodyLease | null,
 		work: (scope: BodyCallScope) => Promise<T>,
 	): Promise<T> {
+		this.assertActionAllowed();
 		// 情况 a：委托谱系复用，重入不排队
 		if (lease != null) {
 			return work(this.bodyScopeOf(callState, state, lease));
@@ -1085,8 +1278,15 @@ export class RuntimeEngine {
 			// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
 			try {
 				await grant.session.close();
-			} catch {
+			} catch (err) {
 				state.control = "unknown";
+				this.isolationFailed = true;
+				this.opts.requireRetirement?.({
+					source: "runtime",
+					subject: state.run,
+					code: "CONTROL_ISOLATION_FAILED",
+					detail: String(err),
+				});
 			}
 			// release 之后队列才授予下一项；归属槽由队列的 onRelease 清空
 			grant.release();

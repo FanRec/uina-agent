@@ -233,7 +233,15 @@ async function runToEnd(
 	engine: RuntimeEngine,
 	rootRef: ExactRef,
 ): Promise<{ run: Ref; outcome: string; error: { code: string } | null }> {
-	const acceptance = engine.submit(
+	const owner = await engine.owner.attach({ worldOwner: "world:t:1", activation: "act:t:1" });
+	await engine.owner.setGate({
+		requestId: "enable",
+		attachment: owner.attachment,
+		gate: "disabled",
+		closed: false,
+		expectedRevision: owner.gateRevision,
+	});
+	const acceptance = await engine.submit(
 		{ worldOwner: "world:t:1", activation: "act:t:1" },
 		{
 			requestId: `req:${rootRef}`,

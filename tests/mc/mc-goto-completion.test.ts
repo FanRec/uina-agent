@@ -14,7 +14,7 @@ function director(endX) {
 	bot.entity = { position: { x: 5, y: 64, z: 0 } }; bot.controlState = {}; bot.targetDigBlock = null;
 	bot.pathfinder = { movements: null, goal: null, setMovements: () => {}, goto: async () => { bot.entity.position = { x: endX, y: 64, z: 0.68 }; }, isMoving: () => false };
 	let sequence = 0;
-	return new GotoDirector({ bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: ++sequence }) }, mintOp: () => \`op:\${++sequence}\`, mintEff: () => \`eff:\${++sequence}\` });
+	return new GotoDirector({ assertActionAllowed: () => {}, bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: ++sequence }) }, mintOp: () => \`op:\${++sequence}\`, mintEff: () => \`eff:\${++sequence}\` });
 }
 const request = { at: { x: 0, y: 64, z: 0 }, tolerance: 1, sprint: false, digThrough: false, placeToReach: false, timeoutMs: 1000 };
 const results=[];for(const x of [1.67,3.2]){try{const result=await director(x).goto(request,new AbortController().signal);results.push(result.receipt.completion);}catch(error){results.push(error.code ?? error.message);}}console.log(JSON.stringify(results));

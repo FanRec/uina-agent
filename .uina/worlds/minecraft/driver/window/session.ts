@@ -491,10 +491,7 @@ export class WindowSessionImpl implements WindowSession {
 				dispatch: "sent",
 				completion,
 				evidence: [],
-				confirmed: {
-					slots: input.slot === -999 ? [] : [structuredClone(this.value.slots[input.slot])],
-					cursor: structuredClone(this.value.cursor),
-				},
+				confirmed: structuredClone(this.value),
 				needsSnapshot: false,
 			};
 		} catch (error) {

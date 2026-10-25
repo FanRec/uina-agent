@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { WindowSession } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { ClientWindowObservation } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import type { DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type { ControlRetirement, DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { BodySessionImpl, type BodySessionDeps } from "../../.uina/worlds/minecraft/driver/body/session.js";
 import { PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
@@ -82,6 +82,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 	};
 	let serial = 0;
 	const deps: BodySessionDeps = {
+		assertActionAllowed: () => {},
 		host: { state: "ready", identity: { connection: "conn:t1", incarnation: "inc:t1" }, on: () => () => {} },
 		bot: () => bot as unknown as MineflayerBot,
 		sampleSelf: () => null,
@@ -191,7 +192,9 @@ describe("Driver window lifetime and server confirmation", () => {
 			needsSnapshot: false,
 			confirmed: { cursor: { name: "stone", count: 8 } },
 		});
-		expect(receipt.confirmed?.slots).toEqual([{ slot: 0, item: null }]);
+		expect(receipt.confirmed?.slots[0]).toEqual({ slot: 0, item: null });
+		expect(receipt.confirmed?.window).toBe(initial.value.window);
+		expect(receipt.confirmed?.slots).toHaveLength(initial.value.layout.slotCount);
 		expect(
 			h.writes.filter((write) => write.name === "window_click").map((write) => [write.data.mode, write.data.stateId]),
 		).toEqual([[0, -1]]);
@@ -233,6 +236,7 @@ describe("Driver window lifetime and server confirmation", () => {
 
 	test("cancelled dispatched opening seals the connection when a late native window cannot be retired", async () => {
 		const h = harness();
+		const retirements: ControlRetirement[] = [];
 		let onActivation = () => {};
 		const activated = new Promise<void>((resolve) => {
 			onActivation = resolve;
@@ -245,6 +249,7 @@ describe("Driver window lifetime and server confirmation", () => {
 			...h.deps,
 			arbiter: new DriverControlArbiter(),
 			mintBody: () => "body:late-open",
+			requireRetirement: (notice) => retirements.push(notice),
 		});
 		const cancellation = new AbortController();
 		const body = await port.acquire(ownerT(2), cancellation.signal);
@@ -254,6 +259,9 @@ describe("Driver window lifetime and server confirmation", () => {
 		cancellation.abort();
 		expect((await pending).dispatch).toBe("sent");
 		await body.close();
+		expect(retirements).toEqual([
+			{ source: "driver", subject: "body:late-open", code: "CONTROL_ISOLATION_FAILED", detail: expect.any(String) },
+		]);
 		h.bot.currentWindow = windows.createWindow(1, "minecraft:generic_9x3", "Late response");
 		h.bot.emit("windowOpen", h.bot.currentWindow);
 		h.full();

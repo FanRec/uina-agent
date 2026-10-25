@@ -68,7 +68,7 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 
 	const call = async (ref: string, input: JsonValue, timeoutMs = 30000): Promise<CallResult> => {
 		const requestId = `req:${ns}:${label}-${++seq}`;
-		const acceptance = rt.submit(
+		const acceptance = await rt.submit(
 			{ worldOwner, activation },
 			{ requestId, entry: { kind: "call", selector: ref, input }, schedule: { kind: "enqueue" } },
 		);

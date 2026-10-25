@@ -1,6 +1,8 @@
 # Executor 详细设计
 
-日期：2026-10-18。状态：终态详细设计，未实现。目标部署为本机 Windows 10+；行为合同确定，策略初值须经实现验收。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
+日期：2026-10-25。状态：终态详细设计，批 4 的平台/传输与受管执行侧已实现；工具投影、请求凭证、可靠通知及 WorldDef 尚未实现。目标部署为本机 Windows 10+，当前真实验收仅 Windows 11 x64。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
+
+批 4 状态与实际证据见 [平台实施记录](../executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；它不注册模型工具。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Microsoft、Program/Library 仍明确不可用。后续按同一装配继续，不另建桥。
 
 ## 1. Uina 得到什么
 

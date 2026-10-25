@@ -43,7 +43,7 @@ export interface MinecraftWorldOptions {
 	/** world-history.db 路径（.uina/world-data/minecraft/ 下，Host 提供数据根）。 */
 	dbPath: string;
 	/** 当前绑定投影（§4.2；I1 每进程生成显式分区，不猜旧身份）。 */
-	binding: { binding: Ref; world: Ref; worldRevision: Ref };
+	binding: { binding: Ref; world: Ref; worldRevision: Ref; state?: "bound" | "unbound" };
 	/** 本次启动命名空间（与 Driver 证据流命名空间同源；跨进程不复用，§5.3）。 */
 	namespace: string;
 }
@@ -101,7 +101,7 @@ export function projectAvailability(input: {
 		history:
 			history.state === "unavailable" ? { state: "unavailable", reason: history.reason } : { state: history.state },
 		binding: {
-			state: "bound",
+			state: input.binding.state ?? "bound",
 			binding: input.binding.binding,
 			world: input.binding.world,
 			worldRevision: input.binding.worldRevision,
@@ -139,6 +139,19 @@ export class MinecraftWorld implements WorldPort {
 	}
 
 	async read<T>(query: WorldQuery): Promise<Observation<T>> {
+		const observation = await this.readPartition<T>(query);
+		if (this.binding.state !== "unbound") return observation;
+		return {
+			...observation,
+			coverage: "partial",
+			unknown: [
+				...observation.unknown,
+				"persistent world identity is unbound; this observation belongs to the current launch partition",
+			],
+		};
+	}
+
+	private async readPartition<T>(query: WorldQuery): Promise<Observation<T>> {
 		const input = this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader?.kind === "current") {

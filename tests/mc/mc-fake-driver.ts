@@ -128,6 +128,7 @@ export function makeBodyHarness(botOverrides: Record<string, unknown> = {}): Bod
 	};
 	const bot = makeBodyBot(botOverrides);
 	const port = new PlayerPortImpl({
+		assertActionAllowed: () => {},
 		host,
 		bot: () => bot,
 		sink,

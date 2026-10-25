@@ -1,30 +1,17 @@
-/**
- * 开发入口共用装配：连接 dev 服并把 Driver/World/Runtime/能力面接起来。
- *
- * 唯一定义来源：docs/proposals/mc/development-plan.md §9、development-guide.md §5。
- * 场景文件（entry.ts 的 I1、k1.ts 的 K1）只写步骤与断言，不复制装配：
- * 两处装配一旦漂移，真服验证就会证明错的东西。
- * 端口互注入解循环：Runtime 消费 Driver/World 端口，Driver 消费 runtime.sink
- * （open 前用占位 sink，open 后接线；open 前无任何副作用）。
- */
-
-import { mkdirSync } from "node:fs";
+/** Development scenarios share the production execution-side composition. */
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuiltCapabilities } from "../capabilities/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
-import type { JsonValue } from "../contracts/values.js";
-import { buildCapabilities } from "../capabilities/index.js";
-import type { DriverExecutionSink } from "../contracts/runtime.js";
-import type { Ref, Vec3 } from "../contracts/values.js";
-import { PlayerPortImpl } from "../driver/body/player-port.js";
-import { ClientHost } from "../driver/client-host.js";
-import { DriverControlArbiter } from "../driver/control-arbiter.js";
-import { FactsSource } from "../driver/facts/index.js";
-import { GotoDirector } from "../driver/goto.js";
+import type { JsonValue, Ref, Vec3 } from "../contracts/values.js";
+import type { ClientHost } from "../driver/client-host.js";
+import type { FactsSource } from "../driver/facts/index.js";
 import type { MineflayerBot } from "../driver/mineflayer/adapter.js";
-import { MinecraftRuntime } from "../runtime/index.js";
-import { MinecraftWorld } from "../world/index.js";
+import type { MinecraftRuntime } from "../runtime/index.js";
+import type { MinecraftWorld } from "../world/index.js";
+import { openExecutionSide } from "../companion/side.js";
 
 export const DEV_SERVER = {
 	host: "127.0.0.1",
@@ -32,36 +19,16 @@ export const DEV_SERVER = {
 	username: process.env.MC_DEV_USER ?? "UinaDev",
 	version: "1.21.11",
 };
-const STORAGE_ID = "minecraft-runtime@1";
-
-/** 每前缀独立单调发号；必须带启动命名空间（world.md §5.3）。 */
-function makeIssuer(namespace: string): (prefix: string) => Ref {
-	const counters = new Map<string, number>();
-	return (prefix: string): Ref => {
-		const next = (counters.get(prefix) ?? 0) + 1;
-		counters.set(prefix, next);
-		return `${prefix}:${namespace}:${next}`;
-	};
-}
-
 export function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
 export function dist(a: Vec3, b: Vec3): number {
 	return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
-
 export function fmtPos(p: Vec3): string {
 	return `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`;
 }
-
-type BotEntityView = { entity?: { position?: { x: number; y: number; z: number }; onGround?: boolean } | null };
-
-/**
- * 出生落定等待（验证侧准备）：服务端会把玩家放回上次位置，可能有坠落/惯性；
- * 位置静止且落地后再计算目标，避免寻路起点不稳。
- */
+type BotEntityView = { entity?: { position?: Vec3; onGround?: boolean } | null };
 export async function waitForStill(bot: BotEntityView, log: (message: string) => void): Promise<void> {
 	const deadline = Date.now() + 8000;
 	let stable = 0;
@@ -69,17 +36,13 @@ export async function waitForStill(bot: BotEntityView, log: (message: string) =>
 	while (Date.now() < deadline) {
 		const pos = bot.entity?.position ?? null;
 		if (pos != null && bot.entity?.onGround === true && last != null && dist(pos, last) < 0.01) {
-			stable++;
-			if (stable >= 3) return;
-		} else {
-			stable = 0;
-		}
+			if (++stable >= 3) return;
+		} else stable = 0;
 		last = pos;
 		await sleep(150);
 	}
 	log("warn: spawn stillness wait timed out; proceeding from last sampled position");
 }
-
 export interface DevHarness {
 	label: string;
 	ns: string;
@@ -93,141 +56,85 @@ export interface DevHarness {
 	capabilities: BuiltCapabilities;
 	bot: MineflayerBot;
 	log: (message: string) => void;
+	close(): Promise<void>;
 }
-
 export async function openHarness(
 	label: string,
 	options: {
 		binding?: { world: Ref; worldRevision: Ref };
 		callables?: NativeCallable<JsonValue, JsonValue>[];
-		/** Dedicated validation data; explicit option wins over MC_DEV_DATA_DIR and the normal local default. */
 		dataRoot?: string;
 	} = {},
 ): Promise<DevHarness> {
 	const log = (message: string): void => console.log(`[mc-${label}] ${message}`);
 	const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-	const worldDataDir = resolve(
+	const dataRoot = resolve(
 		options.dataRoot ?? process.env.MC_DEV_DATA_DIR ?? join(repoRoot, ".uina", "world-data", "minecraft"),
 	);
-	mkdirSync(worldDataDir, { recursive: true });
-	log(`data root: ${worldDataDir}`);
-
-	// per-boot 命名空间：禁冒号；绑定身份每次启动显式生成（不猜旧身份）
-	const ns = `${label}-${Date.now().toString(36)}`;
-	const worldRef = options.binding?.world ?? `wld:${ns}`;
-	const binding = `bind:${ns}`;
-	const worldRevision = options.binding?.worldRevision ?? `wldrev:${ns}`;
-	const worldOwner: Ref = `owner:${ns}`;
-	const activation: Ref = `act:${ns}`;
-
-	const host = new ClientHost();
-	const arbiter = new DriverControlArbiter();
-	const mint = makeIssuer(ns);
-	const facts = new FactsSource(host, { binding, world: worldRef, worldRevision, streamNamespace: ns });
-	const sinkRef: { current: DriverExecutionSink | null } = { current: null };
-	const sink: DriverExecutionSink = { record: (fact) => sinkRef.current?.record(fact) ?? null };
-	const playerPort = new PlayerPortImpl({
-		host,
-		bot: () => host.bot,
-		sink,
-		sampleSelf: () => facts.sampleSelf(),
-		arbiter,
-		mintBody: () => mint("body"),
-		mintOp: () => mint("op"),
-		mintEff: () => mint("eff"),
-		publishWindow: (observation) => facts.publishWindow(observation),
-	});
-	const gotoDirector = new GotoDirector({
-		host,
-		bot: () => host.bot,
-		sink,
-		arbiter,
-		mintOp: () => mint("op"),
-		mintEff: () => mint("eff"),
-	});
-
-	// runtime 用 getter：open 是两段式，受理只会发生在 open 之后。
-	let runtime: MinecraftRuntime | null = null;
-	const capabilities = buildCapabilities({
-		runtime: () => {
-			if (runtime == null) throw new Error("runtime is not open yet");
-			return runtime;
+	await mkdir(dataRoot, { recursive: true });
+	const ns = `${label}-${randomUUID()}`;
+	const worldOwner = `owner:${ns}`;
+	const activation = `activation:${ns}`;
+	const side = await openExecutionSide(
+		{
+			launch: `launch:${ns}`,
+			origin: { worldOwner, activation },
+			storageId: `storage:${ns}`,
+			worldDataDir: dataRoot,
+			config: {
+				connection: { ...DEV_SERVER, authMode: "offline" },
+				binding: options.binding ?? { world: `world:${ns}`, worldRevision: `revision:${ns}` },
+			},
+			unclean: false,
+			oldControlRetired: true,
+			ownerLifetimeMs: 5000,
+			localGates: [],
 		},
-		gotoDirector,
-		knowledge: () => facts.knowledge(),
-	});
-	capabilities.callables.push(...(options.callables ?? []));
-
-	const world = new MinecraftWorld({
-		facts,
-		readers: capabilities.readers,
-		validators: capabilities.validators,
-		dbPath: join(worldDataDir, "world-history.db"),
-		binding: { binding, world: worldRef, worldRevision },
-		namespace: ns,
-	});
-
-	log(`connecting ${DEV_SERVER.host}:${DEV_SERVER.port} as ${DEV_SERVER.username} (${DEV_SERVER.version})`);
-	await host.connect(DEV_SERVER);
-	if (host.state !== "ready" || host.identity == null) throw new Error(`client not ready: ${host.state}`);
-	const bot = host.bot;
-	if (bot == null) throw new Error("client host lost the bot after ready");
-	log(
-		`ready: connection=${host.identity.connection} incarnation=${host.identity.incarnation} ` +
-			`dimension=${host.dimension ?? "unknown"} position=${host.position ? fmtPos(host.position) : "unknown"}`,
+		{ callables: options.callables },
 	);
-	await waitForStill(bot as unknown as BotEntityView, log);
-
-	// 协议号不在 Bot 类型上；从注册表版本元数据读取，读不到则如实缺省 environment
-	const protocol = (bot as unknown as { registry?: { version?: { version?: number } } }).registry?.version?.version;
-	const opened = await MinecraftRuntime.open({
-		dbPath: join(worldDataDir, "runtime.db"),
-		storageId: STORAGE_ID,
-		namespace: ns,
-		worldOwner,
-		world,
-		playerPort,
-		callables: capabilities.callables,
-		...(typeof protocol === "number" ? { environment: { serverVersion: bot.version, protocol } } : {}),
-	});
-	runtime = opened.runtime;
-	sinkRef.current = runtime.sink;
-	log(
-		`runtime open: journal=${opened.start.journalMode} sync=${opened.start.synchronousMode} ` +
-			`recovered=${JSON.stringify(opened.start.recoveredCounts)}`,
-	);
-	log(`history: ${await world.historyReady}`);
-
-	return {
-		label,
-		ns,
-		worldOwner,
-		activation,
-		dataRoot: worldDataDir,
-		host,
-		facts,
-		world,
-		runtime: runtime as MinecraftRuntime,
-		capabilities,
-		bot,
-		log,
-	};
+	let heartbeat: ReturnType<typeof setInterval> | null = null;
+	try {
+		const owner = await side.attach();
+		await side.runtime.setOwnerGate({
+			requestId: randomUUID(),
+			attachment: owner.attachment,
+			gate: "disabled",
+			closed: false,
+			expectedRevision: owner.gateRevision,
+		});
+		heartbeat = setInterval(() => {
+			void side.runtime.heartbeat(owner.attachment).catch((error: unknown) => log(`heartbeat: ${String(error)}`));
+		}, 1000);
+		await side.connected;
+		if (side.host.state !== "ready" || !side.host.bot) throw new Error(`client not ready: ${side.host.state}`);
+		await waitForStill(side.host.bot as unknown as BotEntityView, log);
+		log(
+			`data root: ${dataRoot}; runtime: ${side.start.journalMode}/${side.start.synchronousMode}; history: ${await side.world.historyReady}`,
+		);
+		return {
+			label,
+			ns,
+			worldOwner,
+			activation,
+			dataRoot,
+			host: side.host,
+			facts: side.facts,
+			world: side.world,
+			runtime: side.runtime,
+			capabilities: side.capabilities,
+			bot: side.host.bot,
+			log,
+			close: async () => {
+				if (heartbeat) clearInterval(heartbeat);
+				await side.close();
+			},
+		};
+	} catch (error) {
+		if (heartbeat) clearInterval(heartbeat);
+		await side.close().catch(() => {});
+		throw error;
+	}
 }
-
 export async function closeHarness(h: DevHarness): Promise<void> {
-	try {
-		await h.runtime.close();
-	} catch {
-		// 收尾失败不影响错误上报
-	}
-	try {
-		await h.world.close();
-	} catch {
-		// 同上
-	}
-	try {
-		await h.host.close();
-	} catch {
-		// 同上
-	}
+	await h.close();
 }

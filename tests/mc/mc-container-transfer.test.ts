@@ -68,7 +68,7 @@ function windowFixture(container: (ItemValue | null)[], player: (ItemValue | nul
 				completion: "met",
 				evidence: [],
 				needsSnapshot: false,
-				confirmed: { slots: value().slots, cursor: value().cursor },
+				confirmed: structuredClone(value()),
 			};
 		},
 		async close() {},
@@ -87,6 +87,24 @@ function windowFixture(container: (ItemValue | null)[], player: (ItemValue | nul
 }
 
 describe("窗口搬移：服务端快照上的固定清单", () => {
+	test("confirmed placement is accounted before any later qualification-dependent snapshot", async () => {
+		const f = windowFixture([stack("dirt", 1)], [null]);
+		const snapshot = f.session.snapshot.bind(f.session);
+		f.session.snapshot = async () => {
+			if (f.clicks.length >= 2)
+				throw Object.assign(new Error("cancelled after receipt"), {
+					name: "CallFailure",
+					code: "INTERRUPTED",
+					dispatch: "not_sent",
+				});
+			return snapshot();
+		};
+		expect(await transferWindow(f.session, { direction: "from", item: "dirt", count: 1 })).toEqual({
+			moved: { dirt: 1 },
+			remaining: {},
+		});
+		expect(f.items[1]?.count).toBe(1);
+	});
 	test("an unknown component stack does not hide a later proven match", async () => {
 		const unknown = stack("dirt", 2);
 		unknown.components = null;

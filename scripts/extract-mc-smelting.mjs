@@ -16,10 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TARGET = resolve(
-	dirname(fileURLToPath(import.meta.url)),
-	"../.uina/worlds/minecraft/driver/facts/smelting.ts",
-);
+const TARGET = resolve(dirname(fileURLToPath(import.meta.url)), "../.uina/worlds/minecraft/driver/facts/smelting.ts");
 const MARK_START = "// <generated>";
 const MARK_END = "// </generated>";
 
