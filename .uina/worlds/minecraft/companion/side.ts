@@ -1,6 +1,7 @@
 /** Game-side composition root shared by bootstrap and development scenarios. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { describeCapabilities } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
@@ -29,6 +30,8 @@ export async function openExecutionSide(
 	options: {
 		callables?: NativeCallable<JsonValue, JsonValue>[];
 		onRetirement?: (request: RetirementRequest) => void;
+		onChanged?: () => void;
+		onGameEvent?: (notice: import("../contracts/executor.js").GameNotice) => void;
 	} = {},
 ) {
 	const config = parseExecutorConfig(init.config);
@@ -100,6 +103,19 @@ export async function openExecutionSide(
 		assertActionAllowed,
 		requireRetirement,
 	});
+	const importantEvents = facts.subscribe((notice) => {
+		if (notice.kind !== "evidence") return;
+		for (const record of notice.records) {
+			const value = record.fact.value as Record<string, JsonValue>;
+			if (
+				value &&
+				(value.kind === "death" ||
+					(value.kind === "connection" && value.state === "disconnected") ||
+					(value.kind === "chat" && value.channel === "private" && value.self === false))
+			)
+				options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
+		}
+	});
 	const capabilities = buildCapabilities({ runtime: getRuntime, gotoDirector, knowledge: () => facts.knowledge() });
 	capabilities.callables.push(...(options.callables ?? []));
 	const world = new MinecraftWorld({
@@ -120,6 +136,7 @@ export async function openExecutionSide(
 			playerPort,
 			callables: capabilities.callables,
 			ownerLifetimeMs: init.ownerLifetimeMs,
+			onChanged: options.onChanged,
 			unclean: init.unclean,
 			oldControlRetired: init.oldControlRetired,
 			requireRetirement,
@@ -182,6 +199,7 @@ export async function openExecutionSide(
 		const close = (): Promise<void> =>
 			(closePromise ??= (async () => {
 				closing = true;
+				importantEvents.close();
 				const errors: unknown[] = [];
 				const owner = getRuntime().inspectOwner();
 				if (owner) {
@@ -238,10 +256,12 @@ export async function openExecutionSide(
 					value = getRuntime().lookup(p.requestId as string);
 					break;
 				case "runtime.read":
-					value = getRuntime().read(p.run as string);
+					value = await getRuntime().read(p.run as string);
 					break;
 				case "runtime.readRecord":
-					value = getRuntime().readRecord(p.ref as string);
+					value = await getRuntime().readRecord(p.ref as string, {
+						format: p.format as import("../contracts/runtime.js").RecordFormat | undefined,
+					});
 					break;
 				case "runtime.wait":
 					value = await getRuntime().wait(
@@ -256,6 +276,28 @@ export async function openExecutionSide(
 				case "runtime.stop":
 					value = await getRuntime().stop(payload as unknown as StopCommand);
 					break;
+				case "describe":
+					value = describeCapabilities(capabilities, p as Parameters<typeof describeCapabilities>[1]);
+					break;
+				case "runtime.list":
+					value = await getRuntime().list(p as Parameters<MinecraftRuntime["list"]>[0]);
+					break;
+				case "runtime.calls":
+					value = await getRuntime().listCalls(p.run as string, p as Parameters<MinecraftRuntime["listCalls"]>[1]);
+					break;
+				case "runtime.pendingDeliveries":
+					value = await getRuntime().pendingDeliveries(p as Parameters<MinecraftRuntime["pendingDeliveries"]>[0]);
+					break;
+				case "runtime.readDelivery":
+					value = await getRuntime().readDelivery(p.ref as string);
+					break;
+				case "runtime.settleDelivery":
+					value = await getRuntime().settleDelivery(
+						p.ref as string,
+						p.receipt as unknown as import("../contracts/runtime.js").DeliveryReceipt,
+					);
+					break;
+
 				case "observe":
 					value = await world.read({ ref: p.selector as ExactRef, input: p.input ?? {} });
 					break;
@@ -280,6 +322,7 @@ export async function openExecutionSide(
 			close,
 		};
 	} catch (error) {
+		importantEvents.close();
 		await Promise.allSettled([host.close(), world.close(), ...(runtime ? [runtime.close()] : [])]);
 		throw error;
 	}

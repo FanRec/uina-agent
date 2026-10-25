@@ -53,6 +53,9 @@ const peer = new RpcPeer({
 			const { openExecutionSide } = await import("./side.js");
 			side = await openExecutionSide(init, {
 				onRetirement: (request) => peer.notify({ v: 1, launch, kind: "retire_required", request }),
+				onChanged: () => peer.notify({ v: 1, launch, kind: "changed", runs: [], statusChanged: true }),
+				onGameEvent: (event) =>
+					peer.notify({ v: 1, launch, kind: "changed", runs: [], statusChanged: false, events: [event] }),
 			});
 			if (disconnected) {
 				await side.close();

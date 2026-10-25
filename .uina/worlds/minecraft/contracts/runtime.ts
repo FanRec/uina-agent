@@ -311,3 +311,51 @@ export interface ControlRetirement {
 	code: "CONTROL_ISOLATION_FAILED" | "EXECUTION_DOMAIN_UNRETIRED";
 	detail: string;
 }
+
+/** Fixed reports and their bounded projections. Only Runtime owns their disposition. */
+export type CompletionReport =
+	| { reportKind: "terminal"; snapshot: Extract<RunSnapshot, { phase: "finished" }> }
+	| { reportKind: "decision"; snapshot: Extract<RunSnapshot, { phase: "awaiting_decision" }> };
+export interface DeliveryRef {
+	completionRef: Ref;
+	requestId: Ref;
+	run: Ref;
+	segment: Ref;
+	revision: number;
+}
+export type Delivery = DeliveryRef & CompletionReport;
+export type CompletionHeader = DeliveryRef & { recordBytes: number } & (
+		| { reportKind: "terminal"; snapshot: Extract<RunSummary, { phase: "finished" }> }
+		| { reportKind: "decision"; snapshot: Extract<RunSummary, { phase: "awaiting_decision" }> }
+	);
+export type CompletionView = CompletionHeader & {
+	content:
+		| { kind: "inline"; report: CompletionReport }
+		| { kind: "record"; record: Ref }
+		| { kind: "unavailable"; record: Ref; error: { code: string; message: string } };
+};
+export type RunReply = Acceptance | ({ kind: "result" } & CompletionView);
+export type DeliveryReceipt = import("../../../../src/core/types.js").HostCommitReceipt;
+export interface DeliveryState {
+	delivery: CompletionHeader;
+	disposition: "pending" | "committed";
+	eligible: boolean;
+}
+export type RuntimeRecord = {
+	kind: "run" | "segment" | "call" | "effect" | "completion" | "stop";
+	record: Ref;
+	value: JsonValue;
+};
+export type RecordFormat = "auto" | "inline" | "file";
+export type RecordReply =
+	| { kind: "inline"; record: RuntimeRecord }
+	| {
+			kind: "file";
+			record: Ref;
+			recordKind: RuntimeRecord["kind"];
+			file: { path: string; sha256: string; bytes: number };
+	  };
+export type CallSummary = Pick<
+	CallRecord,
+	"call" | "run" | "segment" | "parent" | "record" | "ref" | "implementation" | "access" | "execution" | "outcome"
+>;

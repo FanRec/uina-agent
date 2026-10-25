@@ -1,0 +1,284 @@
+/** One report, two presentation channels. Host canonical receipts alone acknowledge Runtime. */
+import { randomUUID } from "node:crypto";
+import type { HostDeliveryState } from "../../../../src/core/types.js";
+import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
+import type { MinecraftExecutor } from "./index.js";
+import type { DeliveryAttempt } from "./ledger-worker.js";
+
+export class DeliveryPump {
+	readonly heldRequests = new Set<string>();
+	private readonly heldTools = new Set<string>();
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private running: Promise<void> | null = null;
+	private stopped = false;
+	private unsubscribe: (() => void) | null = null;
+	private unsubscribeSide: (() => void) | null = null;
+	private active: (Omit<DeliveryAttempt, "activation"> & { activation?: string }) | null = null;
+	private emitting = false;
+	private error: { code: string; message: string } | null = null;
+	private lastCheckedAt: string | null = null;
+	private pendingCount: number | null = null;
+	private hostState: HostDeliveryState = { kind: "unavailable", reason: "not checked" };
+	private failures = 0;
+	private readonly activation = `delivery:${randomUUID()}`;
+	constructor(
+		private readonly executor: MinecraftExecutor,
+		private readonly ctx: ServiceCompanionContext,
+		private readonly pollMs = 5000,
+	) {}
+	start(): void {
+		this.unsubscribeSide = this.executor.subscribe((events) => {
+			this.wake(0);
+			for (const event of events)
+				void this.ctx.emitEvent!({
+					id: event.ref,
+					type: "minecraft_event",
+					origin: "external",
+					channel: "world",
+					text: JSON.stringify({ ...event, nextCall: { action: "observe", params: { selector: "events@1" } } }),
+				}).catch((error) => {
+					this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
+				});
+		});
+		this.unsubscribe = this.ctx.onHostEvent?.(() => this.wake(0)) ?? null;
+		this.wake(this.pollMs);
+	}
+	private wake(ms: number): void {
+		if (this.stopped) return;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			void this.reconcile().catch(() => {});
+		}, ms);
+	}
+	async view(state: DeliveryState): Promise<CompletionView> {
+		const header = state.delivery;
+		if (header.recordBytes + Buffer.byteLength(JSON.stringify(header)) + 1024 > 16 * 1024)
+			return { ...header, content: { kind: "record", record: header.completionRef } };
+		try {
+			const full = await this.executor.readRecord(header.completionRef, { format: "inline" });
+			if (full.kind !== "inline" || full.record.kind !== "completion") throw new Error("completion record unavailable");
+			const delivery = full.record.value as unknown as import("../contracts/runtime.js").Delivery;
+			return {
+				...header,
+				content: {
+					kind: "inline",
+					report: {
+						reportKind: delivery.reportKind,
+						snapshot: delivery.snapshot,
+					} as import("../contracts/runtime.js").CompletionReport,
+				},
+			};
+		} catch (error) {
+			return {
+				...header,
+				content: {
+					kind: "unavailable",
+					record: header.completionRef,
+					error: { code: "RECORD_UNAVAILABLE", message: String(error) },
+				},
+			};
+		}
+	}
+	async toolAttempt(key: string): Promise<{ key: string; attempt: string }> {
+		const attempt = await this.prepare(key, "tool");
+		this.heldTools.add(key);
+		// The Host registers tool attempts synchronously on receipt, ahead of after-hooks.
+		setTimeout(() => {
+			this.heldTools.delete(key);
+			this.wake(this.pollMs);
+		}, 0);
+		return { key, attempt: attempt.attempt };
+	}
+	private async prepare(key: string, channel: "tool" | "input"): Promise<DeliveryAttempt> {
+		const port = this.ctx.delivery!;
+		const attempt: DeliveryAttempt = {
+			key,
+			attempt: randomUUID(),
+			channel,
+			namespace: port.namespace,
+			session: port.session,
+			activation: this.activation,
+			createdAt: new Date().toISOString(),
+		};
+		await this.executor.ledger.putAttempt(attempt);
+		return attempt;
+	}
+	private async ack(key: string, state: Extract<HostDeliveryState, { kind: "committed" }>): Promise<void> {
+		const r = state.receipt,
+			p = this.ctx.delivery!;
+		if (r.key !== key || r.namespace !== p.namespace || r.session !== p.session)
+			throw new Error("Host receipt scope mismatch");
+		// Host has durably received this input. A lost Runtime ACK reply must not hold the local input slot.
+		if (this.active?.key === key) this.active = null;
+		await this.executor.rpc("runtime.settleDelivery", { ref: key, receipt: r });
+	}
+	reconcile(): Promise<void> {
+		if (this.stopped) return Promise.resolve();
+		return (this.running ??= (async () => {
+			try {
+				await this.drain();
+				this.error = null;
+				this.failures = 0;
+			} catch (error) {
+				this.error = { code: "DELIVERY_UNCONFIRMED", message: String(error) };
+				this.failures++;
+			} finally {
+				this.running = null;
+				this.wake(this.failures ? Math.min(8000, 1000 * 2 ** (this.failures - 1)) : this.pollMs);
+			}
+		})());
+	}
+	private async drain(): Promise<void> {
+		if (this.ctx.signal.aborted || this.stopped) return;
+		const port = this.ctx.delivery!;
+		const attempts = new Map((await this.executor.ledger.attempts()).map((a) => [a.key, a]));
+		// Recovery only looks up original intentions. It never resends actions.
+		for (const c of await this.executor.ledger.requests())
+			if (!c.run) {
+				const found = await this.executor.lookup(c.requestId);
+				if (found.kind === "found") await this.executor.ledger.found(c.requestId, found);
+			}
+		let cursor: string | undefined;
+		let count = 0;
+		let unconfirmed: Error | null = null;
+		do {
+			const page = await this.executor.rpc<{ items: DeliveryRef[]; next?: string }>("runtime.pendingDeliveries", {
+				...(cursor ? { cursor } : {}),
+				limit: 100,
+			});
+			cursor = page.next;
+			count += page.items.length;
+			for (const ref of page.items) {
+				if (this.stopped || this.ctx.signal.aborted) return;
+				if (this.heldRequests.has(ref.requestId)) continue;
+				const host = await port.inspect(ref.completionRef);
+				this.lastCheckedAt = new Date().toISOString();
+				if (this.active?.key === ref.completionRef) this.hostState = host;
+				if (host.kind === "committed") {
+					await this.ack(ref.completionRef, host);
+					continue;
+				}
+				if (host.kind === "unavailable") {
+					unconfirmed = new Error(host.reason);
+					continue;
+				}
+				const prior = attempts.get(ref.completionRef);
+				if (host.kind === "pending") {
+					const hold = (state: Extract<HostDeliveryState, { kind: "pending" }>) => {
+						if (state.channel !== "input") return;
+						this.hostState = state;
+						this.active = {
+							key: ref.completionRef,
+							attempt: state.attempt,
+							channel: "input",
+							namespace: port.namespace,
+							session: port.session,
+							createdAt: state.since,
+						};
+					};
+					if (prior?.channel === "input" && prior.activation !== this.activation && host.attempt === prior.attempt) {
+						const retired = await port.retire(ref.completionRef, prior.attempt);
+						if (retired.kind === "committed") {
+							await this.ack(ref.completionRef, retired);
+							continue;
+						}
+						if (retired.kind === "unavailable") {
+							unconfirmed = new Error(retired.reason);
+							continue;
+						}
+						if (this.active?.key === ref.completionRef) this.active = null;
+						if (retired.kind === "changed") {
+							if (retired.state.kind === "committed") await this.ack(ref.completionRef, retired.state);
+							else if (retired.state.kind === "pending") hold(retired.state);
+							else if (retired.state.kind === "unavailable") unconfirmed = new Error(retired.state.reason);
+						}
+						continue;
+					}
+					hold(host);
+					continue;
+				}
+				if (this.heldTools.has(ref.completionRef)) continue;
+				if (this.active?.key === ref.completionRef) {
+					if (this.emitting) continue;
+					this.active = null;
+				}
+				if (this.active) continue;
+				let state: DeliveryState;
+				try {
+					state = await this.executor.rpc("runtime.readDelivery", { ref: ref.completionRef });
+				} catch (error) {
+					unconfirmed = error instanceof Error ? error : new Error(String(error));
+					continue;
+				}
+				if (!state.eligible) continue;
+				const view = await this.view(state);
+				const attempt = await this.prepare(ref.completionRef, "input");
+				if (this.stopped || this.ctx.signal.aborted) return;
+				this.active = attempt;
+				this.emitting = true;
+				// emitEvent can encompass a full model turn; never await it inside drain.
+				void Promise.resolve()
+					.then(() =>
+						this.ctx.emitEvent!({
+							id: attempt.attempt,
+							type: "minecraft_completion",
+							channel: "world",
+							origin: "internal",
+							receipt: { key: attempt.key, attempt: attempt.attempt },
+							render: async () => {
+								if (this.stopped) return null;
+								const latest = await this.executor.rpc<DeliveryState>("runtime.readDelivery", {
+									ref: ref.completionRef,
+								});
+								return latest.eligible ? formatCompletion(view) : null;
+							},
+							data: view,
+						}),
+					)
+					.catch((error) => {
+						this.error = { code: "DELIVERY_UNCONFIRMED", message: String(error) };
+					})
+					.finally(() => {
+						this.emitting = false;
+						this.wake(0);
+					});
+			}
+		} while (cursor);
+		this.pendingCount = count;
+		if (unconfirmed) throw unconfirmed;
+	}
+	async retry(key: string, expectedAttempt: string): Promise<unknown> {
+		const reply = await this.ctx.delivery!.retire(key, expectedAttempt);
+		if (reply.kind === "committed") await this.ack(key, reply);
+		if (reply.kind === "retired" && this.active?.attempt === expectedAttempt) this.active = null;
+		this.wake(0);
+		return reply;
+	}
+	diagnostics() {
+		return {
+			observedAt: new Date().toISOString(),
+			pendingCount: this.pendingCount,
+			activeInput: this.active ? { ...this.active, lastCheckedAt: this.lastCheckedAt, host: this.hostState } : null,
+			lastCheckedAt: this.lastCheckedAt,
+			hostBusy: this.ctx.isBusy?.() ?? null,
+			error: this.error,
+		};
+	}
+	async close(): Promise<void> {
+		this.stopped = true;
+		if (this.timer) clearTimeout(this.timer);
+		this.unsubscribe?.();
+		this.unsubscribeSide?.();
+		await this.running;
+	}
+}
+
+export function formatCompletion(view: CompletionView): string {
+	return JSON.stringify({
+		kind: "result",
+		...view,
+		nextCall: { action: "runs", params: { op: "record", ref: view.completionRef } },
+	});
+}

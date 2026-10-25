@@ -28,6 +28,37 @@ async function until(check: () => boolean) {
 	}
 }
 
+test("a remote pre-acceptance gate rejection remains not accepted while the parent cache is stale", async () => {
+	const dataRoot = await root();
+	let executor: MinecraftExecutor | undefined;
+	try {
+		executor = await MinecraftExecutor.open({
+			worldDataDir: dataRoot,
+			config: config(),
+			policy: { autoRecover: false, closeGraceMs: 3000 },
+		});
+		const owner = executor.status().side!.owner!;
+		// A gate can change in the execution domain before the next parent heartbeat/status refresh.
+		await executor.rpc("runtime.setOwnerGate", {
+			requestId: randomUUID(),
+			attachment: owner.attachment,
+			gate: "emergency",
+			closed: true,
+		});
+		expect(executor.status().actionsAllowed).toBe(true);
+		const reply = await executor.submit({
+			requestId: "remote-gate-refusal",
+			entry: { kind: "call", selector: "chat@1", input: { text: "must not be sent" } },
+			schedule: { kind: "enqueue" },
+		});
+		expect(reply).toMatchObject({ kind: "not_accepted", code: "OWNER_GATE_CLOSED", requestId: "remote-gate-refusal" });
+		expect(await executor.lookup("remote-gate-refusal")).toMatchObject({ kind: "not_found" });
+	} finally {
+		await executor?.close();
+		await rm(dataRoot, { recursive: true, force: true });
+	}
+});
+
 test("real managed bootstrap restores Runtime before game connection, binds owner and persists native request", async () => {
 	const dataRoot = await root();
 	let executor: MinecraftExecutor | undefined;

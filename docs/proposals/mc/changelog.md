@@ -1,5 +1,11 @@
 # 设计变更记录
 
+## 2026-10-25 · 批 6 正式原生主脑入口
+
+- WorldDef、六 action 原生 façade、同源目录、请求凭证与显式重试、固定报告和 Host receipt 可靠交付已接通；Program/Library 保持明确不可用。
+- Runtime schema v3 保存不可变截面和交付处置；Executor ledger v2 保存原请求与尝试，旧数据拒绝自动迁移。
+- BodyEndpoint、abort/stop、源/产物 manifest 与开发入口同步；首次真实模型完成采集生产、缺料纠错和显式停止。证据、校准修正及剩余范围见 [实施记录](native-host-implementation.md)。
+
 ## 2026-10-25 · 批 5 Host 通用持久回执
 
 - journal 同批升级 v4，旧 v3 明确拒绝，不迁移真实日志；SessionStore 暴露真实会话身份与 durable/volatile。

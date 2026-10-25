@@ -44,6 +44,12 @@ export interface WireError {
 	detail?: JsonValue;
 }
 
+export interface GameNotice {
+	ref: string;
+	observedAt: string;
+	payload: JsonValue;
+}
+
 export type ExecutorFrame =
 	| { v: 1; launch: Ref; kind: "request"; id: number; method: string; payload: JsonValue }
 	| {
@@ -56,7 +62,14 @@ export type ExecutorFrame =
 	  }
 	| { v: 1; launch: Ref; kind: "cancel_wait"; id: number }
 	| { v: 1; launch: Ref; kind: "retire_required"; request: RetirementRequest }
-	| { v: 1; launch: Ref; kind: "changed"; runs: { run: Ref; revision: number }[]; statusChanged: boolean };
+	| {
+			v: 1;
+			launch: Ref;
+			kind: "changed";
+			runs: { run: Ref; revision: number }[];
+			statusChanged: boolean;
+			events?: GameNotice[];
+	  };
 
 export interface BootstrapHello {
 	v: 1;

@@ -12,7 +12,8 @@ import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js"
 import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
 import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import { RuntimeRefs } from "../../.uina/worlds/minecraft/runtime/refs.js";
-import type { CallRow } from "../../.uina/worlds/minecraft/runtime/runtime-db-worker.js";
+import { callFromRow, snapshotFromRow } from "../../.uina/worlds/minecraft/runtime/rows.js";
+import type { CallRow, RunRow } from "../../.uina/worlds/minecraft/runtime/runtime-db-worker.js";
 
 function callable(
 	ref: ExactRef,
@@ -52,12 +53,14 @@ function harness(build: (queue: RecordQueue) => NativeCallable<JsonValue, JsonVa
 	const refs = new RuntimeRefs("settlement");
 	const instance = refs.writerInstance();
 	const callRows = new Map<string, CallRow>();
+	const runRows = new Map<string, RunRow>();
 	const queue = new RecordQueue({
 		instance,
 		mintRecord: () => refs.record(),
 		recoveredWatermarks: {},
 		apply: (items) => {
 			for (const item of items) {
+				if (item.mutation.kind === "run") runRows.set(item.mutation.row.run, item.mutation.row);
 				if (item.mutation.kind === "call") callRows.set(item.mutation.row.call, item.mutation.row);
 			}
 			queue.onDurable(instance, items[items.length - 1]!.ticket.sequence);
@@ -97,7 +100,7 @@ function harness(build: (queue: RecordQueue) => NativeCallable<JsonValue, JsonVa
 		if (reply.kind !== "result" || reply.snapshot.phase !== "finished") throw new Error(JSON.stringify(reply));
 		return reply.snapshot;
 	};
-	return { engine, queue, submit, finish, calls: () => [...callRows.values()] };
+	return { engine, queue, submit, finish, calls: () => [...callRows.values()], runs: () => [...runRows.values()] };
 }
 
 function failure(): Error {
@@ -125,10 +128,13 @@ describe("Runtime effect settlement", () => {
 		]);
 		const summary = await h.finish(await h.submit("direct@1"));
 		expect(summary).toMatchObject({ outcome: "unknown", unknownEffects: ["eff:settlement"] });
-		expect(h.engine.readRecord(summary.record).value).toMatchObject({ value: { removed: 2 }, outcome: "unknown" });
+		expect(snapshotFromRow(h.runs().find((r) => r.run === summary.run))).toMatchObject({
+			value: { removed: 2 },
+			outcome: "unknown",
+		});
 		const record = h.calls().find((item) => item.call === call);
 		expect(record?.outcome).toBe("unknown");
-		expect(h.engine.readRecord(record!.record).value).toMatchObject({
+		expect(callFromRow(record!)).toMatchObject({
 			effects: ["eff:settlement"],
 			value: { removed: 2 },
 			outcome: "unknown",
@@ -155,9 +161,9 @@ describe("Runtime effect settlement", () => {
 		const middle = h.calls().find((call) => call.parent === root.call)!;
 		const leaf = h.calls().find((call) => call.parent === middle.call)!;
 		for (const call of [root, middle, leaf]) expect(call.outcome).toBe("unknown");
-		expect(h.engine.readRecord(root.record).value).toMatchObject({ effects: [] });
-		expect(h.engine.readRecord(middle.record).value).toMatchObject({ effects: [] });
-		expect(h.engine.readRecord(leaf.record).value).toMatchObject({ effects: ["eff:settlement"] });
+		expect(callFromRow(root)).toMatchObject({ effects: [] });
+		expect(callFromRow(middle)).toMatchObject({ effects: [] });
+		expect(callFromRow(leaf)).toMatchObject({ effects: ["eff:settlement"] });
 		expect(h.queue.effectRecord("eff:settlement")?.owner).toMatchObject({ callId: leaf.call });
 	});
 
@@ -179,7 +185,7 @@ describe("Runtime effect settlement", () => {
 		const root = h.calls().find((call) => call.parent === null)!;
 		const child = h.calls().find((call) => call.parent === root.call)!;
 		expect(child.outcome).toBe("failed");
-		expect(h.engine.readRecord(summary.record).value).toMatchObject({ value: "recovered" });
+		expect(snapshotFromRow(h.runs().find((r) => r.run === summary.run))).toMatchObject({ value: "recovered" });
 	});
 
 	test("a closed child scope must finish descendant cleanup before the parent settles", async () => {
@@ -361,12 +367,12 @@ try {
  const accepted=await runtime.submit({worldOwner:"owner:settlement",activation:"act:settlement"},{requestId:"req:sqlite",entry:{kind:"call",selector:"root@1",input:{}},schedule:{kind:"enqueue"}});
  assert.equal(accepted.kind,"accepted");run=accepted.snapshot.run;
  const reply=await runtime.wait(run,{timeoutMs:2000});assert.equal(reply.kind,"result");assert.equal(reply.snapshot.outcome,"unknown");
- before=runtime.read(run);records=runtime.readRecord(before.record);
- effect=runtime.readRecord("eff:settlement");assert.equal(effect.value.latest.completion,"unknown");assert.deepEqual(records.value.value,{removed:2});
+ before=(await runtime.read(run));records=(await runtime.readRecord(before.record)).record;
+ effect=(await runtime.readRecord("eff:settlement")).record;assert.equal(effect.value.latest.completion,"unknown");assert.deepEqual(records.value.value,{removed:2});
 } finally { await runtime.close(); }
 runtime=(await MinecraftRuntime.open({...options,namespace:"restart"})).runtime;
 try {
- assert.deepEqual(runtime.read(run),before);assert.deepEqual(runtime.readRecord(before.record),records);assert.deepEqual(runtime.readRecord("eff:settlement"),effect);
+ assert.deepEqual((await runtime.read(run)),before);assert.deepEqual((await runtime.readRecord(before.record)).record,records);assert.deepEqual((await runtime.readRecord("eff:settlement")).record,effect);
  const {DatabaseSync}=await import("node:sqlite");const db=new DatabaseSync(options.dbPath);
  try {const calls=db.prepare("SELECT outcome,effects,value FROM calls ORDER BY parent IS NOT NULL").all();assert.equal(calls.length,2);assert.deepEqual(calls.map(c=>c.outcome),["unknown","unknown"]);assert.deepEqual(calls.map(c=>JSON.parse(c.effects)),[[],["eff:settlement"]]);assert.deepEqual(calls.map(c=>JSON.parse(c.value)),[{removed:2},{removed:2}]);} finally {db.close();}
 } finally {await runtime.close();}

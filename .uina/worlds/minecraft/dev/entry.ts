@@ -45,8 +45,10 @@ async function main(): Promise<void> {
 		if (acceptance.kind !== "accepted") fail(`submit ${requestId} not accepted: ${JSON.stringify(acceptance)}`);
 		return acceptance.snapshot.run;
 	};
-	const runValue = (snapshot: RunSummary): JsonValue | undefined => {
-		const record = rt.readRecord(snapshot.record).value as unknown as { value?: JsonValue };
+	const runValue = async (snapshot: RunSummary): Promise<JsonValue | undefined> => {
+		const reply = await rt.readRecord(snapshot.record);
+		if (reply.kind !== "inline") throw new Error("expected inline development record");
+		const record = reply.record.value as { value?: JsonValue };
 		return record.value;
 	};
 	/** 场景准备：找一个可站立的近邻目标（脚下实心、双脚空间为空），避免选到悬崖/水面。 */
@@ -151,7 +153,9 @@ async function main(): Promise<void> {
 			fail(`chat outcome ${chatReply.snapshot.outcome}: ${JSON.stringify(chatReply.snapshot.error ?? null)}`);
 		}
 		// chat@1 的值合同是 {sent, kind}（capabilities §4 chat）；效果记录另经 run 记录读取。
-		const chatRecord = rt.readRecord(chatReply.snapshot.record);
+		const chatRecordReply = await rt.readRecord(chatReply.snapshot.record);
+		if (chatRecordReply.kind !== "inline") throw new Error("expected inline development record");
+		const chatRecord = chatRecordReply.record;
 		const chatSnapshot = chatRecord.value as unknown as RunSnapshot;
 		if (chatSnapshot.phase !== "finished" || chatSnapshot.value == null) fail("chat run record has no value");
 		const chatValue = chatSnapshot.value as unknown as { sent?: boolean; kind?: string };
@@ -186,13 +190,13 @@ async function main(): Promise<void> {
 		const arrivedAt = self2.value.place.position;
 		// 完成口径：GoalNear 邻域在成功时成立（站姿/停稳随运动能力包补齐）。
 		// 完成后因惯性/下坡继续滑动是物理事实，记录但不改写成功判定。
-		const reported = (runValue(gotoSnap) as { at?: Vec3 } | undefined)?.at ?? null;
+		const reported = ((await runValue(gotoSnap)) as { at?: Vec3 } | undefined)?.at ?? null;
 		if (reported == null) fail("goto run value has no arrival position");
 		const reportedRemain = dist(reported, target);
 		if (reportedRemain > 2.75) {
 			fail(
 				`goto reported arrival ${reportedRemain.toFixed(2)} blocks from target ` +
-					`(start=${fmtPos(startPos)} target=${fmtPos(target)} value=${JSON.stringify(runValue(gotoSnap))})`,
+					`(start=${fmtPos(startPos)} target=${fmtPos(target)} value=${JSON.stringify(await runValue(gotoSnap))})`,
 			);
 		}
 		log(

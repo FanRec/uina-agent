@@ -98,7 +98,7 @@ try {
  if(kind==="delegated") {
   assert.equal(active,1,"delegated smelt must retain ancestor lease");
   const other=await submit("other@1");
-  await sleep(50);assert.notEqual(runtime.read(other).phase,"finished","second body must wait for ancestor");
+  await sleep(50);assert.notEqual((await runtime.read(other)).phase,"finished","second body must wait for ancestor");
   allowCook=true;
   assert.equal((await finish(run)).outcome,"succeeded");
   assert.equal((await finish(other)).outcome,"succeeded");
@@ -107,7 +107,7 @@ try {
   assert.equal(active,0,"owned body must be released during cooking");
   const other=await submit("other@1");
   assert.equal((await finish(other)).outcome,"succeeded");
-  assert.notEqual(runtime.read(run).phase,"finished","other body completed before smelting");
+  assert.notEqual((await runtime.read(run)).phase,"finished","other body completed before smelting");
   allowCook=true;
   assert.equal((await finish(run)).outcome,"succeeded");
  } else {
@@ -121,7 +121,7 @@ try {
   assert.deepEqual({opens,clicks:window.clicks},counts,"stopped wait must never reopen or click");
   assert.equal(state.inventory.counts.iron_ingot,64);
   assert.equal(window.item(0)?.count,1);
-  saved=runtime.readRecord(stopped.record);
+  saved=(await runtime.readRecord(stopped.record)).record;
  }
  if(kind!=="cancel") {
   assert.equal(cooked,3);assert.equal(state.inventory.counts.iron_ingot,3);
@@ -145,7 +145,7 @@ if(kind==="cancel") {
   assert.equal(calls.length,1);assert.equal(runs.length,1);
  } finally {db.close();}
  const reopened=(await MinecraftRuntime.open({...options,namespace:"reopened"})).runtime;
- try {assert.deepEqual(reopened.read(stopped.run),stopped);assert.deepEqual(reopened.readRecord(stopped.record),saved);}
+ try {assert.deepEqual((await reopened.read(stopped.run)),stopped);assert.deepEqual((await reopened.readRecord(stopped.record)).record,saved);}
  finally {await reopened.close();}
 }
 console.log("production runtime "+kind+" passed");

@@ -101,12 +101,8 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 				latest: { dispatch: fact.dispatch, completion: fact.completion, evidence: fact.evidence },
 			};
 			this.effectOwner.set(fact.effect, attribution);
-			// 效果记录进 record_index（runtime.md §5.3 五类记录）
-			this.enqueue({
-				kind: "record_index",
-				row: { record: attribution.record, kind: "effect", object_ref: fact.effect },
-			});
 		} else {
+			attribution.record = this.mintRecord();
 			attribution.facts.push(fact);
 			attribution.latest = { dispatch: fact.dispatch, completion: fact.completion, evidence: fact.evidence };
 		}

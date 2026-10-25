@@ -23,6 +23,7 @@ import { RpcError, RpcPeer, type WireEndpoint } from "./ipc.js";
 import { ExecutorLedger } from "./ledger.js";
 import type { LedgerSnapshot } from "./ledger-worker.js";
 import { acquireOwnership, type ManagedProcess, type WindowsOwnership } from "./platform/index.js";
+import type { RpcMethod } from "./protocol.js";
 import { validateHello } from "./protocol.js";
 
 export interface ExecutorPolicy {
@@ -88,7 +89,7 @@ function endpoint(child: ChildProcess): WireEndpoint {
 }
 
 export class MinecraftExecutor {
-	private readonly ledger = new ExecutorLedger();
+	readonly ledger = new ExecutorLedger();
 	private identity!: LedgerSnapshot["identity"];
 	private readonly localGates = new Set<"disabled" | "emergency" | "owner_lost">();
 	private connection: Connection | null = null;
@@ -107,6 +108,13 @@ export class MinecraftExecutor {
 	private lastRetirementClean = false;
 	private tail = Buffer.alloc(0);
 	private discardedBytes = 0;
+	private readonly listeners = new Set<(events: import("../contracts/executor.js").GameNotice[]) => void>();
+	subscribe(listener: (events: import("../contracts/executor.js").GameNotice[]) => void): () => void {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
 	private readonly activation = `activation:${randomUUID()}`;
 	private readonly abortListener: () => void;
 	private constructor(
@@ -267,6 +275,15 @@ export class MinecraftExecutor {
 				endpoint: endpoint(child),
 				onFault: (error) => this.onSideFault(connection, error),
 				onNotification: (frame) => {
+					if (this.connection !== connection || this.closing) return;
+					if (frame.kind === "changed")
+						for (const listener of this.listeners) {
+							try {
+								listener(frame.events ?? []);
+							} catch {
+								/* Consumer errors do not affect physical control. */
+							}
+						}
 					if (frame.kind === "retire_required")
 						this.onSideFault(connection, new RpcError(frame.request.code, frame.request.detail));
 				},
@@ -327,10 +344,12 @@ export class MinecraftExecutor {
 					{ attachment: connection.attachment },
 					{ timeoutMs: this.policy.heartbeatDeadlineMs },
 				)
-				.then((value) => {
+				.then(async (value) => {
 					if (this.connection !== connection || this.closing) return;
 					connection.lastHeartbeat = performance.now();
 					if (this.side) this.side.owner = value as unknown as OwnerState;
+					const fresh = await connection.peer!.call("status", {});
+					if (this.connection === connection && !this.closing) this.side = fresh as unknown as ExecutionSideStatus;
 				})
 				.catch((error: Error) => this.onSideFault(connection, error))
 				.finally(() => {
@@ -453,8 +472,13 @@ export class MinecraftExecutor {
 		try {
 			return (await connection.peer.call("runtime.submit", request)) as unknown as Acceptance;
 		} catch (error) {
-			if (error instanceof RpcError && error.dispatch === "unknown")
-				return { kind: "unknown", requestId: request.requestId, reason: `${error.code}: ${error.message}` };
+			if (error instanceof RpcError) {
+				const refusal = error.failure;
+				if (refusal && typeof refusal === "object" && !Array.isArray(refusal) && refusal.dispatch === "not_sent")
+					return { kind: "not_accepted", requestId: request.requestId, code: error.code, message: error.message };
+				if (error.dispatch === "unknown")
+					return { kind: "unknown", requestId: request.requestId, reason: `${error.code}: ${error.message}` };
+			}
 			throw error;
 		}
 	}
@@ -464,8 +488,25 @@ export class MinecraftExecutor {
 	async read(run: string): Promise<RunSummary> {
 		return (await this.current().peer.call("runtime.read", { run })) as unknown as RunSummary;
 	}
-	async readRecord(ref: string): Promise<JsonValue> {
-		return await this.current().peer.call("runtime.readRecord", { ref });
+	async readRecord(
+		ref: string,
+		options: { format?: import("../contracts/runtime.js").RecordFormat } = {},
+	): Promise<import("../contracts/runtime.js").RecordReply> {
+		return await this.rpc("runtime.readRecord", { ref, ...options });
+	}
+	async rpc<T>(method: RpcMethod, payload: unknown, signal?: AbortSignal): Promise<T> {
+		return (await this.current().peer.call(method, payload, { signal })) as T;
+	}
+	async resumeEmergency(expected: { attachment: string; gateRevision: number }): Promise<OwnerGateReceipt> {
+		const connection = this.current();
+		if (connection.attachment !== expected.attachment)
+			throw new RpcError("OWNER_STATE_CHANGED", "emergency owner changed");
+		return this.setOwnerGate("emergency", false, expected.gateRevision);
+	}
+	async retireControl(): Promise<void> {
+		if (!(await this.retireSide(false)))
+			throw new RpcError("EXECUTOR_OWNERSHIP_UNAVAILABLE", "control retirement unconfirmed");
+		this.phase = "faulted";
 	}
 	async observe<T>(selector: string, input: JsonValue = {}): Promise<Observation<T>> {
 		return (await this.current().peer.call("observe", { selector, input })) as unknown as Observation<T>;

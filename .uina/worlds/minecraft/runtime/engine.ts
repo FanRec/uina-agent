@@ -43,23 +43,8 @@ import { toCallFailure } from "./failure.js";
 import { RuntimeOwner } from "./owner.js";
 import { RuntimeRefs } from "./refs.js";
 import { RecordQueue } from "./records.js";
-import {
-	callFromRow,
-	canonicalJson,
-	callRowOf,
-	callValueOf,
-	liveEffectValueOf,
-	projectSummary,
-	recoveredEffectValueOf,
-	runRowOf,
-	runSnapshotOf,
-	segmentFromRow,
-	segmentRowOf,
-	segmentValueOf,
-	snapshotFromRow,
-	summaryFromRow,
-} from "./rows.js";
-import type { CallRow, RecoveredRows, RunRow, SegmentRow, StopIntentRow } from "./runtime-db-worker.js";
+import { canonicalJson, callRowOf, projectSummary, runRowOf, segmentRowOf, summaryFromRow } from "./rows.js";
+import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
 import type { BodyLease, CallFrame, CallState, RunState, RunWaiter, SubmissionState } from "./state.js";
 
 // ---- 纯值辅助 ----
@@ -126,21 +111,14 @@ export class RuntimeEngine {
 	private readonly ajv = new AjvCtor({ strict: false, allErrors: true });
 	private readonly validatorCache = new Map<string, ValidateFunction>();
 	private readonly byRef = new Map<Ref, NativeCallable<JsonValue, JsonValue>>();
-	private readonly byName = new Map<string, NativeCallable<JsonValue, JsonValue>[]>();
 	private readonly runs = new Map<Ref, RunState>();
 	private readonly submissions = new Map<Ref, SubmissionState>();
 	private readonly byRequestId = new Map<Ref, SubmissionState>();
 	private readonly submissionBarriers = new Set<Ref>();
-	private readonly recordIndex = new Map<Ref, { kind: string; objectRef: Ref }>();
 	private readonly stopIntentRows = new Map<Ref, StopIntentRow>();
 	// 恢复事实（只读；恢复结算后未终结 Run 已按 §4.4 表落终态）
 	private readonly recoveredRuns = new Map<Ref, RunRow>();
-	private readonly recoveredSegments = new Map<Ref, SegmentRow>();
-	private readonly recoveredCalls = new Map<Ref, CallRow>();
-	private readonly recoveredEffects = new Map<Ref, string>();
-	private readonly recoveredOwners = new Map<Ref, string>();
 	/** effect 身份引用 → 最新已提交效果记录 ref（public-api §7 readRecord 口径）。 */
-	private readonly recoveredEffectRecords = new Map<Ref, Ref>();
 	// 身体：单槽 FIFO 队列独占 acquire，归属槽与授予/释放配对收在队列内（§3.3.1）
 	private readonly bodyLeaseQueue: BodyLeaseQueue;
 	// chat 旁路串行化：单写协议通道 + 归属槽无竞争
@@ -179,10 +157,6 @@ export class RuntimeEngine {
 				throw new Error(`duplicate callable ref: ${callable.descriptor.ref}`);
 			}
 			this.byRef.set(callable.descriptor.ref, callable);
-			const name = callable.descriptor.ref.split("@")[0];
-			const list = this.byName.get(name) ?? [];
-			list.push(callable);
-			this.byName.set(name, list);
 		}
 	}
 
@@ -190,9 +164,6 @@ export class RuntimeEngine {
 
 	recover(rows: RecoveredRows): void {
 		this.owner.recover(rows.ownerState, this.opts.unclean === true);
-		for (const row of rows.records) {
-			this.recordIndex.set(row.record, { kind: row.kind, objectRef: row.object_ref });
-		}
 		for (const row of rows.stopIntents) this.stopIntentRows.set(row.record, row);
 		for (const row of rows.submissions) {
 			const state: SubmissionState = {
@@ -220,14 +191,6 @@ export class RuntimeEngine {
 			if (row.status === "cancelled") this.submissionBarriers.add(row.request_id);
 		}
 		for (const row of rows.runs) this.recoveredRuns.set(row.run, row);
-		for (const row of rows.segments) this.recoveredSegments.set(row.segment, row);
-		for (const row of rows.calls) this.recoveredCalls.set(row.call, row);
-		for (const row of rows.effects) {
-			this.recoveredEffects.set(row.effect, row.facts);
-			this.recoveredOwners.set(row.effect, row.owner ?? "null");
-			this.recoveredEffectRecords.set(row.effect, row.record);
-			this.recordIndex.set(row.record, { kind: "effect", objectRef: row.effect });
-		}
 		// §4.4 恢复表（I1 子集）：未终结 Run——有停止意图 → cancelled；否则 unknown；
 		// 旧控制退役不明 → control unknown。追加为新的不可变截面。
 		const unfinished = rows.runs.filter((r) => r.phase !== "finished");
@@ -246,6 +209,8 @@ export class RuntimeEngine {
 			const next: RunRow = {
 				...row,
 				revision: row.revision + 1,
+				record: this.refs.record(),
+				completion_ref: this.refs.completion(),
 				phase: "finished",
 				waiting: null,
 				outcome:
@@ -435,9 +400,6 @@ export class RuntimeEngine {
 		};
 		this.submissions.set(key, submission);
 		this.byRequestId.set(request.requestId, submission);
-		this.recordIndex.set(runRecord, { kind: "run", objectRef: run });
-		this.recordIndex.set(segmentRecord, { kind: "segment", objectRef: segment });
-		this.recordIndex.set(callRecord, { kind: "call", objectRef: call });
 		this.queue.enqueueAll([
 			{
 				kind: "submission",
@@ -454,12 +416,9 @@ export class RuntimeEngine {
 					error: null,
 				},
 			},
-			{ kind: "run", row: runRowOf(state) },
-			{ kind: "segment", row: segmentRowOf(state, this.opts.environment ?? null) },
-			{ kind: "call", row: callRowOf(state.rootCall) },
-			{ kind: "record_index", row: { record: runRecord, kind: "run", object_ref: run } },
-			{ kind: "record_index", row: { record: segmentRecord, kind: "segment", object_ref: segment } },
-			{ kind: "record_index", row: { record: callRecord, kind: "call", object_ref: call } },
+			this.runMutation(state),
+			this.segmentMutation(state),
+			this.callMutation(state.rootCall),
 		]);
 		// No callable or Driver dispatch can begin before acceptance is confirmed.
 		await this.queue.flushThrough(this.queue.capture());
@@ -623,85 +582,6 @@ export class RuntimeEngine {
 		});
 	}
 
-	readRecord(ref: Ref): { kind: string; record: Ref; value: JsonValue } {
-		const entry = this.recordIndex.get(ref);
-		if (entry == null) {
-			// 效果记录在队列内存侧（recover 已把持久效果行载入 recordIndex）
-			const effect = this.queue.effectByRecord(ref);
-			if (effect != null) return { kind: "effect", record: ref, value: this.effectValueOf(effect) };
-			// effect 身份引用（eff:）：固定最新已提交效果记录截面（public-api §7 口径）
-			const liveAttribution = this.queue.effectRecord(ref);
-			if (liveAttribution != null) {
-				return { kind: "effect", record: liveAttribution.record, value: this.effectValueOf(ref) };
-			}
-			const recoveredRecord = this.recoveredEffectRecords.get(ref);
-			if (recoveredRecord != null) {
-				return { kind: "effect", record: recoveredRecord, value: this.effectValueOf(ref) };
-			}
-			throw callFailure({
-				code: "NOT_FOUND",
-				source: "world",
-				message: `record ${ref} is not known to this runtime`,
-				dispatch: "not_sent",
-				effects: [],
-				recoverable: false,
-			});
-		}
-		switch (entry.kind) {
-			case "run": {
-				const live = this.runs.get(entry.objectRef);
-				const recovered = this.recoveredRuns.get(entry.objectRef);
-				const value =
-					live != null
-						? runSnapshotOf(live)
-						: snapshotFromRow(
-								recovered,
-								recovered?.segment != null ? this.recoveredSegments.get(recovered.segment) : undefined,
-							);
-				return { kind: "run", record: ref, value: plain(value) };
-			}
-			case "segment": {
-				const live = [...this.runs.values()].find((r) => r.segmentRecord === ref);
-				const value =
-					live != null
-						? segmentValueOf(live, this.opts.environment ?? null)
-						: segmentFromRow(this.recoveredSegments.get(entry.objectRef));
-				return { kind: "segment", record: ref, value: plain(value) };
-			}
-			case "call": {
-				const live = this.findLiveCall(entry.objectRef);
-				const value = live != null ? callValueOf(live) : callFromRow(this.recoveredCalls.get(entry.objectRef));
-				return { kind: "call", record: ref, value: plain(value) };
-			}
-			case "effect":
-				return { kind: "effect", record: ref, value: this.effectValueOf(entry.objectRef) };
-			case "stop": {
-				const row = this.stopIntentRows.get(ref);
-				if (row == null) break;
-				return {
-					kind: "stop",
-					record: ref,
-					value: plain({
-						requestId: row.stop_request_id,
-						target: JSON.parse(row.target),
-						record: row.record,
-						intent: "durable",
-						control: row.control,
-						snapshot: null,
-					}),
-				};
-			}
-		}
-		throw callFailure({
-			code: "NOT_FOUND",
-			source: "world",
-			message: `record ${ref} payload is not readable`,
-			dispatch: "not_sent",
-			effects: [],
-			recoverable: false,
-		});
-	}
-
 	// ---- 停止（§4.4：先内存关门，再持久 stop_intent） ----
 
 	async stop(command: StopCommand): Promise<StopReceipt> {
@@ -738,7 +618,6 @@ export class RuntimeEngine {
 				created_at: nowIso(),
 			};
 			this.stopIntentRows.set(record, row);
-			this.recordIndex.set(record, { kind: "stop", objectRef: requestTarget });
 			const submission: SubmissionState = {
 				owner: this.opts.worldOwner,
 				requestId: requestTarget,
@@ -768,7 +647,6 @@ export class RuntimeEngine {
 						error: null,
 					},
 				},
-				{ kind: "record_index", row: { record, kind: "stop", object_ref: requestTarget } },
 			]);
 			let intent: "durable" | "unknown" = "unknown";
 			try {
@@ -835,12 +713,7 @@ export class RuntimeEngine {
 			created_at: nowIso(),
 		};
 		this.stopIntentRows.set(record, row);
-		this.recordIndex.set(record, { kind: "stop", objectRef: state.run });
-		this.queue.enqueueAll([
-			{ kind: "stop_intent", row },
-			{ kind: "run", row: runRowOf(state) },
-			{ kind: "record_index", row: { record, kind: "stop", object_ref: state.run } },
-		]);
+		this.queue.enqueueAll([{ kind: "stop_intent", row }, this.runMutation(state)]);
 		let intent: "durable" | "unknown" = "unknown";
 		try {
 			await this.queue.flushThrough(this.queue.capture());
@@ -1024,10 +897,7 @@ export class RuntimeEngine {
 			state.revision++;
 			state.phase = "finished";
 			if (state.stopped && state.control !== "unknown") state.control = "stopped";
-			this.queue.enqueueAll([
-				{ kind: "segment", row: segmentRowOf(state, this.opts.environment ?? null) },
-				{ kind: "run", row: runRowOf(state) },
-			]);
+			this.queue.enqueueAll([this.segmentMutation(state), this.runMutation(state)]);
 			await this.queue.flushThrough(this.queue.capture());
 			this.notifyResult(state);
 		} catch (err) {
@@ -1104,7 +974,7 @@ export class RuntimeEngine {
 			callState.error = failureData(threw);
 			callState.outcome = "failed";
 		}
-		this.queue.enqueue({ kind: "call", row: callRowOf(callState) });
+		this.queue.enqueue(this.callMutation(callState));
 		callState.settledResolve();
 		if (threw != null) throw threw;
 		return value as JsonValue;
@@ -1135,11 +1005,7 @@ export class RuntimeEngine {
 		const record = this.refs.record();
 		const child = this.createCallState(parent.run, parent.segment, call, record, parent, callable, input);
 		parent.children.add(child);
-		this.recordIndex.set(record, { kind: "call", objectRef: call });
-		this.queue.enqueueAll([
-			{ kind: "call", row: callRowOf(child) },
-			{ kind: "record_index", row: { record, kind: "call", object_ref: call } },
-		]);
+		this.queue.enqueueAll([this.callMutation(child)]);
 		return this.executeCallBody(child, state, lease);
 	}
 
@@ -1196,11 +1062,11 @@ export class RuntimeEngine {
 			signal: callState.abort.signal,
 			progress: async (value: Progress) => {
 				callState.progress = value;
-				this.queue.enqueue({ kind: "call", row: callRowOf(callState) });
+				this.queue.enqueue(this.callMutation(callState));
 				if (callState.parent == null) {
 					state.progress = value;
 					state.revision++;
-					this.queue.enqueue({ kind: "run", row: runRowOf(state) });
+					this.queue.enqueue(this.runMutation(state));
 					this.notifyChanged(state);
 				}
 			},
@@ -1271,7 +1137,7 @@ export class RuntimeEngine {
 		if (state.phase === "queued") this.setPhase(state, "running");
 		state.control = "active";
 		state.revision++;
-		this.queue.enqueue({ kind: "run", row: runRowOf(state) });
+		this.queue.enqueue(this.runMutation(state));
 		try {
 			return await work(this.bodyScopeOf(callState, state, { session: grant.session }));
 		} finally {
@@ -1295,7 +1161,7 @@ export class RuntimeEngine {
 				state.control = "none";
 			}
 			state.revision++;
-			this.queue.enqueue({ kind: "run", row: runRowOf(state) });
+			this.queue.enqueue(this.runMutation(state));
 		}
 	}
 
@@ -1348,18 +1214,13 @@ export class RuntimeEngine {
 			}
 			return callable;
 		}
-		const candidates = this.byName.get(selector) ?? [];
-		if (candidates.length === 1) return candidates[0];
 		throw callFailure({
-			code: candidates.length === 0 ? "NOT_FOUND" : "SELECTOR_INVALID",
+			code: "PROGRAM_UNAVAILABLE",
 			source: "input",
-			message:
-				candidates.length === 0
-					? `no capability matches the name ${selector}`
-					: `name ${selector} is ambiguous across ${candidates.length} versions`,
+			message: "programs are not delivered; native selectors require an exact @version",
 			dispatch: "not_sent",
 			effects: [],
-			recoverable: false,
+			recoverable: true,
 		});
 	}
 
@@ -1411,13 +1272,26 @@ export class RuntimeEngine {
 		return false;
 	}
 
+	private runMutation(state: RunState): ApplyItem["mutation"] {
+		state.record = this.refs.record();
+		return { kind: "run", row: runRowOf(state) };
+	}
+	private segmentMutation(state: RunState): ApplyItem["mutation"] {
+		state.segmentRecord = this.refs.record();
+		return { kind: "segment", row: segmentRowOf(state, this.opts.environment ?? null) };
+	}
+	private callMutation(state: CallState): ApplyItem["mutation"] {
+		state.record = this.refs.record();
+		return { kind: "call", row: callRowOf(state) };
+	}
+
 	// ---- 通知 ----
 
 	private setPhase(state: RunState, phase: RunState["phase"]): void {
 		if (state.phase === phase) return;
 		state.phase = phase;
 		state.revision++;
-		this.queue.enqueue({ kind: "run", row: runRowOf(state) });
+		this.queue.enqueue(this.runMutation(state));
 		this.notifyChanged(state);
 	}
 
@@ -1442,20 +1316,6 @@ export class RuntimeEngine {
 	private summaryFromRecovered(run: Ref): RunSummary | null {
 		const row = this.recoveredRuns.get(run);
 		return row == null ? null : summaryFromRow(row);
-	}
-
-	private effectValueOf(effect: Ref): Record<string, JsonValue> {
-		const live = this.queue.effectRecord(effect);
-		if (live != null) return liveEffectValueOf(effect, live);
-		const factsJson = this.recoveredEffects.get(effect);
-		if (factsJson != null) {
-			return recoveredEffectValueOf(effect, {
-				factsJson,
-				ownerJson: this.recoveredOwners.get(effect) ?? null,
-				record: this.recoveredEffectRecords.get(effect) ?? `rec:effect:${effect}`,
-			});
-		}
-		return { effect, error: "effect facts unavailable" };
 	}
 }
 

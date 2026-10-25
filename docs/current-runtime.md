@@ -100,9 +100,9 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 生产链修复将合成、熔炼拆开，取货共用实例匹配与跨槽分装，进度累计服务端确认量。自有熔炼在世界等待前关窗并释放身体，复查重新申请；燃料批量受实际槽位与刻数约束。WindowClickReceipt.confirmed 直接携带确认时的服务端快照，避免确认后读取失败漏记。当前类型/9 条边界、MC 28 文件/236 项、构建通过；本轮真服验收与边界见 [生产链修复实施](proposals/mc/production-repair-implementation.md)。先前 [Driver repair](proposals/mc/driver-repair-implementation.md) 的源码/构建产物各 15/15 属于其历史验证。
 
-批 4 已实现 Windows x64 Executor 平台：双命名 Job、精确进程身份、受管 bootstrap/Companion、固定 JSON IPC、持久身份/launch 及本地门意图、心跳、关闭/退役与显式恢复。Runtime 使用 schema v2，固定 owner/storage，受理及开始先提交；Owner 独立三门与 Driver 写入检查共用同一权威。开发场景 `pnpm dev:mc:executor` 经正式受管入口验证，开发 harness 复用同一执行侧装配。证据见 [平台实施记录](proposals/mc/executor-platform-implementation.md)。
+批 4 已实现 Windows x64 Executor 平台：双命名 Job、精确进程身份、受管 bootstrap/Companion、固定 JSON IPC、持久身份/launch 及本地门意图、心跳、关闭/退役与显式恢复。Runtime 在批 4 使用 schema v2（本批 6 已升级 v3），固定 owner/storage，受理及开始先提交；Owner 独立三门与 Driver 写入检查共用同一权威。开发场景 `pnpm dev:mc:executor` 经正式受管入口验证，开发 harness 复用同一执行侧装配。证据见 [平台实施记录](proposals/mc/executor-platform-implementation.md)。
 
-批 5 已实现通用 Host 持久回执与 journal v4：工具/输入共享 receipt 标记、来源绑定的 inspect/retire、输入去重与 CAS 退役；committed 只由 canonical append 完成后生成。提交索引沿 Session reducer 增量恢复且跨回溯保留，内存会话标 volatile。ExtensionAPI.delivery(scope) 与 World context.delivery 复用同一端口；详见 [批 5 实施记录](proposals/mc/host-delivery-implementation.md)。Program/Library、WorldDef/模型工具与可靠通知仍未实现；当前不能作为完整 `minecraft({action,params})` 主脑工具使用。旧 Runtime 库不自动迁移，验收用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
+批 5 已实现通用 Host 持久回执与 journal v4：工具/输入共享 receipt 标记、来源绑定的 inspect/retire、输入去重与 CAS 退役；committed 只由 canonical append 完成后生成。提交索引沿 Session reducer 增量恢复且跨回溯保留，内存会话标 volatile。ExtensionAPI.delivery(scope) 与 World context.delivery 复用同一端口；详见 [批 5 实施记录](proposals/mc/host-delivery-implementation.md)。批 6 已接正式 WorldDef、原生模型工具、固定报告/分页记录与 Host 回执可靠通知、BodyEndpoint；Runtime schema v3、Executor ledger v2。默认关闭、仅支持显式 offline 1.21.11 配置；Program/Library、continue 与高级调度明确不可用。源/产物与真实 deepseek-flash 校准见 [原生接入实施](proposals/mc/native-host-implementation.md)。旧数据库不自动迁移，验收使用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
 
 ## QQ World
 

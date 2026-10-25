@@ -1,5 +1,7 @@
 import { Worker } from "node:worker_threads";
 import type { LedgerRequest, LedgerSnapshot } from "./ledger-worker.js";
+import type { RequestCredential, DeliveryAttempt } from "./ledger-worker.js";
+import type { SubmissionLookup } from "../contracts/runtime.js";
 import { RpcError } from "./ipc.js";
 
 export class ExecutorLedger {
@@ -31,7 +33,7 @@ export class ExecutorLedger {
 		this.pending.clear();
 	}
 	private request(
-		request: Omit<Extract<LedgerRequest, { op: "open" }>, "id"> | Omit<Exclude<LedgerRequest, { op: "open" }>, "id">,
+		request: LedgerRequest extends infer R ? (R extends { id: number } ? Omit<R, "id"> : never) : never,
 	): Promise<unknown> {
 		const id = ++this.sequence;
 		if (this.fault) return Promise.reject(this.fault);
@@ -61,6 +63,24 @@ export class ExecutorLedger {
 	}
 	async clean(launch: string): Promise<void> {
 		await this.request({ op: "clean", launch } as Omit<Extract<LedgerRequest, { op: "clean" }>, "id">);
+	}
+	async putRequest(credential: RequestCredential): Promise<void> {
+		await this.request({ op: "request_put", credential });
+	}
+	async getRequest(requestId: string): Promise<RequestCredential | null> {
+		return (await this.request({ op: "request_get", requestId })) as RequestCredential | null;
+	}
+	async requests(): Promise<RequestCredential[]> {
+		return (await this.request({ op: "request_list" })) as RequestCredential[];
+	}
+	async found(requestId: string, lookup: Extract<SubmissionLookup, { kind: "found" }>): Promise<void> {
+		await this.request({ op: "request_found", requestId, lookup });
+	}
+	async putAttempt(attempt: DeliveryAttempt): Promise<void> {
+		await this.request({ op: "attempt_put", attempt });
+	}
+	async attempts(): Promise<DeliveryAttempt[]> {
+		return (await this.request({ op: "attempt_list" })) as DeliveryAttempt[];
 	}
 	close(): Promise<void> {
 		return (this.closePromise ??= (async () => {

@@ -1,0 +1,6 @@
+{
+	"name": "uina-world-minecraft",
+	"private": true,
+	"type": "module",
+	"uina": { "entry": "worlddef/index.ts" }
+}

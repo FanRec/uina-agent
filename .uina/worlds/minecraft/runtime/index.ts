@@ -14,6 +14,12 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
+	CallSummary,
+	DeliveryRef,
+	DeliveryState,
+	DeliveryReceipt,
+	RecordFormat,
+	RecordReply,
 	ControlRetirement,
 	OwnerGate,
 	OwnerGateReceipt,
@@ -33,6 +39,7 @@ import type { EffectReceipt, JsonValue, Ref } from "../contracts/values.js";
 import { RuntimeEngine } from "./engine.js";
 import { RecordQueue } from "./records.js";
 import { RuntimeRefs } from "./refs.js";
+import type { StorageQuery } from "./storage-queries.js";
 import type { RecoveredRows, WorkerRequest, WorkerResponse } from "./runtime-db-worker.js";
 
 export interface MinecraftRuntimeOptions {
@@ -44,6 +51,7 @@ export interface MinecraftRuntimeOptions {
 	namespace: string;
 	worldOwner: Ref;
 	ownerLifetimeMs?: number;
+	onChanged?: () => void;
 	monotonicNow?: () => number;
 	unclean?: boolean;
 	oldControlRetired?: boolean;
@@ -91,12 +99,28 @@ export class MinecraftRuntime {
 	private readonly engine: RuntimeEngine;
 	private readonly flags: LifecycleFlags;
 	private closePromise: Promise<void> | null = null;
+	private queryId = 0;
+	private readonly queries = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 
 	private constructor(worker: Worker, queue: RecordQueue, engine: RuntimeEngine, flags: LifecycleFlags) {
 		this.worker = worker;
 		this.queue = queue;
 		this.engine = engine;
 		this.flags = flags;
+		worker.on("message", (msg: WorkerResponse) => {
+			if (msg.type !== "query_reply") return;
+			const pending = this.queries.get(msg.id);
+			if (!pending) return;
+			this.queries.delete(msg.id);
+			if (msg.error) pending.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
+			else pending.resolve(msg.value);
+		});
+		const fail = (error: Error) => {
+			for (const q of this.queries.values()) q.reject(error);
+			this.queries.clear();
+		};
+		worker.on("error", fail);
+		worker.on("exit", () => fail(new Error("Runtime storage closed")));
 	}
 
 	static async open(
@@ -180,8 +204,10 @@ export class MinecraftRuntime {
 			requireRetirement: opts.requireRetirement,
 		});
 		worker.on("message", (msg: WorkerResponse) => {
-			if (msg.type === "durable") queue.onDurable(msg.instance, msg.through);
-			else if (msg.type === "conflict") queue.onFault(`storage conflict: ${msg.message}`);
+			if (msg.type === "durable") {
+				queue.onDurable(msg.instance, msg.through);
+				opts.onChanged?.();
+			} else if (msg.type === "conflict") queue.onFault(`storage conflict: ${msg.message}`);
 			else if (msg.type === "fatal") queue.onFault(`storage fatal: ${msg.message}`);
 		});
 		worker.on("error", (err: Error) => queue.onFault(`storage worker error: ${err.message}`));
@@ -267,12 +293,44 @@ export class MinecraftRuntime {
 		return this.engine.lookup(requestId);
 	}
 
-	read(run: Ref): RunSummary {
-		return this.engine.read(run);
+	read(run: Ref): Promise<RunSummary> {
+		return this.query({ op: "read", run });
 	}
 
-	readRecord(ref: Ref): { kind: string; record: Ref; value: JsonValue } {
-		return this.engine.readRecord(ref);
+	private async query<T>(query: StorageQuery): Promise<T> {
+		await this.queue.flushThrough(this.queue.capture());
+		if (this.flags.closed) throw new Error("Runtime storage closed");
+		const id = ++this.queryId;
+		return await new Promise<T>((resolve, reject) => {
+			this.queries.set(id, { resolve: (value) => resolve(value as T), reject });
+			try {
+				this.worker.postMessage({ type: "query", id, query } satisfies WorkerRequest);
+			} catch (error) {
+				this.queries.delete(id);
+				reject(error);
+			}
+		});
+	}
+	readRecord(ref: Ref, options: { format?: RecordFormat } = {}): Promise<RecordReply> {
+		return this.query({ op: "record", ref, ...options });
+	}
+	list(filter: { activeOnly?: boolean; cursor?: string } = {}): Promise<{ items: RunSummary[]; next?: string }> {
+		return this.query({ op: "list", ...filter });
+	}
+	listCalls(
+		run: Ref,
+		filter: { parent?: Ref; cursor?: string } = {},
+	): Promise<{ items: CallSummary[]; next?: string }> {
+		return this.query({ op: "calls", run, ...filter });
+	}
+	pendingDeliveries(page: { cursor?: string; limit?: number } = {}): Promise<{ items: DeliveryRef[]; next?: string }> {
+		return this.query({ op: "pending", ...page });
+	}
+	readDelivery(ref: Ref): Promise<DeliveryState> {
+		return this.query({ op: "delivery", ref });
+	}
+	settleDelivery(ref: Ref, receipt: DeliveryReceipt): Promise<void> {
+		return this.query({ op: "settle", ref, receipt });
 	}
 
 	wait(
@@ -280,7 +338,9 @@ export class MinecraftRuntime {
 		options?: { afterRevision?: number; timeoutMs?: number },
 		signal?: AbortSignal,
 	): Promise<RunWaitReply> {
-		return this.engine.wait(run, options, signal);
+		return this.engine
+			.wait(run, options, signal)
+			.then(async (reply) => ({ ...reply, snapshot: await this.read(run) }) as RunWaitReply);
 	}
 
 	async stop(command: StopCommand): Promise<StopReceipt> {

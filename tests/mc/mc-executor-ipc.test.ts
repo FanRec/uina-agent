@@ -191,7 +191,7 @@ describe("MC private IPC", () => {
 			limits: { frameBytes: 1024, queuedBytes: 2048 },
 			handleRequest: async (method) =>
 				method === "runtime.readRecord"
-					? { kind: "run", record: "rec", value: "x".repeat(5000) }
+					? { kind: "inline", record: { kind: "run", record: "rec", value: "x".repeat(5000) } }
 					: { attachment: "a", gates: [], gateRevision: 1, validForMs: 5000 },
 		});
 		const parent = new RpcPeer({

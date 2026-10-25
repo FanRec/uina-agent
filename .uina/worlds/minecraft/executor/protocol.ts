@@ -103,8 +103,8 @@ const definitions = {
 	},
 	"runtime.read": { input: object({ run: ref }), output: summary, cancellable: true },
 	"runtime.readRecord": {
-		input: object({ ref }),
-		output: shaped({ kind: ref, record: ref, value: any }),
+		input: object({ ref, format: { enum: ["auto", "inline", "file"] } }, ["ref"]),
+		output: shaped({ kind: { enum: ["inline", "file"] }, record: any }),
 		cancellable: true,
 	},
 	"runtime.wait": {
@@ -123,6 +123,46 @@ const definitions = {
 			snapshot: { anyOf: [{ type: "null" }, summary] },
 		}),
 	},
+	describe: { input: { type: "object" }, output: { type: "object" }, cancellable: true },
+	"runtime.list": {
+		input: object({ activeOnly: { type: "boolean" }, cursor: ref }, []),
+		output: shaped({ items: { type: "array" } }),
+		cancellable: true,
+	},
+	"runtime.calls": {
+		input: object({ run: ref, parent: ref, cursor: ref }, ["run"]),
+		output: shaped({ items: { type: "array" } }),
+		cancellable: true,
+	},
+	"runtime.pendingDeliveries": {
+		input: object({ cursor: ref, limit: { type: "integer", minimum: 1, maximum: 100 } }, []),
+		output: shaped({ items: { type: "array" } }),
+		cancellable: true,
+	},
+	"runtime.readDelivery": {
+		input: object({ ref }),
+		output: shaped({
+			delivery: { type: "object" },
+			disposition: { enum: ["pending", "committed"] },
+			eligible: { type: "boolean" },
+		}),
+		cancellable: true,
+	},
+	"runtime.settleDelivery": {
+		input: object({
+			ref,
+			receipt: object({
+				namespace: ref,
+				session: ref,
+				key: ref,
+				attempt: ref,
+				record: ref,
+				channel: { enum: ["tool", "input"] },
+			}),
+		}),
+		output: { type: "null" },
+	},
+
 	observe: {
 		input: object({ selector: ref, input: any }, ["selector"]),
 		output: shaped({
@@ -179,12 +219,16 @@ export const validateFrame = ajv.compile({
 				detail: { type: "string", maxLength: 2048 },
 			}),
 		}),
-		object({
-			...common,
-			kind: { const: "changed" },
-			runs: { type: "array", items: object({ run: ref, revision: integer }) },
-			statusChanged: { type: "boolean" },
-		}),
+		object(
+			{
+				...common,
+				kind: { const: "changed" },
+				runs: { type: "array", items: object({ run: ref, revision: integer }) },
+				statusChanged: { type: "boolean" },
+				events: { type: "array", items: object({ ref, observedAt: ref, payload: any }) },
+			},
+			["v", "launch", "kind", "runs", "statusChanged"],
+		),
 	],
 });
 export const validateHello = ajv.compile(

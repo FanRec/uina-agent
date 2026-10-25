@@ -1,6 +1,6 @@
 # Runtime / Callable 详细设计
 
-日期：2026-10-18（Asia/Shanghai），2026-10-24 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。程序、决策续段、安全介入、核验器与交付处置尚未实现。
+日期：2026-10-18（Asia/Shanghai），2026-10-24 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。批 6 固定记录与交付处置已实现；程序、决策续段、安全介入与核验器尚未实现。
 
 跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 
@@ -336,12 +336,12 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；Executor 平台已接，WorldDef 仍缺 | `submit` 为异步持久受理；schema v2 固定 owner/storage，旧库明确拒绝。受管入口证据见 [实施记录](../executor-platform-implementation.md)，不等于完整主脑入口 |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v3 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../native-host-implementation.md)，程序/I2 仍缺 |
 | Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
 | Library | 旧 SQLite/CAS Assets 已清理；普通文件库尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
 | World Watch | 当前事实的保守失效 Watch 已实现；事件 Watch 尚缺 | 不把历史 container.last 当作当前库存或可等待条件 |
-| Uina 接入 | 通用 Host 持久回执尚未实现 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
+| Uina 接入 | 批 5 Host 通用回执、批 6 原生 World/可靠交付已接通 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
 QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；真实 QuickJS、Host 交付与断电验收仍未完成，不能互相替代。

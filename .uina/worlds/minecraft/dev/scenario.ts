@@ -91,7 +91,9 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 				message: reply.snapshot.error?.message,
 			};
 		}
-		const record = rt.readRecord(reply.snapshot.record).value as unknown as { value?: JsonValue };
+		const full = await rt.readRecord(reply.snapshot.record);
+		if (full.kind !== "inline") throw new Error("expected inline development record");
+		const record = full.record.value as { value?: JsonValue };
 		return { ok: true, value: record.value };
 	};
 

@@ -168,7 +168,7 @@ let replayed=0;
 const recovery=(await MinecraftRuntime.open({...options,namespace:"recovered",unclean:true,oldControlRetired:true,callables:[{descriptor:descriptor("work@1"),invoke:async()=>{replayed++;return null;}}]})).runtime;
 const recoveredOwner=await recovery.attach({...origin,activation:"act:recovered"});
 assert.ok(recoveredOwner.gates.includes("owner_lost"));assert.equal(replayed,0);
-assert.equal(recovery.read(old.snapshot.run).phase,"finished");assert.equal(recovery.read(old.snapshot.run).control,"stopped");
+assert.equal((await recovery.read(old.snapshot.run)).phase,"finished");assert.equal((await recovery.read(old.snapshot.run)).control,"stopped");
 await recovery.close();
 sql(db=>db.exec("UPDATE meta SET value='1' WHERE key='schema_version'"));
 const before=sql(db=>db.prepare("SELECT COUNT(*) AS n FROM record_log").get().n);

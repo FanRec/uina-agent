@@ -22,6 +22,8 @@
     "dev:mc:repair": "tsx .uina/worlds/minecraft/dev/repair.ts",
     "dev:mc:production-repair": "tsx .uina/worlds/minecraft/dev/production-repair.ts",
     "dev:mc:executor": "tsx .uina/worlds/minecraft/dev/executor.ts",
+    "dev:mc:native": "tsx .uina/worlds/minecraft/dev/native-host.ts",
+    "dev:mc:model": "tsx .uina/worlds/minecraft/dev/native-host.ts --model",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "biome format . && pnpm check:boundaries && tsc --noEmit",

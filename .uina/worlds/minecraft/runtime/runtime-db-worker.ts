@@ -14,6 +14,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
+import { RECORD_SCHEMA, snapshotMutation, queryStorage, type StorageQuery } from "./storage-queries.js";
 import type { DriverExecutionFact } from "../contracts/runtime.js";
 
 // ---- 行形状（引擎侧同构） ----
@@ -121,13 +122,13 @@ export interface ApplyItem {
 		| { kind: "run"; row: RunRow }
 		| { kind: "segment"; row: SegmentRow }
 		| { kind: "call"; row: CallRow }
-		| { kind: "effect_fact"; row: EffectRow; fact: DriverExecutionFact }
-		| { kind: "record_index"; row: RecordIndexRow };
+		| { kind: "effect_fact"; row: EffectRow; fact: DriverExecutionFact };
 }
 
 export type WorkerRequest =
 	| { type: "open"; dbPath: string; storageId: string; worldOwner: string }
 	| { type: "apply"; items: ApplyItem[] }
+	| { type: "query"; id: number; query: StorageQuery }
 	| { type: "close" };
 
 export interface RecoveredRows {
@@ -152,9 +153,10 @@ export type WorkerResponse =
 	| { type: "durable"; instance: string; through: number }
 	| { type: "conflict"; message: string }
 	| { type: "fatal"; message: string }
+	| { type: "query_reply"; id: number; value?: unknown; error?: { code: string; message: string } }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -242,11 +244,6 @@ CREATE TABLE IF NOT EXISTS effects (
 	facts TEXT NOT NULL,
 	verifications TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS records (
-	record TEXT PRIMARY KEY,
-	kind TEXT NOT NULL,
-	object_ref TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS record_log (
 	instance TEXT NOT NULL,
 	seq INTEGER NOT NULL,
@@ -293,6 +290,7 @@ function openDatabase(dbPath: string, storageId: string, worldOwner: string): Op
 		db.exec("BEGIN IMMEDIATE");
 		try {
 			db.exec(SCHEMA_SQL);
+			db.exec(RECORD_SCHEMA);
 			const insert = db.prepare("INSERT INTO meta(key,value) VALUES(?,?)");
 			insert.run("schema_version", SCHEMA_VERSION);
 			insert.run("storage_id", storageId);
@@ -449,6 +447,7 @@ function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; t
 				payload,
 			);
 			applyMutation(db, item.mutation);
+			snapshotMutation(db, item.mutation);
 			lastInstance = item.ticket.instance;
 			lastSeq = item.ticket.sequence;
 		}
@@ -554,29 +553,26 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 		case "effect_fact": {
 			const r = mutation.row;
 			const fact = mutation.fact;
-			// 首条事实固定 owner/operation/record（§5.4 晚到证据不换绑）
+			// 首条事实固定 owner/operation；record 随新截面更新（§5.4 晚到证据不换绑）
 			db.prepare(
 				"INSERT OR IGNORE INTO effects (effect, owner, operation, record, facts, verifications) VALUES (?, ?, ?, ?, '[]', '[]')",
 			).run(r.effect, r.owner, fact.operation, r.record);
-			const row = db.prepare("SELECT owner, record, facts FROM effects WHERE effect = ?").get(r.effect) as Row;
-			// 同一 effect ref 已属别的 owner/record：本进程发了与历史记录相同的 ref，
+			const row = db
+				.prepare("SELECT owner, operation, record, facts FROM effects WHERE effect = ?")
+				.get(r.effect) as Row;
+			// 同一 effect ref 已属别的 owner/operation：本进程发了与历史记录相同的 ref，
 			// 说明发号空间跨启动冲突。静默追加会把两条不同的身体动作混成一条效果记录。
-			if (String(row.owner) !== r.owner || String(row.record) !== r.record) {
+			if (String(row.owner) !== r.owner || String(row.operation) !== r.operation) {
 				throw new StorageConflict(
 					`effect ${r.effect} 已存在且身份不同：已有 owner=${String(row.owner)} record=${String(row.record)}，本次 owner=${r.owner} record=${r.record}`,
 				);
 			}
 			const facts = JSON.parse(String(row.facts)) as DriverExecutionFact[];
 			facts.push(fact);
-			db.prepare("UPDATE effects SET facts = ? WHERE effect = ?").run(JSON.stringify(facts), r.effect);
-			return;
-		}
-		case "record_index": {
-			const r = mutation.row;
-			db.prepare("INSERT OR IGNORE INTO records (record, kind, object_ref) VALUES (?, ?, ?)").run(
+			db.prepare("UPDATE effects SET facts = ?, record = ? WHERE effect = ?").run(
+				JSON.stringify(facts),
 				r.record,
-				r.kind,
-				r.object_ref,
+				r.effect,
 			);
 			return;
 		}
@@ -592,6 +588,7 @@ if (parentPort == null) {
 }
 const port = parentPort;
 let db: DatabaseSync | null = null;
+let databasePath = "";
 
 port.on("message", (request: WorkerRequest) => {
 	try {
@@ -599,6 +596,7 @@ port.on("message", (request: WorkerRequest) => {
 			if (db != null) throw new Error("storage already opened");
 			const opened = openDatabase(request.dbPath, request.storageId, request.worldOwner);
 			db = opened.db;
+			databasePath = request.dbPath;
 			port.postMessage({
 				type: "opened",
 				journalMode: opened.journalMode,
@@ -609,6 +607,18 @@ port.on("message", (request: WorkerRequest) => {
 			return;
 		}
 		if (db == null) throw new Error("storage is not opened");
+		if (request.type === "query") {
+			void queryStorage(db, databasePath, request.query).then(
+				(value) => port.postMessage({ type: "query_reply", id: request.id, value } satisfies WorkerResponse),
+				(error) =>
+					port.postMessage({
+						type: "query_reply",
+						id: request.id,
+						error: { code: error.code ?? "STORE_UNAVAILABLE", message: messageOf(error) },
+					} satisfies WorkerResponse),
+			);
+			return;
+		}
 		if (request.type === "apply") {
 			const ack = applyBatch(db, request.items);
 			if (ack != null) {

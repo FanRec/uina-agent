@@ -319,3 +319,19 @@ export function recoveredEffectValueOf(
 		},
 	};
 }
+
+/** Display only: omitted fields stay explicit, full data remains in fixed records. */
+export function boundedSummary(summary: RunSummary): RunSummary {
+	const out = structuredClone(summary);
+	if (Buffer.byteLength(JSON.stringify(out.progress)) > 2048) {
+		out.progress = {};
+		out.progressComplete = false;
+	}
+	out.unknownEffects = out.unknownEffects.slice(0, 8);
+	out.unknownEffectsComplete = out.unknownEffectCount <= 8;
+	if (out.phase === "finished" && out.error && Buffer.byteLength(out.error.message) > 1024) {
+		out.error.message = Buffer.from(out.error.message).subarray(0, 1000).toString("utf8");
+		out.error.messageComplete = false;
+	}
+	return out;
+}

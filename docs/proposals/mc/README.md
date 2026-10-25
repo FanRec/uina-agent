@@ -9,17 +9,17 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
 | Driver（受控玩家）、World（观察与记录） | K1 + 批 2 + 批 3 + 修复：连接级 1.21.11 协议适配、玩家/容器/工作站共享确认、独立库存/采矿/牌面操作、统一查询校验；窗口含普通容器、工作台与熔炉（高炉/烟熏炉仍拒），`revision` 只随槽位与光标推进；feedback、通用领域记录仍缺 | 2026-10-25 |
-| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，库 schema v2（程序/决策/交付处置仍缺） | 2026-10-25 |
+| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，批 6 固定记录与交付处置已接通，库 schema v3（程序/决策仍缺） | 2026-10-25 |
 | 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器、批 3 生产链已实现：**10 查询 + 15 动作（25/51）**，按真实目录计数；此前 27 项为误计。生产链修复已随 `6fbd9a4` 入库；其余 K3–K8 待实现 | 2026-10-25 |
 | Library（程序、蓝图与经验） | 未实现；按普通文件库设计 | 2026-10-19 |
-| Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；正式 WorldDef、工具/通知仍待批 5–6。见 [实施记录](executor-platform-implementation.md) | 2026-10-25 |
+| Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；批 6 正式 WorldDef、原生工具、请求凭证、可靠通知与 BodyEndpoint 已接线。见 [原生接入实施](native-host-implementation.md) | 2026-10-25 |
 | Host 持久交付接缝 | **批 5 已实现**：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定；见 [实施记录](host-delivery-implementation.md) | 2026-10-25 |
 | Program（单文件 JS + 共享 worker/独立 guest） | 详细设计已写，未实现 | 2026-10-19 |
-| 真实 Minecraft 游玩验收 | 批 4 受管源码/产物各 **8/8**（含导航中关闭/过期/故障恢复）；MC **33 文件/270 项**。生产链 K3 各 **14/14**、production-repair 各 **7/7** 及 Driver repair/I1/K1/批 2 保留对应历史证据。尚无真实模型自主游玩结论 | 2026-10-25 |
+| 真实 Minecraft 游玩验收 | 批 4 受管源码/产物各 **8/8**（含导航中关闭/过期/故障恢复）；MC **33 文件/270 项**。生产链 K3 各 **14/14**、production-repair 各 **7/7** 及 Driver repair/I1/K1/批 2 保留对应历史证据。批 6 已有真实 deepseek-flash 的采集/生产、缺料纠错和显式停止校准，见 [实施记录](native-host-implementation.md) | 2026-10-25 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
-**下一步与当前状态分开**：按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 4 平台与批 5 通用 Host 回执已实现，接下来由批 6 接正式原生模型入口并首次校准；批 7–9 依次交付 Program 执行、文件复用和完整 I2。此后按直接依赖和模型使用收益选玩法。当前仍没有可供主脑使用的正式 minecraft 工具。
+**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，下一批为 Program 执行，再接文件复用及等待/决策与完整 I2。现有 25 项能力不等于全部 51 项设计完成。
 
 批 2 设计、取舍与任务记录见 [窗口与容器实施](window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 

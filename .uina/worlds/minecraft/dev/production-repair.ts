@@ -227,7 +227,7 @@ async function main(): Promise<void> {
 				"smelt window stayed open",
 			);
 			checked(await s.call("equip@1", { item: null, slot: "hand" }, 5000));
-			assert(h.runtime.read(run).phase !== "finished", "body action did not finish before smelting");
+			assert((await h.runtime.read(run)).phase !== "finished", "body action did not finish before smelting");
 			const result = await finish(run);
 			assert(result.outcome === "succeeded", JSON.stringify(result));
 			assert((await count("iron_ingot")) === 3, JSON.stringify(await inventory()));
