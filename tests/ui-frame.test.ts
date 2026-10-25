@@ -503,6 +503,8 @@ describe("帧行规范化（孤立控制符 / 回车语义）", () => {
 		//（帧行里出现换行会让终端多推进一行、整帧错位，必须拦在帧外）
 		expect(dropStrayControls("a\rb\nc")).toBe("a\rbc");
 		expect(dropStrayControls("x\u0001y\u009bz")).toBe("xyz");
+		// FS/GS/RS/US（0x1C-0x1F）同样是裸 C0：快路径正则必须覆盖，否则原样放行
+		expect(dropStrayControls("a\u001cb\u001dc\u001ed\u001fe")).toBe("abcde");
 	});
 
 	it("回车按终端覆盖语义落地", () => {

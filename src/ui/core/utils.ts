@@ -299,7 +299,7 @@ function scanAnsiEnd(text: string, start: number): number {
  * 裸 C0（除 tab/CR/**ESC**）/DEL/C1：进入帧会吞掉后续定位与底色序列，一律丢弃。
  * ESC 不算裸控制符——它是合法 ANSI 序列的引导符，工具卡每行都带 SGR。
  */
-const STRAY_CONTROLS = /[\u0000-\u000C\u000E-\u001A\u007F-\u009F]/;
+const STRAY_CONTROLS = /[\u0000-\u000C\u000E-\u001A\u001C-\u001F\u007F-\u009F]/;
 
 export function dropStrayControls(text: string): string {
 	if (!text) return "";
