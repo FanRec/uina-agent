@@ -64,7 +64,7 @@ repair 场景覆盖：金镐拒绝钻石矿、铜镐铁矿、自动铁镐钻石�
 
 ## 本轮验证记录
 
-- 当前工作树：`codex/phase0-baseline`，以 d77d20f 为修复基线，未提交；保留用户原有 src/agent/context.ts 修改，不更改真实 Provider/会话/认证，不删除或重置已有游戏世界。
+- 当前工作树：`codex/phase0-baseline`，以 d77d20f 为修复基线，已提交为 **6157834**；保留用户原有 src/agent/context.ts 修改，不更改真实 Provider/会话/认证，不删除或重置已有游戏世界。
 - 工程检查：`pnpm typecheck`（含 9 条边界）、MC 显式列表 **24 文件 / 176 项**、`pnpm build` 均通过。
 - 最终源码与构建产物在既有 Paper 1.21.11 build132 上串行运行，各 **15/15 PASS**。两次使用不同的独立 Temp 数据根，均包含客户端/Runtime/World 完整关闭重开后的 SQLite 历史；真实物品覆盖 max_damage=50/damage=40→剩余耐久10、拒绝 minDurability=100，以及 max_stack_size=16 的精确移出与余量返回。
 

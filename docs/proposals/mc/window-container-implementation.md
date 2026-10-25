@@ -1,6 +1,6 @@
 # 窗口与容器：批 2 设计及实施计划
 
-日期：2026-10-24。范围：Driver WindowSession、真实窗口观察历史、container@1、transfer@1、container.last@1；不含 craft/smelt、Program、Executor、Host 回执。沿当前含批 1 未提交实现的工作树增量开发，不从旧 HEAD 另建丢失实现的工作树，不提交无关修改。
+日期：2026-10-24。范围：Driver WindowSession、真实窗口观察历史、container@1、transfer@1、container.last@1；不含 craft/smelt、Program、Executor、Host 回执。沿当时含批 1 未提交实现的工作树增量开发，不从旧 HEAD 另建丢失实现的工作树，不提交无关修改；本批已随批 1 落在 **d77d20f**。
 
 ## 整体结构与取舍
 
@@ -72,7 +72,7 @@ flowchart LR
 
 ## 本轮结果
 
-- 工作树：codex/phase0-baseline，在已有未提交批 1 基础上增量实现；未提交，未修改 Core 或真实 Provider/会话/认证。
+- 工作树：codex/phase0-baseline，在已有未提交批 1 基础上增量实现；已随批 1 一并提交为 **d77d20f**，未修改 Core 或真实 Provider/会话/认证。
 - 工程：pnpm typecheck（含 9 条边界）、pnpm build；16 个 MC 文件 / 125 项回归通过。
 - 真服：Paper 1.21.11 build132，offline UinaDev；源码与构建产物的容器场景均 13 项通过，K1 19 项通过，I1 在实际可行走地面通过（含 stop 后 drift=0）。不把重叠登录或平台外导航的失败场景当作通过证据。
 - 当前支持普通现代窗口 mode-0 左/右键；工作站、旧协议、feedback、Program/Library、Host 回执、Executor/WorldDef 均未包含在本批。祖先身体需要先导航；未确认开窗退役后须重连。

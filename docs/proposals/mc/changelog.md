@@ -1,5 +1,12 @@
 # 设计变更记录
 
+## 2026-10-25 · 状态校正与批 3 前置登记
+
+- 提交归属校正：K1 收口、真服复验、批 1 采集、批 2 窗口容器四轮均已在 **d77d20f** 入库（84 files）；2026-10-25 修复与 Driver 收敛在 **6157834**。`dev/MC-WORLD.md`、[窗口容器实施记录](window-container-implementation.md) 与 [Driver 修复实施](driver-repair-implementation.md) 此前记作"未提交"，已更正。
+- 新增 [development-plan §10.7](development-plan.md)：批 3 的三处底层前置按源码登记——`WindowSession.layout()` 只接受普通容器窗口（`crafting`/`furnace` 报 `UNSUPPORTED_WINDOW`，`container@1` 白名单同样不含这两种方块）；`KnowledgeRecipe` 拍平 `inShape`，摆格图案丢失；该数据版本无熔炼配方与燃料刻数。批 3 的前置列改为引用该节。
+- 测试基线校正：MC 确定性回归实际为 **24 files / 176 tests**（入口文档此前仍写 16/125）。
+- 未改动任何行为合同与源码。
+
 ## 2026-10-25 · 审查修复与 Driver 写入路径收敛
 
 - 按连接的 DriverProtocol 集中物品编码、同步协议写入与服务端通知；先实现 Java 1.21.11，其他版本的相关操作明确拒绝，后续版本沿窄端口接入。
