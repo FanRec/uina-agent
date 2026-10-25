@@ -1,6 +1,8 @@
 # Minecraft 实现重做入口
 
-更新时间：2026-10-25。当前目录已有 I1/K1、批 1 采集、批 2 窗口与容器、**批 3 生产链**，源码落在 `d77d20f`（K1+批 1+批 2）与 `6157834`（修复与 Driver 收敛），批 3 为本轮工作树；能力目录共 **12 查询 + 15 动作（27/51）**，`craft@1`/`smelt@1` 已真服 14/14 PASS。Program/Library、Host 回执、Executor/WorldDef 尚未实现，下一批为**批 4 校准点**（用现有 27 项能力让模型真玩 30–60 分钟，产出 K4–K8 的重排表）。
+更新时间：2026-10-25。当前目录已有 I1/K1、批 1 采集、批 2 窗口与容器、**批 3 生产链**，K1/批 1/批 2 在 `d77d20f`，Driver 修复在 `6157834`；当前 `codex/phase0-baseline` 工作树还包含既有未提交生产链修复。实际装配目录为 **10 查询 + 15 动作（25/51）**，此前 27 项为误计；当前专项验证与来源见 dev/MC-WORLD.md。Program/Library、Host 回执、Executor/WorldDef 尚未实现。
+
+下一任务是**批 4：Executor 进程与传输底座**；批 5 的 H 回执可独立推进，批 6 才经正式原生模型入口首次校准，批 7–9 接 Program、文件复用、等待/决策并收口 I2。后续玩法按真实依赖与校准收益入队，施工顺序唯一见总规划 §10；不再先扩到蓝图再接主脑，也不以开发脚本代替模型游玩。
 
 本目录开发者开工前先读 [总开发规划](../../../docs/proposals/mc/development-plan.md) 和 [开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读所属模块。规范中的接口/所有权、真实结果、退出与验证要求适用于本次重做；不要求特定代理工具、假 Bot 先行或每个小步骤都提交。
 
@@ -15,4 +17,4 @@
 
 I1 入口 `pnpm dev:mc`；K1 `pnpm dev:mc:k1`；采集 `pnpm dev:mc:k2`；窗口容器 `pnpm dev:mc:containers`；生产链 `pnpm dev:mc:k3`；修复与协议确认 `pnpm dev:mc:repair`。当前确定性回归使用显式 tests/mc/*.test.ts 列表与 vmThreads，**26 files / 201 tests**（2026-10-25 实测）；实际真服记录见 dev/MC-WORLD.md。
 
-不要清理 `.uina/world-data/minecraft`、profile 数据或其他运行数据；本次只移除源码、旧测试和对应开发接线。
+不要清理 `.uina/world-data/minecraft`、profile 数据或其他运行数据；规划修订与后续施工使用各自明确范围，验收不得以删除真实数据换取通过。

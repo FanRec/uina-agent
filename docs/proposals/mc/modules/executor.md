@@ -162,7 +162,7 @@ interface ExecutionSideStatus {
   world: WorldAvailabilityValue;
   runtime: "ready" | "unavailable";
   safety: {active: Ref | null; last: Ref | null}; // 介入身份；完整事实仍经 readRecord
-  program: ProgramCapacity;
+  program: ProgramCapacity | null; // 原生阶段尚未装配时为 null；损坏/故障不能伪装成未交付
   faults: {code: string; message: string}[];
   retirement: RetirementRequest | null; // 当前 launch 内一旦请求便锁存
 }
@@ -184,7 +184,9 @@ interface ExecutorStatus {
 
 ready 只表示执行侧已握手、运行库可用；游戏连接、World 历史和动作门分别显示。`actionsAllowed` 是接入门的当前判断，不担保某能力目标可执行。World 历史 opening/unavailable 不遮蔽当前读；Runtime 库不可用则不能受理新 Run。状态推送只刷新有时间的缓存，精确 status 按需读取；断流立即将 side 置空，lastKnown 明确标旧。
 
-常驻指南只使用 [Program 附录 A](program.md#附录-a模型的最小指南)；动作 schema 提供工具调用形状，能力家族按需 describe。OS、协议字段和存储配置不进入模型指南。
+Program 未装配的原生阶段，`program=null`，最小指南和发现结果明确实际支持范围；不填写零容量假装已健康，也不暴露未实现 API 的可运行示例。已装配 Program 的故障由实际容量/诊断报告，不降回 null。默认自保尚未交付时也须在指南/诊断说明，`safety.active=null` 本身不能证明自保已启用。
+
+常驻指南从 [Program 附录 A](program.md#附录-a模型的最小指南) 的同一要求生成，只包含当前交付范围；原生阶段保留工具/查询/原生动作、accepted/unknown/停止等说明，程序与库接入后再加入对应说明。动作 schema 提供工具调用形状，能力家族按需 describe。OS、协议字段和存储配置不进入模型指南。
 
 ## 3. 装配与启动
 
@@ -213,6 +215,10 @@ Executor 是 Uina 侧实例；companion 是游戏侧组合根，不把它们再�
 - `authMode` 必填，两条连接路径并列支持。offline 的 username 是实际登录名，不要求 Microsoft 登录、缓存或正版 UUID；microsoft 的 username 是上游认证缓存/账号选择标识，accountId 是操作者已确认的游戏 profile UUID。交互认证未完成时如实显示，不宣布可用；凭证/cache 复用客户端认证机制，不写入命令行、工具正文或诊断。
 - 源码运行显式用当前 Node + `--import tsx` 启动仓库内 bootstrap；构建运行使用随 World 发布的 bootstrap 与 Worker/QuickJS/native 资源。entry 使用模块相对绝对路径，不继承整份 `process.execArgv`，不拼 shell 命令。两条路径分别验收。
 - 本轮固定静态装配能力；改模块代码需关闭旧 activation、证明退役后重启。不增加热加载服务；编辑库文件仍按 Program 的段内快照规则生效。
+
+**分阶段交付（2026-10-25 排期裁决）**：按 [总规划 §10](../development-plan.md#10-剩余施工总纲2026-10-25-重排)，先开放已验收 offline 1.21.11 的正式原生入口，再沿同一装配接入 Program/Library，最后接齐等待/决策与 I2。原生阶段已经包含正式进程监管、Owner 门、请求账本、Runtime 记录、Host 持久回执和 BodyEndpoint，不能用同进程临时工具或普通 emitEvent 替代。
+
+六个 action 的终态形状保留。原生阶段 observe/describe/run 原生/runs 的已实现操作/chat 真实可用；code、程序名、library、continue 等尚未交付的分支明确失败且不执行或写入。发现只列真实条目，状态按 §2.3 表示 Program 未装配；不建立第二套 façade、配置模式或运行状态机。已声明应装配的模块、native/Worker/WASM 资产缺失仍启动失败，不能以阶段性未交付为由回退；后续交付必须同步指南、schema/分派和产物。Microsoft 路径在其真实认证验收前明确不可用，不自动改用 offline；最终仍须完成两种认证。
 
 配置形状如下；连接字段复用 Driver，其他字段由 Executor 拥有。省略的 port=25565，program.workers=1，其余策略初值见 §5、§7、§8；不覆盖 Program 其余已定资源策略。
 
@@ -257,7 +263,7 @@ accountKey 按无歧义元组编码并取摘要用于 OS 名称。offline 同服
 1. 注册生命周期 abort 处理，立刻检查是否已取消；在整个启动中保留检查。先取得 §4 的目录/账号所有权，再打开 executor.db。生成本次 activation/launch，持久登记未关闭启动记录。
 2. 启动只会握手的 bootstrap；完成 OS 监管后才允许 init。bootstrap 之前不 import 有启动副作用的业务模块，不创建 Bot、数据库 worker 或 guest。
 3. init 含协议版本、launch、worldOwner、activation、expectedStorageId（首次可为 null）、数据根、配置及先前退役事实。子进程验证唯一 init 和身份，先封闭动作准入，核对已有库身份后恢复 Runtime 记录及持久门；expectedStorageId 非空而原库不存在时不得自动新建。不得在恢复前连接可写客户端。
-4. 组合根加载能力导出/schema，校验引用唯一性；建立 Program、Library、查询/调用目录。Driver 在尚无有效 owner 和 Body 的状态下创建；注入 Runtime 的调用核验与效果 sink，World 订阅同一个 Driver.facts。循环依赖用未开放的本地接缝完成接线后一次开放，不能用临时“总允许” verifier 过渡。
+4. 组合根加载能力导出/schema，校验引用唯一性；建立本批已交付的查询/调用目录及 Program/Library。§3.1 的原生阶段可尚未装配后两者，按 §2.3/§3.1 明确状态和拒绝分支；已声明需装配却初始化失败时仍回滚启动。Driver 在尚无有效 owner 和 Body 的状态下创建；注入 Runtime 的调用核验与效果 sink，World 订阅同一个 Driver.facts。循环依赖用未开放的本地接缝完成接线后一次开放，不能用临时“总允许” verifier 过渡。
 5. Runtime 库恢复成功后返回 ready，包含 launch/storageId、实际存储设置和 ExecutionSideStatus。World 历史和 Driver 连接可继续 opening/connecting；它们不是 Runtime ready 的假前提。缺失的历史、查询或操作通过各自 availability 表达。
 6. Executor 核对 storageId、持久 Host delivery 端口和本地记录，attach 绑定当前 owner/activation，启动心跳、请求/交付对账与通知 drain。正常显式启用可解除 disabled；异常启动留下 owner_lost，待核对后按 §7.3 解除，emergency 始终另行处理。ready 以前收到的游戏写请求拒绝，不排进隐性启动队列。
 7. 暴露 BodyEndpoint，向框架完成 onStart。此后六个 action 可调用；连接未 ready 的动作明确失败，查询/文件库按各自可用性服务。
