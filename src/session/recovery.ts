@@ -1,4 +1,5 @@
 import { validImages } from "../core/content.js";
+import { deliveryKey, validDeliveryMetadata } from "../core/delivery.js";
 import { readDeclaredEffects } from "../core/effects.js";
 import { TOOL_RESULT_STATUSES, type AgentMessage, type ToolEffect, type ToolResultStatus } from "../core/types.js";
 import type {
@@ -39,6 +40,8 @@ interface PendingCall {
  * unresolved-operation detection 拒绝非法延续；恢复只能经 planRecovery 落盘。
  */
 export interface CanonicalState {
+	/** All-branch committed delivery facts; rewind never clears this derived index. */
+	deliveryCommits: Map<string, Omit<import("../core/types.js").HostCommitReceipt, "session">>;
 	/** 主线（回溯在此截断）。 */
 	entries: HydratedSessionEntry[];
 	/** 全历史，含被放弃切片（只增不减）。 */
@@ -63,6 +66,7 @@ export interface CanonicalState {
 
 export function initialCanonicalState(): CanonicalState {
 	return {
+		deliveryCommits: new Map(),
 		entries: [],
 		allEntries: [],
 		queued: new Map(),
@@ -107,6 +111,15 @@ export function checkRecord(state: CanonicalState, record: SessionRecord): void 
 			ensureSettled(state, record.kind);
 			if (!state.queued.has(record.input.id)) {
 				throw new SessionFormatError(`input 没有对应队列项: ${record.input.id}`);
+			}
+			{
+				const queued = state.queued.get(record.input.id)!;
+				if (
+					queued.receiptNamespace !== record.input.receiptNamespace ||
+					queued.receipt?.key !== record.input.receipt?.key ||
+					queued.receipt?.attempt !== record.input.receipt?.attempt
+				)
+					throw new SessionFormatError("input receipt 与队列归属不一致");
 			}
 			return;
 		case "message":
@@ -191,6 +204,7 @@ function checkEvent(state: CanonicalState, record: SessionEventRecord): void {
 			if (!Number.isSafeInteger(data.order) || data.order <= 0) {
 				throw new SessionFormatError("queue_enqueued order 无效");
 			}
+			if (!validDeliveryMetadata(data)) throw new SessionFormatError("queue receipt 无效");
 			return;
 		}
 		case "queue_restored": {
@@ -241,6 +255,7 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 			return applyRewind(state, record);
 		case "input":
 			state.queued.delete(record.input.id);
+			indexDelivery(state, record.input, record.id, "input");
 			return addEntry(state, record, { kind: "input", input: structuredClone(record.input) });
 		case "custom_message":
 			return addEntry(state, record, {
@@ -300,8 +315,26 @@ export function buildRewindCandidateEntry(state: CanonicalState, record: Session
 	};
 }
 
+function indexDelivery(
+	state: CanonicalState,
+	value: { receipt?: import("../core/types.js").HostDeliveryTag; receiptNamespace?: string },
+	record: string,
+	channel: "input" | "tool",
+): void {
+	if (!value.receipt || !value.receiptNamespace) return;
+	const key = deliveryKey(value.receiptNamespace, value.receipt.key);
+	if (!state.deliveryCommits.has(key))
+		state.deliveryCommits.set(key, {
+			...value.receipt,
+			namespace: value.receiptNamespace,
+			record,
+			channel,
+		});
+}
+
 function applyMessage(state: CanonicalState, record: SessionRecord & { kind: "message" }): void {
 	const { message } = record;
+	if (message.role === "tool") indexDelivery(state, message, record.id, "tool");
 	if (message.role === "assistant" && message.tool_calls?.length) {
 		state.resultIds.clear();
 		state.finishedEvents.clear();
@@ -336,6 +369,12 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 				...(isInputSource(data.source) ? { source: data.source } : {}),
 				...(data.data !== undefined ? { data: data.data } : {}),
 				...(typeof data.receivedAt === "string" ? { receivedAt: data.receivedAt } : {}),
+				...(data.receipt
+					? {
+							receipt: structuredClone(data.receipt) as import("../core/types.js").HostDeliveryTag,
+							receiptNamespace: data.receiptNamespace as string,
+						}
+					: {}),
 			});
 			return;
 		case "queue_restored":
@@ -761,6 +800,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 			(input.mode === "steer" || input.mode === "followUp") &&
 			typeof input.text === "string" &&
 			validImages(input.images) &&
+			validDeliveryMetadata(input) &&
 			(input.source === undefined || isInputSource(input.source)) &&
 			(input.receivedAt === undefined ||
 				(typeof input.receivedAt === "string" && Number.isFinite(Date.parse(input.receivedAt))))
@@ -795,6 +835,8 @@ export function isRecord(value: unknown): value is SessionRecord {
 function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!value || typeof value !== "object") return false;
 	const message = value as Record<string, unknown>;
+	if (!validDeliveryMetadata(message)) return false;
+	if (message.receipt !== undefined && message.role !== "tool") return false;
 	if (!validImages(message.images)) return false;
 	if (!isValidInputProvenance(message.input)) return false;
 	if (message.role === "custom")

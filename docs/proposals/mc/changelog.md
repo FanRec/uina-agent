@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-10-25 · 批 5 Host 通用持久回执
+
+- journal 同批升级 v4，旧 v3 明确拒绝，不迁移真实日志；SessionStore 暴露真实会话身份与 durable/volatile。
+- 工具/输入携带 receipt；Broker 验证后同步登记尝试，canonical append 才确认。提交索引由既有 reducer 增量维护，回溯不删除历史交付事实。
+- Mailbox 按来源/key 去重，render 后重验提交资格，retire 对 attempt 做 CAS；工具退役不删除协议消息，输入退役与原队列撤回共用持久路径。
+- Host、Extension 与 World 共享来源绑定的 inspect/retire 端口。批 6 继续正式 MC 模型入口与可靠通知，本批未接真实模型或改变玩法数量。
+- 实际进程中断、Host 重开与最终验证见 [实施记录](host-delivery-implementation.md)。
+
 ## 2026-10-25 · 批 4 Executor 平台底座
 
 - 新增 Windows x64 私有 Node-API 双 Job、精确进程句柄/异步退役、受管 bootstrap、Companion 静态装配、固定 IPC、身份/launch/本地门意图账本。没有添加模型工具或临时通知桥。

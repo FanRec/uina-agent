@@ -588,7 +588,7 @@ describe("JSONL session", () => {
 		const path = env.sessionPath;
 		const header = JSON.stringify({
 			kind: "header",
-			version: 3,
+			version: 4,
 			id: "x",
 			cwd: env.cwd,
 			createdAt: new Date().toISOString(),

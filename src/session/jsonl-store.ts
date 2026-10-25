@@ -28,11 +28,11 @@ import type {
  * Journal schema version, single source of truth for both the writer
  * (header creation) and the reader (parseHeader validation).
  *
- * v3 是当前唯一格式：写 v3、读只接受 v3。不维护迁移链，也没有旧版本
+ * v4 是当前唯一格式：写 v4、读只接受 v4。不维护迁移链，也没有旧版本
  * reader——旧版本 journal 明确拒绝（新会话开新文件即可，不为旧数据
  * 保留兼容代码）。
  */
-const JOURNAL_VERSION = 3;
+const JOURNAL_VERSION = 4;
 
 export async function openJsonlSession(path: string): Promise<{
 	store: JsonlSessionStore;
@@ -65,7 +65,7 @@ export async function openJsonlSession(path: string): Promise<{
 	const handle = await open(path, "r+");
 	let store: JsonlSessionStore;
 	try {
-		store = new JsonlSessionStore(path, handle, lastSeq, records);
+		store = new JsonlSessionStore(path, handle, lastSeq, records, header.id);
 	} catch (error) {
 		await handle.close();
 		throw error;
@@ -96,9 +96,13 @@ export async function openJsonlSession(path: string): Promise<{
 }
 
 export class JsonlSessionStore implements SessionStore {
+	readonly durability = "durable" as const;
 	private tail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private writeFailure?: Error;
+	get failure(): Error | undefined {
+		return this.writeFailure;
+	}
 
 	/** 常驻 canonical 状态：append = check → 落盘 → apply，内存永不领先磁盘。 */
 	readonly state: CanonicalState;
@@ -109,6 +113,7 @@ export class JsonlSessionStore implements SessionStore {
 		private readonly handle: FileHandle,
 		private nextSeq: number,
 		records: SessionRecord[] = [],
+		readonly session: string = randomUUID(),
 	) {
 		this.records = structuredClone(records);
 		this.state = canonicalReplay(records);
@@ -240,6 +245,8 @@ export class JsonlSessionStore implements SessionStore {
 }
 
 export class MemorySessionStore implements SessionStore {
+	readonly session = randomUUID();
+	readonly durability = "volatile" as const;
 	readonly path = ":memory:";
 	readonly records: SessionRecord[] = [];
 	/** 常驻 canonical 状态：与 records 严格同步（append = check → push → apply）。 */

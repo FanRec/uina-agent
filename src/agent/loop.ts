@@ -1,3 +1,11 @@
+import { deliveryKey, validDeliveryTag } from "../core/delivery.js";
+import type {
+	HostDeliveryPort,
+	HostDeliveryState,
+	HostRetireReply,
+	HostDeliveryTag,
+	InputDeliveryOwner,
+} from "../core/types.js";
 import { randomUUID } from "node:crypto";
 import { validImages } from "../core/content.js";
 import { errorMessage } from "../core/errors.js";
@@ -91,6 +99,7 @@ function isWorldInput(item: QueuedMessage): boolean {
 }
 
 export interface AgentInput {
+	receipt?: HostDeliveryTag;
 	id: string;
 	mode: "steer" | "followUp";
 	source: import("../core/types.js").InputSource;
@@ -145,6 +154,26 @@ function asToolPipelineFailure(error: unknown): ToolPipelineFailure {
 	return error instanceof ToolPipelineFailure ? error : new ToolPipelineFailure(false, error);
 }
 
+interface InputDeliveryAttempt {
+	item: QueuedMessage;
+	since: string;
+	order: number;
+	owner: InputDeliveryOwner;
+	active: boolean;
+	phase: "queued" | "processing" | "appending";
+	admission?: Promise<void>;
+	append?: Promise<void>;
+	retirement?: Promise<HostRetireReply>;
+	error?: unknown;
+}
+interface ToolDeliveryAttempt {
+	namespace: string;
+	receipt: HostDeliveryTag;
+	since: string;
+	order: number;
+	error?: unknown;
+}
+
 export class Subject {
 	/** 主体活动阶段：turn（回合执行）→ afterEnd（post-turn 收尾：outcome 已冻结，
 	 * 但仍占用主体、仍可 interrupt）→ undefined；rewind 与 activity（回合外排他
@@ -180,6 +209,141 @@ export class Subject {
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private lastPromptFingerprint?: string;
+	private readonly inputDeliveries = new Map<string, InputDeliveryAttempt>();
+	private readonly toolDeliveries = new Map<string, ToolDeliveryAttempt>();
+	private deliveryOrder = 0;
+	private deliveryClosed = false;
+
+	delivery(namespace: string): HostDeliveryPort {
+		if (!namespace.trim()) throw new Error("delivery namespace must not be empty");
+		return Object.freeze({
+			namespace,
+			session: this.store?.session ?? "unbound",
+			durability: this.store?.durability ?? "volatile",
+			inspect: async (key: string) => this.inspectDelivery(namespace, key),
+			retire: (key: string, attempt: string) => this.retireDelivery(namespace, key, attempt),
+		});
+	}
+
+	closeDelivery(): void {
+		this.deliveryClosed = true;
+		for (const attempt of this.inputDeliveries.values()) attempt.active = false;
+		this.toolDeliveries.clear();
+	}
+
+	private findDelivery(namespace: string, key: string) {
+		const inputs = [...this.inputDeliveries.values()].filter(
+			(a) => a.item.receiptNamespace === namespace && a.item.receipt?.key === key,
+		);
+		const tools = [...this.toolDeliveries.entries()].filter(
+			([, a]) => a.namespace === namespace && a.receipt.key === key,
+		);
+		const input = inputs.sort((a, b) => a.order - b.order)[0];
+		const tool = tools.sort((a, b) => a[1].order - b[1].order)[0];
+		return input && (!tool || input.order < tool[1].order)
+			? { channel: "input" as const, input }
+			: tool
+				? { channel: "tool" as const, tool }
+				: undefined;
+	}
+
+	private inspectDelivery(namespace: string, key: string): HostDeliveryState {
+		const committed = this.store?.state.deliveryCommits.get(deliveryKey(namespace, key));
+		if (committed) return { kind: "committed", receipt: { ...committed, session: this.store!.session } };
+		if (this.deliveryClosed || !this.store || this.store.failure)
+			return {
+				kind: "unavailable",
+				reason: this.store?.failure ? errorMessage(this.store.failure) : "Host delivery session is unavailable",
+			};
+		const current = this.findDelivery(namespace, key);
+		if (!current) return { kind: "absent" };
+		if (current.channel === "tool") {
+			const attempt = current.tool[1];
+			if (attempt.error) return { kind: "unavailable", reason: errorMessage(attempt.error) };
+			return {
+				kind: "pending",
+				attempt: attempt.receipt.attempt,
+				since: attempt.since,
+				channel: "tool",
+				activity: "processing",
+			};
+		}
+		const attempt = current.input;
+		if (attempt.error) return { kind: "unavailable", reason: errorMessage(attempt.error) };
+		return {
+			kind: "pending",
+			attempt: attempt.item.receipt!.attempt,
+			since: attempt.since,
+			channel: "input",
+			activity: attempt.phase === "queued" ? "queued" : "processing",
+		};
+	}
+
+	private async retireDelivery(namespace: string, key: string, expectedAttempt: string): Promise<HostRetireReply> {
+		const state = this.inspectDelivery(namespace, key);
+		if (state.kind === "committed") return state;
+		if (this.deliveryClosed || !this.store || this.store.failure)
+			return {
+				kind: "unavailable",
+				reason: this.store?.failure ? errorMessage(this.store.failure) : "Host delivery session is unavailable",
+			};
+		if (state.kind === "absent") return { kind: "retired" };
+		if (state.kind === "pending" && state.attempt !== expectedAttempt) return { kind: "changed", state };
+		const current = this.findDelivery(namespace, key);
+		const actual =
+			current?.channel === "input" ? current.input.item.receipt!.attempt : current?.tool[1].receipt.attempt;
+		if (actual !== expectedAttempt) return { kind: "changed", state: this.inspectDelivery(namespace, key) };
+		if (current!.channel === "tool") {
+			this.toolDeliveries.delete(current!.tool[0]);
+			return { kind: "retired" };
+		}
+		return this.retireInputDelivery(current!.input);
+	}
+
+	private retireInputDelivery(attempt: InputDeliveryAttempt): Promise<HostRetireReply> {
+		if (attempt.retirement) return attempt.retirement;
+		attempt.active = false;
+		return (attempt.retirement = (async (): Promise<HostRetireReply> => {
+			try {
+				if (attempt.append) await attempt.append.catch(() => undefined);
+				await attempt.admission?.catch((error) => {
+					if (!this.store || this.store.failure) throw this.store?.failure ?? error;
+					// A failed append whose rollback succeeded left resident state equal to disk.
+					// If admission actually committed before an ACK failure, withdraw its real queue item below.
+				});
+				if (this.store?.failure) throw this.store.failure;
+				if (this.store?.state.queued.has(attempt.item.id))
+					await this.storeEvent("queue_restored", eventData(attempt.item));
+				this.queues.remove(attempt.item.id);
+				this.inputDeliveries.delete(attempt.item.id);
+				this.deferredInputRenders.delete(attempt.item.id);
+				this.notifyQueueChanged();
+				const state = this.inspectDelivery(attempt.owner.namespace, attempt.item.receipt!.key);
+				return state.kind === "committed" ? state : { kind: "retired" };
+			} catch (error) {
+				attempt.error = error;
+				attempt.retirement = undefined;
+				return { kind: "unavailable", reason: errorMessage(error) };
+			}
+		})());
+	}
+
+	private ownsInput(item: QueuedMessage): boolean {
+		if (!item.receipt) return true;
+		const current = this.inputDeliveries.get(item.id)?.item;
+		return (
+			current?.receiptNamespace === item.receiptNamespace &&
+			current?.receipt?.key === item.receipt.key &&
+			current?.receipt?.attempt === item.receipt.attempt
+		);
+	}
+
+	private enqueueInput(item: QueuedMessage): Promise<void> {
+		const admission = this.storeEvent("queue_enqueued", eventData(item));
+		const attempt = this.inputDeliveries.get(item.id);
+		if (attempt) attempt.admission = admission;
+		return admission;
+	}
 
 	constructor(
 		model: Model,
@@ -573,7 +737,8 @@ export class Subject {
 			return this.startRun(submission.promptText, queued, { needsEnqueueEvent: true });
 		}
 
-		return this.storeEvent("queue_enqueued", eventData(queued)).then(async () => {
+		return this.enqueueInput(queued).then(async () => {
+			if (this.inputDeliveries.get(queued.id)?.active === false) return;
 			this.queues.add(queued);
 			await this.publishInputAccepted(queued);
 			this.notifyQueueChanged();
@@ -622,7 +787,15 @@ export class Subject {
 			| { outcome: "committed" }
 			| { outcome: "retired"; reason: "empty_render" | "claimed" | "already_recorded" | "missing_render" },
 	): Promise<void> {
-		this.deferredInputRenders.delete(item.id);
+		const current = this.inputDeliveries.get(item.id);
+		if (
+			!current ||
+			(current.item.receipt?.attempt === item.receipt?.attempt &&
+				current.item.receiptNamespace === item.receiptNamespace)
+		) {
+			this.deferredInputRenders.delete(item.id);
+			this.inputDeliveries.delete(item.id);
+		}
 		await this.publishInputFact({
 			type: "input_settled",
 			inputId: item.id,
@@ -631,9 +804,23 @@ export class Subject {
 		});
 	}
 
-	accept(input: AgentInput): Promise<void> {
+	accept(input: AgentInput, owner?: InputDeliveryOwner): Promise<void> {
+		if (
+			input.receipt !== undefined &&
+			(!validDeliveryTag(input.receipt) || !owner || !owner.isActive() || this.deliveryClosed)
+		)
+			return Promise.reject(new Error("Invalid receipt or inactive input source"));
+		if (input.receipt && owner) {
+			if (
+				this.store?.state.deliveryCommits.has(deliveryKey(owner.namespace, input.receipt.key)) ||
+				this.findDelivery(owner.namespace, input.receipt.key)
+			)
+				return Promise.resolve();
+		}
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
+		if (this.inputDeliveries.has(input.id) || this.queues.has(input.id) || this.store?.state.queued.has(input.id))
+			return Promise.reject(new Error(`输入 id 已在队列中: ${input.id}`));
 		if (this.store?.state.recordIds.has(input.id)) {
 			return Promise.reject(new Error(`输入 id 已存在于会话记录中: ${input.id}`));
 		}
@@ -647,6 +834,18 @@ export class Subject {
 			}),
 			id: input.id,
 		};
+		if (input.receipt && owner) {
+			queued.receipt = { ...input.receipt };
+			queued.receiptNamespace = owner.namespace;
+			this.inputDeliveries.set(input.id, {
+				item: queued,
+				owner,
+				since: new Date().toISOString(),
+				order: ++this.deliveryOrder,
+				active: true,
+				phase: "queued",
+			});
+		}
 		if (input.render) this.deferredInputRenders.set(input.id, input.render);
 		const startImmediately = !this.isBusy() && this.queues.size === 0;
 		return this.submitInput(
@@ -656,6 +855,8 @@ export class Subject {
 				: { kind: "queue", resumeIfIdle: true },
 		).catch((error) => {
 			this.deferredInputRenders.delete(input.id);
+			const attempt = this.inputDeliveries.get(input.id);
+			if (attempt?.item === queued) attempt.error = error;
 			throw error;
 		});
 	}
@@ -736,6 +937,16 @@ export class Subject {
 
 	seedQueue(items: readonly QueuedMessage[]): void {
 		this.queues.seed(items);
+		for (const item of items)
+			if (item.receipt && item.receiptNamespace)
+				this.inputDeliveries.set(item.id, {
+					item,
+					since: item.receivedAt ?? new Date().toISOString(),
+					order: ++this.deliveryOrder,
+					owner: { namespace: item.receiptNamespace, isActive: () => false },
+					active: true,
+					phase: "queued",
+				});
 		this.notifyQueueChanged();
 	}
 
@@ -760,7 +971,11 @@ export class Subject {
 		const claimed: QueuedMessage[] = [];
 		for (const item of items) {
 			try {
-				await this.storeEvent("queue_restored", eventData(item));
+				const attempt = this.inputDeliveries.get(item.id);
+				if (attempt) {
+					const reply = await this.retireInputDelivery(attempt);
+					if (reply.kind === "unavailable") throw new Error(reply.reason);
+				} else await this.storeEvent("queue_restored", eventData(item));
 				claimed.push(item);
 				await this.settleInput(item, { outcome: "retired", reason: "claimed" });
 			} catch (error) {
@@ -781,7 +996,11 @@ export class Subject {
 		const claimed = this.queues.remove(id);
 		if (!claimed) return null;
 		try {
-			await this.storeEvent("queue_restored", { ...claimed });
+			const attempt = this.inputDeliveries.get(claimed.id);
+			if (attempt) {
+				const reply = await this.retireInputDelivery(attempt);
+				if (reply.kind === "unavailable") throw new Error(reply.reason);
+			} else await this.storeEvent("queue_restored", { ...claimed });
 		} catch (error) {
 			this.queues.add(claimed);
 			this.notifyQueueChanged();
@@ -809,12 +1028,9 @@ export class Subject {
 		const inputState = queuedInput ? { durable: !options.needsEnqueueEvent, committed: false } : undefined;
 		try {
 			if (queuedInput && options.needsEnqueueEvent) {
-				await this.storeEvent("queue_enqueued", {
-					...queuedInput,
-					source: queuedInput.source,
-					data: queuedInput.data,
-				});
+				await this.enqueueInput(queuedInput);
 				inputState!.durable = true;
+				if (this.inputDeliveries.get(queuedInput.id)?.active === false) return;
 			}
 			this.activity = "turn";
 			this.interrupted = false;
@@ -848,7 +1064,7 @@ export class Subject {
 		} catch (error) {
 			const admissionFailed = queuedInput !== undefined && inputState !== undefined && !inputState.durable;
 			if (queuedInput && inputState?.durable && !inputState.committed) {
-				for (const item of queuedInputs) if (!this.queues.has(item.id)) this.queues.add(item);
+				for (const item of queuedInputs) if (this.ownsInput(item) && !this.queues.has(item.id)) this.queues.add(item);
 				this.notifyQueueChanged();
 			}
 			this.abort = null;
@@ -1312,21 +1528,33 @@ export class Subject {
 
 	private async settleToolExchange(result: StreamCollectorResult): Promise<{ stopped: boolean }> {
 		await this.appendMessage(this.buildAssistantMessage(result));
-		const batch = await this.executeToolCalls(result.toolCalls);
-		for (const res of batch.results) {
-			// 阶段 D/M7：canonical journal 落原始执行正文（未经 transformResult 改写）；
-			// 模型可见改写投影经后续请求的投影链生效，不进 canonical 历史。
-			const evidence = res.canonical ?? res;
-			await this.appendMessage({
-				role: "tool",
-				tool_call_id: res.callId,
-				content: evidence.result,
-				images: evidence.images,
-				details: evidence.details,
-				status: evidence.status,
-				timestamp: new Date().toISOString(),
-			});
+		const attempts = new Set<string>();
+		const batch = await this.executeToolCalls(result.toolCalls, attempts);
+		try {
+			for (const res of batch.results) {
+				// 阶段 D/M7：canonical journal 落原始执行正文（未经 transformResult 改写）；
+				// 模型可见改写投影经后续请求的投影链生效，不进 canonical 历史。
+				const evidence = res.canonical ?? res;
+				await this.appendMessage({
+					role: "tool",
+					tool_call_id: res.callId,
+					content: evidence.result,
+					images: evidence.images,
+					details: evidence.details,
+					receipt: evidence.receipt,
+					receiptNamespace: evidence.receiptNamespace,
+					status: evidence.status,
+					timestamp: new Date().toISOString(),
+				});
+			}
+		} catch (error) {
+			for (const id of attempts) {
+				const attempt = this.toolDeliveries.get(id);
+				if (attempt) attempt.error = error;
+			}
+			throw error;
 		}
+		for (const id of attempts) this.toolDeliveries.delete(id);
 		if (batch.error) throw batch.error;
 		return { stopped: batch.results.some((res) => res.continuation === "stop") };
 	}
@@ -1371,7 +1599,7 @@ export class Subject {
 				}
 			} catch (error) {
 				// 批量认领路径尚未提交当前项时，当前项和后续项都归还队列。
-				for (const pending of items.slice(i)) this.queues.add(pending);
+				for (const pending of items.slice(i)) if (this.ownsInput(pending)) this.queues.add(pending);
 				this.notifyQueueChanged();
 				throw error;
 			}
@@ -1379,7 +1607,7 @@ export class Subject {
 		return true;
 	}
 
-	private async executeToolCalls(calls: CompletedToolCall[]): Promise<ToolBatchOutcome> {
+	private async executeToolCalls(calls: CompletedToolCall[], attempts = new Set<string>()): Promise<ToolBatchOutcome> {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
@@ -1405,9 +1633,14 @@ export class Subject {
 		}): Promise<ToolBatchResult> => {
 			let started = false;
 			try {
-				return await this.executeOne(call, tool, () => {
-					started = true;
-				});
+				return await this.executeOne(
+					call,
+					tool,
+					() => {
+						started = true;
+					},
+					attempts,
+				);
 			} catch (error) {
 				throw new ToolPipelineFailure(started, error);
 			}
@@ -1459,6 +1692,7 @@ export class Subject {
 		call: CompletedToolCall,
 		prepared: PreparedToolCall,
 		onStarted?: () => void,
+		attempts = new Set<string>(),
 	): Promise<ToolBatchResult> {
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
 		// 在流水线启动前广播 tool_call，确保 UI 必定能收到工具调用声明并建立节点，
@@ -1475,6 +1709,17 @@ export class Subject {
 			{
 				signal: this.currentSignal(),
 				hooks: this.runtimeHooks.tools,
+				onValidated: (outcome) => {
+					if (!outcome.receipt || !outcome.receiptNamespace || this.deliveryClosed) return;
+					const id = randomUUID();
+					attempts.add(id);
+					this.toolDeliveries.set(id, {
+						namespace: outcome.receiptNamespace,
+						receipt: { ...outcome.receipt },
+						since: new Date().toISOString(),
+						order: ++this.deliveryOrder,
+					});
+				},
 				observers: {
 					onStart: async () => {
 						await this.storeEvent("tool_started", {
@@ -1572,7 +1817,7 @@ export class Subject {
 			}
 		} catch (error) {
 			// Items already committed are canonical; only the uncommitted suffix returns to the mailbox.
-			for (const item of items.slice(committedCount)) this.queues.add(item);
+			for (const item of items.slice(committedCount)) if (this.ownsInput(item)) this.queues.add(item);
 			this.notifyQueueChanged();
 			throw error;
 		}
@@ -1580,19 +1825,45 @@ export class Subject {
 	}
 
 	private async commitQueueItem(item: QueuedMessage): Promise<boolean> {
+		if (!this.ownsInput(item)) return false;
+		const attempt = this.inputDeliveries.get(item.id);
+		const eligible = () =>
+			!item.receipt ||
+			(!!attempt &&
+				this.inputDeliveries.get(item.id) === attempt &&
+				attempt.active &&
+				attempt.owner.isActive() &&
+				!this.deliveryClosed &&
+				!this.store?.state.deliveryCommits.has(deliveryKey(attempt.owner.namespace, item.receipt!.key)));
+		const retire = async () => {
+			if (attempt && this.inputDeliveries.get(item.id) === attempt) {
+				const reply = await this.retireInputDelivery(attempt);
+				if (reply.kind === "unavailable") throw new Error(reply.reason);
+			}
+			return false;
+		};
+		if (!eligible()) return retire();
+		if (attempt) attempt.phase = "processing";
 		if (this.store?.state.recordIds.has(item.id)) {
 			console.warn(`[Subject:Mailbox] 队列条目 ID ${item.id} 已在历史记录中，跳过并退役`);
-			if (this.store.state.queued.has(item.id)) {
-				await this.storeEvent("queue_restored", eventData(item));
-			}
+			if (attempt) await retire();
+			else if (this.store.state.queued.has(item.id)) await this.storeEvent("queue_restored", eventData(item));
 			await this.settleInput(item, { outcome: "retired", reason: "already_recorded" });
 			return false;
 		}
 		const render = this.deferredInputRenders.get(item.id);
 		if (render) {
-			const rendered = await render();
+			let rendered: string | null;
+			try {
+				rendered = await render();
+			} catch (error) {
+				if (attempt) attempt.error = error;
+				throw error;
+			}
+			if (!eligible()) return retire();
 			if (!rendered?.trim()) {
-				await this.storeEvent("queue_restored", eventData(item));
+				if (attempt) await retire();
+				else await this.storeEvent("queue_restored", eventData(item));
 				await this.settleInput(item, { outcome: "retired", reason: "empty_render" });
 				return false;
 			}
@@ -1600,12 +1871,22 @@ export class Subject {
 		} else if (item.text === "[deferred world event]") {
 			console.warn(`[Subject:Mailbox] 队列条目 ${item.id} 的延迟渲染函数已丢失，安全退役`);
 			if (this.store?.state.queued.has(item.id)) {
-				await this.storeEvent("queue_restored", eventData(item));
+				if (attempt) await retire();
+				else await this.storeEvent("queue_restored", eventData(item));
 			}
 			await this.settleInput(item, { outcome: "retired", reason: "missing_render" });
 			return false;
 		}
-		await this.store?.appendInput(item);
+		if (!eligible()) return retire();
+		if (attempt) attempt.phase = "appending";
+		try {
+			const append = this.store?.appendInput(item) ?? Promise.resolve();
+			if (attempt) attempt.append = append;
+			await append;
+		} catch (error) {
+			if (attempt) attempt.error = error;
+			throw error;
+		}
 		const message = projectInputMessage(item);
 		if (message) this.history.push(message);
 		await this.settleInput(item, { outcome: "committed" });

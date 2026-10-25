@@ -1,3 +1,4 @@
+import { validDeliveryTag } from "../core/delivery.js";
 import { validImages } from "../core/content.js";
 import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
@@ -36,6 +37,9 @@ export interface PreparedToolCall {
 }
 
 export interface ToolExecutionResult {
+	receipt?: import("../core/types.js").HostDeliveryTag;
+	/** Internal stamp from the actual registration; never trusted from Tool.run. */
+	receiptNamespace?: string;
 	images?: import("../core/content.js").ImageContent[];
 	details?: unknown;
 	result: string;
@@ -57,7 +61,12 @@ export interface ToolView {
 	has(name: string): boolean;
 	getExecutionMode(name: string): ToolExecutionMode;
 	prepare(name: string, args: Record<string, unknown>): PreparedToolCall;
-	execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult>;
+	execute(
+		prepared: PreparedToolCall,
+		signal?: AbortSignal,
+		invocationId?: string,
+		onValidated?: (result: ToolExecutionResult) => void,
+	): Promise<ToolExecutionResult>;
 	run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
 	executePipeline(
 		call: ToolCallRequest,
@@ -92,14 +101,18 @@ export class ToolBroker implements ToolView {
 		return new ScopedToolView(this, options);
 	}
 
-	private readonly tools = new Registrations<{ tool: Tool; validator: ValidateFunction }>();
+	private readonly tools = new Registrations<{ tool: Tool; validator: ValidateFunction; deliveryNamespace: string }>();
 
-	register(t: Tool, options: { replace?: boolean } = {}): () => void {
+	register(t: Tool, options: { replace?: boolean; deliveryNamespace?: string } = {}): () => void {
 		validateToolDefinition(t);
 		const name = t.def.function.name;
 		if (this.tools.has(name) && !options.replace) throw new Error(`工具重名: ${name}`);
 		const validator = ajv.compile(t.def.function.parameters);
-		return this.tools.register(name, { tool: t, validator }, options);
+		return this.tools.register(
+			name,
+			{ tool: t, validator, deliveryNamespace: options.deliveryNamespace ?? `tool:${name}` },
+			options,
+		);
 	}
 
 	remove(name: string): void {
@@ -112,6 +125,10 @@ export class ToolBroker implements ToolView {
 
 	names(): string[] {
 		return [...this.tools.keys()];
+	}
+
+	getDeliveryNamespace(name: string): string | undefined {
+		return this.tools.get(name)?.deliveryNamespace;
 	}
 
 	get(name: string): Tool | undefined {
@@ -139,7 +156,12 @@ export class ToolBroker implements ToolView {
 		return { name, args, tool: entry.tool, validator: entry.validator };
 	}
 
-	async execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult> {
+	async execute(
+		prepared: PreparedToolCall,
+		signal?: AbortSignal,
+		invocationId?: string,
+		onValidated?: (result: ToolExecutionResult) => void,
+	): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
@@ -154,7 +176,16 @@ export class ToolBroker implements ToolView {
 				status: "not_started",
 			};
 		}
-		return executeToolCore(tool, prepared.name, prepared.args, signal, this.context, invocationId);
+		return executeToolCore(
+			tool,
+			prepared.name,
+			prepared.args,
+			signal,
+			this.context,
+			invocationId,
+			this.getDeliveryNamespace(prepared.name),
+			onValidated,
+		);
 	}
 
 	async run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
@@ -180,6 +211,8 @@ async function executeToolCore(
 	signal?: AbortSignal,
 	context?: ToolExecutionContext,
 	invocationId?: string,
+	deliveryNamespace?: string,
+	onValidated?: (result: ToolExecutionResult) => void,
 ): Promise<ToolExecutionResult> {
 	if (signal?.aborted) {
 		return {
@@ -197,11 +230,18 @@ async function executeToolCore(
 			!result ||
 			typeof result.result !== "string" ||
 			!validImages(result.images) ||
+			(result.receipt !== undefined && !validDeliveryTag(result.receipt)) ||
 			!(TOOL_RESULT_STATUSES as readonly unknown[]).includes(result.status)
 		) {
 			throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
 		}
-		return result;
+		const validated: ToolExecutionResult = {
+			...result,
+			receipt: result.receipt ? Object.freeze({ key: result.receipt.key, attempt: result.receipt.attempt }) : undefined,
+			receiptNamespace: result.receipt ? deliveryNamespace : undefined,
+		};
+		onValidated?.(validated);
+		return validated;
 	} catch (error) {
 		if (signal?.aborted) {
 			return {
@@ -262,7 +302,12 @@ export class ScopedToolView implements ToolView {
 		return this.root.prepare(name, args);
 	}
 
-	async execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult> {
+	async execute(
+		prepared: PreparedToolCall,
+		signal?: AbortSignal,
+		invocationId?: string,
+		onValidated?: (result: ToolExecutionResult) => void,
+	): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
@@ -288,7 +333,16 @@ export class ScopedToolView implements ToolView {
 		}
 		const context: ToolExecutionContext | undefined =
 			this.ownerId !== undefined ? { ownerId: this.ownerId, callerId: this.options.callerId } : this.root.getContext();
-		return executeToolCore(tool, prepared.name, prepared.args, signal, context, invocationId);
+		return executeToolCore(
+			tool,
+			prepared.name,
+			prepared.args,
+			signal,
+			context,
+			invocationId,
+			this.root.getDeliveryNamespace(prepared.name),
+			onValidated,
+		);
 	}
 
 	async run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {

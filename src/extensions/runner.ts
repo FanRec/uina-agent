@@ -1,3 +1,5 @@
+import { deliveryKey } from "../core/delivery.js";
+import type { HostDeliveryPort, InputDeliveryOwner } from "../core/types.js";
 /** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
@@ -39,7 +41,8 @@ export interface ExtensionAPI {
 	readonly path: string;
 	readonly cwd: string;
 	readonly ui: ExtensionUIContext;
-	submitInput(input: AgentInput): Promise<void>;
+	delivery(scope?: string): HostDeliveryPort;
+	submitInput(input: AgentInput, options?: { deliveryScope?: string; signal?: AbortSignal }): Promise<void>;
 	reportError(error: unknown): void;
 	on<T extends ExtensionEvent["type"]>(
 		type: T,
@@ -64,7 +67,7 @@ export interface ExtensionAPI {
 	)[];
 	/** 事实出口（RuntimeEvent 单流广播）：capability 产生"已发生"的事实（如 session_compact）。 */
 	emitEvent(event: import("../runtime/events.js").RuntimeEvent): Promise<void>;
-	registerTool(tool: Tool, options?: { replace?: boolean }): () => void;
+	registerTool(tool: Tool, options?: { replace?: boolean; deliveryScope?: string }): () => void;
 	callTool(
 		name: string,
 		args: Record<string, unknown>,
@@ -150,7 +153,8 @@ export interface ExtensionRunnerOptions {
 	onModel?: (model: import("../core/types.js").Model, options?: { replace?: boolean }) => () => void;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
-	onInput?: (input: AgentInput) => Promise<void>;
+	onInput?: (input: AgentInput, owner?: InputDeliveryOwner) => Promise<void>;
+	delivery?: (namespace: string) => HostDeliveryPort;
 	/** 当前上下文事实（pi.context()）。 */
 	context?: () => Promise<ContextSnapshot>;
 	/** 完整 RequestProjection inspection（不发送 Provider、不发布 ContextSnapshot）。 */
@@ -573,11 +577,19 @@ export class ExtensionRunner extends ExtensionHost {
 					);
 				}, options?.signal),
 			reportError: (error) => this.emitOwnedError(scope.id, "external", error),
-			submitInput: async (input) => {
+			delivery: (localScope) => {
+				assertActive();
+				if (!this.options.delivery) throw new Error("宿主未提供交付回执端口");
+				return this.options.delivery(deliveryKey(scope.id, localScope ?? ""));
+			},
+			submitInput: async (input, inputOptions) => {
 				assertActive();
 				if (!this.options.onInput) throw new Error("宿主未提供输入入口");
 				try {
-					await this.options.onInput(cloneAgentInputForHost(input));
+					await this.options.onInput(cloneAgentInputForHost(input), {
+						namespace: deliveryKey(scope.id, inputOptions?.deliveryScope ?? ""),
+						isActive: () => scope.active && !inputOptions?.signal?.aborted,
+					});
 				} catch (error) {
 					this.emitOwnedError(scope.id, "submitInput", error);
 					throw error;
@@ -630,7 +642,7 @@ export class ExtensionRunner extends ExtensionHost {
 								}, signal);
 							},
 						},
-						options,
+						{ ...options, deliveryNamespace: deliveryKey(scope.id, options?.deliveryScope ?? "") },
 					),
 				);
 			},

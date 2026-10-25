@@ -76,7 +76,7 @@ describe("CLI session recovery", () => {
 		await root.writeFile(
 			join("work", "data", "session.jsonl"),
 			[
-				JSON.stringify({ kind: "header", version: 3, id: "session", cwd, createdAt: timestamp }),
+				JSON.stringify({ kind: "header", version: 4, id: "session", cwd, createdAt: timestamp }),
 				JSON.stringify({ kind: "message", id: "1", seq: 1, timestamp, message: { role: "user", content: "ORDER_A" } }),
 				JSON.stringify({ kind: "custom_message", id: "2", seq: 2, timestamp, customType: "probe", content: "ORDER_C" }),
 				JSON.stringify({

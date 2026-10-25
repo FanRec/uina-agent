@@ -68,11 +68,11 @@ TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递�
 
 扩展阻止执行时记录 `not_started` 及原因，不生成 `tool_started`；该日志可正常重开。`custom_entry` 是 capability 私有持久状态（Auxiliary）：仅登记在 auxiliary timeline，不进入主线 entries 与模型上下文。
 
-队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次或跨重启 producer 对账。`input_accepted` 表示已受理进入直接启动或队列；`input_settled` 表示输入已进入 canonical history 或永久退役（不表示模型已回复或外部副作用成功）。World 可用该事实回收 deferred 输入占位，避免把 render 当作提交确认。
+队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次。普通无 receipt 输入不承诺 producer 对账；带 receipt 的输入可经来源绑定的 HostDeliveryPort 查询持久提交事实，交付重试不能据此重跑外部动作。`input_accepted` 表示已受理进入直接启动或队列；`input_settled` 表示输入已进入 canonical history 或永久退役（不表示模型已回复或外部副作用成功）。World 可用该事实回收 deferred 输入占位，避免把 render 当作提交确认。
 
 Host 默认装配事件帧 profile：未显式传入 `projection`/`systemPrompt` 时，模型请求中的外部输入（用户输入、runtime 来源且 `origin: external` 的观察）以 `external_event_frame` 三消息组（通知、合成调用、回执）呈现，内部 runtime 消息以带来源标注的 user 消息呈现且不重复加内部分类前缀；每请求执行帧协议校验，请求级预算门仍归 Subject。`examples/file-events.mts` 的文件变化观察标 `origin: external`。设计见 [外部事件帧设计](proposals/runtime/external-event-frame-design.md)。
 
-header 为 v3，且只接受 v3：v2 及更早版本明确拒绝，没有迁移链，也没有旧版本 reader——旧 journal 直接开新会话。不会自动猜测修复非法生命周期记录，也无法补回已丢失的输入。
+header 为 v4，且只接受 v4：v3 及更早版本明确拒绝，没有迁移链，也没有旧版本 reader——旧 journal 直接开新会话。不会自动猜测修复非法生命周期记录，也无法补回已丢失的输入。
 
 ## 工具结果
 
@@ -102,7 +102,7 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 批 4 已实现 Windows x64 Executor 平台：双命名 Job、精确进程身份、受管 bootstrap/Companion、固定 JSON IPC、持久身份/launch 及本地门意图、心跳、关闭/退役与显式恢复。Runtime 使用 schema v2，固定 owner/storage，受理及开始先提交；Owner 独立三门与 Driver 写入检查共用同一权威。开发场景 `pnpm dev:mc:executor` 经正式受管入口验证，开发 harness 复用同一执行侧装配。证据见 [平台实施记录](proposals/mc/executor-platform-implementation.md)。
 
-Program/Library、Host 持久回执、WorldDef/模型工具与通知仍未实现，Host 会话仍为 journal v3；当前不能作为完整 `minecraft({action,params})` 主脑工具使用。旧 Runtime 库不自动迁移，验收用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
+批 5 已实现通用 Host 持久回执与 journal v4：工具/输入共享 receipt 标记、来源绑定的 inspect/retire、输入去重与 CAS 退役；committed 只由 canonical append 完成后生成。提交索引沿 Session reducer 增量恢复且跨回溯保留，内存会话标 volatile。ExtensionAPI.delivery(scope) 与 World context.delivery 复用同一端口；详见 [批 5 实施记录](proposals/mc/host-delivery-implementation.md)。Program/Library、WorldDef/模型工具与可靠通知仍未实现；当前不能作为完整 `minecraft({action,params})` 主脑工具使用。旧 Runtime 库不自动迁移，验收用独立临时数据根。普通窗口支持范围、真实 Paper 验收及未验证项见 [MC 开发报告](../dev/MC-WORLD.md)。
 
 ## QQ World
 

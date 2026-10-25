@@ -1,20 +1,13 @@
-# Minecraft 实现重做入口
+# Minecraft 实现入口
 
-更新时间：2026-10-25。当前目录已有 I1/K1、批 1 采集、批 2 窗口与容器、**批 3 生产链**，K1/批 1/批 2 在 `d77d20f`，Driver 修复在 `6157834`；当前 `codex/phase0-baseline` 工作树还包含既有未提交生产链修复。实际装配目录为 **10 查询 + 15 动作（25/51）**，此前 27 项为误计；当前专项验证与来源见 dev/MC-WORLD.md。Program/Library、Host 回执、Executor/WorldDef 尚未实现。
+更新时间：2026-10-25。基线 `codex/phase0-baseline` / `6fbd9a4`。批 0–3 能力与生产链修复、批 4 Executor 平台已入库；批 5 通用 Host 持久回执已实现并随本批提交。能力面仍为 **10 查询 + 15 动作（25/51）**。
 
-下一任务是**批 4：Executor 进程与传输底座**；批 5 的 H 回执可独立推进，批 6 才经正式原生模型入口首次校准，批 7–9 接 Program、文件复用、等待/决策并收口 I2。后续玩法按真实依赖与校准收益入队，施工顺序唯一见总规划 §10；不再先扩到蓝图再接主脑，也不以开发脚本代替模型游玩。
+批 4 有 Windows x64 双 Job、受管 bootstrap/Companion、固定 IPC、Owner/心跳/三门、停止/退役/恢复。批 5 有 journal v4、工具与输入 receipt、提交索引、来源绑定 inspect/retire、Mailbox 去重与 World 上下文接线。
 
-本目录开发者开工前先读 [总开发规划](../../../docs/proposals/mc/development-plan.md) 和 [开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读所属模块。规范中的接口/所有权、真实结果、退出与验证要求适用于本次重做；不要求特定代理工具、假 Bot 先行或每个小步骤都提交。
+下一任务是 **批 6：正式原生主脑入口与可靠通知及首次模型校准**。Program/Library、等待/决策与完整 I2 按批 7–9 推进；其余玩法按实际依赖与校准收益选择。当前没有正式 minecraft 模型工具，不能以开发脚本替代主脑游玩验收。
 
-## 权威设计
+开工先读 [总规划 §10](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读 [公开合同](../../../docs/proposals/mc/public-api.md) 与所属模块。Host 回执行为见 [合同](../../../docs/proposals/runtime/delivery-receipts.md)，本轮证据见 [实施记录](../../../docs/proposals/mc/host-delivery-implementation.md)。
 
-- [状态与导航](../../../docs/proposals/mc/README.md)、[概要](../../../docs/proposals/mc/design.md)。
-- [完整开发规划](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)。
-- [跨模块合同](../../../docs/proposals/mc/contracts.md)、[公开类型](../../../docs/proposals/mc/public-api.md)。
-- [Executor](../../../docs/proposals/mc/modules/executor.md)、[Runtime](../../../docs/proposals/mc/modules/runtime.md)、[Program](../../../docs/proposals/mc/modules/program.md)、[Library](../../../docs/proposals/mc/modules/library.md)。
-- [Driver](../../../docs/proposals/mc/modules/driver.md)、[World](../../../docs/proposals/mc/modules/world.md)、[能力面](../../../docs/proposals/mc/modules/capabilities.md)。
-- 通用 Host 交付依赖：[持久交付回执](../../../docs/proposals/runtime/delivery-receipts.md)。
+真服入口仍为 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`、`dev:mc:k3`、`dev:mc:repair`、`dev:mc:production-repair`、`dev:mc:executor`。MC 专项使用显式 `tests/mc/*.test.ts` 列表与 vmThreads；Host/扩展及全仓使用默认池。真服历史记录见 dev/MC-WORLD.md，本轮只验证 Host/Session 责任。
 
-I1 入口 `pnpm dev:mc`；K1 `pnpm dev:mc:k1`；采集 `pnpm dev:mc:k2`；窗口容器 `pnpm dev:mc:containers`；生产链 `pnpm dev:mc:k3`；修复与协议确认 `pnpm dev:mc:repair`；生产链修复 `pnpm dev:mc:production-repair`（默认独立 Temp 数据根）。当前确定性回归使用显式 tests/mc/*.test.ts 列表与 vmThreads，**28 files / 236 tests**（2026-10-25 实测）；实际真服记录见 dev/MC-WORLD.md 与 docs/proposals/mc/production-repair-implementation.md。
-
-不要清理 `.uina/world-data/minecraft`、profile 数据或其他运行数据；规划修订与后续施工使用各自明确范围，验收不得以删除真实数据换取通过。
+不要清理真实 `.uina/world-data`、profile、认证、会话或 Minecraft 世界。journal v3 保留原文件，使用新 v4 会话，不自动迁移。

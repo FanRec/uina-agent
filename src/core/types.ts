@@ -8,6 +8,43 @@ export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type FinishReason = "stop" | "tool_calls" | "length";
 export type ToolResultStatus = "succeeded" | "failed" | "cancelled" | "unknown" | "not_started";
 
+/** Transport metadata for one fixed producer material and one delivery attempt. */
+export interface HostDeliveryTag {
+	key: string;
+	attempt: string;
+}
+export interface HostCommitReceipt extends HostDeliveryTag {
+	namespace: string;
+	session: string;
+	record: string;
+	channel: "tool" | "input";
+}
+export type HostDeliveryState =
+	| { kind: "committed"; receipt: HostCommitReceipt }
+	| ({ kind: "pending"; attempt: string; since: string } & (
+			| { channel: "tool"; activity: "processing" }
+			| { channel: "input"; activity: "queued" | "processing" }
+	  ))
+	| { kind: "absent" }
+	| { kind: "unavailable"; reason: string };
+export type HostRetireReply =
+	| { kind: "retired" }
+	| { kind: "committed"; receipt: HostCommitReceipt }
+	| { kind: "changed"; state: HostDeliveryState }
+	| { kind: "unavailable"; reason: string };
+export interface HostDeliveryPort {
+	readonly namespace: string;
+	readonly session: string;
+	readonly durability: "durable" | "volatile";
+	inspect(key: string): Promise<HostDeliveryState>;
+	retire(key: string, expectedAttempt: string): Promise<HostRetireReply>;
+}
+/** Bound by the actual registration, never by model parameters or message content. */
+export interface InputDeliveryOwner {
+	namespace: string;
+	isActive(): boolean;
+}
+
 /** ToolResultStatus 的合法值集合（P2-H 单一事实）：broker 的运行时校验与
  * recovery.checkEvent 的 journal 校验共用；第三方 Tool 是不可信边界，两处
  * 校验都保留。 */
@@ -58,6 +95,8 @@ export interface ModelContextMeta {
 }
 
 export interface QueuedMessage {
+	receipt?: HostDeliveryTag;
+	receiptNamespace?: string;
 	id: string;
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
@@ -167,6 +206,8 @@ export interface AssistantAgentMessage {
 }
 
 export interface ToolAgentMessage {
+	receipt?: HostDeliveryTag;
+	receiptNamespace?: string;
 	input?: InputProvenance;
 	details?: unknown;
 	id?: string;

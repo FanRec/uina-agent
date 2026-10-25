@@ -246,7 +246,9 @@ export class UinaHost {
 				reload: () => hostSelf.reloadExtensions(),
 				shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
 				tools,
-				onInput: (input) => (state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input)),
+				delivery: (namespace) => subject.delivery(namespace),
+				onInput: (input, owner) =>
+					state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input, owner),
 				onError: (text) => emit({ type: "error", text }),
 				onNotice: (text) => emit({ type: "notice", text }),
 				onProvider: (name, registered, options) => models.register(name, registered, options),
@@ -564,6 +566,7 @@ export class UinaHost {
 	async dispose(): Promise<void> {
 		if (this.stopPromise) return this.stopPromise;
 		this.state.stopping = true;
+		this.subject.closeDelivery();
 		this.stopPromise = (async () => {
 			this.subject.interrupt();
 			for (const controller of this.directRuns.keys()) controller.abort();

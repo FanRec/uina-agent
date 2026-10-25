@@ -49,6 +49,7 @@ export interface ActionDef<TParams = Record<string, unknown>> {
  * 外部伴生服务上下文
  */
 export interface ServiceCompanionContext {
+	delivery?: import("../../core/types.js").HostDeliveryPort;
 	/** 取消信号（当宿主或世界关闭时触发） */
 	signal: AbortSignal;
 	/** 投递输入/机会至主脑信道（可选通用能力） */
@@ -175,6 +176,7 @@ export interface WorldRuntime {
 }
 
 export interface WorldEvent {
+	receipt?: import("../../core/types.js").HostDeliveryTag;
 	id: string;
 	type: string;
 	channel: "world";

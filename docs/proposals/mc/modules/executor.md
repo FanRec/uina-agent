@@ -484,7 +484,7 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 
 ### 8.1 权威报告与 Host 回执
 
-Runtime 只持久保存 pending/committed 两种交付处置；committed 只接受真实 HostCommitReceipt，不因接口返回、流水线 tool_result 或 render 成功而确认。报告仍是同一 CompletionReport，不新增补报报告。所需的通用接口与内核接线见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，它目前尚未实现；完整 Executor 不能在缺少它时宣称支持可靠通知。
+Runtime 只持久保存 pending/committed 两种交付处置；committed 只接受真实 HostCommitReceipt，不因接口返回、流水线 tool_result 或 render 成功而确认。报告仍是同一 CompletionReport，不新增补报报告。所需的通用接口与内核接线见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，该通用接缝已在批 5 实现，见 [实施记录](../host-delivery-implementation.md)；Executor 的实际消费与可靠通知仍须在批 6 接通。
 
 Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 completionRef，attempt 使用宿主生成的本次交付 UUID；输入渠道可直接令 inputId=attempt。返回的 receipt 必须匹配当前端口、生产者 key 与真实持久记录；guest/模型的同形 JSON 无效。持久后 settleDelivery(receipt) 幂等将原项改 committed；ACK 丢失可重复同一确认，不能降回 pending。不同会话无法核实旧回执时允许重新呈现同 key，不推断游戏动作没执行。
 

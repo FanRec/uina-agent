@@ -53,7 +53,7 @@ export class WorldActivation {
 					return this.scope.run((combined) => rawTool.run(args, combined, toolContext), signal);
 				},
 			};
-			this.scope.onDispose(this.host.pi.registerTool(tool));
+			this.scope.onDispose(this.host.pi.registerTool(tool, { deliveryScope: `world:${this.definition.name}` }));
 		} catch (cause) {
 			await this.rollback(cause);
 			throw cause;
@@ -94,7 +94,11 @@ export class WorldActivation {
 		const { pi } = this.host;
 		return {
 			signal: this.scope.signal,
-			submitInput: pi.submitInput ? (input) => pi.submitInput!(input) : undefined,
+			delivery: pi.delivery?.(`world:${this.definition.name}`),
+			submitInput: pi.submitInput
+				? (input) =>
+						pi.submitInput!(input, { deliveryScope: `world:${this.definition.name}`, signal: this.scope.signal })
+				: undefined,
 			isBusy: pi.isBusy ? () => pi.isBusy!() : undefined,
 			worldDataDir: pi.subject
 				? join(pi.subject.stateRoot, "world-data", this.definition.name)
@@ -107,20 +111,24 @@ export class WorldActivation {
 						if (event.channel !== "world") throw new Error("World 事件必须使用 channel: world");
 						if (!event.text && !event.render) throw new Error("World 事件必须提供 text 或 render，拒绝静默丢弃");
 						const render = event.render ? async () => (this.scope.active ? await event.render!() : null) : undefined;
-						await pi.submitInput!({
-							id: event.id,
-							mode: event.delivery === "urgent" ? "steer" : "followUp",
-							source: {
-								kind: "runtime",
-								type: event.type,
-								ref: this.definition.name,
-								origin: event.origin,
-								channel: event.channel,
+						await pi.submitInput!(
+							{
+								id: event.id,
+								mode: event.delivery === "urgent" ? "steer" : "followUp",
+								source: {
+									kind: "runtime",
+									type: event.type,
+									ref: this.definition.name,
+									origin: event.origin,
+									channel: event.channel,
+								},
+								text: event.text ?? "[deferred world event]",
+								...(render ? { render } : {}),
+								data: event.data,
+								receipt: event.receipt,
 							},
-							text: event.text ?? "[deferred world event]",
-							...(render ? { render } : {}),
-							data: event.data,
-						});
+							{ deliveryScope: `world:${this.definition.name}`, signal: this.scope.signal },
+						);
 					}
 				: undefined,
 			onActivity: pi.on

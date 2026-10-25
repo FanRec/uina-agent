@@ -1,6 +1,6 @@
 # Host 持久交付回执
 
-日期：2026-10-18。状态：终态合同设计，未实现。本文拥有通用工具结果/运行时输入的交付标记、状态查询与尝试退役；不拥有生产者的任务、通知内容或重试策略。Minecraft 的使用方式见 [Executor §8](../mc/modules/executor.md)。
+日期：2026-10-18。状态：批 5 已实现（2026-10-25）；实现与验证见 [实施记录](../mc/host-delivery-implementation.md)。本文拥有通用工具结果/运行时输入的交付标记、状态查询与尝试退役；不拥有生产者的任务、通知内容或重试策略。Minecraft 的使用方式见 [Executor §8](../mc/modules/executor.md)。
 
 ## 1. 保证与所有权
 
@@ -78,8 +78,15 @@ inspect 查询端口绑定的当前 session。旧会话的 ACK 丢失而新会�
 
 ## 6. 当前事实与实施验证
 
-当前 [Subject](../../../src/agent/loop.ts) 在 executeOne.onDone 发 tool_result，之后才在 settleToolExchange 追加 canonical tool message；[SessionStore](../../../src/session/jsonl-store.ts) 的磁盘 append 会 sync 后更新恢复状态。现有 [World 上下文](../../../src/extensions/world-framework/types.ts) 只有 submitInput/emitEvent 与活动事件，尚无本文 delivery 端口或 receipt 标记。
+当前 [Subject](../../../src/agent/loop.ts) 在 executeOne.onDone 发 tool_result，之后才在 settleToolExchange 追加 canonical tool message；[SessionStore](../../../src/session/jsonl-store.ts) 的磁盘 append 会 sync 后更新恢复状态。[World 上下文](../../../src/extensions/world-framework/types.ts) 已注入 delivery 端口；工具、submitInput 与 emitEvent 使用同一注册来源 namespace。
 
-实施须同步 ToolExecutionResult/AgentMessage/AgentInput、记录 schema/reducer、Subject、Host 与 Extension/World 适配；新增信息属于 Tool execution、Mailbox、Canonical history 的元数据和查询，不添加内核业务概念。当前日志是 v3，新字段按项目版本纪律发布为 v4，旧格式明确拒绝，不在本任务自动改写真实日志，不保留一条“旧接缝也能保证”的旁路。
+实施须同步 ToolExecutionResult/AgentMessage/AgentInput、记录 schema/reducer、Subject、Host 与 Extension/World 适配；新增信息属于 Tool execution、Mailbox、Canonical history 的元数据和查询，不添加内核业务概念。当前日志已为 v4，v3 及更早格式明确拒绝，不在本任务自动改写真实日志，不保留一条“旧接缝也能保证”的旁路。
 
 必须验证：工具结束但尚未 append；同批其他工具长时间执行；append 前后强杀；恢复生成 unknown 不误 ACK；回执回调丢失；同 key 并发入队；retire 与 append 竞争；主脑长期忙但队列不增长；跨会话重复；回溯后 committed 事实仍可查；内存存储不返回 durable。静态类型或 mock 只证明其边界，不等于磁盘/重启/真实生产者验收。
+
+
+### 批 5 接线约定
+
+`ExtensionAPI.delivery(scope?: string)` 返回当前会话端口；`registerTool` / `submitInput` 接受 `deliveryScope?: string`。namespace 为 `JSON.stringify([extensionRegistrationId, scope ?? ""])`，World 使用 `world:<name>`。submitInput 可带 World 生命周期 signal，实际提交资格同时受扩展与 World activation 约束。模型参数不能设置这些身份。
+
+SessionStore 显式提供 session / durability。提交索引保留首份 namespace/key 记录，内存提交可查询但端口明确 volatile。恢复队列保留原占位，不恢复旧 activation 的提交资格；正常消费或显式 retire 只撤回旧交付，生产者决定是否重新呈现。无 SessionStore 的裸 Subject 返回 unavailable。

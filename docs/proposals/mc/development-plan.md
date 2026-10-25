@@ -1,8 +1,8 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。下一批为 **批 4：Executor 进程与传输底座**；批 5 的 Host 回执可独立推进；批 6 接通正式原生模型入口并首次校准。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4 Executor 平台与批 5 Host 持久回执已实现；下一批为 **批 6：正式原生模型入口与首次校准**。完整程序闭环 I2 在批 9，详见 §10。
 
-K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，核查基线 HEAD 为 `8b46337`，工作树包含既有未提交生产链修复。本次规划文档单独提交，不迁移数据或实施这些工作包，既有生产链修改保留。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
+K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，当前实现基线 HEAD 为 `6fbd9a4`，已包含生产链修复和批 4；批 5 已在当前工作树实现，见 [实施记录](host-delivery-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
 目标：完成当前设计的 **16 个查询、35 个动作**，以及支持它们的运行、控制、观察、文件复用与恢复机制。先后交付的是正式实现的一部分，最终范围不因首个可用流程缩减。
 
@@ -10,18 +10,18 @@ K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的�
 
 采用 **先落实最小共享接缝，再按依赖并行实现，持续接通真实流程**。各模块不用等整个项目完成才集成；共享语义也不能留到模块写完后再补。
 
-2026-10-25 的当前起点（历史运行证据不升级为本次重跑）：
+2026-10-25 当前起点核查（历史运行证据不升级为本次重跑）：
 
 | 事实 | 对开发的影响 |
 |---|---|
 | contracts/driver/world/runtime/capabilities 已接通 I1、K1 和完整 K2 能力组；目录实测 10 查询 + 15 动作；当前核查中 MC 28 文件/236 项、`pnpm typecheck` 通过 | 现有采集、存取、合成和熔炼已是模型与程序的真实消费者，不再以“能力不足”为由推迟接入 |
 | 真服已有 Paper 1.21.11 build132、Java 21、offline UinaDev 的专项验收记录；生产链源码/产物 K3 各 14/14、修复场景各 7/7，见生产链实施记录 | 这些证明对应场景；未证明模型自主游玩、Microsoft 认证或其他版本 |
-| 当前工作树包含生产链修复和未跟踪的新实现文件 | 保留现有修改；并行 worktree 只有在共同基线整合后才可使用，不假设 HEAD 已包含当前文件 |
-| Host/World 已有生命周期、工具、输入和图片接缝，但没有 HostDeliveryPort/receipt | Host 回执是独立基础任务；普通 emitEvent 不能代替持久接收 |
-| 会话实现仍是 v3，src/ 内无 receipt 类型；[回执规范](../runtime/delivery-receipts.md) 已裁决升级 v4、拒绝旧格式 | H 仍完全未实现：与回执同批修改写入、恢复及相关消费者；不迁移真实会话 |
+| `6fbd9a4` 已包含生产链修复与 Executor 平台；批 5 在当前工作树实现 | 保留工作树归属；正式 MC 消费与通知随批 6 接通 |
+| Host/World 已有生命周期、工具、输入、图片与 HostDeliveryPort/receipt 接缝 | 批 6 直接消费正式端口，不以 emitEvent 返回代替持久接收 |
+| 会话为 journal v4；带标记 canonical 记录增量形成提交索引，旧 v3 明确拒绝 | H 已实现，保留真实旧日志；验收使用独立会话，见批 5 实施记录 |
 | 类型检查与构建均已包含 Minecraft（tsconfig.build 纳入 `.uina/worlds/minecraft`，Worker 路径按产物/源码双态解析） | 构建接线已完成；后续 Worker/WASM 资产按首次采用时补复制规则 |
 | package.json 固定 mineflayer=4.39.0、mineflayer-pathfinder=2.4.5、vec3=0.1.7；QuickJS 尚未列入依赖 | 引擎与 WASM/Worker 在批 7 接入；研究快照不自动等于安装版本 |
-| 仅开发 harness 装配正式执行模块；没有 Executor、Companion、WorldDef、Program 或 Library 实现 | 当前不能直接进行正式主脑工具校准；先完成批 4–6，不新造一次性模型桥 |
+| Executor/Companion 已经受管装配原生执行侧，WorldDef、Program、Library 尚缺 | 批 6 接正式原生主脑入口；批 7–9 接程序与复用，不造临时模型桥 |
 | Runtime 只受理原生 call + enqueue；feedback、通用领域记录、事件 Watch 和效果核验器尚缺 | 按下文实际消费者补齐；原生集成不冒充完整 Runtime、Driver 或 I2 |
 
 不先建设完整通用平台。源码归属、控制交接、记录身份和加载方式先确定；具体算法、文件拆分与高级玩法细节在相应工作包中落定。
@@ -156,14 +156,14 @@ A 只落实首批模块实际交换的合同。领域输入类型放所属能力
 
 完成：I2 使用正式引擎和文件库；同步死循环可退役，其他正常调用不被普通取消误杀；保存能明确追到实际 Call。
 
-### H · 通用 Host 持久回执
+### H · 通用 Host 持久回执（批 5 已实现）
 
 依赖：A，独立于 Minecraft 玩法。主要位置：现有 `src/core/types.ts`、`src/tools/{broker,pipeline}.ts`、`src/agent/{loop,queue}.ts`、`src/session/`、`src/host/` 及 World 上下文；只改实际调用链需要的文件。
 
-- [ ] 按 [既定合同](../runtime/delivery-receipts.md) 同批加入 receipt、inspect/retire、输入/工具接收与恢复索引，并完成 journal v4。
-- [ ] 同步当前运行文档及会话版本说明；切换验收使用新 v4 会话，保留原日志，不为验证自动重写真实数据。
-- [ ] 从现有 mailbox、执行交换和 canonical history 得出状态；不建回执数据库或 Minecraft 专属 Core 分支。
-- [ ] 用真实 SessionStore 与 Subject/Host 路径检查 append 前后中断、同 key 去重、retire 竞争、回调丢失及回溯。测试只控制有关输入/故障，不要求调用模型证明磁盘提交。
+- [x] 按 [既定合同](../runtime/delivery-receipts.md) 同批加入 receipt、inspect/retire、输入/工具接收与恢复索引，并完成 journal v4。
+- [x] 同步当前运行文档及会话版本说明；切换验收使用新 v4 会话，保留原日志，不为验证自动重写真实数据。
+- [x] 从现有 mailbox、执行交换和 canonical history 得出状态；不建回执数据库或 Minecraft 专属 Core 分支。
+- [x] 用真实 SessionStore 与 Subject/Host 路径检查 append 前后中断、同 key 去重、retire 竞争、回调丢失及回溯。测试只控制有关输入/故障，不要求调用模型证明磁盘提交。
 
 完成：committed 必须来自真实持久会话；pending/unavailable/absent 各有事实依据；通知重试不触发游戏动作。旧 v3 明确拒绝，真实会话不自动改写。
 
@@ -252,7 +252,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 ## 9. 现在可直接开工的任务
 
 1. **批 4 的 E 平台底座已实现**：Windows x64 双 Job、受管 bootstrap/Companion、固定 IPC、Owner 门和退出证明；证据与边界见 [实施记录](executor-platform-implementation.md)。正式 WorldDef/模型工具/可靠通知尚未实现。
-2. **默认下一任务是批 5 的 H**：一次完成通用回执与 journal v4，使用临时会话验证，不迁移真实日志。E 与 H 的集成在批 6，不要求 H 等待 Program。
+2. **批 5 的 H 已实现，默认下一任务为批 6**：通用回执、journal v4 与 Host/World 上下文已接线，临时会话与真实进程验证见 [实施记录](host-delivery-implementation.md)。E 与 H 的正式 MC 集成在批 6；真实旧日志不迁移。
 3. Program 引擎也具备独立开工条件，按批 7 的范围实现真实 QuickJS/Worker；不阻塞 E/H，也不提前宣布已接主脑。
 4. E/H 就绪后优先接通批 6 并用现有能力做模型校准；继续批 7–9 的程序闭环。玩法仅在已有接缝和具体收益成立时插入，不再固定等到某组全部做完。
 
@@ -286,7 +286,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | 批 | 交付物与归属 | 直接前置 | 完成判据 |
 |---|---|---|---|
 | **4 · Executor 平台底座（已实现）** | `executor/`、`companion/` 及 Windows x64 native：两个命名 Job、受管 bootstrap、启动身份、固定 IPC、Owner 门/心跳、关闭与退役；同步修正 Runtime 持久受理 | 已有 A/I1；Executor 平台合同 | 实际结果见 [实施记录](executor-platform-implementation.md)：真实 OS/Node、SQLite/Worker 和源码/产物受管入口；此批不宣称模型工具已可用，Windows 10 与 ARM 未验收 |
-| **5 · H 通用持久回执** | 按既定规范同批完成 Host/Subject/Tool/Session receipt、inspect/retire、恢复索引与 journal v4；扩展上下文提供同一端口 | 既有 Host/Session；独立于批 4、Program 与玩法 | 临时 v4 会话走真实 Host/Subject/SessionStore：append 前后中断、同键去重、retire 竞争、回调丢失与回溯均有事实依据；旧 v3 明确拒绝，真实日志不迁移 |
+| **5 · H 通用持久回执（已实现）** | 按既定规范同批完成 Host/Subject/Tool/Session receipt、inspect/retire、恢复索引与 journal v4；扩展上下文提供同一端口 | 既有 Host/Session；独立于批 4、Program 与玩法 | 临时 v4 会话走真实 Host/Subject/SessionStore：append 前后中断、同键去重、retire 竞争、回调丢失与回溯均有事实依据；旧 v3 明确拒绝，真实日志不迁移 |
 | **6 · 正式原生主脑闭环与首次校准** | `worlddef/`、`companion/`、`executor/` 与必要 Runtime 交付接缝：配置/绑定、目录发现、查询、原生 run/chat、请求查证/停止/记录、短结果/后台可靠通知、BodyEndpoint；先支持已验收的 offline 1.21.11 范围 | 批 4 + 批 5 + 现有 R/D/W/25 项能力 | 源码/产物各经真实 WorldTool/Host 路径运行；工具取消只结束等待、显式 stop 才停止 Run，停用/急停撤销写源；完成通知由真实 Host receipt 确认，恢复不重放动作。随后真模型仅凭短指南完成发现、采集生产、缺料纠错与停止，记录首次校准 |
 | **7 · Program 执行闭环** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
 | **8 · Library 文件与发现复用** | `library/` 及发现装配：程序/经验/蓝图文件的命名、头/metadata、CRUD 与扫描；程序 compile-only 和 save from 复用批 7 的编译/精确源码接缝。蓝图解释和现场 Project 随施工包实现 | 批 7 的编译与执行材料；文件部分可独立实现 | 真实临时文件验证坏头、并发修改和来源追溯；模型完成试做→纠错→save from→局部改文件→新段复用。在途段仍用原字节；经验判断不冒充事实 |

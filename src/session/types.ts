@@ -3,7 +3,7 @@ import type { CanonicalState } from "./recovery.js";
 
 export interface SessionHeader {
 	kind: "header";
-	version: 3;
+	version: 4;
 	id: string;
 	cwd: string;
 	createdAt: string;
@@ -179,6 +179,10 @@ export interface SessionSnapshot {
 }
 
 export interface SessionStore {
+	readonly session: string;
+	readonly durability: "durable" | "volatile";
+	/** Append rollback could not establish a safe disk boundary; reopen before trusting absence. */
+	readonly failure?: Error;
 	readonly path: string;
 	/** 常驻 canonical 状态：派生查询一律从它计算，禁止对 records 再写第二个 walker。 */
 	readonly state: CanonicalState;

@@ -43,6 +43,8 @@ export interface ToolPipelineObservers {
 }
 
 export interface ToolPipelineOptions {
+	/** Synchronous canonical ownership handoff, before any result hook/observer. */
+	readonly onValidated?: (result: ToolExecutionResult) => void;
 	readonly signal?: AbortSignal;
 	readonly hooks?: ToolPipelineHooks;
 	readonly observers?: ToolPipelineObservers;
@@ -102,7 +104,7 @@ export async function executeToolPipeline(
 	// 3. 参数准备与校验（tool identity 的最终复核在 broker.execute，此处不做二次 prepare）
 	let prepared = call.prepared ?? broker.prepare(call.name, call.args);
 	if (prepared.error) {
-		const outcome = await broker.execute(prepared, signal, invocationId);
+		const outcome = await broker.execute(prepared, signal, invocationId, options.onValidated);
 		await observers?.onDone?.(outcome, executionCall);
 		return { ...outcome, callId: call.callId, invocationId: invocationId };
 	}
@@ -111,7 +113,7 @@ export async function executeToolPipeline(
 	await observers?.onStart?.(executionCall);
 
 	// 5. 核心工具执行
-	let outcome = await broker.execute(prepared, signal, invocationId);
+	let outcome = await broker.execute(prepared, signal, invocationId, options.onValidated);
 	// 权威执行事实（阶段 D / M7）：transformResult 改写前留档；onDone（journal tool_finished
 	// + tool_result 派发）必须拿到原始正文——模型可见变换不能改写 canonical 历史。
 	const canonical: ToolExecutionResult = outcome;
