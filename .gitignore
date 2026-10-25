@@ -10,9 +10,13 @@ dist/
 /dev/
 .agents/
 AGENTS.md
+.trae/
 
 notes/
 .artifacts/
+
+# CPU 采样产物（V8 .cpuprofile），本地分析用，不入库
+*.cpuprofile
 
 # Project-local generated files and temporary intermediates.
 /uina/tmp/
@@ -21,6 +25,9 @@ notes/
 
 # World 本地运行状态：一律位于 .uina/world-data，不随源码提交。
 /.uina/world-data/
+
+# QQ World 收到的媒体落盘缓存（origin.json + payload），属运行时数据
+/.uina/worlds/qq/**/downloads/
 
 # Minecraft 开发服务端本体（jar/存档/配置）：可整体删除复位，见 .uina/worlds/minecraft/dev-env/README.md
 /.uina/worlds/minecraft/dev-env/server/
