@@ -136,6 +136,10 @@ export interface WindowSnapshot {
 	/** 本次打开身份，不是网络 windowId。 */
 	window: Ref;
 	type: string;
+	/**
+	 * 内容修订号：只在槽位与光标变化时推进，是点击的 CAS 前置条件。
+	 * properties（炉子燃烧/进度）变化不推进它——否则燃烧期间每次点击都会撞 CONFLICT。
+	 */
 	revision: number;
 	layout: { slotCount: number; regions: { name: string; slots: number[] }[] };
 	properties: Record<string, JsonValue>;
@@ -224,6 +228,12 @@ export interface BodyOps {
 	lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
 	writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt>;
 	openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;
+	/**
+	 * 玩家自带窗口（window 0，含 2×2 合成格与结果槽）的作用域：期间独占身体，退出时强制关闭。
+	 * 与 openContainer 打开的窗口互斥；回调式是因为生命周期与身体资格是同一条作用域，
+	 * 交出裸会话会让调用方漏关而卡住身体。
+	 */
+	withInventory<T>(work: (window: WindowSession) => Promise<T>): Promise<T>;
 	feedback(sensors: Record<string, WorldQuery>): Promise<FeedbackStream>;
 }
 

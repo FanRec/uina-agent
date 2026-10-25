@@ -4,6 +4,7 @@ import type { ItemValue, SignText, WindowSnapshot } from "../../contracts/body.j
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "../execution.js";
+import { fixedLayout } from "../window/layout.js";
 import { toMineflayerVec3, type MineflayerBot } from "./adapter.js";
 
 const require = createRequire(import.meta.url);
@@ -113,19 +114,12 @@ class Protocol12111 implements DriverProtocol {
 				current.selectedItem = this.nativeItem(packet.carriedItem) as NativeWindow["selectedItem"];
 			if (packet.windowId === 0 && items.length >= 46) {
 				this.playerSynchronized = true;
+				const inventory = fixedLayout("minecraft:inventory");
 				this.player = {
 					window: "player-inventory",
 					type: "minecraft:inventory",
 					revision: (this.player?.revision ?? 0) + 1,
-					layout: {
-						slotCount: items.length,
-						regions: [
-							{ name: "crafting", slots: [0, 1, 2, 3, 4] },
-							{ name: "armor", slots: [5, 6, 7, 8] },
-							{ name: "player", slots: Array.from({ length: 36 }, (_, i) => i + 9) },
-							{ name: "offhand", slots: [45] },
-						],
-					},
+					layout: { slotCount: items.length, regions: inventory?.regions ?? [] },
 					properties: {},
 					slots: items.map((item: JsonValue | null, slot: number) => ({ slot, item })),
 					cursor,

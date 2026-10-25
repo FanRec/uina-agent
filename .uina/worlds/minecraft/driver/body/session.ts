@@ -861,7 +861,7 @@ export class BodySessionImpl implements BodySession {
 		};
 	}
 
-	private async withInventory<T>(
+	private async withInventoryScope<T>(
 		work: (deps: BodyOperationDeps & { window: WindowSession; selectedSlot: number }) => Promise<T>,
 	): Promise<T> {
 		this.enterOp();
@@ -911,11 +911,16 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt> {
-		return this.withInventory((deps) => runEquip(deps, item, slot));
+		return this.withInventoryScope((deps) => runEquip(deps, item, slot));
 	}
 
 	async toss(item: ItemSelector, count: number): Promise<TossOutcome> {
-		return this.withInventory((deps) => runToss(deps, item, count));
+		return this.withInventoryScope((deps) => runToss(deps, item, count));
+	}
+
+	/** 玩家自带窗口的作用域（2×2 合成用）：与 equip/toss 走同一条所有权与撤销屏障。 */
+	async withInventory<T>(work: (window: WindowSession) => Promise<T>): Promise<T> {
+		return this.withInventoryScope((deps) => work(deps.window));
 	}
 
 	async lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt> {
@@ -1076,14 +1081,14 @@ export class BodySessionImpl implements BodySession {
 					});
 				}
 				if (
-					!/^(chest|trapped_chest|ender_chest|barrel|hopper|dispenser|dropper|(?:[a-z_]+_)?shulker_box)$/.test(
+					!/^(chest|trapped_chest|ender_chest|barrel|hopper|dispenser|dropper|crafting_table|furnace|(?:[a-z_]+_)?shulker_box)$/.test(
 						block.name,
 					)
 				) {
 					throw fail({
 						code: "UNSUPPORTED_WINDOW",
 						source: "capability",
-						message: "target is not a supported plain container; dedicated workstation layouts are unsupported",
+						message: "target has no supported window layout (plain containers, crafting table and furnace only)",
 						dispatch: "not_sent",
 						recoverable: false,
 					});

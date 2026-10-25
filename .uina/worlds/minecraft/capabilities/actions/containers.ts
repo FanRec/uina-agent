@@ -5,17 +5,12 @@ import type { CallFailure, JsonSchema, JsonValue, Vec3 } from "../../contracts/v
 import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
-import { BLOCK_REACH, ENTITY_REACH, blockReach } from "../shared/reach.js";
+import { ENTITY_REACH } from "../shared/reach.js";
+import { approachBlock, delegated } from "../shared/approach.js";
 import { readValue } from "../shared/observe.js";
 import { readBlockAt, readObservation, type EntityEntryView } from "../shared/views.js";
 import { assertSameDimension, distance, fail, resolveGrid, resolvePoint } from "../shared/targets.js";
-import {
-	transferRoom,
-	transferWindow,
-	windowItem,
-	windowRegion,
-	type TransferSelection,
-} from "../shared/window-transfer.js";
+import { transferRoom, transferWindow, windowItem, type TransferSelection } from "../shared/window-transfer.js";
 
 const BLOCK_CONTAINERS = [
 	"chest",
@@ -25,6 +20,7 @@ const BLOCK_CONTAINERS = [
 	"hopper",
 	"dispenser",
 	"dropper",
+	"furnace",
 	"shulker_box",
 	...[
 		"white",
@@ -45,6 +41,11 @@ const BLOCK_CONTAINERS = [
 		"black",
 	].map((color) => `${color}_shulker_box`),
 ];
+/**
+ * 自动搜索的候选：熔炉只接受显式端点。按名字搜到炉子再往里塞东西，
+ * 会把燃料放进 input 槽而没人能看出错——宁可不搜。
+ */
+const SEARCHABLE_CONTAINERS = BLOCK_CONTAINERS.filter((name) => name !== "furnace");
 const ENTITY_REF_SCHEMA: JsonSchema = {
 	type: "object",
 	properties: {
@@ -63,6 +64,8 @@ interface Candidate {
 	position: Vec3;
 	endpoint: JsonValue;
 	entity: boolean;
+	/** 方块名（去掉命名空间）；实体容器为 null。 */
+	block: string | null;
 }
 
 interface TransferInput extends Omit<TransferSelection, "direction"> {
@@ -74,19 +77,16 @@ function interrupted(ctx: CallContext): void {
 	if (ctx.signal.aborted) fail("INTERRUPTED", "container action was stopped", { recoverable: false });
 }
 
-function delegated(ctx: CallContext): boolean {
-	return "player" in ctx;
-}
-
-function blockCandidate(raw: unknown, self: SelfState): Candidate {
+function blockCandidate(raw: unknown, self: SelfState, block: string | null = null): Candidate {
 	const point = resolvePoint(raw, self);
 	assertSameDimension(point, self, "container");
-	const block = resolveGrid(raw, self);
+	const target = resolveGrid(raw, self);
 	return {
-		target: { block, place: { ...self.place, position: block } },
-		position: block,
-		endpoint: plain({ position: block, dimension: self.place.dimension }),
+		target: { block: target, place: { ...self.place, position: target } },
+		position: target,
+		endpoint: plain({ position: target, dimension: self.place.dimension }),
 		entity: false,
+		block,
 	};
 }
 
@@ -107,26 +107,32 @@ async function explicitCandidate(ctx: CallContext, raw: unknown): Promise<Candid
 				entry.ref.appearance === ref.appearance,
 		);
 		if (entity == null) fail("REFERENCE_STALE", "container entity is no longer tracked with that identity");
-		return { target: ref, position: entity.position, endpoint: plain(ref), entity: true };
+		return { target: ref, position: entity.position, endpoint: plain(ref), entity: true, block: null };
 	}
 	const candidate = blockCandidate(raw, self);
 	const block = await readBlockAt(ctx.world, candidate.position);
-	if (block == null || !BLOCK_CONTAINERS.includes(block.name.replace(/^minecraft:/, "")))
+	const name = block?.name.replace(/^minecraft:/, "") ?? null;
+	if (name != null && name === "crafting_table") {
+		fail("NOT_FOUND", "target is a crafting table, not a container", {
+			hint: "use craft@1 for a crafting table; container@1/transfer@1 only handle storage blocks and furnaces",
+		});
+	}
+	if (name == null || !BLOCK_CONTAINERS.includes(name))
 		fail("NOT_FOUND", "target is not a currently observed supported container");
-	return candidate;
+	return { ...candidate, block: name };
 }
 
 async function nearbyCandidates(ctx: CallContext): Promise<Candidate[]> {
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 	const blocks: Candidate[] = [];
-	for (const name of BLOCK_CONTAINERS) {
+	for (const name of SEARCHABLE_CONTAINERS) {
 		interrupted(ctx);
 		const observation = await readObservation<{ blocks: { position: Vec3 }[] }>(ctx.world, "blocks@1", {
 			name,
 			radius: 16,
 			limit: 3,
 		});
-		for (const block of observation.value.blocks) blocks.push(blockCandidate(block.position, self));
+		for (const block of observation.value.blocks) blocks.push(blockCandidate(block.position, self, name));
 	}
 	const entities = await readObservation<{ entities: EntityEntryView[] }>(ctx.world, "entities@1", {
 		radius: 16,
@@ -140,7 +146,13 @@ async function nearbyCandidates(ctx: CallContext): Promise<Candidate[]> {
 			!entity.name.endsWith("_chest_raft")
 		)
 			continue;
-		blocks.push({ target: entity.ref, position: entity.position, endpoint: plain(entity.ref), entity: true });
+		blocks.push({
+			target: entity.ref,
+			position: entity.position,
+			endpoint: plain(entity.ref),
+			entity: true,
+			block: null,
+		});
 	}
 	const seen = new Set<string>();
 	return blocks
@@ -155,11 +167,12 @@ async function nearbyCandidates(ctx: CallContext): Promise<Candidate[]> {
 
 async function approach(ctx: CallContext, candidate: Candidate): Promise<void> {
 	interrupted(ctx);
+	if (!candidate.entity) {
+		await approachBlock(ctx, candidate.position, "container");
+		return;
+	}
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-	const reach = candidate.entity
-		? distance(self.place.position, candidate.position)
-		: blockReach(self, candidate.position);
-	if (reach <= (candidate.entity ? ENTITY_REACH : BLOCK_REACH)) return;
+	if (distance(self.place.position, candidate.position) <= ENTITY_REACH) return;
 	if (delegated(ctx))
 		fail("CONTROL_CONFLICT", "delegated body cannot start an independent navigation", {
 			hint: "goto@1 before the ancestor withBody; a delegated container must already be within reach",
@@ -188,7 +201,7 @@ async function withWindow<T>(
 const containerDescriptor: CallableDescriptor = {
 	ref: "container@1",
 	summary:
-		"Approach a container, read its server-confirmed contents, and close it; delegated bodies require an already reachable target",
+		"Approach a container or furnace, read its server-confirmed contents, and close it; delegated bodies require an already reachable target",
 	tags: ["container", "inventory"],
 	input: { type: "object", properties: { at: GRID_POS_SCHEMA }, required: ["at"], additionalProperties: false },
 	output: { type: "object" },
@@ -226,18 +239,21 @@ export function containerCallable(_deps: CapabilityDeps): NativeCallable<JsonVal
 			const candidate = await explicitCandidate(ctx, (input as { at: unknown }).at);
 			return withWindow(ctx, candidate, async (window) => {
 				const snapshot = (await window.snapshot()).value;
-				const region = windowRegion(snapshot, "container");
+				// 业务槽 = 除玩家区以外的全部区域：普通容器是 container，熔炉是 input/fuel/result。
+				const regions = snapshot.layout.regions.filter((region) => region.name !== "player");
 				const slots = snapshot.slots
-					.filter((slot) => region.includes(slot.slot) && slot.item != null)
+					.filter((slot) => slot.item != null && regions.some((region) => region.slots.includes(slot.slot)))
 					.map((slot) => {
 						const item = windowItem(slot.item);
-						return { slot: slot.slot, name: item?.name, count: item?.count };
+						const region = regions.find((entry) => entry.slots.includes(slot.slot));
+						return { region: region?.name, slot: slot.slot, name: item?.name, count: item?.count };
 					});
+				const total = regions.reduce((sum, region) => sum + region.slots.length, 0);
 				return plain({
 					at: candidate.endpoint,
 					type: snapshot.type,
 					slots,
-					freeSlots: region.length - slots.length,
+					freeSlots: total - slots.length,
 					properties: snapshot.properties,
 				});
 			});
@@ -306,6 +322,16 @@ const transferDescriptor: CallableDescriptor = {
 				containersChecked: 1,
 			},
 		},
+		{
+			input: { from: { position: { x: 1, y: 64, z: 2 }, dimension: "overworld" }, item: "iron_ingot" },
+			output: {
+				from: { position: { x: 1, y: 64, z: 2 }, dimension: "overworld" },
+				to: "inventory",
+				moved: { iron_ingot: 3 },
+				remaining: {},
+				containersChecked: 1,
+			},
+		},
 	],
 };
 
@@ -360,6 +386,13 @@ export function transferCallable(_deps: CapabilityDeps): NativeCallable<JsonValu
 				selected = await explicitCandidate(ctx, endpoint);
 				checked = 1;
 			}
+			if (selected.block === "furnace" && direction === "to") {
+				fail("WRONG_STATE", "furnace input and fuel slots are loaded by smelt@1, not transfer@1", {
+					hint: "transfer@1 only takes a furnace result out: {from:{position}, item}; use smelt@1 to load",
+				});
+			}
+			// 炉子只有结果槽是纯交换格：input/fuel 由 smelt@1 按槽位语义写入。
+			const regions = selected.block === "furnace" ? { block: "result", player: "player" } : undefined;
 			const identity = {
 				from: direction === "from" ? selected.endpoint : "inventory",
 				to: direction === "to" ? selected.endpoint : "inventory",
@@ -367,9 +400,10 @@ export function transferCallable(_deps: CapabilityDeps): NativeCallable<JsonValu
 			};
 			try {
 				return await withWindow(ctx, selected, async (window) => {
-					const amounts = await transferWindow(window, selection, async (progress) =>
-						ctx.progress(plain({ ...identity, ...progress }) as never),
-					);
+					const amounts = await transferWindow(window, selection, {
+						regions,
+						onProgress: async (progress) => ctx.progress(plain({ ...identity, ...progress }) as never),
+					});
 					return plain({ ...identity, ...amounts });
 				});
 			} catch (err) {

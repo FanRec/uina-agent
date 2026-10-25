@@ -4,29 +4,16 @@
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §3 item/recipe。
  * item 是版本静态知识（无连接也可读、无观察水位）；recipe 的 plan 依赖当前库存，
  * 因此走 current 读取但 cursor="none"——它读当前事实，不发布观察水位。
+ * 配方含合成（hand/crafting_table）与熔炼（furnace）；熔炼一条配方一个原料，见 driver/facts/knowledge.ts。
  */
 
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
+import { type KnowledgeDeps, requireKnowledge } from "../shared/knowledge.js";
 import type { QuerySpec } from "../shared/query.js";
 import { fail, stripNamespace } from "../shared/targets.js";
-
-export interface KnowledgeDeps {
-	knowledge: () => RegistryKnowledge | null;
-}
-
-function knowledgeOf(deps: KnowledgeDeps): RegistryKnowledge {
-	const knowledge = deps.knowledge();
-	if (knowledge == null) {
-		fail("WRONG_STATE", "game knowledge is not available yet", {
-			hint: "item/recipe need a live connection: the data version comes from the server handshake",
-			recoverable: true,
-		});
-	}
-	return knowledge;
-}
 
 const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 	descriptor: {
@@ -61,7 +48,7 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 		kind: "static",
 		read: (input: JsonValue): Fact<unknown> => {
 			const name = stripNamespace((input as { name: string }).name);
-			const knowledge = knowledgeOf(deps);
+			const knowledge = requireKnowledge(deps);
 			const item = knowledge.item(name);
 			if (item == null) {
 				fail("NOT_FOUND", `unknown item: ${name}`, {
@@ -70,9 +57,9 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			}
 			const unknown: string[] = [];
 			if (!item.sourcesComplete) {
-				unknown.push("smelting and trade sources are absent from this data version; sources may be incomplete");
+				unknown.push("trade sources are absent from this data version; sources may be incomplete");
 			}
-			if (item.fuel == null) unknown.push("fuel burn time is not part of this data version");
+			if (item.fuel == null) unknown.push("fuel burn time is unknown for this item");
 			return factOf({ ...item, dataVersion: knowledge.dataVersion }, { unknown, source: "derived" });
 		},
 	},
@@ -81,7 +68,7 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 	descriptor: {
 		ref: "recipe@1",
-		summary: "Crafting recipes for an item plus the missing-material plan against the current inventory",
+		summary: "Recipes (crafting and smelting) for an item plus the missing-material plan against the current inventory",
 		input: {
 			type: "object",
 			properties: {
@@ -103,11 +90,24 @@ const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 						recipes: [
 							{
 								station: "crafting_table",
-								ingredients: [{ item: "iron_ingot", count: 3 }],
+								ingredients: [
+									{ item: "iron_ingot", count: 3 },
+									{ item: "stick", count: 2 },
+								],
 								output: { item: "iron_pickaxe", count: 1 },
+								pattern: [
+									["iron_ingot", "iron_ingot", "iron_ingot"],
+									[null, "stick", null],
+									[null, "stick", null],
+								],
 							},
 						],
-						plan: { steps: [], need: { iron_ingot: 3 }, have: {}, missing: { iron_ingot: 3 } },
+						plan: {
+							steps: [{ item: "iron_ingot", count: 3, action: "smelt" }],
+							need: { iron_ingot: 3, stick: 2 },
+							have: {},
+							missing: { iron_ingot: 3, stick: 2 },
+						},
 					},
 				},
 			},
@@ -120,12 +120,12 @@ const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			const raw = input as { item: string; count?: number };
 			const name = stripNamespace(raw.item);
 			const wanted = raw.count ?? 1;
-			const knowledge = knowledgeOf(deps);
+			const knowledge = requireKnowledge(deps);
 			const recipes = knowledge.recipesFor(name);
 			const unknown: string[] = [];
 			if (recipes.length === 0) {
-				fail("NOT_FOUND", `no crafting recipe for ${name} in data version ${knowledge.dataVersion}`, {
-					hint: "smelting/trade recipes are not part of this data version yet",
+				fail("NOT_FOUND", `no recipe for ${name} in data version ${knowledge.dataVersion}`, {
+					hint: "trade and stonecutting recipes are not part of this data version",
 				});
 			}
 			const inventory = view.inventory();
@@ -184,7 +184,9 @@ function planOf(
 	if (best == null) return undefined;
 	const steps: { item: string; count: number; action: "craft" | "smelt" }[] = [];
 	for (const [item, count] of Object.entries(best.missing)) {
-		if (knowledge.recipesFor(item).length > 0) steps.push({ item, count, action: "craft" });
+		const options = knowledge.recipesFor(item);
+		if (options.length === 0) continue;
+		steps.push({ item, count, action: options.some((recipe) => recipe.station !== "furnace") ? "craft" : "smelt" });
 	}
 	return { steps, need: best.need, have, missing: best.missing };
 }

@@ -73,10 +73,11 @@ export function containerObservation<T>(record: ContainerEvidence | null): Obser
 		};
 	const { target, snapshot } = record.fact.value;
 	const blockTarget = target as BlockTarget;
-	const regions = snapshot.layout.regions.filter((region) => region.name === "container");
+	// 业务槽 = 除玩家区以外的区域：普通容器是 container，熔炉是 input/fuel/result。
+	const regions = snapshot.layout.regions.filter((region) => region.name !== "player");
 	const containerSlots = new Set(regions.flatMap((region) => region.slots));
 	const slots = new Map(snapshot.slots.map((slot) => [slot.slot, slot.item]));
-	const contents: { slot: number; name: string; count: number }[] = [];
+	const contents: { region: string | undefined; slot: number; name: string; count: number }[] = [];
 	const counts: Record<string, number> = {};
 	let complete = regions.length > 0;
 	for (const slot of containerSlots) {
@@ -91,7 +92,8 @@ export function containerObservation<T>(record: ContainerEvidence | null): Obser
 			continue;
 		}
 		const count = Number(item.count);
-		contents.push({ slot, name: item.name, count });
+		const region = regions.find((entry) => entry.slots.includes(slot));
+		contents.push({ region: region?.name, slot, name: item.name, count });
 		counts[item.name] = (counts[item.name] ?? 0) + count;
 	}
 	contents.sort((a, b) => a.slot - b.slot);

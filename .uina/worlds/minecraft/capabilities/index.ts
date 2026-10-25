@@ -16,6 +16,7 @@ import type { CapabilityDeps } from "./deps.js";
 import { attackCallable } from "./actions/combat.js";
 import { chatCallable } from "./actions/chat.js";
 import { collectCallable, dropCallable, pickupCallable } from "./actions/carrying.js";
+import { craftCallable, smeltCallable } from "./actions/crafting.js";
 import { equipCallable, eatCallable } from "./actions/items.js";
 import { gotoCallable } from "./actions/navigation.js";
 import { placeCallable } from "./actions/building.js";
@@ -97,6 +98,8 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		dropCallable(deps),
 		containerCallable(deps),
 		transferCallable(deps),
+		craftCallable(deps),
+		smeltCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {

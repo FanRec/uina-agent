@@ -2,10 +2,13 @@
  * 静态游戏知识：由当前连接的注册表构建 RegistryKnowledge（contracts/knowledge.ts）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.2、modules/capabilities.md §3 item/recipe。
- * 数据只来自 minecraft-data（经 prismarine-registry），不做网络补全、不猜掉落率：
+ * 数据来源两处，边界清楚：
+ * - 合成配方、方块/实体掉落、物品属性来自 minecraft-data（经 prismarine-registry）；
+ * - 熔炼配方与燃料刻数来自 smelting.ts（Paper 1.21.11 jar 抽取 + 手工燃料表），
+ *   因为 minecraft-data 的 PC 数据没有 smelting/燃料字段。
+ * 不做网络补全、不猜掉落率：
  * - 方块掉落只取"普通挖掘"条目（silkTouch!==true），harvest 保留 harvestTools 的实际成员；
- * - 配方只有合成（本版本数据无熔炼/交易），缺失类别用 sourcesComplete=false 如实表达；
- * - 燃料数据当前版本未提供，fuel 保持 null 而不是 0。
+ * - 缺失的来源类别用 sourcesComplete=false 如实表达；燃料表未收录的保持 null 而不是 0。
  */
 
 import type {
@@ -16,6 +19,7 @@ import type {
 	ItemSource,
 	RegistryKnowledge,
 } from "../../contracts/knowledge.js";
+import { FUEL_TICKS, SMELTING } from "./smelting.js";
 
 interface ItemData {
 	id: number;
@@ -123,25 +127,54 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 				const name = stripNamespace(item.name);
 				ingredients.set(name, (ingredients.get(name) ?? 0) + 1);
 			};
-			if (recipe.inShape != null) for (const row of recipe.inShape) for (const cell of row) add(cell);
+			const rows = recipe.inShape != null && recipe.inShape.length > 0 ? recipe.inShape : null;
+			if (rows != null) for (const row of rows) for (const cell of row) add(cell);
 			if (recipe.ingredients != null) for (const cell of recipe.ingredients) add(cell);
 			if (ingredients.size === 0) continue;
-			const rows = recipe.inShape?.length ?? 1;
-			const cols = recipe.inShape != null ? Math.max(...recipe.inShape.map((r) => r.length)) : 1;
-			const station = rows > 2 || cols > 2 || ingredients.size > 4 ? "crafting_table" : "hand";
+			// 图案必须保留：craft@1 靠它摆 3×3；空格是 null，不是缺项。
+			const pattern = rows?.map((row) =>
+				row.map((cell) =>
+					cell == null || cell < 0 ? null : itemsById[cell] ? stripNamespace(itemsById[cell].name) : null,
+				),
+			);
+			const cells =
+				rows != null
+					? rows.reduce((sum, row) => sum + row.filter((cell) => cell != null && cell >= 0).length, 0)
+					: (recipe.ingredients?.length ?? 0);
+			const cols = rows != null ? Math.max(...rows.map((row) => row.length)) : 1;
+			// 判据是实际非空格数，不是"物品种类数"：9 个同种材料的 shapeless 一样要工作台。
+			const station =
+				rows != null && (rows.length > 2 || cols > 2) ? "crafting_table" : cells > 4 ? "crafting_table" : "hand";
 			const normalised = [...ingredients.entries()]
 				.map(([item, count]) => ({ item, count }))
 				.sort((a, b) => a.item.localeCompare(b.item));
-			// 同料同产物的镜像/变体只保留一份（避免 plan 里重复计数）。
-			const key = `${station}|${normalised.map((i) => `${i.item}x${i.count}`).join(",")}`;
-			if (shaped.some((r) => signatureOf(r) === key)) continue;
-			shaped.push({
+			const candidate: KnowledgeRecipe = {
 				station,
 				ingredients: normalised,
 				output: { item: stripNamespace(outputItem.name), count: recipe.result.count },
-			});
+				...(pattern == null ? {} : { pattern }),
+			};
+			// 完全相同的配方只留一份（真实数据没有重复，这里防止 plan 重复计数）。
+			const key = signatureOf(candidate);
+			if (shaped.some((r) => signatureOf(r) === key)) continue;
+			shaped.push(candidate);
 		}
 		if (shaped.length > 0) recipesByOutput.set(stripNamespace(outputItem.name), shaped);
+	}
+
+	// 熔炼：一条 smelting 配方可能有多个可替代原料，按"每个原料一条配方"展开，
+	// 让 ingredients 始终是真正的账单（而不是"任选其一"被误读成"全都要"）。
+	for (const row of SMELTING) {
+		for (const input of row.inputs) {
+			const list = recipesByOutput.get(row.output) ?? [];
+			list.push({
+				station: "furnace",
+				ingredients: [{ item: input, count: 1 }],
+				output: { item: row.output, count: row.count },
+				cookTicks: row.ticks,
+			});
+			recipesByOutput.set(row.output, list);
+		}
 	}
 
 	for (const [blockName, entry] of Object.entries(registry.blockLoot ?? {})) {
@@ -163,7 +196,7 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 		}
 	}
 
-	// 类别覆盖：本数据集有合成/方块/实体，缺熔炼与交易。
+	// 类别覆盖：合成/熔炼/方块/实体都有，缺交易。
 	const categoriesComplete = false;
 
 	const itemCache = new Map<string, KnowledgeItem | null>();
@@ -178,13 +211,16 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 			return null;
 		}
 		const sources: ItemSource[] = [];
-		if (recipesByOutput.has(name)) sources.push({ kind: "craft" });
+		const recipes = recipesByOutput.get(name) ?? [];
+		if (recipes.some((recipe) => recipe.station !== "furnace")) sources.push({ kind: "craft" });
+		if (recipes.some((recipe) => recipe.station === "furnace")) sources.push({ kind: "smelt" });
 		for (const dropped of entitiesByDrop.get(name) ?? []) sources.push({ kind: "entity", entity: dropped });
 		for (const block of blocksByDrop.get(name) ?? []) {
 			sources.push({ kind: "block", block: block.block, harvest: block.harvest });
 		}
 		const block = registry.blocksByName[name];
 		const food = registry.foodsByName?.[name];
+		const fuelTicks = FUEL_TICKS[name];
 		const value: KnowledgeItem = {
 			name,
 			displayName: data.displayName ?? name,
@@ -192,7 +228,7 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 			placeAs: block != null ? stripNamespace(block.name) : null,
 			tool: toolOf(data),
 			food: food?.foodPoints != null ? { hunger: food.foodPoints, saturation: food.saturation ?? 0 } : null,
-			fuel: null,
+			fuel: typeof fuelTicks === "number" ? { ticks: fuelTicks } : null,
 			sources,
 			sourcesComplete: categoriesComplete,
 		};
@@ -231,5 +267,6 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 }
 
 function signatureOf(recipe: KnowledgeRecipe): string {
-	return `${recipe.station}|${recipe.ingredients.map((i) => `${i.item}x${i.count}`).join(",")}`;
+	const pattern = recipe.pattern?.map((row) => row.map((cell) => cell ?? ".").join(",")).join("|") ?? "";
+	return `${recipe.station}|${pattern}|${recipe.ingredients.map((i) => `${i.item}x${i.count}`).join(",")}|${recipe.output.item}x${recipe.output.count}`;
 }

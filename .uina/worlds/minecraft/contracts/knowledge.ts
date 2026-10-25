@@ -24,18 +24,26 @@ export interface KnowledgeItem {
 	/** 工具数据只在物品确实带耐久时给出；tier 来自声明表，未知为 null。 */
 	tool: { type: string; tier: string | null; durability: number } | null;
 	food: { hunger: number; saturation: number } | null;
-	/** 燃料燃烧刻数；当前版本数据未提供时为 null。 */
+	/** 燃料燃烧刻数（20 刻 = 1 秒）；燃料表未收录时为 null，表示未知而不是 0。 */
 	fuel: { ticks: number } | null;
 	sources: ItemSource[];
-	/** false 表示数据源缺少掉落/交易等类别，sources 不完整（不等于无法获得）。 */
+	/** false 表示数据源缺少某些来源类别（当前只有交易），sources 不完整（不等于无法获得）。 */
 	sourcesComplete: boolean;
 }
 
 export interface KnowledgeRecipe {
+	/** hand = 玩家自带 2×2；crafting_table = 3×3 工作台；furnace = 熔炼（只此一种站别）。 */
 	station: "hand" | "crafting_table" | "furnace";
+	/** 一次制作/熔炼的原料账单（重复格已聚合）；plan 的差额计算用它。 */
 	ingredients: { item: string; count: number }[];
 	output: { item: string; count: number };
-	fuel?: { item: string; count: number };
+	/**
+	 * 成形配方的摆格图案（行优先，null = 空格）。仅 shaping 配方有；
+	 * 无形状配方与熔炼配方省略，craft@1 按 ingredients 顺序填格。
+	 */
+	pattern?: (string | null)[][];
+	/** 熔炼一份产物的烹饪刻数（20 刻 = 1 秒）；仅 furnace 配方有。 */
+	cookTicks?: number;
 }
 
 /** 方块掉落：items 是可能产出（概率掉落也在此列），harvest 保留实际工具集合及未知。 */
@@ -52,7 +60,7 @@ export interface RegistryKnowledge {
 	/** 实际采用的数据版本（如 1.21.11）。 */
 	dataVersion: string;
 	item(name: string): KnowledgeItem | null;
-	/** 产出该物品的配方；当前数据只含工作台/手持合成，熔炼为空。 */
+	/** 产出该物品的配方：先合成（hand / crafting_table），再熔炼（furnace）。 */
 	recipesFor(item: string): KnowledgeRecipe[];
 	blockDrops(block: string): KnowledgeBlockDrops | null;
 	/** 已知物品名（用于把输入名规范成注册表名字，保留命名空间前缀容忍）。 */

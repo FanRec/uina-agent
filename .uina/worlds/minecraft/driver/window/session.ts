@@ -13,6 +13,7 @@ import { EffectRecorder, fail, nowIso } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
 import { type NativeWindow, type DriverProtocol, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
 import { jsonEqual, matchesItem } from "../../contracts/items.js";
+import { windowLayout } from "./layout.js";
 
 const RESPONSE_MS = 5000;
 type ClickInput = Parameters<WindowSession["click"]>[0];
@@ -42,24 +43,9 @@ function failure(code: string, message: string) {
 }
 
 function layout(window: NativeWindow): WindowSnapshot["layout"] {
-	if (
-		!/^minecraft:generic_9x[1-6]$/.test(String(window.type)) &&
-		!["minecraft:generic_3x3", "minecraft:hopper", "minecraft:shulker_box"].includes(String(window.type))
-	) {
-		throw failure("UNSUPPORTED_WINDOW", `window layout ${window.type} is not supported for container operations`);
-	}
-	const count = window.slots.length;
-	const start = window.inventoryStart;
-	if (start <= 0 || window.inventoryEnd !== count || count - start !== 36) {
-		throw failure("UNSUPPORTED_WINDOW", "window does not expose a verified container plus 36-slot player layout");
-	}
-	return {
-		slotCount: count,
-		regions: [
-			{ name: "container", slots: Array.from({ length: start }, (_, i) => i) },
-			{ name: "player", slots: Array.from({ length: 36 }, (_, i) => start + i) },
-		],
-	};
+	const result = windowLayout(String(window.type), window.slots.length, window.inventoryStart, window.inventoryEnd);
+	if ("reason" in result) throw failure("UNSUPPORTED_WINDOW", result.reason);
+	return result.layout;
 }
 
 function matches(value: JsonValue | null, expected: StackExpectation): boolean {
@@ -282,11 +268,25 @@ export class WindowSessionImpl implements WindowSession {
 	};
 
 	private update(next: WindowSnapshot): void {
-		if (!jsonEqual(this.value, next)) {
-			next.revision++;
-			this.value = next;
-			this.observedAt = nowIso();
-			if (this.deps.target) this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: next }));
+		const previous = this.value;
+		if (previous != null && jsonEqual(previous, next)) {
+			this.notify();
+			return;
+		}
+		// revision 是点击的 CAS 前置条件，只约束内容（槽位与光标）。炉子进度每秒变化多次，
+		// 若也推进 revision，燃烧期间每次点击都会在派发前撞 CONFLICT。
+		const contentChanged =
+			previous == null ||
+			previous.type !== next.type ||
+			!jsonEqual(previous.layout, next.layout) ||
+			!jsonEqual(previous.slots, next.slots) ||
+			!jsonEqual(previous.cursor, next.cursor);
+		this.value =
+			previous == null ? next : { ...next, revision: contentChanged ? previous.revision + 1 : previous.revision };
+		this.observedAt = nowIso();
+		// 证据只记内容变化：进度包不构成新的窗口观察事实。
+		if (contentChanged && this.deps.target) {
+			this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: this.value }));
 		}
 		this.notify();
 	}

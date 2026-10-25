@@ -18,6 +18,7 @@
     "dev:mc:k1": "tsx .uina/worlds/minecraft/dev/k1.ts",
     "dev:mc:k2": "tsx .uina/worlds/minecraft/dev/k2.ts",
     "dev:mc:containers": "tsx .uina/worlds/minecraft/dev/k2-containers.ts",
+    "dev:mc:k3": "tsx .uina/worlds/minecraft/dev/k3.ts",
     "dev:mc:repair": "tsx .uina/worlds/minecraft/dev/repair.ts",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
