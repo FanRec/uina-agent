@@ -20,11 +20,15 @@ const registry: RegistryLike = {
 		wooden_pickaxe: { id: 913, name: "wooden_pickaxe", displayName: "Wooden Pickaxe", stackSize: 1, maxDurability: 59 },
 		iron_pickaxe: { id: 933, name: "iron_pickaxe", displayName: "Iron Pickaxe", stackSize: 1, maxDurability: 250 },
 		stick: { id: 946, name: "stick", displayName: "Stick", stackSize: 64 },
+		wheat: { id: 296, name: "wheat", displayName: "Wheat", stackSize: 64 },
+		hay_block: { id: 849, name: "hay_block", displayName: "Hay Block", stackSize: 64 },
 	},
 	items: {
 		0: { id: 0, name: "air" },
 		1: { id: 1, name: "stone" },
 		35: { id: 35, name: "cobblestone" },
+		296: { id: 296, name: "wheat" },
+		849: { id: 849, name: "hay_block" },
 		893: { id: 893, name: "apple" },
 		904: { id: 904, name: "iron_ingot" },
 		913: { id: 913, name: "wooden_pickaxe" },
@@ -72,6 +76,8 @@ const registry: RegistryLike = {
 				result: { id: 933, count: 1 },
 			},
 		],
+		// 9 个同种材料的 shapeless：物品种类只有 1 种，但格子有 9 个，必须走工作台。
+		"849": [{ ingredients: Array.from({ length: 9 }, () => 296), result: { id: 849, count: 1 } }],
 	},
 };
 
@@ -104,6 +110,12 @@ describe("item：物品知识", () => {
 		expect(knowledge.canonicalItemName("minecraft:apple")).toBe("apple");
 		expect(knowledge.canonicalItemName("nope")).toBeNull();
 	});
+
+	test("熔炼来源进 sources，燃料刻数来自燃料表（未收录即 null）", () => {
+		expect(knowledge.item("iron_ingot")?.sources.some((source) => source.kind === "smelt")).toBe(true);
+		expect(knowledge.item("stick")?.fuel).toEqual({ ticks: 100 });
+		expect(knowledge.item("stone")?.fuel).toBeNull();
+	});
 });
 
 describe("blockDrops：普通挖掘掉落", () => {
@@ -129,6 +141,33 @@ describe("recipe：配方整形", () => {
 			{ item: "iron_ingot", count: 3 },
 			{ item: "stick", count: 2 },
 		]);
+	});
+
+	test("成形配方保留摆格图案（空格是 null，不是缺项）", () => {
+		expect(knowledge.recipesFor("iron_pickaxe")[0]?.pattern).toEqual([
+			["iron_ingot", "iron_ingot", "iron_ingot"],
+			[null, "stick", null],
+			[null, "stick", null],
+		]);
+	});
+
+	test("站别按实际格子数判定：9 个同种材料的 shapeless 也要工作台", () => {
+		const recipe = knowledge.recipesFor("hay_block")[0];
+		expect(recipe?.station).toBe("crafting_table");
+		expect(recipe?.pattern).toBeUndefined();
+		expect(recipe?.ingredients).toEqual([{ item: "wheat", count: 9 }]);
+	});
+
+	test("熔炼配方来自版本数据表：一条原料一条配方，带烹饪刻数", () => {
+		const furnace = knowledge
+			.recipesFor("iron_ingot")
+			.filter((recipe) => recipe.station === "furnace")
+			.map((recipe) => recipe.ingredients[0]?.item);
+		expect(furnace).toContain("raw_iron");
+		expect(furnace).toContain("iron_ore");
+		const raw = knowledge.recipesFor("iron_ingot").find((recipe) => recipe.ingredients[0]?.item === "raw_iron");
+		expect(raw?.output).toEqual({ item: "iron_ingot", count: 1 });
+		expect(raw?.cookTicks).toBe(200);
 	});
 });
 

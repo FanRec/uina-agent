@@ -165,7 +165,7 @@ try {
  let result = await world.read(query());
  assert.equal(result.source, "history"); assert.equal(result.cursor, null);
  assert.deepEqual(result.value.counts, { stone: 3 });
- assert.deepEqual(result.value.contents, [{ slot: 0, name: "stone", count: 3 }]);
+ assert.deepEqual(result.value.contents, [{ region: "container", slot: 0, name: "stone", count: 3 }]);
  assert.equal(result.value.complete, true);
  assert.equal(result.value.source, "window");
  assert.equal(h.facts.pendingEvidence.length, 0); // pre-subscription connection capture also reached durable ACK

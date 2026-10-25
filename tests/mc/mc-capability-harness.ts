@@ -7,7 +7,14 @@
  */
 
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { BodyOps, SelfState, ItemValue, ItemSelector } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type {
+	BodyOps,
+	SelfState,
+	ItemValue,
+	ItemSelector,
+	WindowSession,
+} from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { RegistryKnowledge } from "../../.uina/worlds/minecraft/contracts/knowledge.js";
 import type { CallFailure, JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
@@ -128,6 +135,12 @@ export interface HarnessHooks {
 	/** 导航替身：测试可在里面模拟"走到之后世界发生了什么"（例如顺手捡起）。 */
 	onGoto?: (request: { at: { x: number; y: number; z: number }; tolerance: number }) => void;
 	self?: Partial<SelfState>;
+	/** 覆盖静态知识：配方类测试要自己的注册表。 */
+	knowledge?: RegistryKnowledge;
+	/** openContainer 打开的窗口（工作台/熔炉）；不提供则调用即失败。 */
+	openWindow?: () => WindowSession;
+	/** withInventory 拿到的玩家窗口；不提供则调用即失败。 */
+	inventoryWindow?: () => WindowSession;
 }
 
 export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
@@ -243,6 +256,21 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 				remaining: 0,
 			};
 		},
+		async openContainer() {
+			calls.push("openContainer");
+			if (hooks.openWindow == null) throw new Error("this harness has no block window");
+			return hooks.openWindow();
+		},
+		async withInventory<T>(work: (window: WindowSession) => Promise<T>): Promise<T> {
+			calls.push("withInventory");
+			if (hooks.inventoryWindow == null) throw new Error("this harness has no player window");
+			const window = hooks.inventoryWindow();
+			try {
+				return await work(window);
+			} finally {
+				await window.close({ force: true });
+			}
+		},
 	} as unknown as BodyOps;
 
 	let bodyAcquired = 0;
@@ -287,7 +315,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 				};
 			},
 		} as never,
-		knowledge: () => knowledge,
+		knowledge: () => hooks.knowledge ?? knowledge,
 	});
 	callableTable = capabilities.callables;
 	const callable = (ref: string) => {

@@ -328,6 +328,20 @@ describe("item@1 / recipe@1", () => {
 		expect(result.value.plan.have.oak_log).toBe(12);
 		expect(result.value.plan.missing).toEqual({});
 	});
+
+	test("成形配方带摆格图案；燃料刻数随 item@1 一起出去", () => {
+		const recipeReader = readerOf("recipe@1");
+		if (recipeReader.kind !== "current") throw new Error("recipe must be a current reader");
+		const stick = recipeReader.read(makeView(), { item: "stick" } as JsonValue) as Fact<{
+			recipes: { station: string; pattern?: (string | null)[][] }[];
+		}>;
+		expect(stick.value.recipes[0]?.pattern).toEqual([["oak_planks"], ["oak_planks"]]);
+		const itemReader = readerOf("item@1");
+		if (itemReader.kind !== "static") throw new Error("item must be static");
+		const log = itemReader.read({ name: "oak_log" } as JsonValue) as Fact<{ fuel: { ticks: number } | null }>;
+		expect(log.value.fuel).toEqual({ ticks: 300 });
+		expect(log.unknown.some((entry) => entry.includes("fuel"))).toBe(false);
+	});
 });
 
 describe("目录完整性", () => {
@@ -348,12 +362,13 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("container.last@1")).toBe(false);
 	});
 
-	test("13 个动作齐备，ref 不重复", () => {
+	test("15 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"attack@1",
 			"chat@1",
 			"collect@1",
 			"container@1",
+			"craft@1",
 			"drop@1",
 			"eat@1",
 			"equip@1",
@@ -361,6 +376,7 @@ describe("目录完整性", () => {
 			"mine@1",
 			"pickup@1",
 			"place@1",
+			"smelt@1",
 			"transfer@1",
 			"use@1",
 		]);

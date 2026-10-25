@@ -18,7 +18,8 @@ const target = { place: placeT(), block: { x: 0, y: 64, z: 0 } };
 const empty = { item: null, count: 0 };
 const stone = (count: number) => new Item(1, count);
 
-function harness(autoTick = true) {
+function harness(autoTick = true, options: { type?: string; slots?: number } = {}) {
+	const windowType = options.type ?? "minecraft:generic_9x3";
 	const bot = new EventEmitter() as EventEmitter & Record<string, any>;
 	const client = new EventEmitter() as EventEmitter & Record<string, any>;
 	const writes: { name: string; data: any }[] = [];
@@ -44,7 +45,7 @@ function harness(autoTick = true) {
 		bot.emit("windowClose", window);
 	};
 	let state = 1;
-	const contents = Array.from({ length: 63 }, () => null as any);
+	const contents = Array.from({ length: options.slots ?? 63 }, () => null as any);
 	contents[0] = stone(8);
 	let carried: any = null;
 	let respond = true;
@@ -66,7 +67,7 @@ function harness(autoTick = true) {
 		writes.push({ name, data });
 		if (name === "block_place" || name === "use_entity") {
 			queueMicrotask(() => {
-				bot.currentWindow = windows.createWindow(1, "minecraft:generic_9x3", "Chest");
+				bot.currentWindow = windows.createWindow(1, windowType, "Chest");
 				bot.emit("windowOpen", bot.currentWindow);
 				full();
 			});
@@ -260,11 +261,44 @@ describe("Driver window lifetime and server confirmation", () => {
 		expect(h.observations).toEqual([null]);
 	});
 
-	test("dedicated workstation targets are rejected before activation", async () => {
+	test("unsupported workstation targets are rejected before activation", async () => {
 		const h = harness();
-		h.bot.blockAt = () => ({ name: "furnace", position: target.block });
+		h.bot.blockAt = () => ({ name: "enchanting_table", position: target.block });
 		expect((await captureFailure(h.session.openContainer(target))).code).toBe("UNSUPPORTED_WINDOW");
 		expect(h.writes).toHaveLength(0);
+		await h.session.close();
+	});
+
+	test("crafting table windows expose result and crafting regions", async () => {
+		const h = harness(true, { type: "minecraft:crafting", slots: 46 });
+		h.bot.blockAt = () => ({ name: "crafting_table", position: target.block });
+		const window = await h.session.openContainer(target);
+		const snapshot = (await window.snapshot()).value;
+		expect(snapshot.type).toBe("minecraft:crafting");
+		expect(snapshot.layout.regions.map((region) => region.name)).toEqual(["result", "crafting", "player"]);
+		expect(snapshot.layout.regions.find((region) => region.name === "crafting")?.slots).toEqual([
+			1, 2, 3, 4, 5, 6, 7, 8, 9,
+		]);
+		// 工作站窗口没有 container 区域：按 container 取格的调用方必须显式失败。
+		expect(snapshot.layout.regions.some((region) => region.name === "container")).toBe(false);
+		await window.close({ force: true });
+		await h.session.close();
+	});
+
+	test("furnace progress packets keep the click revision unchanged", async () => {
+		const h = harness(true, { type: "minecraft:furnace", slots: 39 });
+		h.bot.blockAt = () => ({ name: "furnace", position: target.block });
+		const window = await h.session.openContainer(target);
+		const before = (await window.snapshot()).value;
+		expect(before.layout.regions.map((region) => region.name)).toEqual(["input", "fuel", "result", "player"]);
+		h.client.emit("craft_progress_bar", { windowId: 1, property: 2, value: 7 });
+		const progressed = (await window.snapshot()).value;
+		expect(progressed.properties).toEqual({ "2": 7 });
+		expect(progressed.revision).toBe(before.revision);
+		h.contents[0] = stone(3);
+		h.full();
+		expect((await window.snapshot()).value.revision).toBe(before.revision + 1);
+		await window.close({ force: true });
 		await h.session.close();
 	});
 
