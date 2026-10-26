@@ -34,6 +34,7 @@ import type {
 } from "../../contracts/body.js";
 import type { Fact, FactSource, Vec3 } from "../../contracts/values.js";
 import { protocolFor } from "../mineflayer/protocol.js";
+import { effectiveAttribute, trackVitals } from "./vitals.js";
 import { fromMineflayerVec3, toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 
 export interface FactViewContext {
@@ -110,12 +111,11 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 
 	// maxHealth：尝试读实体属性（版本键名差异大），读不到如实 unknown。
 	let maxHealth: number | null = null;
-	const attrs = (bot.entity as unknown as { attributes?: Record<string, { base?: number }> }).attributes;
+	const attrs = (bot.entity as unknown as { attributes?: Record<string, unknown> }).attributes;
 	const maxKey =
 		attrs != null ? Object.keys(attrs).find((k) => k.endsWith("max_health") || k.endsWith("maxHealth")) : undefined;
-	if (maxKey != null && typeof attrs?.[maxKey]?.base === "number") {
-		maxHealth = attrs[maxKey].base ?? null;
-	} else {
+	if (maxKey != null) maxHealth = effectiveAttribute(attrs?.[maxKey]);
+	if (maxHealth == null) {
 		unknown.push("maxHealth attribute not available");
 	}
 
@@ -125,10 +125,7 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 			: null;
 	if (saturation == null) unknown.push("saturation not received");
 
-	const oxygen =
-		typeof (bot as unknown as { oxygen?: number }).oxygen === "number"
-			? (bot as unknown as { oxygen: number }).oxygen
-			: null;
+	const oxygen = typeof bot.oxygenLevel === "number" ? Math.max(0, Math.min(20, bot.oxygenLevel)) : null;
 	if (oxygen == null) unknown.push("oxygen not received");
 
 	// inWater/inLava：读客户端物理每 tick 写在实体上的判定结果（prediction）。
@@ -141,8 +138,7 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 	if (inLava == null) unknown.push("inLava not observed: client physics has not resolved lava contact yet");
 
 	const effects: StatusEffectValue[] = [];
-	for (const eff of Object.values(bot.entity.effects ?? {})) {
-		const rec = eff as unknown as { id?: number; amplifier?: number; duration?: number };
+	for (const rec of trackVitals(bot).effects()) {
 		if (typeof rec.id !== "number") {
 			unknown.push("effect entry without id");
 			continue;
@@ -153,9 +149,12 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 			continue;
 		}
 		effects.push({
-			name: name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+			name: name
+				.replace(/([a-z])([A-Z])/g, "$1_$2")
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "_"),
 			amplifier: rec.amplifier ?? 0,
-			seconds: typeof rec.duration === "number" ? rec.duration / 20 : null,
+			seconds: rec.seconds,
 		});
 	}
 	const xpLevel = bot.experience?.level ?? null;
@@ -180,7 +179,7 @@ function selfFact(ctx: FactViewContext): Fact<SelfState | null> {
 		oxygen,
 		inWater,
 		inLava,
-		effects,
+		effects: bot.entity.effects == null ? null : effects,
 		xpLevel,
 		look: yaw == null || pitch == null ? null : { yaw, pitch },
 	};

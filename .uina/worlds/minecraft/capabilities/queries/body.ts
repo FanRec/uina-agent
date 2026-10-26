@@ -51,7 +51,7 @@ const selfQuery: QuerySpec = {
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
-		feedback: false,
+		feedback: true,
 		examples: [
 			{
 				input: {},
@@ -96,7 +96,7 @@ const inventoryQuery: QuerySpec = {
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
-		feedback: false,
+		feedback: true,
 		examples: [
 			{
 				input: {},

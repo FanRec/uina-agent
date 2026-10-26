@@ -16,9 +16,9 @@
  * 释放顺序：调用方先 await session.close()（close 屏障），再 release()；队列只在 release()
  * 之后才授予下一项，因此新主人拿到的客户端已证明旧写入失效（§3.3.2）。
  *
- * 抢占受理使用短 reservation，并给替代 Run 一次就绪优先机会；没有常驻优先级栈。
- * 不做：kind=safety 预留（§3.3.3 留给后续轮次）、
- * 通道锁与兼容性判断（§3.3.2 归 Driver adapter）、任意 Promise 依赖图检测（§3.3.1 合同
+ * 抢占受理使用短 reservation，并给替代 Run 一次就绪优先机会；自保期间暂停普通授予，
+ * safety 申请优先进入同一队列。没有常驻优先级栈。
+ * 不做：通道锁与兼容性判断（§3.3.2 归 Driver adapter）、任意 Promise 依赖图检测（§3.3.1 合同
  * 要求显式停止，不做不可靠的死锁探测）。
  */
 
@@ -129,7 +129,8 @@ export class BodyLeaseQueue {
 		};
 		item.detach = () => signal.removeEventListener("abort", onAbort);
 		signal.addEventListener("abort", onAbort, { once: true });
-		this.waiting.push(item);
+		if (owner.kind === "safety") this.waiting.unshift(item);
+		else this.waiting.push(item);
 		if (this.priorityRun && sameRun(owner, this.priorityRun)) {
 			this.waiting.pop();
 			this.waiting.unshift(item);
@@ -162,7 +163,7 @@ export class BodyLeaseQueue {
 	}
 
 	private pump(): void {
-		if (this.active != null || this.reservations > 0) return;
+		if (this.active != null || (this.reservations > 0 && this.waiting[0]?.owner.kind !== "safety")) return;
 		const item = this.waiting.shift();
 		if (item == null) return;
 		item.state = "acquiring";

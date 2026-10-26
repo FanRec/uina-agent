@@ -27,7 +27,7 @@ const worldQuery: QuerySpec = {
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
-		feedback: false,
+		feedback: true,
 		examples: [
 			{
 				input: {},
@@ -74,7 +74,7 @@ const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
-		feedback: false,
+		feedback: true,
 		examples: [
 			{
 				input: { kind: "hostile", radius: 16 },

@@ -8,6 +8,7 @@ import type {
 	ItemSelector,
 	StackExpectation,
 	ControlInput,
+	FeedbackStream,
 	BlockPos,
 	SignText,
 } from "../contracts/body.js";
@@ -24,7 +25,8 @@ type WindowHandle = {
 	needsSnapshot: boolean;
 	body: BodyCallScope;
 };
-type Handle = BodyHandle | WindowHandle;
+type StreamHandle = { kind: "stream"; stream: FeedbackStream };
+type Handle = BodyHandle | WindowHandle | StreamHandle;
 function fail(code: string, message: string): never {
 	throw callFailure({ code, message, source: "program", dispatch: "not_sent", effects: [], recoverable: true });
 }
@@ -50,9 +52,11 @@ export function createProgramHost(
 	resources: Set<() => Promise<void>>,
 	access: (selector: string) => "read" | "act" | undefined,
 ): ProgramHostApi {
+	const lifetime = new AbortController();
+	const hostSignal = AbortSignal.any([ctx.signal, lifetime.signal]);
 	const handles = new Map<string, Handle>();
 	function live(): void {
-		if (ctx.signal.aborted) fail("PROGRAM_RETIRED", "call is retired");
+		if (hostSignal.aborted) fail("PROGRAM_RETIRED", "call is retired");
 	}
 	function get(handle: string): Handle {
 		live();
@@ -70,6 +74,9 @@ export function createProgramHost(
 			} finally {
 				handles.delete(handle);
 			}
+		} else if (h.kind === "stream") {
+			await h.stream.close();
+			handles.delete(handle);
 		} else {
 			await h.window.close({ force: ctx.signal.aborted });
 			handles.delete(handle);
@@ -77,6 +84,7 @@ export function createProgramHost(
 		return null;
 	};
 	const close = async () => {
+		lifetime.abort();
 		await Promise.allSettled([...handles.keys()].map((handle) => closeHandle({ handle })));
 	};
 	resources.add(close);
@@ -184,13 +192,13 @@ export function createProgramHost(
 			if (!Number.isFinite(ms) || ms < 0) fail("PROGRAM_INPUT_INVALID", "sleep ms must be finite and non-negative");
 			await new Promise<void>((resolve, reject) => {
 				const done = () => {
-					ctx.signal.removeEventListener("abort", abort);
+					hostSignal.removeEventListener("abort", abort);
 					resolve();
 				};
 				const timer = setTimeout(done, ms);
 				const abort = () => {
 					clearTimeout(timer);
-					ctx.signal.removeEventListener("abort", abort);
+					hostSignal.removeEventListener("abort", abort);
 					reject(
 						callFailure({
 							code: "CANCELLED",
@@ -202,8 +210,8 @@ export function createProgramHost(
 						}),
 					);
 				};
-				ctx.signal.addEventListener("abort", abort, { once: true });
-				if (ctx.signal.aborted) abort();
+				hostSignal.addEventListener("abort", abort, { once: true });
+				if (hostSignal.aborted) abort();
 			});
 			return null;
 		},
@@ -238,6 +246,17 @@ export function createProgramHost(
 		handleOp: async ({ handle, op, args }) => {
 			const h = get(handle);
 			const a = args as Record<string, JsonValue>;
+			if (h.kind === "stream") {
+				if (op === "next") return plain(await h.stream.next(a.after as number | null, ctx.signal));
+				if (op === "apply")
+					return plain(
+						await h.stream.apply(
+							a.frame as unknown as import("../contracts/body.js").FeedbackFrameRef,
+							a.input as unknown as ControlInput,
+						),
+					);
+				return fail("ACCESS_DENIED", "invalid stream operation");
+			}
 			if (h.kind === "window") {
 				if (op === "snapshot") {
 					const f = await h.window.snapshot();
@@ -304,6 +323,10 @@ export function createProgramHost(
 				return plain(receipt);
 			}
 			const player = h.scope.player;
+			if (op === "waitClosed") {
+				await h.closed;
+				return fail("CONTROL_INVALID", "body scope ended");
+			}
 			const target = async (raw: JsonValue): Promise<BlockTarget | EntityRef> => {
 				if (raw && typeof raw === "object" && !Array.isArray(raw) && "networkId" in raw)
 					return raw as unknown as EntityRef;
@@ -323,6 +346,14 @@ export function createProgramHost(
 				return { place, block };
 			};
 			switch (op) {
+				case "feedback": {
+					const stream = await player.feedback(
+						a.sensors as unknown as Record<string, import("../contracts/world.js").WorldQuery>,
+					);
+					const id = `handle:${randomUUID()}`;
+					handles.set(id, { kind: "stream", stream });
+					return { handle: id, kind: "stream" };
+				}
 				case "drive":
 					return plain(
 						await player.drive(a.input as unknown as ControlInput, (a.opts as { ticks?: number })?.ticks ?? 1),

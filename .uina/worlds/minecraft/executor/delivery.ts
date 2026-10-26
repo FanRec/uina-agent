@@ -36,7 +36,13 @@ export class DeliveryPump {
 					type: "minecraft_event",
 					origin: "external",
 					channel: "world",
-					text: JSON.stringify({ ...event, nextCall: { action: "observe", params: { selector: "events@1" } } }),
+					text: JSON.stringify({
+						...event,
+						nextCall:
+							(event.payload as { kind?: string })?.kind === "safety_changed"
+								? { action: "runs", params: { op: "record", ref: event.ref } }
+								: { action: "observe", params: { selector: "events@1" } },
+					}),
 				}).catch((error) => {
 					this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
 				});

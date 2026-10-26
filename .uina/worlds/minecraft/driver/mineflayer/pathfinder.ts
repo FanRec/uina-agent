@@ -15,6 +15,7 @@
 
 import { createRequire } from "node:module";
 import type { MineflayerBot } from "./adapter.js";
+import { toMineflayerVec3 } from "./adapter.js";
 import type { Vec3 } from "../../contracts/values.js";
 
 /**
@@ -34,6 +35,8 @@ const pathfinderModule = createRequire(import.meta.url)("mineflayer-pathfinder")
 
 /** 本文件触碰的 Movements 最小面。 */
 interface PathfinderMovements {
+	allowParkour: boolean;
+	maxDropDown: number;
 	allowSprinting: boolean;
 	canDig: boolean;
 	allow1by1towers: boolean;
@@ -55,6 +58,12 @@ export interface PathfinderMovementsConfig {
 
 /** 适配层内的插件装配面视图；仅本文件可见。 */
 interface PathfinderAssembly {
+	getPathFromTo(
+		movements: PathfinderMovements,
+		start: unknown,
+		goal: unknown,
+		options: object,
+	): IterableIterator<{ result: { status: string; path: Vec3[] } }>;
 	movements?: unknown;
 	goal?: unknown;
 	setMovements(movements: unknown): void;
@@ -111,4 +120,70 @@ export function pathfinderGoalActive(bot: MineflayerBot): boolean {
 /** 路径是否仍在推进（路径队列非空）。 */
 export function pathfinderMoving(bot: MineflayerBot): boolean {
 	return (bot as BotWithAssembly).pathfinder?.isMoving() ?? false;
+}
+
+/** Read-only short search; never setGoal/setMovements or start the upstream writer. */
+export function escapeWaypoints(path: Vec3[], current: Vec3): Vec3[] {
+	const points = path.length
+		? path
+		: [{ x: Math.floor(current.x), y: Math.floor(current.y), z: Math.floor(current.z) }];
+	return points.map((p) => ({ x: p.x + 0.5, y: p.y, z: p.z + 0.5 }));
+}
+export function escapeGoalBias(node: Vec3, origin: Vec3): number {
+	return Math.hypot(node.x + 0.5 - origin.x, node.y - origin.y, node.z + 0.5 - origin.z) * 0.001;
+}
+export function escapeThreatClearance(node: Vec3, threats: Vec3[]): boolean {
+	return threats.every((t) => Math.hypot(t.x - (node.x + 0.5), t.y - node.y, t.z - (node.z + 0.5)) >= 8.15);
+}
+export async function planEscape(
+	bot: MineflayerBot,
+	kind: "lava" | "drowning" | "low_health_damage",
+	threats: Vec3[],
+	signal: AbortSignal,
+): Promise<Vec3[] | null> {
+	loadPathfinderPlugin(bot);
+	const movements = new Movements(bot);
+	movements.canDig = false;
+	movements.allow1by1towers = false;
+	movements.scafoldingBlocks = [];
+	movements.allowParkour = false;
+	movements.maxDropDown = 1;
+	const block = (p: Vec3) => bot.blockAt(toMineflayerVec3(p), false);
+	const origin = { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z };
+	const goal = {
+		// Break equal grid-cost ties using the actual sub-cell body position. A
+		// moving player at a lava edge must not turn back across the source cell.
+		heuristic: (node: Vec3) => escapeGoalBias(node, origin),
+		hasChanged: () => false,
+		isValid: () => true,
+		isEnd: (node: Vec3) => {
+			const feet = block(node),
+				head = block({ ...node, y: node.y + 1 }),
+				floor = block({ ...node, y: node.y - 1 });
+			if (!feet || !head || !floor) return false;
+			if ([feet.name, head.name].some((n) => /lava|fire|cactus|magma/.test(n))) return false;
+			if (head.boundingBox !== "empty" || /water|bubble_column/.test(head.name)) return false;
+			if (kind === "drowning") return true;
+			if (feet.boundingBox !== "empty" || floor.boundingBox !== "block") return false;
+			return kind !== "low_health_damage" || escapeThreatClearance(node, threats);
+		},
+	};
+	const iterator = (bot as BotWithAssembly).pathfinder!.getPathFromTo(movements, bot.entity.position, goal, {
+		timeout: 250,
+		tickTimeout: 2,
+		searchRadius: 16,
+		optimizePath: false,
+	});
+	for (const { result } of iterator) {
+		signal.throwIfAborted();
+		if (result.status === "success") return escapeWaypoints(result.path, bot.entity.position);
+		if (result.status !== "partial") return null;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	return null;
+}
+
+export function canBreathe(bot: MineflayerBot, position: Vec3): boolean | null {
+	const head = bot.blockAt(toMineflayerVec3({ ...position, y: position.y + 1.62 }), false);
+	return head == null ? null : head.boundingBox === "empty" && !/water|lava|bubble_column/.test(head.name);
 }

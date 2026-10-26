@@ -21,6 +21,7 @@ import { EffectRecorder, fail } from "../execution.js";
 import { BodySessionImpl, type HostView } from "./session.js";
 
 export interface PlayerPortDeps {
+	prepareFeedback?: import("../../contracts/body.js").PrepareFeedback;
 	assertActionAllowed: () => void;
 	requireRetirement?: (notice: ControlRetirement) => void;
 	host: HostView;
@@ -134,6 +135,7 @@ export class PlayerPortImpl implements PlayerPort {
 				host: this.deps.host,
 				sink: this.deps.sink,
 				sampleSelf: this.deps.sampleSelf,
+				prepareFeedback: this.deps.prepareFeedback,
 				publishWindow: this.deps.publishWindow,
 				bot: this.deps.bot,
 				mintOp: this.deps.mintOp,

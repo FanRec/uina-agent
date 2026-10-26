@@ -1,5 +1,5 @@
 /** Call-bound views over one Driver session; no second control arbiter or client. */
-import type { BodyOps, BodySession, ControlOwner, WindowSession } from "../contracts/body.js";
+import type { BodyOps, BodySession, ControlOwner, WindowSession, FeedbackStream } from "../contracts/body.js";
 import { callFailure } from "../contracts/values.js";
 
 export function scopedBody(session: BodySession, scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }) {
@@ -7,6 +7,7 @@ export function scopedBody(session: BodySession, scope: { signal: AbortSignal; o
 	const signal = AbortSignal.any([scope.signal, local.signal]);
 	const pending = new Set<Promise<unknown>>();
 	const windows = new Set<WindowSession>();
+	const streams = new Set<FeedbackStream>();
 	let using = false,
 		ended = false,
 		closing: Promise<void> | undefined;
@@ -52,6 +53,20 @@ export function scopedBody(session: BodySession, scope: { signal: AbortSignal; o
 			if (key === "withInventory")
 				return <T>(work: (w: WindowSession) => Promise<T>) =>
 					run(() => target.withInventory((w) => work(windowView(w))));
+			if (key === "feedback")
+				return (sensors: Parameters<BodyOps["feedback"]>[0]) =>
+					run(async () => {
+						const raw = await target.feedback(sensors);
+						streams.add(raw);
+						return {
+							next: (after, abort) => run(() => raw.next(after, AbortSignal.any([signal, abort]))),
+							apply: (frame, input) => run(() => raw.apply(frame, input)),
+							close: async () => {
+								await raw.close();
+								streams.delete(raw);
+							},
+						} satisfies FeedbackStream;
+					});
 			if (key === "useItem")
 				return (hand: Parameters<BodyOps["useItem"]>[0]) =>
 					run(async () => {
@@ -83,6 +98,8 @@ export function scopedBody(session: BodySession, scope: { signal: AbortSignal; o
 		ended = true;
 		local.abort();
 		closing = (async () => {
+			await Promise.allSettled([...streams].map((stream) => stream.close()));
+			streams.clear();
 			await Promise.allSettled([...windows].map((w) => w.close({ force: true })));
 			windows.clear();
 			await Promise.allSettled([...pending]);

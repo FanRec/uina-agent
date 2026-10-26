@@ -31,7 +31,7 @@ export interface ExecutionSideStatus {
 	connection: "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 	world: WorldAvailabilityValue;
 	runtime: "ready" | "unavailable";
-	safety: { active: null; last: null };
+	safety: { active: Ref | null; last: Ref | null };
 	program: import("./program.js").ProgramCapacity | null;
 	faults: { code: string; message: string }[];
 	retirement: RetirementRequest | null;

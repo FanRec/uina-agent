@@ -1,6 +1,6 @@
 # Runtime / Callable 详细设计
 
-日期：2026-10-18（Asia/Shanghai），2026-10-24 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。批 6 固定记录与交付处置已实现；批 7 程序与批 9A world_change 等待投影已接通；批 9B 已接决策续段、替换/抢占与决策有效性交付；安全介入与核验器尚未实现。
+日期：2026-10-18（Asia/Shanghai），2026-10-27 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。批6固定记录与交付、批7程序、批9A等待和批9B决策续段/调度已接通；批10已接安全介入、独立身体退役及持久记录（schema v6）；显式效果核验器尚未实现。
 
 跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 

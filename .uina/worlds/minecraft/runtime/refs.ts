@@ -29,6 +29,9 @@ export class RuntimeRefs {
 	run(): Ref {
 		return this.next("run");
 	}
+	intervention(): Ref {
+		return this.next("safety");
+	}
 
 	segment(): Ref {
 		return this.next("seg");

@@ -77,7 +77,24 @@ export const SHIM = String.raw`(() => {
       lookAt: target => op('lookAt',{target}),
       writeSign: (at,opts) => op('writeSign',{at,opts}),
       openContainer: async target => windowHandle(await op('openContainer',{target})),
-      feedback: unavailable, loop: unavailable,
+      feedback: async (sensors={}) => {
+        const stream=await op('feedback',{sensors});
+        return freeze({next:(after=null)=>rpc('handleOp',{handle:stream.handle,op:'next',args:{after}}),
+          apply:(frame,input)=>rpc('handleOp',{handle:stream.handle,op:'apply',args:{frame:{stream:frame.stream,sequence:frame.sequence},input}}),
+          close:()=>rpc('closeHandle',{handle:stream.handle})});
+      },
+      loop: async (step,sensors={}) => {
+        if(typeof step!=='function')throw error('PROGRAM_INPUT_INVALID','loop requires a synchronous step');
+        const stream=await body(h).feedback(sensors);
+        let after=null;
+        try { while(true) {
+          const frame=await stream.next(after); after=frame.sequence;
+          const input=step(frame);
+          if(input && typeof input.then==='function')throw error('STEP_ASYNC','loop step must be synchronous');
+          if(input && input.done===true)return;
+          await stream.apply(frame,input);
+        }} finally {await stream.close();}
+      },
     });
   };
   const mc = Object.freeze({
@@ -94,7 +111,8 @@ export const SHIM = String.raw`(() => {
     withBody: async work => {
       if (typeof work !== 'function') throw error('PROGRAM_INPUT_INVALID','withBody requires a function');
       const h = await rpc('acquireBody',{});
-      try { return await work(body(h)); } finally { await rpc('releaseBody',{handle:h.handle}); }
+      try { return await Promise.race([work(body(h)),rpc('handleOp',{handle:h.handle,op:'waitClosed',args:{}})]); }
+      finally { await rpc('releaseBody',{handle:h.handle}); }
     },
     waitUntil: async (targets,predicate,opts={}) => {
       const started=now();

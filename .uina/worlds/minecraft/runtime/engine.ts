@@ -59,6 +59,7 @@ import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
 import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
 import { createProgramHost } from "./program-host.js";
 import { scopedBody } from "./scoped-body.js";
+import { RuntimeSafety } from "./safety.js";
 
 // ---- 纯值辅助 ----
 
@@ -75,6 +76,30 @@ const AjvCtor = createRequire(import.meta.url)("ajv") as new (options: {
 
 function nowIso(): string {
 	return new Date().toISOString();
+}
+
+async function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	let abort!: () => void;
+	const interrupted = new Promise<never>((_resolve, reject) => {
+		abort = () =>
+			reject(
+				callFailure({
+					code: "INTERRUPTED",
+					message: "body scope retired",
+					source: "environment",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: true,
+				}),
+			);
+		signal.addEventListener("abort", abort, { once: true });
+		if (signal.aborted) abort();
+	});
+	try {
+		return await Promise.race([work, interrupted]);
+	} finally {
+		signal.removeEventListener("abort", abort);
+	}
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
@@ -101,6 +126,8 @@ function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailur
 }
 
 export interface EngineOptions {
+	evidence?: import("../contracts/world.js").WorldEvidencePort;
+	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
 	commitAdmission?: (command: import("./runtime-db-worker.js").AdmissionCommand) => Promise<void>;
 	refs: RuntimeRefs;
 	queue: RecordQueue;
@@ -152,6 +179,8 @@ export class RuntimeEngine {
 	private shutdownPromise: Promise<void> | null = null;
 	private isolationFailed = false;
 	private chatGate: Promise<void> = Promise.resolve();
+	readonly safety: RuntimeSafety;
+	private activeBody: { run: Ref; interrupt(): Promise<void> } | null = null;
 
 	constructor(opts: EngineOptions) {
 		this.opts = opts;
@@ -162,7 +191,31 @@ export class RuntimeEngine {
 			onGrant: (owner) => this.queue.setQualificationOwner(owner),
 			onRelease: () => this.queue.setQualificationOwner(null),
 			// Run 停止后不再授予；排队/在途期间的停止由授予前复验拦下（§2.2）
-			isOwnerLive: (owner) => owner.kind !== "run" || this.runs.get(owner.run)?.stopped !== true,
+			isOwnerLive: (owner) =>
+				owner.kind === "safety" ? this.safety.isLive(owner.intervention) : this.runs.get(owner.run)?.stopped !== true,
+		});
+		this.safety = new RuntimeSafety({
+			refs: this.refs,
+			queue: this.queue,
+			bodies: this.bodyLeaseQueue,
+			guard: () => this.assertActionAllowed(),
+			interrupt: async () => {
+				if (this.activeBody) {
+					const active = this.activeBody;
+					await active.interrupt();
+					return active.run;
+				}
+				const id = this.bodyLeaseQueue.blockingCall();
+				const call = id ? this.findLiveCall(id) : undefined;
+				if (call) {
+					call.abort.abort();
+					await call.settled;
+					return call.run;
+				}
+				return null;
+			},
+			retain: opts.evidence?.retain.bind(opts.evidence),
+			changed: opts.onSafetyChanged,
 		});
 		this.owner = new RuntimeOwner({
 			worldOwner: opts.worldOwner,
@@ -184,6 +237,12 @@ export class RuntimeEngine {
 	// ---- 恢复（只读事实 + 未终结 Run 结算，不自动重放） ----
 
 	recover(rows: RecoveredRows): void {
+		this.safety.recover(
+			rows.safety ?? [],
+			this.opts.oldControlRetired === true,
+			JSON.parse(rows.ownerState?.gates ?? "[]").length > 0,
+			rows.effects,
+		);
 		for (const report of rows.completions ?? [])
 			if (!this.segmentCompletions.has(report.segment))
 				this.segmentCompletions.set(report.segment, report.completionRef);
@@ -1180,6 +1239,7 @@ export class RuntimeEngine {
 			});
 	}
 	controlState(): StopReceipt["control"] {
+		if (this.safety.inspect().active) return "stopping";
 		if (this.isolationFailed || [...this.runs.values()].some((state) => state.control === "unknown")) return "unknown";
 		return [...this.runs.values()].some((state) => state.phase !== "finished" && state.stopped)
 			? "stopping"
@@ -1195,6 +1255,7 @@ export class RuntimeEngine {
 		this.releasePriority(state);
 	}
 	private stopAll(): void {
+		this.safety.cancel();
 		const closing: Promise<void>[] = [];
 		for (const state of this.runs.values()) {
 			if (state.phase === "finished" || state.phase === "awaiting_decision" || state.stopped) continue;
@@ -1218,12 +1279,22 @@ export class RuntimeEngine {
 			void Promise.all(closing).then(() => clearTimeout(timer));
 		}
 	}
+	async invalidateControl(): Promise<void> {
+		this.safety.cancel("invalidated");
+		if (this.activeBody) await this.activeBody.interrupt();
+		else {
+			const id = this.bodyLeaseQueue.blockingCall();
+			const call = id ? this.findLiveCall(id) : null;
+			call?.abort.abort();
+		}
+	}
 	shutdown(): Promise<void> {
 		if (this.shutdownPromise != null) return this.shutdownPromise;
 		this.owner.shutdown();
 		this.shutdownPromise = (async () => {
 			let timeout: ReturnType<typeof setTimeout> | undefined;
 			const complete = Promise.all([...this.pendingSubmissions.values()].map((item) => item.promise)).then(async () => {
+				await this.safety.close();
 				await Promise.all([...this.activeRuns, ...this.stopBarriers]);
 				await this.chatGate;
 			});
@@ -1685,35 +1756,46 @@ export class RuntimeEngine {
 		state.control = "active";
 		state.revision++;
 		this.queue.enqueue(this.runMutation(state));
-		try {
-			const owned: BodyLease = { session: grant.session, activeCall: callState.call, closed: false };
-			try {
-				return await this.runBodyWork(callState, state, owned, work);
-			} finally {
+		const owned: BodyLease = {
+			session: grant.session,
+			activeCall: callState.call,
+			closed: false,
+			abort: new AbortController(),
+		};
+		let closing: Promise<void> | undefined;
+		const close = (): Promise<void> =>
+			(closing ??= (async () => {
 				owned.closed = true;
-			}
+				owned.abort.abort();
+				// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
+				try {
+					await grant.session.close();
+				} catch (err) {
+					state.control = "unknown";
+					this.isolationFailed = true;
+					this.opts.requireRetirement?.({
+						source: "runtime",
+						subject: state.run,
+						code: "CONTROL_ISOLATION_FAILED",
+						detail: String(err),
+					});
+				}
+				// release 之后队列才授予下一项；归属槽由队列的 onRelease 清空
+				grant.release();
+				// 释放后不再持有控制；stop 期间保持 stop() 设置的 stopping（finish 时落 stopped）
+				if (state.control === "active" && !state.stopped) {
+					state.control = "none";
+				}
+				state.revision++;
+				this.queue.enqueue(this.runMutation(state));
+			})());
+		const active = { run: state.run, interrupt: close };
+		this.activeBody = active;
+		try {
+			return await this.runBodyWork(callState, state, owned, work);
 		} finally {
-			// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
-			try {
-				await grant.session.close();
-			} catch (err) {
-				state.control = "unknown";
-				this.isolationFailed = true;
-				this.opts.requireRetirement?.({
-					source: "runtime",
-					subject: state.run,
-					code: "CONTROL_ISOLATION_FAILED",
-					detail: String(err),
-				});
-			}
-			// release 之后队列才授予下一项；归属槽由队列的 onRelease 清空
-			grant.release();
-			// 释放后不再持有控制；stop 期间保持 stop() 设置的 stopping（finish 时落 stopped）
-			if (state.control === "active" && !state.stopped) {
-				state.control = "none";
-			}
-			state.revision++;
-			this.queue.enqueue(this.runMutation(state));
+			await close();
+			if (this.activeBody === active) this.activeBody = null;
 		}
 	}
 
@@ -1724,14 +1806,15 @@ export class RuntimeEngine {
 		work: (scope: BodyCallScope) => Promise<T>,
 	): Promise<T> {
 		const ctx = this.buildContext(callState, state, lease) as BodyCallScope;
+		const signal = AbortSignal.any([callState.abort.signal, lease.abort.signal]);
 		const body = scopedBody(lease.session, {
-			signal: callState.abort.signal,
+			signal,
 			owner: { kind: "run", run: state.run, segment: state.segment, callId: callState.call },
 			guard: () => this.assertLease(callState, lease),
 		});
 		callState.resources.add(body.close);
 		try {
-			return await work({ ...ctx, player: body.player });
+			return await interruptible(work({ ...ctx, signal, player: body.player }), lease.abort.signal);
 		} finally {
 			await body.close();
 			callState.resources.delete(body.close);

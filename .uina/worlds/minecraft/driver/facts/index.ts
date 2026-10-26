@@ -29,6 +29,7 @@ import { plain } from "../../contracts/values.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import type { ClientHost } from "../client-host.js";
 import { createView } from "./view.js";
+import { trackVitals } from "./vitals.js";
 import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
 import { fromMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
@@ -422,6 +423,10 @@ export class FactsSource implements ClientFactsPort {
 		};
 		on("move", () => this.commit());
 		on("health", () => this.commit());
+		on("physicsTick", () => this.commit());
+		on("breath", () => this.commit());
+		on("entityAttributes", () => this.commit());
+		this.detachFns.push(trackVitals(bot).subscribe(() => this.commit()));
 		on("forcedMove", () => this.commit());
 		on("entitySpawn", () => this.commit());
 		on("entityDespawn", () => this.commit());

@@ -30,6 +30,7 @@ export type ResolvedInvocation = {
 
 /** 身体租约：一次 Call 帧内持有的 Body 会话（§3.3.1 单槽）。 */
 export interface BodyLease {
+	abort: AbortController;
 	session: BodySession;
 	activeCall: Ref;
 	closed: boolean;

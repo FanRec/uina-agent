@@ -191,6 +191,17 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 		return out;
 	}
 
+	effectsForSafety(intervention: Ref): { effects: Ref[]; unknownEffects: Ref[] } {
+		const effects: Ref[] = [],
+			unknownEffects: Ref[] = [];
+		for (const [effect, entry] of this.effectOwner)
+			if (entry.owner?.kind === "safety" && entry.owner.intervention === intervention) {
+				effects.push(effect);
+				if (entry.latest.completion !== "met") unknownEffects.push(effect);
+			}
+		return { effects, unknownEffects };
+	}
+
 	effectRecord(effect: Ref): (EffectAttribution & { effect: Ref }) | null {
 		const attribution = this.effectOwner.get(effect);
 		return attribution == null ? null : { effect, ...attribution };

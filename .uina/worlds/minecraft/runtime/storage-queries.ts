@@ -51,6 +51,13 @@ function save(db: DatabaseSync, record: RuntimeRecord, objectRef: string): numbe
 /** Runs in the same transaction as the materialized row. No second completion authority. */
 export function snapshotMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void {
 	switch (mutation.kind) {
+		case "safety":
+			save(
+				db,
+				{ kind: "safety", record: mutation.value.record, value: plain(mutation.value) },
+				mutation.value.intervention,
+			);
+			return;
 		case "run": {
 			const r = mutation.row;
 			const segment = r.segment

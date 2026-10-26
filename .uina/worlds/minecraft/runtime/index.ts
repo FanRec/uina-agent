@@ -44,6 +44,8 @@ import type { StorageQuery } from "./storage-queries.js";
 import type { AdmissionCommand, RecoveredRows, WorkerRequest, WorkerResponse } from "./runtime-db-worker.js";
 
 export interface MinecraftRuntimeOptions {
+	evidence?: import("../contracts/world.js").WorldEvidencePort;
+	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
 	/** runtime.db 绝对路径（<worldDataDir>/runtime.db，runtime.md §5.3）。 */
 	dbPath: string;
 	/** 存储身份：与库内 meta.storage_id 核对，不符即打开失败。 */
@@ -195,6 +197,8 @@ export class MinecraftRuntime {
 		});
 		let runtime: MinecraftRuntime;
 		const engine = new RuntimeEngine({
+			evidence: opts.evidence,
+			onSafetyChanged: opts.onSafetyChanged,
 			refs,
 			queue,
 			commitAdmission: (command) => runtime.admit(command),
@@ -317,6 +321,15 @@ export class MinecraftRuntime {
 	}
 	programChanged(): void {
 		this.engine.programChanged();
+	}
+	intervene(trigger: import("./safety.js").SafetyTrigger, work: import("./safety.js").SafetyWork) {
+		return this.engine.safety.run(trigger, work);
+	}
+	inspectSafety() {
+		return this.engine.safety.inspect();
+	}
+	invalidateControl() {
+		return this.engine.invalidateControl();
 	}
 
 	lookup(requestId: Ref): SubmissionLookup {

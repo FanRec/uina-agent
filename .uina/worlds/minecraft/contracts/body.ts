@@ -132,6 +132,12 @@ export interface FeedbackStream {
 	close(): Promise<void>;
 }
 
+/** Composition injects pure, validated current-query readers, never World storage. */
+export type PrepareFeedback = (sensors: Record<string, WorldQuery>) => () => {
+	self: Fact<SelfState>;
+	sensors: Record<string, Fact<JsonValue>>;
+};
+
 export interface WindowSnapshot {
 	/** 本次打开身份，不是网络 windowId。 */
 	window: Ref;

@@ -1,6 +1,6 @@
 # Uina Minecraft World — Driver / 受控玩家详细设计
 
-**状态：终态规格；当前已实现 I1/K1、批 1 toss 和批 2 普通容器 WindowSession。feedback、专用工作站及 Microsoft 登录仍缺。当前实现与真服边界见 dev/MC-WORLD.md；历史研究不代表所有终态能力已实现。**
+**状态：终态规格；当前已实现 I1/K1、批 1 toss 和批 2 普通容器 WindowSession。批10已接高频反馈与默认自保所需控制；专用工作站仍仅支持已交付窗口，Microsoft 登录未交付。当前实现与真服边界见 dev/MC-WORLD.md；历史研究不代表所有终态能力已实现。**
 
 日期：2026-10-15（Asia/Shanghai），2026-10-17 修订。修订经过与理由见 [changelog](../changelog.md)，本文只写当前合同。
 
@@ -685,6 +685,8 @@ updatePosition / movement packet
 `physicsTick` 本身仍是模拟后事件，不将监听器排序当模拟前接缝。若插件在模拟后、移动包前改变位置或视角，该变化另外归属于该 Operation，并标本地修改，不能算作已经被第 N 步物理消费的输入。相关源码与验证边界见[研究复核](../research.md)。
 
 ### 8.5 背压与健康
+
+批10当前实现使用同一物理循环约20Hz采样、250ms帧有效期和2秒物理停滞判据。支持额外传感 self/inventory/block/entities/world；其余查询建流前报 SENSOR_UNAVAILABLE。旧帧/重复帧为 FRAME_EXPIRED/FRAME_STALE。模拟适配按真实客户端 control 对象及 apply 边界识别消费步，不修改 Pathfinder 的独立预测状态。确切实现和现场时延见 [批10记录](../feedback-implementation.md)。
 
 - 高频反馈使用有界缓冲。
 - 旧帧优先丢弃或合并，不补播过期动作。

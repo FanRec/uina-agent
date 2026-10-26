@@ -5,7 +5,7 @@
  * 状态机 active → revoking → quiesced → closed（§5.2）；revoking 不可逆；结束须新建资格。
  * 写入核验位置（I1 覆盖 §5.3 的 1/2/3/4）：操作入口、异步恢复后产生副作用前、
  * 控制状态修改前、修改插件目标前；窗口另在同步协议写入和按代次清理时核验。
- * feedback 尚未实现并显式失败。
+ * feedback 复用真实物理步安装持续输入，并在流结束或资格撤销时清理。
  * 低层完成合同名（body.*@1）由 Driver 拥有；公开能力合同归 capabilities。
  * drive 的 Tick = 实际客户端物理模拟步（§7.2）：首个消费步开始计数，第 N 个
  * 消费步结束后、下一次模拟前撤销持续键/use（physicsTick 监听内同步撤销，
@@ -45,6 +45,7 @@ import { runSign } from "./sign.js";
 import { runEquip, runToss } from "./inventory.js";
 import type { BodyOperationDeps } from "./operation.js";
 import { WindowSessionImpl } from "../window/session.js";
+import { FeedbackController } from "./feedback.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
 type MFEntity = NonNullable<MineflayerBot["entities"][string]>;
@@ -59,6 +60,7 @@ export interface HostView {
 }
 
 export interface BodySessionDeps {
+	prepareFeedback?: import("../../contracts/body.js").PrepareFeedback;
 	assertActionAllowed: () => void;
 	requireRetirement?: (notice: ControlRetirement) => void;
 	host: HostView;
@@ -108,6 +110,8 @@ export class BodySessionImpl implements BodySession {
 	private pendingOps = 0;
 	private ownedWindow: WindowSessionImpl | null = null;
 	private openingWindow = false;
+	private feedbackStream: FeedbackController | null = null;
+	private viewOperations = 0;
 	private barrierProven = true;
 	private readonly rootRecorder: EffectRecorder;
 	private get recorder(): EffectRecorder {
@@ -134,7 +138,7 @@ export class BodySessionImpl implements BodySession {
 				this.revoke("connection_lost");
 				return;
 			}
-			if (notice.kind === "incarnation_changed") {
+			if (notice.kind === "incarnation_changed" || notice.kind === "incarnation_invalidated") {
 				this.revoke("incarnation_changed");
 			}
 		});
@@ -183,6 +187,7 @@ export class BodySessionImpl implements BodySession {
 		if (this.state !== "active") return;
 		this.state = "revoking";
 		this.abortController.abort();
+		void this.feedbackStream?.close();
 		const bot = this.deps.bot();
 		if (bot != null) {
 			try {
@@ -341,12 +346,39 @@ export class BodySessionImpl implements BodySession {
 		this.pendingOps--;
 	}
 
+	/** Local compatibility check; movement-only feedback keeps running. */
+	private beginView(): () => void {
+		this.recheck();
+		if (this.feedbackStream?.hasViewInput()) this.viewConflict();
+		this.viewOperations++;
+		return () => {
+			this.viewOperations--;
+		};
+	}
+	private viewConflict(): never {
+		throw fail({
+			code: "CONTROL_CONFLICT",
+			source: "capability",
+			message: "another operation controls view",
+			dispatch: "not_sent",
+			recoverable: true,
+		});
+	}
+
 	// ---- 记录 ----
 
 	async drive(
 		input: ControlInput,
 		ticks: number,
 	): Promise<{ receipt: EffectReceipt; actualTicks: number; end: Fact<SelfState> }> {
+		if (this.feedbackStream)
+			throw fail({
+				code: "CONTROL_CONFLICT",
+				source: "capability",
+				message: "feedback owns continuous input",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
 		if (!Number.isInteger(ticks) || ticks <= 0) {
 			throw fail({
 				code: "INVALID_INPUT",
@@ -383,38 +415,7 @@ export class BodySessionImpl implements BodySession {
 			}
 
 			// 键位：省略项按 false 安装（public-api §4）
-			for (const key of DRIVE_KEYS) {
-				bot.setControlState(key, input.keys[key] === true);
-			}
-
-			// use：hold/once 都在状态进入时激活一次，不逐 Tick 重复
-			if (input.use != null) {
-				const hand = input.use.hand;
-				if (!this.handHasItem(bot, hand)) {
-					this.revokeKeys(bot);
-					throw fail({
-						code: "WRONG_STATE",
-						source: "input",
-						message: `hand ${hand} has no item to use`,
-						hint: "equip the item first (equip), or drop the use field",
-						dispatch: "not_sent",
-						effects: [eff],
-						recoverable: true,
-					});
-				}
-				protocolFor(bot).useItem(hand === "off" ? 1 : 0);
-				this.ownedUse.set(hand, {
-					operation: op,
-					owner: this.scopes.getStore()?.owner ?? this.owner,
-					recorder: this.recorder,
-				});
-			}
-
-			// attack：只在本次输入安装时派发一次，不随 ticks 重复
-			if (input.attack != null) {
-				const entity = this.resolveEntity(bot, input.attack);
-				bot.attack(entity);
-			}
+			this.installControl(bot, input, op);
 
 			this.recorder.record(
 				eff,
@@ -549,6 +550,56 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
+	private validateControl(bot: MineflayerBot, input: ControlInput): void {
+		this.recheck();
+		if (
+			!input ||
+			!input.keys ||
+			Object.entries(input.keys).some(
+				([key, value]) => !DRIVE_KEYS.includes(key as Key) || typeof value !== "boolean",
+			) ||
+			(input.look && (![input.look.yaw, input.look.pitch].every(Number.isFinite) || input.lookAt)) ||
+			(input.use && (!["main", "off"].includes(input.use.hand) || !["hold", "once"].includes(input.use.mode)))
+		)
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "invalid ControlInput",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		if ((input.look || input.lookAt) && this.viewOperations > 0) this.viewConflict();
+		if (input.use && !this.handHasItem(bot, input.use.hand))
+			throw fail({
+				code: "WRONG_STATE",
+				source: "input",
+				message: "selected hand has no item",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		if (input.attack) this.resolveEntity(bot, input.attack);
+		if (input.lookAt) this.lookPointFor(bot, input.lookAt);
+	}
+	private installControl(bot: MineflayerBot, input: ControlInput, op: Ref): void {
+		this.validateControl(bot, input);
+		for (const key of DRIVE_KEYS) bot.setControlState(key, input.keys[key] === true);
+		for (const [hand, use] of this.ownedUse)
+			if (use.operation === op && input.use?.hand !== hand)
+				this.releaseUse(bot, hand, op, "control input released use");
+		if (input.use) {
+			const hand = input.use.hand;
+			if (input.use.mode === "once" || this.ownedUse.get(hand)?.operation !== op) {
+				protocolFor(bot).useItem(hand === "off" ? 1 : 0);
+				this.ownedUse.set(hand, {
+					operation: op,
+					owner: this.scopes.getStore()?.owner ?? this.owner,
+					recorder: this.recorder,
+				});
+			}
+		}
+		if (input.attack) bot.attack(this.resolveEntity(bot, input.attack));
+	}
+
 	private releaseUse(bot: MineflayerBot, hand: Hand, op: Ref, reason: string): void {
 		const use = this.ownedUse.get(hand);
 		if (use?.operation !== op) return; // 不清理无委托关系的其他操作资源
@@ -641,12 +692,14 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt> {
+		const releaseView = options?.aim === "preserve" ? () => {} : this.beginView();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
 			this.checkBlockTarget(target, bot);
 			return await runMining(this.operationDeps(bot), target, options);
 		} finally {
+			releaseView();
 			this.exitOp();
 		}
 	}
@@ -799,6 +852,7 @@ export class BodySessionImpl implements BodySession {
 		face?: Vec3;
 		cursor?: Vec3;
 	}): Promise<EffectReceipt> {
+		const releaseView = "networkId" in input.target ? () => {} : this.beginView();
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
 		this.enterOp();
@@ -907,6 +961,7 @@ export class BodySessionImpl implements BodySession {
 			);
 			return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
 		} finally {
+			releaseView();
 			this.exitOp();
 		}
 	}
@@ -992,6 +1047,7 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt> {
+		const releaseView = this.beginView();
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
 		this.enterOp();
@@ -1014,17 +1070,20 @@ export class BodySessionImpl implements BodySession {
 			);
 			return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
 		} finally {
+			releaseView();
 			this.exitOp();
 		}
 	}
 
 	async writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt> {
+		const releaseView = this.beginView();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
 			this.checkBlockTarget(target, bot);
 			return await runSign(this.operationDeps(bot), target, input);
 		} finally {
+			releaseView();
 			this.exitOp();
 		}
 	}
@@ -1089,6 +1148,7 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async openContainer(_target: BlockTarget | EntityRef): Promise<WindowSession> {
+		const releaseView = this.beginView();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
@@ -1230,18 +1290,72 @@ export class BodySessionImpl implements BodySession {
 			return window;
 		} finally {
 			this.openingWindow = false;
+			releaseView();
 			this.exitOp();
 		}
 	}
 
-	async feedback(_sensors: Record<string, WorldQuery>): Promise<FeedbackStream> {
-		throw fail({
-			code: "INTERNAL",
-			source: "capability",
-			message: "feedback is not implemented in driver I1 scope",
-			hint: "feedback streams arrive with K-group work packages",
-			dispatch: "not_sent",
-			recoverable: false,
+	async feedback(sensors: Record<string, WorldQuery>): Promise<FeedbackStream> {
+		const bot = this.botForWrite();
+		if (this.feedbackStream || this.pendingOps > 0 || this.ownedWindow)
+			throw fail({
+				code: "CONTROL_CONFLICT",
+				source: "capability",
+				message: "another continuous control/window is active",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		if (!this.deps.prepareFeedback)
+			throw fail({
+				code: "SENSOR_UNAVAILABLE",
+				source: "environment",
+				message: "feedback sampler is not installed",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		const sample = this.deps.prepareFeedback(sensors);
+		sample();
+		const op = this.deps.mintOp();
+		const scope = this.scopes.getStore();
+		const scoped = <T>(work: () => T): T => this.scopes.run(scope, work);
+		const recorder = this.recorder;
+		let effect = this.deps.mintEff();
+		const raw = new FeedbackController({
+			body: this.body,
+			operation: op,
+			identity: this.identity,
+			bot,
+			signal: this.signal,
+			guard: this.boundCheck(),
+			sample,
+			validate: (input) => scoped(() => this.validateControl(bot, input)),
+			install: (input) =>
+				scoped(() => {
+					this.installControl(bot, input, op);
+					if (input.lookAt) {
+						const point = this.lookPointFor(bot, input.lookAt);
+						const pos = bot.entity.position;
+						const dx = point.x - pos.x,
+							dy = point.y - (pos.y + 1.62),
+							dz = point.z - pos.z;
+						void bot.look(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)), true);
+					} else if (input.look) void bot.look(input.look.yaw, input.look.pitch, true);
+				}),
+			clear: () =>
+				scoped(() => {
+					this.revokeKeys(bot);
+					for (const hand of ["main", "off"] as const) this.releaseUse(bot, hand, op, "feedback released");
+				}),
+			closed: () => {
+				if (this.feedbackStream === raw) this.feedbackStream = null;
+			},
+			record: (kind, detail, dispatch = "sent") => {
+				if ((kind === "dispatch" && dispatch === "unknown") || kind === "cleanup") effect = this.deps.mintEff();
+				recorder.record(effect, op, "body.feedback@1", kind, dispatch, kind === "dispatch" ? "unknown" : "met", detail);
+				return { effect, dispatch, completion: kind === "dispatch" ? "unknown" : "met", evidence: [] };
+			},
 		});
+		this.feedbackStream = raw;
+		return raw;
 	}
 }

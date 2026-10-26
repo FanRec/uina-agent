@@ -1,5 +1,12 @@
 # 设计变更记录
 
+## 2026-10-27 · 批10反馈与默认自保
+
+- ClientHost 生命周期监听与化身退役修正；self 氧气、最大生命值和效果寿命沿实际客户端数据读取。
+- Driver 在既有物理模拟前安装/核验反馈输入，模拟实际完成后采样并确认；Program 接 body.feedback/loop，流采用单在算帧/latest-only 待交付、250ms有效期与所属输入撤销。
+- Runtime 在同一身体队列中退役旧作用域、授予 safety；默认岩浆/缺氧/低血新伤害反射不另建 Run，不自动吃、挖、放或反击。记录归 safety，旧程序可在外层捕获中断并重新观察。
+- Runtime schema v6，旧v5拒绝自动迁移；history v3、ledger v3、Host journal v4保持。状态与重要提示可查实际介入记录；完整证据见 [批10实施记录](feedback-implementation.md)。能力仍25/51，下一包地点与路径探索。
+
 ## 2026-10-25 · 批 8 Library 文件与发现复用
 
 - 三类普通文件 CRUD、统一扫描/头诊断、compile-only、确切 Call 来源保存、四类统一发现和正式工具/IPC 已接通；Program 只消费注入的只读材料。

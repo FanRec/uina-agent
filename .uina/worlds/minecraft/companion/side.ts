@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { describeDirectory, type DescribeParams } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
+import { prepareFeedback } from "../capabilities/shared/feedback.js";
+import { startSurvival } from "../capabilities/survival.js";
+import { planEscape, canBreathe } from "../driver/mineflayer/pathfinder.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
 import type {
@@ -91,6 +94,7 @@ export async function openExecutionSide(
 		bot: () => host.bot,
 		sink,
 		sampleSelf: () => facts.sampleSelf(),
+		prepareFeedback: (sensors) => prepareFeedback(capabilities, facts)(sensors),
 		arbiter,
 		mintBody: () => mint("body"),
 		mintOp: () => mint("op"),
@@ -154,6 +158,22 @@ export async function openExecutionSide(
 			onWorkerFault: (calls, reason) => runtime?.sealProgramCalls(calls, reason),
 		});
 		const opened = await MinecraftRuntime.open({
+			evidence: world,
+			onSafetyChanged: (record) => {
+				options.onChanged?.();
+				if (record.finishedAt)
+					options.onGameEvent?.({
+						ref: record.record,
+						observedAt: record.finishedAt,
+						payload: plain({
+							kind: "safety_changed",
+							intervention: record.intervention,
+							record: record.record,
+							ended: record.ended,
+							outcome: record.outcome,
+						}),
+					});
+			},
 			dbPath: join(init.worldDataDir, "runtime.db"),
 			storageId: init.storageId,
 			namespace,
@@ -170,6 +190,38 @@ export async function openExecutionSide(
 			requireRetirement,
 		});
 		runtime = opened.runtime;
+		const detachControl = host.on((notice) => {
+			if (
+				notice.kind === "incarnation_invalidated" ||
+				notice.kind === "incarnation_changed" ||
+				notice.kind === "disconnected"
+			)
+				void getRuntime()
+					.invalidateControl()
+					.catch((error) =>
+						requireRetirement({
+							source: "runtime",
+							subject: null,
+							code: "CONTROL_ISOLATION_FAILED",
+							detail: String(error),
+						}),
+					);
+		});
+		const survival = startSurvival({
+			facts,
+			world,
+			runtime: getRuntime(),
+			plan: (kind, threats, signal) => {
+				const bot = host.bot;
+				if (!bot) throw new Error("client disconnected");
+				return planEscape(bot, kind, threats, signal);
+			},
+			breathable: (self) => (host.bot ? canBreathe(host.bot, self.place.position) : null),
+			onFault: (error) => {
+				faults.push({ code: "SAFETY_FAULT", message: String(error) });
+				options.onChanged?.();
+			},
+		});
 		const start = opened.start;
 		let attached = false;
 		const attach = async (): Promise<OwnerState> => {
@@ -216,12 +268,9 @@ export async function openExecutionSide(
 			connection: host.state,
 			world: world.availability(),
 			runtime: getRuntime().availability(),
-			safety: { active: null, last: null },
+			safety: getRuntime().inspectSafety(),
 			program: program!.capacity(),
-			faults: [
-				...faults,
-				{ code: "SAFETY_NOT_IMPLEMENTED", message: "default self-preservation is not delivered in batch 4" },
-			],
+			faults: [...faults],
 			retirement,
 		});
 		const close = (): Promise<void> =>
@@ -246,6 +295,7 @@ export async function openExecutionSide(
 				}
 				// Gate receipt may still say stopping. Runtime.close waits for the actual control barrier.
 				for (const shutdown of [
+					() => survival.close(),
 					() => getRuntime().close(),
 					() => program!.close(),
 					() => host.close(),
@@ -257,6 +307,7 @@ export async function openExecutionSide(
 						errors.push(error);
 					}
 				}
+				detachControl();
 				if (retirement || errors.length) throw new AggregateError(errors, "execution side did not close cleanly");
 			})());
 		const dispatch = async (method: RpcMethod, payload: JsonValue, signal: AbortSignal): Promise<JsonValue> => {

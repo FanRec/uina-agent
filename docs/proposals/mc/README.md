@@ -8,13 +8,13 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
-| Driver（受控玩家）、World（观察与记录） | K1 + 批 2 + 批 3 + 修复：连接级 1.21.11 协议适配、玩家/容器/工作站共享确认、独立库存/采矿/牌面操作、统一查询校验；窗口含普通容器、工作台与熔炉（高炉/烟熏炉仍拒），`revision` 只随槽位与光标推进；feedback、通用领域记录仍缺 | 2026-10-25 |
-| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，批 6 固定记录与交付处置已接通，库 schema v5，批 9B 已接程序决策、显式续段、替换/抢占与决策报告有效性 | 2026-10-25 |
+| Driver（受控玩家）、World（观察与记录） | K1 + 批 2 + 批 3 + 修复：连接级 1.21.11 协议适配、玩家/容器/工作站共享确认、独立库存/采矿/牌面操作、统一查询校验；窗口含普通容器、工作台与熔炉（高炉/烟熏炉仍拒），`revision` 只随槽位与光标推进；批10已接feedback/默认自保；通用领域记录仍缺 | 2026-10-25 |
+| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，批 6 固定记录与交付处置已接通，库 schema v6（批10），批 9B 已接程序决策、显式续段、替换/抢占与决策报告有效性 | 2026-10-25 |
 | 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器、批 3 生产链已实现：**10 查询 + 15 动作（25/51）**，按真实目录计数；此前 27 项为误计。生产链修复已随 `6fbd9a4` 入库；其余 K3–K8 待实现 | 2026-10-25 |
 | Library（程序、蓝图与经验） | 批 8 已实现三类文件 CRUD、来源保存与统一发现；蓝图解释/施工留 Construction，见 [实施记录](library-implementation.md) | 2026-10-25 |
 | Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；批 6 正式 WorldDef、原生工具、请求凭证、可靠通知与 BodyEndpoint 已接线。见 [原生接入实施](native-host-implementation.md) | 2026-10-25 |
 | Host 持久交付接缝 | **批 5 已实现**：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定；见 [实施记录](host-delivery-implementation.md) | 2026-10-25 |
-| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行子集、正式入口、快照与取消已实现，见 [实施记录](program-implementation.md)；9A 已接可等待查询与 waitUntil；9B 已接决策/checkpoint；feedback 未交付 | 2026-10-25 |
+| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行子集、正式入口、快照与取消已实现，见 [实施记录](program-implementation.md)；9A 已接可等待查询与 waitUntil；9B 已接决策/checkpoint；批10已接feedback/loop | 2026-10-25 |
 | 真实 Minecraft 游玩验收 | 批 4 受管源码/产物各 **8/8**（含导航中关闭/过期/故障恢复）；MC **33 文件/270 项**。生产链 K3 各 **14/14**、production-repair 各 **7/7** 及 Driver repair/I1/K1/批 2 保留对应历史证据。批 6 已有真实 deepseek-flash 的采集/生产、缺料纠错和显式停止校准，见 [实施记录](native-host-implementation.md) | 2026-10-25 |
 
 批 7 审查收口：MC **38 文件/293 项**、Host 相关 **5 文件/27 项**、typecheck/build 通过；正式源码/产物程序真服场景各 **8/8**，真实 deepseek-flash 程序校准通过。证据与未验证范围见 [实施记录](program-implementation.md)。
@@ -23,7 +23,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
-**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；依据本轮长时观察，下一组优先反馈与自保，地点/路径探索随后。现有 25 项能力不等于全部 51 项设计完成。
+**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保，下一组为地点记录与路径探索。现有 25 项能力不等于全部 51 项设计完成。
 
 批 2 设计、取舍与任务记录见 [窗口与容器实施](window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 
@@ -122,4 +122,4 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 批 9A：确切查询版本、事件提交 Watch、Program waitUntil 与停止/身体生命周期已接通；能力仍为 25/51，历史库 v2，Runtime/Host 格式不变。完整证据见 [实施记录](wait-implementation.md)。
 
 
-批9B：decide/checkpoint、显式continue、替换/抢占、历史保留与显式清理已接通，Runtime v5/history v3/ledger v3，仍为25/51能力。MC46文件357项、Host5文件27项、类型/边界/构建通过；正式源码/产物I2各7/7，真实deepseek-flash分阶段校准3/3。30分钟开放观察暴露重复死亡与OwnerLost恢复限制，下一工作包优先反馈与自保，再接地点/路径探索。详见[批9B实施记录](decision-implementation.md)。
+批9B：decide/checkpoint、显式continue、替换/抢占、历史保留与显式清理已接通，Runtime v5/history v3/ledger v3，仍为25/51能力。MC46文件357项、Host5文件27项、类型/边界/构建通过；正式源码/产物I2各7/7，真实deepseek-flash分阶段校准3/3。30分钟开放观察暴露重复死亡与OwnerLost恢复限制，批10已接反馈与默认自保，下一工作包为地点与路径探索。详见[批9B实施记录](decision-implementation.md)。

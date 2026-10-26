@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import type { BodySession, ControlOwner, EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import type { CallFailure, Place } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
+import { PlayerPortImpl, type PlayerPortDeps } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
 import type { BodySessionImpl, HostView } from "../../.uina/worlds/minecraft/driver/body/session.js";
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
@@ -117,7 +117,10 @@ export interface BodyHarness {
 }
 
 /** 组合 PlayerPortImpl：真实仲裁器 + 确定性发号 + 窄 stub。 */
-export function makeBodyHarness(botOverrides: Record<string, unknown> = {}): BodyHarness {
+export function makeBodyHarness(
+	botOverrides: Record<string, unknown> = {},
+	options: Partial<Pick<PlayerPortDeps, "sampleSelf" | "prepareFeedback">> = {},
+): BodyHarness {
 	const { view: host, setConnection } = makeHost();
 	const { sink, facts } = makeSink();
 	const arbiter = new DriverControlArbiter();
@@ -133,6 +136,7 @@ export function makeBodyHarness(botOverrides: Record<string, unknown> = {}): Bod
 		bot: () => bot,
 		sink,
 		sampleSelf: () => null,
+		...options,
 		arbiter,
 		mintBody: mint("body"),
 		mintOp: mint("op"),

@@ -9,6 +9,7 @@
  */
 
 import { protocolFor } from "./mineflayer/protocol.js";
+import { trackVitals } from "./facts/vitals.js";
 import type { Ref } from "../contracts/values.js";
 import {
 	connectMinecraftClient,
@@ -32,6 +33,7 @@ export interface DisconnectFacts {
 export type ClientHostListener =
 	| { kind: "state"; state: ConnectionState }
 	| { kind: "incarnation_changed"; identity: ClientIdentity }
+	| { kind: "incarnation_invalidated"; identity: ClientIdentity }
 	| { kind: "disconnected"; facts: DisconnectFacts };
 
 /** ref 前缀约定：driver 拥有 conn:/inc:/body:/op:/eff:/ev: 空间，各前缀独立单调发号。 */
@@ -56,6 +58,7 @@ export class ClientHost {
 	private _attachGeneration = 0;
 	/** death（respawn 包）后待重生：下一次 spawn 落位时换 Incarnation。 */
 	private _pendingRebirth = false;
+	private detachConnection: (() => void) | null = null;
 
 	get state(): ConnectionState {
 		return this._state;
@@ -92,6 +95,7 @@ export class ClientHost {
 		const generation = ++this._attachGeneration;
 		this._disconnect = null;
 		this._lastDimension = null;
+		this._pendingRebirth = false;
 		this._connection = this.nextRef("conn");
 		this._incarnation = this.nextRef("inc");
 		this.setState("connecting");
@@ -99,21 +103,13 @@ export class ClientHost {
 		const bot = connectMinecraftClient(opts);
 		this._bot = bot;
 		protocolFor(bot);
+		trackVitals(bot);
 
 		await new Promise<void>((resolve) => {
-			const onReady = () => {
-				if (generation !== this._attachGeneration) return;
-				cleanup();
-				// 重新同步维度快照后再 ready（spawn 时 bot.game.dimension 已可读）。
-				this._lastDimension = bot.game.dimension ?? null;
-				this.setState("ready");
-				resolve();
-			};
 			const onSpawn = () => {
 				if (generation !== this._attachGeneration) return;
-				if (this._state !== "ready") return; // 首个 spawn 由 ready 路径处理
 				const dim = bot.game.dimension ?? null;
-				const dimensionChanged = dim != null && dim !== this._lastDimension;
+				const dimensionChanged = this._lastDimension != null && dim != null && dim !== this._lastDimension;
 				if (dim != null) this._lastDimension = dim;
 				// Incarnation 只在死亡重生或跨维度时更换（§4.2）；
 				// 同维度重复 spawn（位置同步）不构成身体环境重建。
@@ -122,9 +118,14 @@ export class ClientHost {
 					this._incarnation = this.nextRef("inc");
 					this.emit({ kind: "incarnation_changed", identity: this.identity! });
 				}
+				this.setState("ready");
+				resolve();
 			};
 			const onDeath = () => {
+				if (generation !== this._attachGeneration) return;
 				this._pendingRebirth = true;
+				this.setState("syncing");
+				this.emit({ kind: "incarnation_invalidated", identity: this.identity! });
 			};
 			const onLogin = () => {
 				if (generation !== this._attachGeneration) return;
@@ -160,14 +161,15 @@ export class ClientHost {
 				bot.removeListener("end", onEnd);
 				bot.removeListener("kicked", onKicked);
 				bot.removeListener("error", onError);
+				if (this.detachConnection === cleanup) this.detachConnection = null;
 			};
+			this.detachConnection = cleanup;
 			bot.on("login", onLogin);
 			bot.on("spawn", onSpawn);
 			bot.on("death", onDeath);
 			bot.once("end", onEnd);
 			bot.on("kicked", onKicked);
 			bot.on("error", onError);
-			bot.once("spawn", onReady);
 		});
 	}
 
@@ -175,6 +177,7 @@ export class ClientHost {
 	async close(): Promise<void> {
 		const bot = this._bot;
 		this._attachGeneration += 1;
+		this.detachConnection?.();
 		if (bot == null) {
 			if (this._state !== "disconnected" && this._state !== "faulted") this.setState("disconnected");
 			return;

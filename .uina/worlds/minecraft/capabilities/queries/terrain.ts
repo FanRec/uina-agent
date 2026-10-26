@@ -65,7 +65,7 @@ const blockQuery = (deps: TerrainDeps): QuerySpec => ({
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
-		feedback: false,
+		feedback: true,
 		examples: [
 			{
 				input: { at: { x: 120, y: 63, z: -30 } },

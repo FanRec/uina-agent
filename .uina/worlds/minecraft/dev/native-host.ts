@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UinaHost } from "../../../../src/host/host.js";
-import type { Model, ModelStreamFn } from "../../../../src/core/types.js";
+import type { Model, ModelStreamFn, RequestUsage } from "../../../../src/core/types.js";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import { WorldActivation } from "../../../../src/extensions/world-framework/world-activation.js";
 import type { ExtensionAPI } from "../../../../src/extensions/runner.js";
@@ -15,6 +15,7 @@ import { createMinecraftWorld } from "../worlddef/index.js";
 import type { JsonValue } from "../contracts/values.js";
 import { waitScenario } from "./wait-scenario.js";
 import { libraryScenario } from "./library-scenario.js";
+import { feedbackScenario, prepareFeedbackModelScene } from "./feedback-scenario.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms = 15000): Promise<T> {
@@ -30,6 +31,8 @@ const modelMode = process.argv.includes("--model");
 const programMode = process.argv.includes("--program");
 const waitMode = process.argv.includes("--wait");
 const libraryMode = process.argv.includes("--library");
+const feedbackMode = process.argv.includes("--feedback");
+if (feedbackMode && modelMode) await prepareFeedbackModelScene();
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-model-" : "uina-mc-native-"));
 console.log(`[mc-native] ${modelMode ? "REAL MODEL" : "controlled Provider, REAL Host/Paper"} data=${root}`);
 const configPath = join(root, "config.json");
@@ -86,7 +89,16 @@ const host = await UinaHost.create({
 });
 const results = new Map<string, ToolResultEvent>();
 const transcript: unknown[] = [];
+const calibrationUsage = new Map<string, RequestUsage>();
+let calibrationBudgetHit: string | null = null;
 host.subscribe((event) => {
+	if (event.type === "usage_update") {
+		calibrationUsage.set(event.usage.callId, event.usage);
+		if (feedbackMode && modelMode && calibrationUsage.size >= 12) {
+			calibrationBudgetHit = "12-request calibration budget reached";
+			host.interrupt();
+		}
+	}
 	if (event.type === "tool_result") {
 		results.set(event.callId, event);
 		transcript.push(event);
@@ -147,6 +159,10 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
+		if (modelMode && feedbackMode)
+			api.onHook("turn.transformContext", (projection) => ({
+				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
+			}));
 	});
 	activation = new WorldActivation(world, {
 		pi,
@@ -168,6 +184,7 @@ try {
 		await sleep(180);
 	};
 	await step("prepare dedicated game scene", async () => {
+		if (feedbackMode && modelMode) return;
 		await command("/gamemode creative UinaDev");
 		await command("/tp UinaDev 16000.5 205 16000.5");
 		await until(
@@ -189,7 +206,7 @@ try {
 			(o) => (o.value as { block: { name: string } | null }).block?.name === "stone",
 		);
 		await command("/tp UinaDev 16000.5 200 16000.5");
-		if (libraryMode || waitMode) {
+		if (libraryMode || waitMode || feedbackMode) {
 			await command("/time set day");
 			await command("/weather clear");
 			await command("/kill @e[type=!minecraft:player,distance=..64]");
@@ -208,7 +225,52 @@ try {
 				Math.abs((o.value as { place: { position: { y: number } } }).place.position.y - 200) < 0.1,
 		);
 	});
-	if (modelMode) {
+	if (feedbackMode) {
+		await feedbackScenario({
+			direct,
+			step,
+			safeStop: async () => {
+				await ([...activation!.exposed.values()][0] as BodyEndpoint).safeStop();
+			},
+			resume: async () => {
+				await ([...activation!.exposed.values()][0] as BodyEndpoint).resume();
+			},
+			reopen: async () => {
+				await activation!.stop();
+				activation = undefined;
+				activation = new WorldActivation(world, {
+					pi,
+					runtime: { definition: world, enabled: true },
+					worldName: world.name,
+					notifyExposed() {},
+				});
+				await activation.start();
+				await until(
+					() => direct("runs", { op: "status" }),
+					(r) => (r.side as { connection?: string })?.connection === "ready",
+				);
+			},
+			model: modelMode
+				? async (prompt) => {
+						const timer = setTimeout(() => {
+							calibrationBudgetHit = "90-second calibration budget reached";
+							host.interrupt();
+						}, 90000);
+						try {
+							await host.submitText(prompt, "direct");
+							await host.waitForIdle();
+							if (calibrationBudgetHit) throw new Error(calibrationBudgetHit);
+							const error = transcript.find((e) => (e as { type?: string }).type === "error") as
+								| { text?: string }
+								| undefined;
+							if (error) throw new Error(error.text ?? "model request failed");
+						} finally {
+							clearTimeout(timer);
+						}
+					}
+				: undefined,
+		});
+	} else if (modelMode) {
 		console.log(`[mc-native] real model=${host.snapshot().modelName}`);
 		for (const task of waitMode
 			? [
@@ -529,13 +591,23 @@ try {
 		await activation!.stop();
 		activation = undefined;
 	});
+} catch (error) {
+	console.error("[mc-native] acceptance failed", error);
+	throw error;
 } finally {
 	await activation?.stop();
 	await host.dispose();
 	await writeFile(
 		join(root, "report.json"),
 		JSON.stringify(
-			{ mode: modelMode ? "real-model" : "controlled-provider-real-paper", passed, modelRequests, transcript },
+			{
+				mode: modelMode ? "real-model" : "controlled-provider-real-paper",
+				passed,
+				modelRequests,
+				usage: [...calibrationUsage.values()],
+				calibrationBudgetHit,
+				transcript,
+			},
 			null,
 			2,
 		),

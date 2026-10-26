@@ -17,7 +17,7 @@ import { applyAdmission, type AdmissionCommand } from "./admission.js";
 export type { AdmissionCommand } from "./admission.js";
 import { parentPort } from "node:worker_threads";
 import { RECORD_SCHEMA, snapshotMutation, queryStorage, type StorageQuery } from "./storage-queries.js";
-import type { DriverExecutionFact } from "../contracts/runtime.js";
+import type { DriverExecutionFact, SafetyInterventionRecord } from "../contracts/runtime.js";
 
 // ---- 行形状（引擎侧同构） ----
 
@@ -124,6 +124,7 @@ export interface RecordIndexRow {
 export interface ApplyItem {
 	ticket: { instance: string; sequence: number };
 	mutation:
+		| { kind: "safety"; value: SafetyInterventionRecord }
 		| { kind: "owner_state"; gates: string; revision: number }
 		| { kind: "submission"; row: SubmissionRow }
 		| { kind: "stop_intent"; row: StopIntentRow }
@@ -141,6 +142,7 @@ export type WorkerRequest =
 	| { type: "close" };
 
 export interface RecoveredRows {
+	safety?: SafetyInterventionRecord[];
 	completions?: { segment: string; completionRef: string }[];
 	ownerState?: { gates: string; revision: number };
 	submissions: SubmissionRow[];
@@ -166,7 +168,7 @@ export type WorkerResponse =
 	| { type: "query_reply"; id: number; value?: unknown; error?: { code: string; message: string } }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "5";
+const SCHEMA_VERSION = "6";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -347,6 +349,9 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
 	const gates = db.prepare("SELECT value FROM meta WHERE key='owner_gates'").get() as Row;
 	const revision = db.prepare("SELECT value FROM meta WHERE key='owner_gate_revision'").get() as Row;
 	return {
+		safety: all(
+			"SELECT payload FROM records WHERE seq IN (SELECT MAX(seq) FROM records WHERE kind='safety' GROUP BY object_ref) ORDER BY seq",
+		).map((r) => JSON.parse(String(r.payload)).value as SafetyInterventionRecord),
 		completions: all("SELECT header FROM completions ORDER BY rowid").map((row) => {
 			const header = JSON.parse(String(row.header));
 			return { segment: String(header.segment), completionRef: String(header.completionRef) };

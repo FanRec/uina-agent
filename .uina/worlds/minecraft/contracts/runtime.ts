@@ -361,7 +361,7 @@ export interface DeliveryState {
 	eligible: boolean;
 }
 export type RuntimeRecord = {
-	kind: "run" | "segment" | "call" | "effect" | "completion" | "stop";
+	kind: "run" | "segment" | "call" | "effect" | "completion" | "stop" | "safety";
 	record: Ref;
 	value: JsonValue;
 };

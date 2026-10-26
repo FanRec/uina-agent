@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
@@ -115,4 +115,52 @@ describe("sampleSelf：实体未就绪时值可为 null", () => {
 		const h = makeFactsHarness({ state: "disconnected" });
 		expect(h.facts.sampleSelf()).toBeNull();
 	});
+});
+
+test("installed Mineflayer attribute and oxygen shapes produce usable vitals", () => {
+	const bot = makeBot({
+		entity: entity({
+			attributes: {
+				"minecraft:max_health": {
+					value: 20,
+					modifiers: [
+						{ operation: 0, amount: 4 },
+						{ operation: 1, amount: 0.5 },
+						{ operation: 2, amount: 0.5 },
+					],
+				},
+			},
+		}),
+		oxygenLevel: 3,
+		health: 6,
+		game: { dimension: "overworld" },
+		registry: { effects: {} },
+	});
+	const h = makeFactsHarness({ bot });
+	const self = readSelf(h);
+	expect(self.value?.oxygen).toBe(3);
+	expect(self.value?.maxHealth).toBe(54);
+});
+
+test("received breathing immunity expires and respawn discards the previous body's effects", () => {
+	const now = vi.spyOn(performance, "now").mockReturnValue(0);
+	try {
+		const bot = makeBot({
+			entity: entity(),
+			game: { dimension: "overworld" },
+			registry: { effects: { 1: { name: "WaterBreathing" } } },
+		});
+		const h = makeFactsHarness({ bot });
+		bot.emit("entityEffect", bot.entity, { id: 1, amplifier: 0, duration: 2 });
+		expect(readSelf(h).value?.effects?.[0]?.name).toBe("water_breathing");
+		now.mockReturnValue(101);
+		bot.emit("physicsTick");
+		expect(readSelf(h).value?.effects).toEqual([]);
+		bot.emit("entityEffect", bot.entity, { id: 1, amplifier: 0, duration: -1 });
+		expect(readSelf(h).value?.effects).toHaveLength(1);
+		bot.emit("respawn");
+		expect(readSelf(h).value?.effects).toEqual([]);
+	} finally {
+		now.mockRestore();
+	}
 });

@@ -32,7 +32,7 @@ function host(overrides: Partial<ProgramHostApi> = {}): ProgramHostApi {
 		progress: async () => null,
 		acquireBody: async () => ({ handle: "body:test", kind: "body" }),
 		releaseBody: async () => null,
-		handleOp: async () => null,
+		handleOp: async ({ op }) => (op === "waitClosed" ? new Promise(() => {}) : null),
 		closeHandle: async () => null,
 		log: async () => null,
 		...overrides,
@@ -76,6 +76,40 @@ test("compile-only does not evaluate top level and execution uses isolated globa
 		),
 	).toMatchObject({ kind: "returned", value: [{ a: 2 }, "undefined", "undefined"] });
 	expect(await invoke(p, "async function main() {}")).toMatchObject({ kind: "returned", value: null });
+});
+
+test("real guest loop transports frames, applies inputs and rejects asynchronous steps", async () => {
+	const { p } = await setup();
+	let frames = 0,
+		applied = 0,
+		closed = 0;
+	const h = host({
+		handleOp: async ({ op }) => {
+			if (op === "waitClosed") return new Promise(() => {});
+			if (op === "feedback") return { handle: "stream:test", kind: "stream" };
+			if (op === "next") return { stream: "s", sequence: ++frames, self: { value: { health: 20 } } };
+			if (op === "apply") {
+				applied++;
+				return {};
+			}
+			throw new Error(op);
+		},
+		closeHandle: async () => {
+			closed++;
+			return null;
+		},
+	});
+	expect(
+		await invoke(
+			p,
+			"async function main(mc){let n=0;await mc.withBody(b=>b.loop(f=>++n===3?{done:true}:{keys:{forward:true}}));return n;}",
+			h,
+		),
+	).toMatchObject({ kind: "returned", value: 3 });
+	expect([frames, applied, closed]).toEqual([3, 2, 1]);
+	expect(
+		await invoke(p, "async function main(mc){await mc.withBody(b=>b.loop(async f=>({done:true})));}", h),
+	).toMatchObject({ kind: "failed", failure: { code: "STEP_ASYNC" } });
 });
 test("JSON errors are local, host domain errors preserve their structured fields", async () => {
 	const { p } = await setup();
