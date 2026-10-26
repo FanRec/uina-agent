@@ -4,7 +4,7 @@
 
 本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
-批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；批 9A 已实现 waitUntil（见 [实施记录](../wait-implementation.md)）；decide/checkpoint/continue、feedback/loop 仍是后续合同；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
+批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；批 9A 已实现 waitUntil（见 [实施记录](../wait-implementation.md)）；批 9B 已接位置参数 decide(reason, checkpoint?)、只读 checkpoint 与显式 continue；feedback/loop 仍是后续合同；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
 
 ## 0. 最终体验与验收目标
 
@@ -82,7 +82,7 @@ withBody 的回调结束前始终保留身体，包括子程序等待期间。�
 | waitUntil | `(targets, predicate, {timeoutMs?}?) => Promise<WaitResult>`；先读判定，再等失效并重读 |
 | sleep | `(ms) => Promise<void>`；可取消；0 表示真正让出一次 worker 事件循环 |
 | progress | `(value: Progress) => void`；覆盖式进度对象，最后值在调用结算前送达 Runtime |
-| decide | `({reason, checkpoint?}) => never`；同步抛出专用 NEEDS_DECISION，可被本程序或父程序捕获 |
+| decide | `(reason, checkpoint?) => never`；同步抛出专用 NEEDS_DECISION，可被本程序或父程序捕获 |
 | withBody | `(work: (body) => Promise<T>) => Promise<T>`；独立申请或加入已委托 BodyScope，退出关闭所属资源 |
 | checkpoint | 只读 `JsonValue \| null`；仅续段根程序取得上一段的程序检查点，子程序默认 null |
 | console | log/info/warn/error；调用级有界缓冲，失败时可展开尾部 |
@@ -527,7 +527,7 @@ mc.progress({summary:"正在采集", acquired:6}) 报告结构化进度；Runtim
 控制 API、窗口与反馈的详细合同按需展开；loop 停止不自动表示目标完成。
 await mc.waitUntil(targets, (values, {unknown}) => 布尔值, {timeoutMs:5000});
 结果 met/timeout 有 values，invalidated 只有 reason；只有有游标的查询能等。需让其他任务用身体时在 withBody 外等待。
-mc.decide({reason, checkpoint}) 同步抛 NEEDS_DECISION；本程序或父程序可处理，否则根交还主脑。
+mc.decide(reason, checkpoint?) 同步抛 NEEDS_DECISION；本程序或父程序可处理，否则根交还主脑。
 continue 新段的根程序通过 mc.checkpoint 取得 JSON；不恢复旧栈或旧身体。
 跑通后 library save {name, summary, from:{run,segment,call}}；get 查看源码，文件工具可局部改写。
 程序/经验/蓝图都能发现；动作/程序用 call，查询用 read。保存只保存本程序，不冻结依赖。

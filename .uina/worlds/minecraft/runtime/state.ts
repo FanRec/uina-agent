@@ -54,6 +54,7 @@ export interface CallState {
 	outcome: Outcome | null;
 	value: JsonValue | null;
 	error: CallFailureData | null;
+	decisionRequest?: import("../contracts/values.js").DecisionRequest;
 	closedByParent: { call: Ref; reason: "returned" | "threw" | "decision" | "cancelled" } | null;
 	progress: Progress;
 	effects: Ref[];
@@ -65,6 +66,7 @@ export interface CallState {
 }
 
 export interface SubmissionState {
+	operation?: "submit" | "continue";
 	owner: Ref;
 	requestId: Ref;
 	status: "accepted" | "cancelled" | "rejected";
@@ -82,9 +84,18 @@ export interface RunEnvironment {
 }
 
 export interface RunState {
+	caller?: Ref;
 	run: Ref;
 	owner: Ref;
 	requestId: Ref;
+	segmentRequestId?: Ref;
+	started?: boolean;
+	everStarted?: boolean;
+	priorityRelease?: () => void;
+	checkpoint?: import("../contracts/values.js").Checkpoint | null;
+	decisionRequest?: import("../contracts/values.js").DecisionRequest;
+	decision?: Ref;
+	environment?: RunEnvironment | null;
 	segment: Ref;
 	segmentRecord: Ref;
 	rootCall: CallState;
@@ -93,7 +104,7 @@ export interface RunState {
 	request: RunRequest;
 	requestJson: string;
 	revision: number;
-	phase: "queued" | "running" | "waiting" | "stopping" | "finished";
+	phase: "queued" | "running" | "waiting" | "stopping" | "finished" | "awaiting_decision";
 	waiting?: import("../contracts/runtime.js").WaitState;
 	outcome: Outcome | null;
 	value: JsonValue | null;

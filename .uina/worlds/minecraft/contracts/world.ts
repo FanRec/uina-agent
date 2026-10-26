@@ -59,6 +59,21 @@ export interface WorldEvidencePort {
 	release(owner: Ref): Promise<void>;
 }
 
+/** Trusted maintenance only: exact capture partition and exclusive local storage cutoff. */
+export interface WorldHistoryPrune {
+	partition: { binding: Ref; world: Ref; worldRevision: Ref };
+	beforeStoreSeq: number;
+}
+
+export interface WorldHistoryPruneResult {
+	removed: number;
+	skippedRetained: number;
+	beforeStoreSeq: number;
+	/** Earliest remaining selected evidence; gaps still describe holes after it. */
+	oldestRetainedStoreSeq: number | null;
+	version: number;
+}
+
 export interface WorldAvailabilityValue {
 	current: { state: "starting" | "ready" | "unavailable"; reason?: string };
 	history: {

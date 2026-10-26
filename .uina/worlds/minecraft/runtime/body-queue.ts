@@ -16,7 +16,8 @@
  * 释放顺序：调用方先 await session.close()（close 屏障），再 release()；队列只在 release()
  * 之后才授予下一项，因此新主人拿到的客户端已证明旧写入失效（§3.3.2）。
  *
- * 不做：优先级与 kind=safety 预留（I1 无安全介入，空壳 API 会假装生效，§3.3.3 留给后续轮次）、
+ * 抢占受理使用短 reservation，并给替代 Run 一次就绪优先机会；没有常驻优先级栈。
+ * 不做：kind=safety 预留（§3.3.3 留给后续轮次）、
  * 通道锁与兼容性判断（§3.3.2 归 Driver adapter）、任意 Promise 依赖图检测（§3.3.1 合同
  * 要求显式停止，不做不可靠的死锁探测）。
  */
@@ -45,15 +46,20 @@ export interface BodyLeaseQueueOptions {
 
 type RequestState = "queued" | "acquiring" | "held" | "settled";
 
-interface Request {
+interface RequestBase {
 	owner: ControlOwner;
 	call: Ref;
 	signal: AbortSignal;
 	state: RequestState;
 	detach(): void;
-	resolve(grant: BodyGrant): void;
 	reject(err: CallFailure): void;
 }
+
+type Request = RequestBase &
+	(
+		| { kind: "body"; resolve(grant: BodyGrant): void }
+		| { kind: "navigation"; resolve(grant: { release(): void }): void }
+	);
 
 function interrupted(message: string): CallFailure {
 	return callFailure({
@@ -75,6 +81,24 @@ export class BodyLeaseQueue {
 	private readonly waiting: Request[] = [];
 	/** 已占槽项：acquiring（acquire 在途）或 held（已授予未释放）。 */
 	private active: Request | null = null;
+	private reservations = 0;
+	private priorityRun: Ref | null = null;
+	reserve(): () => void {
+		this.reservations++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.reservations--;
+			this.pump();
+		};
+	}
+	prioritize(run: Ref): void {
+		this.priorityRun = run;
+	}
+	clearPriority(run: Ref): void {
+		if (this.priorityRun === run) this.priorityRun = null;
+	}
 
 	constructor(opts: BodyLeaseQueueOptions) {
 		this.opts = opts;
@@ -85,19 +109,17 @@ export class BodyLeaseQueue {
 	 * 端口拒绝时以 CallFailure 拒绝。同步占槽见文件头不变量 1。
 	 */
 	request(owner: ControlOwner, call: Ref, signal: AbortSignal): Promise<BodyGrant> {
-		const item: Request = {
-			owner,
-			call,
-			signal,
-			state: "queued",
-			detach: () => {},
-			resolve: () => {},
-			reject: () => {},
-		};
-		const promise = new Promise<BodyGrant>((resolve, reject) => {
-			item.resolve = resolve;
-			item.reject = reject;
-		});
+		return new Promise((resolve, reject) =>
+			this.enqueue({ kind: "body", owner, call, signal, state: "queued", detach: () => {}, resolve, reject }),
+		);
+	}
+	requestNavigation(owner: ControlOwner, call: Ref, signal: AbortSignal): Promise<{ release(): void }> {
+		return new Promise((resolve, reject) =>
+			this.enqueue({ kind: "navigation", owner, call, signal, state: "queued", detach: () => {}, resolve, reject }),
+		);
+	}
+	private enqueue(item: Request): void {
+		const { owner, signal } = item;
 		const onAbort = (): void => {
 			// 只处理排队期；已授予的取消由 work 自身的 signal 与 close 负责
 			if (item.state !== "queued") return;
@@ -108,8 +130,12 @@ export class BodyLeaseQueue {
 		item.detach = () => signal.removeEventListener("abort", onAbort);
 		signal.addEventListener("abort", onAbort, { once: true });
 		this.waiting.push(item);
+		if (this.priorityRun && sameRun(owner, this.priorityRun)) {
+			this.waiting.pop();
+			this.waiting.unshift(item);
+			this.priorityRun = null;
+		}
 		this.pump();
-		return promise;
 	}
 
 	/** 当前占槽项的 Call ref（acquiring 或 held）；用于情况 c 的谱系自等待检查。 */
@@ -136,7 +162,7 @@ export class BodyLeaseQueue {
 	}
 
 	private pump(): void {
-		if (this.active != null) return;
+		if (this.active != null || this.reservations > 0) return;
 		const item = this.waiting.shift();
 		if (item == null) return;
 		item.state = "acquiring";
@@ -150,6 +176,15 @@ export class BodyLeaseQueue {
 	}
 
 	private async grant(item: Request): Promise<void> {
+		if (item.kind === "navigation") {
+			if (item.signal.aborted || !this.opts.isOwnerLive(item.owner)) {
+				this.settle(item, interrupted("navigation request expired before grant"));
+				return;
+			}
+			item.state = "held";
+			item.resolve({ release: () => this.release(item) });
+			return;
+		}
 		let session: BodySession;
 		try {
 			session = await this.opts.port.acquire(item.owner, item.signal);
@@ -172,7 +207,7 @@ export class BodyLeaseQueue {
 	private release(item: Request): void {
 		if (item.state !== "held") return;
 		item.state = "settled";
-		this.opts.onRelease();
+		if (item.kind === "body") this.opts.onRelease();
 		if (this.active === item) this.active = null;
 		this.pump();
 	}

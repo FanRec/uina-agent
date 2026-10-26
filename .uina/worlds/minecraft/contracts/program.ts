@@ -2,10 +2,10 @@
  * Program 执行合同与只读程序材料。
  *
  * 唯一定义来源：docs/proposals/mc/modules/program.md §7 与 library.md §5。
- * Library 文件管理合同归 library.ts；决策/等待/反馈按后续批次接入。
+ * Library 文件管理合同归 library.ts；反馈按后续批次接入。
  */
 
-import type { JsonValue } from "./values.js";
+import type { DecisionRequest, JsonValue } from "./values.js";
 import type { ProgramHeader } from "./library.js";
 
 /** 程序以 {name} 或 {code} 提交；Runtime 受理时解析成确切字节。 */
@@ -50,10 +50,30 @@ export type ProgramValidation =
 	  };
 export type InvokeResult =
 	| { kind: "returned"; value: JsonValue }
+	| { kind: "decision"; request: DecisionRequest }
 	| {
 			kind: "failed";
 			failure: ProgramDiagnostic | import("./values.js").CallFailureData;
 	  };
+
+// Only host-created errors carry a decision across native/guest call boundaries.
+// Visible Error fields are conveniences for catch handlers, never authority.
+const decisionRequests = new WeakMap<object, DecisionRequest>();
+export function createDecisionError(request: DecisionRequest): Error {
+	const captured = JSON.parse(JSON.stringify(request)) as DecisionRequest;
+	const freeze = (value: unknown): void => {
+		if (!value || typeof value !== "object") return;
+		for (const child of Object.values(value)) freeze(child);
+		Object.freeze(value);
+	};
+	freeze(captured);
+	const error = Object.assign(new Error(captured.reason), captured);
+	decisionRequests.set(error, captured);
+	return error;
+}
+export function getDecisionRequest(error: unknown): DecisionRequest | undefined {
+	return error !== null && typeof error === "object" ? decisionRequests.get(error) : undefined;
+}
 export type ProgramRetirement = { state: "retired"; stoppedAt: string } | { state: "unknown"; detail: string };
 export type Targets = Record<string, { ref: string; input?: JsonValue }>;
 export interface ReadValues {

@@ -3,8 +3,8 @@
  *
  * 唯一定义来源：docs/proposals/mc/modules/runtime.md §2（受理）、§3（调用与
  * 身体）、§4.3/§4.4（关闭/停止）、§5（记录与结算）、§5.6（五态）。
- * 批 7：支持原生与 Program；Schedule 只支持 enqueue。replace_pending/
- * preempt_current、决策与安全介入仍未交付；固定报告复用既有持久回执。
+ * 批 9B：原生/Program、多段决策续段、enqueue/replace_pending/preempt_current；
+ * 固定报告复用持久回执。安全介入仍由后续玩法工作包接入。
  * 不做：逐 Call 等盘（普通子 Call 入队即返回）；恢复自动重放（恢复只读事实
  * 并按 §4.4 表结算未终结 Run）；效果核验器（ctx.verify 对未注册 verifier 如实
  * NOT_FOUND）。owner→effect 关联由引擎经记录队列归属槽建立（§5.4）。
@@ -17,6 +17,7 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { BodyCallScope, CallContext, NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
+	ContinueRequest,
 	ControlRetirement,
 	Origin,
 	RunRequest,
@@ -55,6 +56,7 @@ import type {
 	ResolvedInvocation,
 } from "./state.js";
 import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
+import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
 import { createProgramHost } from "./program-host.js";
 import { scopedBody } from "./scoped-body.js";
 
@@ -99,6 +101,7 @@ function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailur
 }
 
 export interface EngineOptions {
+	commitAdmission?: (command: import("./runtime-db-worker.js").AdmissionCommand) => Promise<void>;
 	refs: RuntimeRefs;
 	queue: RecordQueue;
 	world: WorldPort;
@@ -141,6 +144,10 @@ export class RuntimeEngine {
 	private readonly uncertainSubmissions = new Set<string>();
 	private readonly activeRuns = new Set<Promise<void>>();
 	private readonly startedRuns = new Set<Ref>();
+	private readonly stoppedRuns = new Set<Ref>();
+	private readonly segmentCompletions = new Map<Ref, Ref>();
+	private admissionTail: Promise<unknown> = Promise.resolve();
+	private readonly recoveredSegments = new Map<Ref, import("./runtime-db-worker.js").SegmentRow>();
 	private readonly stopBarriers = new Set<Promise<StopReceipt>>();
 	private shutdownPromise: Promise<void> | null = null;
 	private isolationFailed = false;
@@ -177,10 +184,14 @@ export class RuntimeEngine {
 	// ---- 恢复（只读事实 + 未终结 Run 结算，不自动重放） ----
 
 	recover(rows: RecoveredRows): void {
+		for (const report of rows.completions ?? [])
+			if (!this.segmentCompletions.has(report.segment))
+				this.segmentCompletions.set(report.segment, report.completionRef);
 		this.owner.recover(rows.ownerState, this.opts.unclean === true);
 		for (const row of rows.stopIntents) this.stopIntentRows.set(row.record, row);
 		for (const row of rows.submissions) {
 			const state: SubmissionState = {
+				operation: row.operation === "continue" ? "continue" : "submit",
 				owner: row.owner,
 				requestId: row.request_id,
 				status: row.status,
@@ -194,7 +205,9 @@ export class RuntimeEngine {
 								plain(
 									(() => {
 										const request = JSON.parse(row.request) as RunRequest;
-										return { entry: request.entry, schedule: request.schedule };
+										return row.operation === "continue"
+											? request
+											: { entry: request.entry, schedule: request.schedule };
 									})(),
 								),
 							),
@@ -205,9 +218,10 @@ export class RuntimeEngine {
 			if (row.status === "cancelled") this.submissionBarriers.add(row.request_id);
 		}
 		for (const row of rows.runs) this.recoveredRuns.set(row.run, row);
+		for (const row of rows.segments) this.recoveredSegments.set(row.segment, row);
 		// §4.4 恢复表（I1 子集）：未终结 Run——有停止意图 → cancelled；否则 unknown；
 		// 旧控制退役不明 → control unknown。追加为新的不可变截面。
-		const unfinished = rows.runs.filter((r) => r.phase !== "finished");
+		const unfinished = rows.runs.filter((r) => r.phase !== "finished" && r.phase !== "awaiting_decision");
 		for (const row of unfinished) {
 			const stoppedByIntent = rows.stopIntents.some((si) => {
 				let target: StopTarget;
@@ -217,7 +231,10 @@ export class RuntimeEngine {
 					return false;
 				}
 				return (
-					("run" in target && target.run === row.run) || ("request" in target && target.request === row.request_id)
+					("run" in target && target.run === row.run) ||
+					("request" in target &&
+						(target.request === row.request_id ||
+							(target.request !== undefined && this.byRequestId.get(target.request)?.run === row.run)))
 				);
 			});
 			const next: RunRow = {
@@ -228,7 +245,7 @@ export class RuntimeEngine {
 				phase: "finished",
 				waiting: null,
 				outcome:
-					row.phase === "queued"
+					row.started !== 1
 						? "not_started"
 						: stoppedByIntent && this.opts.oldControlRetired === true
 							? "cancelled"
@@ -248,6 +265,226 @@ export class RuntimeEngine {
 	}
 
 	// ---- 受理（§2.1，I1 子集） ----
+	private serializeAdmission<T>(work: () => Promise<T>): Promise<T> {
+		const result = this.admissionTail.then(work);
+		this.admissionTail = result.catch(() => {});
+		return result;
+	}
+	private async commitAdmission(
+		origin: Origin,
+		requestId: Ref,
+		mutations: ApplyItem["mutation"][],
+		continuation?: import("./runtime-db-worker.js").AdmissionCommand["continuation"],
+		scheduling?: { replacements?: string[]; preemption?: string },
+	): Promise<void> {
+		if (this.opts.commitAdmission)
+			await this.opts.commitAdmission({
+				owner: origin.worldOwner,
+				requestId,
+				gateRevision: this.owner.state().gateRevision,
+				mutations,
+				continuation,
+				...scheduling,
+			});
+		else {
+			this.queue.enqueueAll(mutations);
+			await this.queue.flushThrough(this.queue.capture());
+		}
+	}
+	continue(origin: Origin, request: ContinueRequest): Promise<Acceptance> {
+		const key = submissionKey(origin.worldOwner, request.requestId);
+		const captured = {
+			...(plain(request) as unknown as ContinueRequest),
+			environment: request.environment ?? ("inherit" as const),
+		};
+		const intent = canonicalJson(plain(captured));
+		const pending = this.pendingSubmissions.get(key);
+		if (pending)
+			return pending.intent === intent
+				? pending.promise
+				: Promise.resolve({
+						kind: "not_accepted",
+						requestId: request.requestId,
+						code: "REQUEST_CONFLICT",
+						message: "requestId is preparing another intent",
+					});
+		const promise = this.serializeAdmission(() => this.continuePrepared(origin, captured, intent)).catch(
+			(error): Acceptance => {
+				this.uncertainSubmissions.add(key);
+				return { kind: "unknown", requestId: request.requestId, reason: String(error) };
+			},
+		);
+		this.pendingSubmissions.set(key, { intent, promise });
+		void promise.finally(() => this.pendingSubmissions.delete(key));
+		return promise;
+	}
+	private async continuePrepared(origin: Origin, request: ContinueRequest, intent: string): Promise<Acceptance> {
+		const reject = (code: string, message: string): Acceptance => ({
+			kind: "not_accepted",
+			requestId: request.requestId,
+			code,
+			message,
+		});
+		const key = submissionKey(origin.worldOwner, request.requestId),
+			prior = this.submissions.get(key) ?? this.byRequestId.get(request.requestId);
+		if (this.submissionBarriers.has(request.requestId) || prior?.status === "cancelled")
+			return reject("REQUEST_CANCELLED", "request was stopped before admission");
+		if (prior) {
+			if (prior.requestJson !== intent || prior.operation !== "continue")
+				return reject("REQUEST_CONFLICT", "requestId already has another intent");
+			if (prior.run && prior.segment)
+				return {
+					kind: "accepted",
+					requestId: request.requestId,
+					segment: prior.segment,
+					snapshot: this.read(prior.run),
+				};
+			return reject(prior.error?.code ?? "REQUEST_CONFLICT", prior.error?.message ?? "request unavailable");
+		}
+		let generation: number;
+		try {
+			this.assertActionAllowed();
+			generation = this.owner.capture(origin);
+		} catch (error) {
+			const f = toCallFailure(error);
+			return reject(f.code, f.message);
+		}
+		const old = this.runs.get(request.run),
+			row = this.recoveredRuns.get(request.run);
+		const summary = old ? projectSummary(old) : row ? summaryFromRow(row) : undefined;
+		if (summary?.phase !== "awaiting_decision" || summary.decision !== request.decision)
+			return reject("DECISION_STALE", "decision is no longer pending");
+		const previousSegment = row?.segment ? this.recoveredSegments.get(row.segment) : undefined;
+		const environment =
+			old?.environment ??
+			(previousSegment?.environment ? JSON.parse(previousSegment.environment) : (this.opts.environment ?? null));
+		if (
+			request.environment !== "current" &&
+			canonicalJson(plain(environment)) !== canonicalJson(plain(this.opts.environment ?? null))
+		)
+			return reject("WRONG_STATE", "inherited environment is no longer available; explicitly choose current");
+		let callable: ResolvedInvocation;
+		try {
+			callable =
+				request.entry.kind === "program"
+					? await this.prepareProgram(await this.requireProgram().resolve(request.entry.source), request.run)
+					: await this.resolveCallable(request.entry.selector, request.run);
+			this.validateInput(callable, request.entry.input);
+			this.owner.assertGeneration(origin, generation);
+		} catch (error) {
+			const f = toCallFailure(error);
+			return reject(f.code, f.message);
+		}
+		if (this.submissionBarriers.has(request.requestId))
+			return reject("REQUEST_CANCELLED", "request stopped during preparation");
+		if (old?.stopped || this.read(request.run).phase !== "awaiting_decision")
+			return reject("DECISION_STALE", "decision was stopped during preparation");
+		const decisionRequest = old?.decisionRequest ?? JSON.parse(row!.decision!).request;
+		const checkpoint = callable.kind === "program" ? decisionRequest.checkpoint : null;
+		if (callable.kind === "native" && decisionRequest.checkpoint?.kind === "domain")
+			return reject("CHECKPOINT_INVALID", "this native entry has no registered domain checkpoint consumer");
+		const segment = this.refs.segment(),
+			abort = new AbortController();
+		const state: RunState = {
+			run: request.run,
+			everStarted: old?.everStarted ?? old?.started ?? row?.started === 1,
+			owner: origin.worldOwner,
+			requestId: summary.rootRequestId,
+			segmentRequestId: request.requestId,
+			segment,
+			segmentRecord: this.refs.record(),
+			rootCall: this.createCallState(
+				request.run,
+				segment,
+				this.refs.call(),
+				this.refs.record(),
+				null,
+				callable,
+				request.entry.input,
+			),
+			callable,
+			request: { requestId: request.requestId, entry: request.entry, schedule: { kind: "enqueue" } },
+			requestJson: intent,
+			revision: summary.revision + 1,
+			phase: "queued",
+			outcome: null,
+			value: null,
+			error: null,
+			completionRef: null,
+			control: "none",
+			unknownEffects: [...summary.unknownEffects],
+			interruptedChildren: [],
+			record: this.refs.record(),
+			progress: {},
+			stopped: false,
+			abort,
+			awaitingBody: 0,
+			waiters: old?.waiters ?? new Set(),
+			checkpoint,
+			environment: request.environment === "current" ? (this.opts.environment ?? null) : environment,
+		};
+		if (this.opts.program)
+			state.programScope = this.opts.program.openSegment({
+				run: state.run,
+				segment,
+				signal: abort.signal,
+				...(callable.kind === "program" ? { entry: callable.program } : {}),
+			});
+		abort.signal.addEventListener("abort", () => state.rootCall.abort.abort(), { once: true });
+		const submission: SubmissionState = {
+			operation: "continue",
+			owner: origin.worldOwner,
+			requestId: request.requestId,
+			status: "accepted",
+			run: state.run,
+			segment,
+			record: state.record,
+			requestJson: intent,
+			error: null,
+		};
+		try {
+			await this.commitAdmission(
+				origin,
+				request.requestId,
+				[
+					{
+						kind: "submission",
+						row: {
+							owner: origin.worldOwner,
+							request_id: request.requestId,
+							status: "accepted",
+							operation: "continue",
+							run: state.run,
+							segment,
+							request: JSON.stringify(request),
+							origin: JSON.stringify(origin),
+							record: state.record,
+							error: null,
+						},
+					},
+					this.segmentMutation(state),
+					this.callMutation(state.rootCall),
+					this.runMutation(state),
+				],
+				{ run: state.run, decision: request.decision, revision: summary.revision },
+			);
+		} catch (error) {
+			await state.programScope?.close("failed");
+			const e = error as { code?: string; message: string; acknowledged?: boolean };
+			if (e.acknowledged && e.code) return reject(e.code, e.message);
+			throw error;
+		}
+		this.runs.set(state.run, state);
+		this.recoveredRuns.delete(state.run);
+		this.submissions.set(key, submission);
+		this.byRequestId.set(request.requestId, submission);
+		if (old?.stopped || this.stoppedRuns.has(state.run) || this.submissionBarriers.has(request.requestId))
+			this.sealRun(state);
+		const execution = this.runRun(state);
+		this.activeRuns.add(execution);
+		void execution.finally(() => this.activeRuns.delete(execution));
+		return { kind: "accepted", requestId: request.requestId, segment, snapshot: projectSummary(state) };
+	}
 
 	submit(origin: Origin, request: RunRequest): Promise<Acceptance> {
 		const key = submissionKey(origin.worldOwner, request.requestId);
@@ -263,10 +500,12 @@ export class RuntimeEngine {
 				});
 			return pending.promise;
 		}
-		const promise = this.submitPrepared(origin, request).catch((err: unknown): Acceptance => {
-			this.uncertainSubmissions.add(key);
-			return { kind: "unknown", requestId: request.requestId, reason: String(err) };
-		});
+		const promise = this.serializeAdmission(() => this.submitPrepared(origin, request)).catch(
+			(err: unknown): Acceptance => {
+				this.uncertainSubmissions.add(key);
+				return { kind: "unknown", requestId: request.requestId, reason: String(err) };
+			},
+		);
 		this.pendingSubmissions.set(key, { intent, promise });
 		void promise.finally(() => this.pendingSubmissions.delete(key));
 		return promise;
@@ -339,13 +578,6 @@ export class RuntimeEngine {
 			const failure = toCallFailure(err);
 			return { kind: "not_accepted", requestId: request.requestId, code: failure.code, message: failure.message };
 		}
-		// I1 范围检查
-		if (request.schedule.kind !== "enqueue") {
-			return this.rejectSubmission(owner, request, intentJson, {
-				code: "UNSUPPORTED_SCHEDULE",
-				message: `schedule ${request.schedule.kind} arrives with the executor/preemption work packages`,
-			});
-		}
 		// 准备材料（§2.1 步骤 2）：解析 + 校验，失败不受理（确定性错误）
 		const run = this.refs.run();
 		let callable: ResolvedInvocation;
@@ -373,6 +605,7 @@ export class RuntimeEngine {
 		const state: RunState = {
 			run,
 			owner,
+			caller: origin.caller,
 			requestId: request.requestId,
 			segment,
 			segmentRecord,
@@ -396,7 +629,7 @@ export class RuntimeEngine {
 			awaitingBody: 0,
 			waiters: new Set(),
 		};
-		this.runs.set(run, state);
+
 		if (this.opts.program)
 			state.programScope = this.opts.program.openSegment({
 				run,
@@ -435,16 +668,59 @@ export class RuntimeEngine {
 			requestJson: intentJson,
 			error: null,
 		};
-		this.submissions.set(key, submission);
-		this.byRequestId.set(request.requestId, submission);
-		this.queue.enqueueAll([
+		const schedule = request.schedule;
+		let replaced: RunState[] = [];
+		let preempted: RunState | undefined;
+		if (schedule.kind === "replace_pending") {
+			if (!schedule.targets && !origin.caller) {
+				await state.programScope?.close("failed");
+				return this.rejectSubmission(owner, request, intentJson, {
+					code: "REPLACE_SCOPE_REQUIRED",
+					message: "explicit targets are required without a trusted caller",
+				});
+			}
+			replaced = schedule.targets
+				? schedule.targets.map((ref) => this.runs.get(ref)!).filter(Boolean)
+				: [...this.runs.values()].filter(
+						(r) =>
+							r.owner === owner &&
+							r.caller === origin.caller &&
+							!r.started &&
+							!r.everStarted &&
+							!r.stopped &&
+							r.phase !== "finished",
+					);
+			if (
+				(schedule.targets &&
+					(new Set(schedule.targets).size !== schedule.targets.length ||
+						replaced.length !== schedule.targets.length)) ||
+				replaced.some((r) => r.owner !== owner || r.started || r.everStarted || r.stopped || r.phase === "finished")
+			) {
+				await state.programScope?.close("failed");
+				return this.rejectSubmission(owner, request, intentJson, {
+					code: "REPLACE_TARGET_INVALID",
+					message: "every replacement target must be an owned never-started run",
+				});
+			}
+		}
+		if (schedule.kind === "preempt_current") {
+			preempted = this.runs.get(schedule.expectedRun);
+			if (!preempted || preempted.owner !== owner || preempted.control !== "active" || preempted.stopped) {
+				await state.programScope?.close("failed");
+				return this.rejectSubmission(owner, request, intentJson, {
+					code: "CONTROL_CHANGED",
+					message: "expectedRun does not own current control",
+				});
+			}
+		}
+		const mutations: ApplyItem["mutation"][] = [
 			{
 				kind: "submission",
 				row: {
 					owner,
 					request_id: request.requestId,
 					status: "accepted",
-					operation: callable.ref,
+					operation: "submit",
 					segment,
 					run,
 					request: JSON.stringify(plain(request)),
@@ -456,9 +732,80 @@ export class RuntimeEngine {
 			this.runMutation(state),
 			this.segmentMutation(state),
 			this.callMutation(state.rootCall),
-		]);
-		// No callable or Driver dispatch can begin before acceptance is confirmed.
-		await this.queue.flushThrough(this.queue.capture());
+		];
+		const replacedRows = replaced.map((old) => {
+			const next = {
+				...old,
+				phase: "finished" as const,
+				outcome: "not_started" as const,
+				stopped: true,
+				completionRef: this.refs.completion(),
+				revision: old.revision + 1,
+				record: this.refs.record(),
+			};
+			mutations.push({ kind: "run", row: runRowOf(next) });
+			return next;
+		});
+		if (preempted)
+			mutations.unshift({
+				kind: "stop_intent",
+				row: {
+					record: this.refs.stopIntent(),
+					stop_request_id: request.requestId,
+					owner,
+					target: JSON.stringify({ run: preempted.run }),
+					control: "stopping",
+					created_at: nowIso(),
+				},
+			});
+		const releaseReservation = preempted ? this.bodyLeaseQueue.reserve() : () => {};
+		try {
+			await this.commitAdmission(origin, request.requestId, mutations, undefined, {
+				replacements: replaced.map((r) => r.run),
+				preemption: preempted?.run,
+			});
+		} catch (error) {
+			releaseReservation();
+			await state.programScope?.close("failed");
+			const f = error as { code?: string; message: string; acknowledged?: boolean };
+			if (f.acknowledged && f.code) {
+				const rejected: SubmissionState = {
+					owner,
+					requestId: request.requestId,
+					status: "rejected",
+					run: null,
+					segment: null,
+					record: null,
+					requestJson: intentJson,
+					error: { code: f.code, message: f.message },
+				};
+				this.submissions.set(key, rejected);
+				this.byRequestId.set(request.requestId, rejected);
+				return { kind: "not_accepted", requestId: request.requestId, code: f.code, message: f.message };
+			}
+			throw error;
+		}
+		this.runs.set(run, state);
+		this.submissions.set(key, submission);
+		this.byRequestId.set(request.requestId, submission);
+		for (let i = 0; i < replaced.length; i++) {
+			const old = replaced[i]!;
+			Object.assign(old, replacedRows[i]);
+			if (old.completionRef) this.segmentCompletions.set(old.segment, old.completionRef);
+			old.abort.abort();
+			await old.programScope?.close("stop");
+			this.notifyResult(old);
+		}
+		if (preempted) {
+			this.sealRun(preempted);
+			this.bodyLeaseQueue.prioritize(state.run);
+			await preempted.rootCall.settled;
+			state.priorityRelease = releaseReservation;
+		} else releaseReservation();
+		this.runs.set(run, state);
+		this.submissions.set(key, submission);
+		this.byRequestId.set(request.requestId, submission);
+		if (this.submissionBarriers.has(request.requestId)) this.sealRun(state);
 		try {
 			this.owner.assertGeneration(origin, generation);
 		} catch {
@@ -525,13 +872,19 @@ export class RuntimeEngine {
 		const live = this.runs.get(submission.run);
 		const snapshot = live != null ? projectSummary(live) : this.summaryFromRecovered(submission.run);
 		if (snapshot == null) return { kind: "unavailable", reason: `run ${submission.run} record not readable` };
+		const completionRef = this.segmentCompletions.get(submission.segment);
 		return {
 			kind: "found",
 			requestId,
-			operation: "submit",
+			operation: submission.operation ?? "submit",
 			segment: submission.segment,
 			snapshot,
-			...(snapshot.phase === "finished" ? { completionRef: snapshot.completionRef } : {}),
+			...(completionRef
+				? { completionRef }
+				: (snapshot.phase === "finished" || snapshot.phase === "awaiting_decision") &&
+						snapshot.segment === submission.segment
+					? { completionRef: snapshot.completionRef }
+					: {}),
 		};
 	}
 
@@ -623,7 +976,7 @@ export class RuntimeEngine {
 
 	async stop(command: StopCommand): Promise<StopReceipt> {
 		const target = command.target;
-		const runRef = "run" in target ? target.run : null;
+		let runRef = "run" in target ? target.run : null;
 		const requestTarget = "request" in target ? target.request : null;
 		let state: RunState | undefined;
 		if (runRef != null) state = this.runs.get(runRef);
@@ -640,10 +993,14 @@ export class RuntimeEngine {
 						snapshot: null,
 					};
 				}
-				if (submission.run != null) state = this.runs.get(submission.run);
+				if (submission.run != null) {
+					runRef = submission.run;
+					state = this.runs.get(submission.run);
+				}
 			}
 		}
-		if (state == null && requestTarget != null) {
+		if (runRef != null) this.stoppedRuns.add(runRef);
+		if (state == null && requestTarget != null && runRef == null) {
 			// 未受理：持久撤销屏障（§4.4），lookup=cancelled，无虚构 Run。
 			const record = this.refs.stopIntent();
 			const row: StopIntentRow = {
@@ -698,6 +1055,39 @@ export class RuntimeEngine {
 			// 恢复截面中的 Run 已持久终结：stop 不改历史，如实回执（§4.4）
 			const recovered = this.recoveredRuns.get(runRef);
 			if (recovered != null) {
+				if (recovered.phase === "awaiting_decision") {
+					const intent: StopIntentRow = {
+						record: this.refs.stopIntent(),
+						stop_request_id: command.requestId,
+						owner: this.opts.worldOwner,
+						target: JSON.stringify(target),
+						control: "stopped",
+						created_at: nowIso(),
+					};
+					const next = {
+						...recovered,
+						phase: "finished",
+						outcome: "cancelled",
+						completion_ref: this.refs.completion(),
+						control: "stopped",
+						revision: recovered.revision + 1,
+						record: this.refs.record(),
+					};
+					this.recoveredRuns.set(runRef, next);
+					this.queue.enqueueAll([
+						{ kind: "stop_intent", row: intent },
+						{ kind: "run", row: next },
+					]);
+					await this.queue.flushThrough(this.queue.capture());
+					return {
+						requestId: command.requestId,
+						target,
+						record: next.record,
+						intent: "durable",
+						control: "stopped",
+						snapshot: summaryFromRow(next),
+					};
+				}
 				return {
 					requestId: command.requestId,
 					target,
@@ -730,6 +1120,7 @@ export class RuntimeEngine {
 				snapshot: projectSummary(state),
 			};
 		}
+		const wasDecision = state.phase === "awaiting_decision";
 		// 内存关门：封闭准入、删除 Body 队列申请、撤销控制
 		state.stopped = true;
 		state.phase = "stopping";
@@ -738,6 +1129,7 @@ export class RuntimeEngine {
 		else if (state.control === "none") state.control = "stopped";
 		this.bodyLeaseQueue.cancelRun(state.run);
 		state.abort.abort();
+		this.releasePriority(state);
 		this.notifyChanged(state);
 		// 持久 stop_intent
 		const record = this.refs.stopIntent();
@@ -750,11 +1142,18 @@ export class RuntimeEngine {
 			created_at: nowIso(),
 		};
 		this.stopIntentRows.set(record, row);
+		if (wasDecision) {
+			state.phase = "finished";
+			state.outcome = "cancelled";
+			state.completionRef = this.refs.completion();
+			state.control = "stopped";
+		}
 		this.queue.enqueueAll([{ kind: "stop_intent", row }, this.runMutation(state)]);
 		let intent: "durable" | "unknown" = "unknown";
 		try {
 			await this.queue.flushThrough(this.queue.capture());
 			intent = "durable";
+			if (wasDecision) this.notifyResult(state);
 		} catch {
 			// 数据库坏了仍实际停止（§4.4）
 		}
@@ -793,11 +1192,12 @@ export class RuntimeEngine {
 		if (state.control === "active") state.control = "stopping";
 		this.bodyLeaseQueue.cancelRun(state.run);
 		state.abort.abort();
+		this.releasePriority(state);
 	}
 	private stopAll(): void {
 		const closing: Promise<void>[] = [];
 		for (const state of this.runs.values()) {
-			if (state.phase === "finished" || state.stopped) continue;
+			if (state.phase === "finished" || state.phase === "awaiting_decision" || state.stopped) continue;
 			// stop performs its control closure before its first await.
 			if (this.startedRuns.has(state.run)) closing.push(state.rootCall.settled);
 			const stopping = this.stop({ requestId: this.refs.stopIntent(), target: { run: state.run } });
@@ -899,12 +1299,36 @@ export class RuntimeEngine {
 
 	/** 受控独占导航（goto）作用域：独占期内效果事实归属给定 owner。 */
 	async runNavigation<T>(owner: ControlOwner, fn: () => Promise<T>): Promise<T> {
-		this.assertActionAllowed();
-		this.queue.setNavigationOwner(owner);
+		const frame = this.als.getStore();
+		if (!frame || owner.kind !== "run" || owner.callId !== frame.call.call)
+			throw this.scopeError("ACCESS_DENIED", "navigation requires the current call identity");
+		this.assertCallLive(frame.call);
+		const blocking = this.bodyLeaseQueue.blockingCall();
+		if (
+			frame.bodyLease ||
+			(blocking &&
+				(this.isDescendantCall(blocking, frame.call.call) || this.isDescendantCall(frame.call.call, blocking)))
+		)
+			throw this.scopeError("CONTROL_CONFLICT", "delegated body cannot start independent navigation");
+		const state = this.runs.get(owner.run)!;
+		const pending = this.bodyLeaseQueue.requestNavigation(owner, owner.callId, frame.call.abort.signal);
+		this.releasePriority(state);
+		const grant = await pending;
 		try {
+			this.assertCallLive(frame.call);
+			this.queue.setNavigationOwner(owner);
+			state.control = "active";
+			state.revision++;
+			this.queue.enqueue(this.runMutation(state));
 			return await fn();
 		} finally {
 			this.queue.setNavigationOwner(null);
+			if (state.control === "active") {
+				state.control = state.stopped ? "stopped" : "none";
+				state.revision++;
+				this.queue.enqueue(this.runMutation(state));
+			}
+			grant.release();
 		}
 	}
 
@@ -913,36 +1337,59 @@ export class RuntimeEngine {
 	private async runRun(state: RunState): Promise<void> {
 		const root = state.rootCall;
 		try {
-			if (state.awaitingBody === 0) this.setPhase(state, "running");
-			// Persist the start boundary before invocation: a recovered queued Run truly never ran.
-			await this.queue.flushThrough(this.queue.capture());
+			if (state.phase === "finished") return;
+			await this.serializeAdmission(async () => {
+				if (state.stopped || state.phase === "finished") return;
+				state.started = true;
+				state.everStarted = true;
+				if (state.awaitingBody === 0) this.setPhase(state, "running");
+				await this.queue.flushThrough(this.queue.capture());
+			});
+			if (projectSummary(state).phase === "finished") return;
 			let rootThrew: CallFailure | null = null;
+			let decision: import("../contracts/values.js").DecisionRequest | undefined;
 			try {
 				this.startedRuns.add(state.run);
 				await this.executeCallBody(root, state, null);
 			} catch (err) {
-				rootThrew = toCallFailure(err);
+				decision = getDecisionRequest(err);
+				if (!decision) rootThrew = toCallFailure(err);
 			}
-			await state.programScope?.close(state.stopped ? "stop" : rootThrew ? "failed" : "finished");
+			await state.programScope?.close(state.stopped ? "stop" : decision ? "decide" : rootThrew ? "failed" : "finished");
 			// §5.5 5-6：固定 H → flush → 终结论 → flush → 通知
 			await this.queue.flushThrough(this.queue.capture());
 			state.unknownEffects = this.queue.unknownEffectsFor(state.run);
 			state.value = rootThrew == null ? root.value : null;
 			state.error = rootThrew != null ? { code: rootThrew.code, message: rootThrew.message } : null;
 			// §5.6 五态：根调用结算 + 运行级控制未知 → unknown
-			state.outcome = state.control === "unknown" ? "unknown" : (root.outcome ?? "unknown");
+			state.outcome =
+				!state.started && !state.everStarted
+					? "not_started"
+					: state.control === "unknown"
+						? "unknown"
+						: (root.outcome ?? "unknown");
 			state.completionRef = this.refs.completion();
 			state.revision++;
-			state.phase = "finished";
+			state.phase = decision && !state.stopped ? "awaiting_decision" : "finished";
+			if (decision && !state.stopped) {
+				state.decision = this.refs.record();
+				state.decisionRequest = decision;
+				state.checkpoint = decision.checkpoint;
+				state.outcome = null;
+				state.error = null;
+			}
 			if (state.stopped && state.control !== "unknown") state.control = "stopped";
 			this.queue.enqueueAll([this.segmentMutation(state), this.runMutation(state)]);
 			await this.queue.flushThrough(this.queue.capture());
+			if (!this.segmentCompletions.has(state.segment)) this.segmentCompletions.set(state.segment, state.completionRef);
 			this.notifyResult(state);
 		} catch (err) {
 			// flush/commit 失败：控制已撤销，不得假称持久终结（§5.5 step 7）
 			console.error(
 				`[mc-runtime] run ${state.run} settlement failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
+		} finally {
+			this.releasePriority(state);
 		}
 	}
 
@@ -954,6 +1401,7 @@ export class RuntimeEngine {
 		const ctx = this.buildContext(callState, state, lease);
 		let value: JsonValue | undefined;
 		let threw: CallFailure | null = null;
+		let decision: import("../contracts/values.js").DecisionRequest | undefined;
 		try {
 			this.assertActionAllowed();
 			if (state.stopped || callState.abort.signal.aborted || callState.closed)
@@ -967,19 +1415,32 @@ export class RuntimeEngine {
 				});
 			const invocation = callState.callable;
 			const raw = await this.als.run({ call: callState, bodyLease: lease }, async () => {
-				if (invocation.kind === "native") return invocation.native.invoke(ctx, callState.input);
+				if (invocation.kind === "native") {
+					return invocation.native.invoke(ctx, callState.input);
+				}
 				const host = createProgramHost(ctx, callState.resources, (selector) =>
 					this.byRef.has(selector) ? "act" : this.opts.queryRefs?.includes(selector) ? "read" : undefined,
 				);
+				for (const method of ["watch", "sleep"] as const) {
+					const invoke = host[method];
+					Object.assign(host, {
+						[method]: (args: never) => {
+							const result = invoke(args);
+							this.releasePriority(state);
+							return result;
+						},
+					});
+				}
 				const result = await state.programScope!.invoke({
 					call: callState.call,
 					program: invocation.program,
 					input: callState.input,
-					checkpoint: null,
+					checkpoint: callState.parent === null && state.checkpoint?.kind === "program" ? state.checkpoint.value : null,
 					signal: callState.abort.signal,
 					host,
 				});
 				if (result.kind === "returned") return result.value;
+				if (result.kind === "decision") throw createDecisionError(result.request);
 				if ("scope" in result.failure) callState.diagnostic = result.failure;
 				const f = result.failure;
 				throw callFailure({
@@ -1002,12 +1463,13 @@ export class RuntimeEngine {
 			}
 			value = raw as JsonValue;
 		} catch (err) {
-			threw = toCallFailure(err);
+			decision = getDecisionRequest(err);
+			if (!decision) threw = toCallFailure(err);
 		}
 		// §4.3 关闭：封闭准入 → 取消/等待子 Call → 保存原因
 		callState.closed = true;
 		const cancelled = callState.closedByParent != null || state.stopped;
-		const reason: "returned" | "threw" | "cancelled" = threw == null ? "returned" : cancelled ? "cancelled" : "threw";
+		const reason = cancelled ? "cancelled" : decision ? "decision" : threw == null ? "returned" : "threw";
 		// closed seals admissions; execution remains running until descendant cleanup settles.
 		const strays = [...callState.children].filter((child) => child.execution === "running");
 		for (const child of strays) {
@@ -1019,11 +1481,14 @@ export class RuntimeEngine {
 		await Promise.all(strays.map((child) => child.settled));
 		// §5.5 step 4：不可变完成截面入队（不逐 Call 等盘）
 		const interrupted = callState.closedByParent != null || state.stopped;
-		callState.execution = interrupted ? "interrupted" : threw == null ? "returned" : "threw";
+		callState.execution = interrupted ? "interrupted" : decision ? "threw" : threw == null ? "returned" : "threw";
+		callState.decisionRequest = decision;
 		callState.effects = this.queue.effectsForCall(callState.call);
 		if (interrupted) {
 			callState.outcome = "cancelled";
 			if (threw != null) callState.error = failureData(threw);
+		} else if (decision) {
+			callState.outcome = null;
 		} else if (threw == null) {
 			callState.value = value ?? null;
 			callState.outcome = this.callHasUnknownEffects(callState) ? "unknown" : "succeeded";
@@ -1033,6 +1498,7 @@ export class RuntimeEngine {
 		}
 		this.queue.enqueue(this.callMutation(callState));
 		callState.settledResolve();
+		if (decision && !interrupted) throw createDecisionError(decision);
 		if (threw != null) throw threw;
 		return value as JsonValue;
 	}
@@ -1207,7 +1673,9 @@ export class RuntimeEngine {
 		state.awaitingBody++;
 		let grant: BodyGrant;
 		try {
-			grant = await this.bodyLeaseQueue.request(owner, callState.call, callState.abort.signal);
+			const requested = this.bodyLeaseQueue.request(owner, callState.call, callState.abort.signal);
+			this.releasePriority(state);
+			grant = await requested;
 		} catch (err) {
 			state.awaitingBody--;
 			throw err;
@@ -1294,10 +1762,12 @@ export class RuntimeEngine {
 	programChanged(): void {
 		const calls = this.opts.program?.capacity().calls ?? [];
 		for (const state of this.runs.values()) {
-			if (state.phase === "finished" || (state.phase === "queued" && !this.startedRuns.has(state.run)) || state.stopped)
+			if (state.phase === "finished" || state.phase === "awaiting_decision" || !state.started || state.stopped)
 				continue;
 			const root = calls.find((c) => c.call === state.rootCall.call);
 			const waiting = root?.waiting;
+			if (waiting?.kind === "idle" || waiting?.kind === "sleep" || waiting?.kind === "world_change")
+				this.releasePriority(state);
 			const phase =
 				state.awaitingBody > 0 && waiting?.method === "acquireBody" ? "queued" : waiting ? "waiting" : "running";
 			if (
@@ -1327,6 +1797,13 @@ export class RuntimeEngine {
 			this.queue.enqueue(this.runMutation(state));
 			this.notifyChanged(state);
 		}
+	}
+
+	private releasePriority(state: RunState): void {
+		const release = state.priorityRelease;
+		state.priorityRelease = undefined;
+		if (release) this.bodyLeaseQueue.clearPriority(state.run);
+		release?.();
 	}
 
 	private isDescendantCall(candidateDescendant: Ref, ancestor: Ref): boolean {
@@ -1470,7 +1947,10 @@ export class RuntimeEngine {
 	}
 	private segmentMutation(state: RunState): ApplyItem["mutation"] {
 		state.segmentRecord = this.refs.record();
-		return { kind: "segment", row: segmentRowOf(state, this.opts.environment ?? null) };
+		return {
+			kind: "segment",
+			row: segmentRowOf(state, state.environment === undefined ? (this.opts.environment ?? null) : state.environment),
+		};
 	}
 	private callMutation(state: CallState): ApplyItem["mutation"] {
 		state.record = this.refs.record();

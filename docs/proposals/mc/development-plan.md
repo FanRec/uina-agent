@@ -1,6 +1,6 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](wait-implementation.md)；下一批为 **批 9B：决策、调度、引用清理与 I2 收口**。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](wait-implementation.md)；**批 9B 的决策、调度、现有历史引用清理与 I2 已实现**，实现与验收边界见 [实施记录](decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -118,7 +118,7 @@ A 只落实首批模块实际交换的合同。领域输入类型放所属能力
 
 - [x] 实现原生调用所需的受理、请求幂等/撤销、CallFrame、BodyScope、停止与 Effect 记录；使用真正的 SQLite 和提交屏障。
 - [x] 与 D/W 接通 I1，并完成停止/资格与效果结算的专项检查；没有安装宽松 verifier 或空 sink。
-- [ ] 随 P 接入程序调用、段内源码固定、决策传播与显式 continue；落实部分进度、未知效果及记录读取。
+- [x] 随 P 接入程序调用、段内源码固定、决策传播与显式 continue；落实部分进度、未知效果及记录读取。
 - [ ] 完成安全介入归属、恢复与交付记录。只恢复事实和基础设施，不自动恢复游戏行动。
 
 完成：同键不重复执行、未知受理可撤销；独立/嵌套/委托调用共用控制规则；关闭先退役控制再持久结算，故障范围能从记录解释。
@@ -253,7 +253,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **默认下一任务为批 9B**：9A 已接可等待查询与 waitUntil；继续决策/continue、调度、引用保护与历史清理，完成 I2；其余玩法按直接依赖与校准收益选择，不把全部未实现内容塞入一批。
+3. **下一工作包优先反馈与自保，再接地点/路径探索**：批 9B 已接程序决策/continue、调度及现有事件/窗口历史保护与显式清理；本轮30分钟开放观察出现重复死亡，先推进高频 feedback/loop 与自保控制工作包；places/remember/forget 与 route.plan/explore 随后按直接依赖推进。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -289,7 +289,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | **7 · Program 执行闭环（已实现）** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
 | **8 · Library 文件与发现复用（已实现）** | `library/` 及发现装配：程序/经验/蓝图文件的命名、头/metadata、CRUD 与扫描；程序 compile-only 和 save from 复用批 7 的编译/精确源码接缝。蓝图解释和现场 Project 随施工包实现 | 批 7 的编译与执行材料；文件部分可独立实现 | 真实临时文件验证坏头、并发修改和来源追溯；模型完成试做→纠错→save from→局部改文件→新段复用。在途段仍用原字节；经验判断不冒充事实 |
 | **9A · 可等待查询与程序等待（已实现）** | 当前查询的确切版本、events 合法增量等待、SQLite 提交版本与库身份、Program waitUntil、world_change 投影及停止清理；历史库 v2 | 批 6–8 | 实际范围、源码/产物真服与模型证据见 [实施记录](wait-implementation.md)；不计作完整 I2 |
-| **9B · 决策、调度与 I2 收口** | decide/checkpoint、continue、决策传播与消费；replace_pending/preempt_current；World 保留/引用保护与历史清理；相关停止/交付竞争 | 批 6–8 + 9A；对应 World/Runtime/Program 合同 | 决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实；引用与清理不制造悬空。经正式模型入口完成完整 I2 |
+| **9B · 决策、调度与 I2 收口（已实现）** | decide/checkpoint、continue、决策传播与消费；replace_pending/preempt_current；World 保留/引用保护与历史清理；相关停止/交付竞争 | 批 6–8 + 9A；对应 World/Runtime/Program 合同 | 决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实；引用与清理不制造悬空。经正式模型入口完成完整 I2 |
 
 批 6 是同一正式 World 的阶段性交付，具体可用范围与状态口径见 [Executor §3.1](modules/executor.md#31-配置与入口)。已声明应装配的模块或资产缺失仍启动失败，不能把损坏部署当成尚未交付。批 9 的 I2 不等待蓝图、完整战斗或全部活动，但仍须兑现所用 API 的正式合同；高频反馈与高级能力继续按下节补齐。
 

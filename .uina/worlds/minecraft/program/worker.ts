@@ -7,11 +7,11 @@ import {
 	type QuickJSHandle,
 	type QuickJSDeferredPromise,
 } from "quickjs-emscripten";
-import type { InvokeResult, ProgramDiagnostic } from "../contracts/program.js";
+import type { ProgramDiagnostic } from "../contracts/program.js";
 import type { JsonValue } from "../contracts/values.js";
 import { PROGRAM_POLICY as P } from "./policy.js";
 import { SHIM } from "./shim.js";
-import type { ProgramWorkerMessage, ProgramWorkerRequest } from "./wire.js";
+import type { ProgramWorkerMessage, ProgramWorkerRequest, WorkerInvokeResult, WireDecision } from "./wire.js";
 if (!parentPort) throw new Error("Program worker requires parentPort");
 const port = parentPort;
 const send = (msg: ProgramWorkerMessage) => port.postMessage(msg);
@@ -27,6 +27,7 @@ interface Guest {
 	interrupted: boolean;
 	result: QuickJSHandle | null;
 	shim: QuickJSHandle | null;
+	shimFactory: QuickJSHandle;
 	rpcs: Map<number, QuickJSDeferredPromise>;
 	nextRpc: number;
 	console: string[];
@@ -50,6 +51,8 @@ function create(id: number, cancel = new SharedArrayBuffer(4)): Guest {
 	const json = ctx.getProp(ctx.global, "JSON");
 	const parseJson = ctx.getProp(json, "parse");
 	json.dispose();
+	// No host function or capability is reachable while evaluating user declarations.
+	const shimFactory = ctx.unwrapResult(ctx.evalCode(SHIM, "uina-shim.js", { type: "global" }));
 	const g: Guest = {
 		id,
 		runtime,
@@ -61,6 +64,7 @@ function create(id: number, cancel = new SharedArrayBuffer(4)): Guest {
 		interrupted: false,
 		result: null,
 		shim: null,
+		shimFactory,
 		rpcs: new Map(),
 		nextRpc: 0,
 		console: [],
@@ -129,6 +133,7 @@ function dispose(g: Guest): void {
 	g.rpcs.clear();
 	g.result?.dispose();
 	g.shim?.dispose();
+	g.shimFactory.dispose();
 	g.parseJson.dispose();
 	g.ctx.dispose();
 	g.runtime.dispose();
@@ -178,7 +183,24 @@ function flush(g: Guest, final = false): void {
 	g.progress = null;
 	g.logs = [];
 }
-function finish(g: Guest, result: InvokeResult): void {
+function thrownResult(g: Guest, handle: QuickJSHandle): WorkerInvokeResult {
+	if (g.shim && !g.interrupted && !Atomics.load(g.cancel, 0)) {
+		const fn = g.ctx.getProp(g.shim, "decisionData");
+		const result = g.ctx.callFunction(fn, g.ctx.undefined, handle);
+		fn.dispose();
+		if (!result.error) {
+			const text = g.ctx.typeof(result.value) === "string" ? g.ctx.getString(result.value) : null;
+			result.value.dispose();
+			if (text !== null) {
+				if (Buffer.byteLength(text) > P.maxValueBytes)
+					return { kind: "failed", failure: failure("PROGRAM_VALUE", "decision exceeds 1 MiB") };
+				return { kind: "decision", decision: JSON.parse(text) as WireDecision };
+			}
+		} else result.error.dispose();
+	}
+	return { kind: "failed", failure: readError(g, handle) };
+}
+function finish(g: Guest, result: WorkerInvokeResult): void {
 	// Flush at most one final batch behind the one outstanding acknowledged batch.
 	if (g.shim && (g.progress !== null || g.logs.length)) flush(g, true);
 	if (result.kind === "failed") result.failure = { ...result.failure, consoleTail: [...g.console] };
@@ -231,12 +253,12 @@ function start(msg: Extract<ProgramWorkerRequest, { type: "invoke" }>): void {
 			send({ type: "rpc", id: g.id, rpc, method, args: JSON.parse(text) as JsonValue });
 			return d.handle;
 		});
-		g.ctx.setProp(g.ctx.global, "__uinaPost", post);
-		post.dispose();
 		const now = g.ctx.newFunction("__uinaNow", () => g.ctx.newNumber(performance.now()));
-		g.ctx.setProp(g.ctx.global, "__uinaNow", now);
+		const checkpoint = injectJson(g, msg.checkpoint);
+		g.shim = g.ctx.unwrapResult(g.ctx.callFunction(g.shimFactory, g.ctx.undefined, post, now, checkpoint));
+		post.dispose();
 		now.dispose();
-		g.shim = g.ctx.unwrapResult(g.ctx.evalCode(SHIM, "uina-shim.js", { type: "global" }));
+		checkpoint.dispose();
 		const mc = g.ctx.getProp(g.shim, "mc");
 		const input = injectJson(g, msg.input);
 		const result = g.ctx.callFunction(main, g.ctx.undefined, mc, input);
@@ -244,10 +266,15 @@ function start(msg: Extract<ProgramWorkerRequest, { type: "invoke" }>): void {
 		mc.dispose();
 		input.dispose();
 		if (result.error) {
-			const f = readError(g, result.error);
+			const outcome = thrownResult(g, result.error);
 			result.error.dispose();
-			if (!g.interrupted && !Atomics.load(g.cancel, 0) && f.code !== "PROGRAM_MEMORY") flush(g);
-			finish(g, { kind: "failed", failure: f });
+			if (
+				!g.interrupted &&
+				!Atomics.load(g.cancel, 0) &&
+				(outcome.kind !== "failed" || outcome.failure.code !== "PROGRAM_MEMORY")
+			)
+				flush(g);
+			finish(g, outcome);
 			return;
 		}
 		g.result = result.value;
@@ -282,10 +309,10 @@ function check(g: Guest): void {
 			finish(g, { kind: "failed", failure: err as ProgramDiagnostic });
 		}
 	} else {
-		const f = readError(g, state.error);
+		const outcome = thrownResult(g, state.error);
 		state.error.dispose();
 		flush(g);
-		finish(g, { kind: "failed", failure: f });
+		finish(g, outcome);
 	}
 }
 let scheduled = false;
@@ -304,9 +331,9 @@ function schedule(): void {
 				const job = g.runtime.executePendingJobs(1);
 				g.computeTotalMs += performance.now() - t;
 				if (job.error) {
-					const f = readError(g, job.error);
+					const outcome = thrownResult(g, job.error);
 					job.error.dispose();
-					finish(g, { kind: "failed", failure: f });
+					finish(g, outcome);
 					continue;
 				}
 				checkMemory(g);
@@ -357,7 +384,11 @@ port.on("message", (msg: ProgramWorkerRequest) => {
 	const d = g.rpcs.get(msg.rpc);
 	if (!d) return;
 	g.rpcs.delete(msg.rpc);
-	const value = injectJson(g, msg.reply);
+	const reply =
+		!msg.reply.ok && "decision" in msg.reply
+			? { ok: false, decisionJson: JSON.stringify(msg.reply.decision) }
+			: msg.reply;
+	const value = injectJson(g, reply);
 	d.resolve(value);
 	value.dispose();
 	d.dispose();

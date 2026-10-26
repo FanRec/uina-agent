@@ -58,21 +58,22 @@ export function snapshotMutation(db: DatabaseSync, mutation: ApplyItem["mutation
 				: undefined;
 			const snapshot = snapshotFromRow(r, segment);
 			save(db, { kind: "run", record: r.record, value: plain(snapshot) }, r.run);
-			if (r.phase === "finished" && r.completion_ref) {
+			if ((r.phase === "finished" || r.phase === "awaiting_decision") && r.completion_ref) {
 				const refs = {
 					completionRef: r.completion_ref,
-					requestId: r.request_id,
+					requestId: r.segment_request_id || r.request_id,
 					run: r.run,
 					segment: r.segment!,
 					revision: r.revision,
 				};
-				const report = { ...refs, reportKind: "terminal", snapshot };
+				const reportKind = r.phase === "awaiting_decision" ? "decision" : "terminal";
+				const report = { ...refs, reportKind, snapshot };
 				const recordBytes = save(
 					db,
 					{ kind: "completion", record: r.completion_ref, value: plain(report) },
 					r.completion_ref,
 				);
-				const header = { ...refs, recordBytes, reportKind: "terminal", snapshot: boundedSummary(summaryFromRow(r)) };
+				const header = { ...refs, recordBytes, reportKind, snapshot: boundedSummary(summaryFromRow(r)) };
 				db.prepare("INSERT OR IGNORE INTO completions(completion_ref,run,header) VALUES(?,?,?)").run(
 					r.completion_ref,
 					r.run,
@@ -220,7 +221,9 @@ export async function queryStorage(db: DatabaseSync, dbPath: string, q: StorageQ
 		if (!Number.isInteger(limit) || limit < 1 || limit > 100)
 			fail("INVALID_INPUT", "delivery page limit must be 1..100");
 		const rows = db
-			.prepare("SELECT header FROM completions WHERE disposition='pending' ORDER BY rowid LIMIT ? OFFSET ?")
+			.prepare(
+				"SELECT c.header FROM completions c JOIN runs r ON r.run=c.run WHERE c.disposition='pending' AND (json_extract(c.header,'$.reportKind')='terminal' OR (r.phase='awaiting_decision' AND r.completion_ref=c.completion_ref)) ORDER BY c.rowid LIMIT ? OFFSET ?",
+			)
 			.all(limit + 1, offset);
 		return page(
 			rows.map((r) => {
@@ -240,7 +243,15 @@ export async function queryStorage(db: DatabaseSync, dbPath: string, q: StorageQ
 	const row = db.prepare("SELECT * FROM completions WHERE completion_ref=?").get(q.ref);
 	if (!row) fail("NOT_FOUND", `completion ${q.ref} not found`);
 	if (q.op === "delivery")
-		return { delivery: JSON.parse(String(row.header)), disposition: String(row.disposition), eligible: true };
+		return {
+			delivery: JSON.parse(String(row.header)),
+			disposition: String(row.disposition),
+			eligible:
+				JSON.parse(String(row.header)).reportKind === "terminal" ||
+				db
+					.prepare("SELECT 1 FROM runs WHERE run=? AND phase='awaiting_decision' AND completion_ref=?")
+					.get(row.run, q.ref) !== undefined,
+		};
 	const receipt = q.receipt;
 	if (
 		receipt.key !== q.ref ||

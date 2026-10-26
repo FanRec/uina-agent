@@ -7,7 +7,7 @@
  * 绑定由 World 拥有（组合根注入当前绑定投影，Driver 据此标注捕获 scope）；
  * 历史侧两段启动（§13.1）：句柄立即可用，historyReady 结算 ready/unavailable。
  * I1 不做领域记录（readRecord/writeRecord 显式失败，沿 writeSign 先例）；
- * WorldEvidencePort 随真实记录所有者出现时再接入。
+ * WorldEvidencePort 仅保护可信记录所有者实际持有的不可变观察引用。
  */
 
 import { callFailure } from "../contracts/values.js";
@@ -27,6 +27,9 @@ import type {
 	EventPage,
 	WorldAvailabilityValue,
 	WorldPort,
+	WorldEvidencePort,
+	WorldHistoryPrune,
+	WorldHistoryPruneResult,
 	WorldQuery,
 	WorldWatch,
 } from "../contracts/world.js";
@@ -111,7 +114,7 @@ export function projectAvailability(input: {
 	};
 }
 
-export class MinecraftWorld implements WorldPort {
+export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly facts: ClientFactsPort;
 	private readonly current: CurrentReads;
 	private readonly history: HistoryIngest;
@@ -249,6 +252,20 @@ export class MinecraftWorld implements WorldPort {
 
 	async writeRecord(_change: Parameters<WorldPort["writeRecord"]>[0]): Promise<DomainRecord> {
 		throw unimplementedRecords("writeRecord");
+	}
+
+	/** Trusted record owners only; these operations never enter the guest API. */
+	async retain(owner: Ref, evidence: Ref[]): Promise<void> {
+		await this.history.retain(owner, evidence);
+	}
+
+	async release(owner: Ref): Promise<void> {
+		await this.history.release(owner);
+	}
+
+	/** Explicit maintenance: capture partition plus exclusive local store sequence. */
+	async pruneHistory(options: WorldHistoryPrune): Promise<WorldHistoryPruneResult> {
+		return await this.history.prune(options);
 	}
 
 	availability(): WorldAvailabilityValue {

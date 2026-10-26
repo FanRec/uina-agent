@@ -1,16 +1,18 @@
 /** Executor owns only identity/launch/local gate intent, never Run outcomes. */
 import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
-import type { RunRequest, SubmissionLookup } from "../contracts/runtime.js";
+import type { ContinueRequest, RunRequest, SubmissionLookup } from "../contracts/runtime.js";
 
-export interface RequestCredential {
+export type RequestIntent =
+	| { operation: "submit"; request: RunRequest }
+	| { operation: "continue"; request: ContinueRequest };
+export type RequestCredential = RequestIntent & {
 	requestId: string;
-	request: RunRequest;
 	activation: string;
 	createdAt: string;
 	run?: string;
 	segment?: string;
-}
+};
 export interface DeliveryAttempt {
 	key: string;
 	attempt: string;
@@ -53,7 +55,7 @@ parentPort!.on("message", (request: LedgerRequest) => {
 			if (db) throw new Error("ledger already open");
 			db = new DatabaseSync(request.path);
 			const prior = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='identity'").get();
-			if (prior && Number(db.prepare("SELECT schema_version FROM identity WHERE id=1").get()?.schema_version) !== 2)
+			if (prior && Number(db.prepare("SELECT schema_version FROM identity WHERE id=1").get()?.schema_version) !== 3)
 				throw new Error("incompatible executor ledger schema; use a new data root");
 			db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL");
 			if (
@@ -67,9 +69,9 @@ parentPort!.on("message", (request: LedgerRequest) => {
 			db.exec(
 				"CREATE TABLE IF NOT EXISTS requests (request_id TEXT PRIMARY KEY, credential TEXT NOT NULL); CREATE TABLE IF NOT EXISTS delivery_attempts (key TEXT PRIMARY KEY, attempt TEXT NOT NULL)",
 			);
-			db.prepare("INSERT OR IGNORE INTO identity VALUES (1,2,?,?,0)").run(request.worldOwner, request.storageId);
+			db.prepare("INSERT OR IGNORE INTO identity VALUES (1,3,?,?,0)").run(request.worldOwner, request.storageId);
 			const identity = db.prepare("SELECT * FROM identity WHERE id=1").get()!;
-			if (Number(identity.schema_version) !== 2) throw new Error("incompatible executor ledger schema");
+			if (Number(identity.schema_version) !== 3) throw new Error("incompatible executor ledger schema");
 			const previous = db.prepare("SELECT launch,activation,clean FROM launches ORDER BY seq DESC LIMIT 1").get();
 			const gates = db
 				.prepare("SELECT gate FROM local_gates ORDER BY gate")
@@ -101,10 +103,12 @@ parentPort!.on("message", (request: LedgerRequest) => {
 				const changed = db.prepare("UPDATE launches SET clean=1 WHERE launch=?").run(request.launch);
 				if (changed.changes !== 1) throw new Error("unknown launch");
 			} else if (request.op === "request_put") {
+				if (request.credential.requestId !== request.credential.request.requestId) throw new Error("REQUEST_CONFLICT");
 				const old = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.credential.requestId);
 				if (
 					old &&
-					JSON.stringify(JSON.parse(String(old.credential)).request) !== JSON.stringify(request.credential.request)
+					(JSON.parse(String(old.credential)).operation !== request.credential.operation ||
+						JSON.stringify(JSON.parse(String(old.credential)).request) !== JSON.stringify(request.credential.request))
 				)
 					throw new Error("REQUEST_CONFLICT");
 				db.prepare("INSERT OR IGNORE INTO requests VALUES(?,?)").run(

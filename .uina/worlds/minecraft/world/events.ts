@@ -2,7 +2,7 @@
  * events@1：历史视图的输入规范化、游标编解码与页成形。
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md#events、modules/world.md §8.5。
- * 游标只编码"哪个历史分区、哪组 kinds、读到哪个 rowid、本次扫描上界、页大小"；
+ * 游标只编码"哪个历史分区、哪组 kinds、读到哪个 store_seq、本次扫描上界、页大小"；
  * 它不代表模型已读，也不绑定连接/Run。kinds 由游标固定，续页不能换过滤。
  * 本文件不碰 SQL：读取由 sqlite-worker 执行，这里只做纯值换算。
  */
@@ -38,7 +38,7 @@ export interface EventCursor {
 	/** null = 不过滤（全部四类）。 */
 	kinds: GameEventKind[] | null;
 	limit: number;
-	/** 已读取到的 evidence.rowid；0 表示从可读下界开始。 */
+	/** 已读取到的 evidence.store_seq；0 表示从可读下界开始。 */
 	pos: number;
 	/** 本次扫描上界；分页期间保持不变，不追逐新消息。 */
 	upper: number;

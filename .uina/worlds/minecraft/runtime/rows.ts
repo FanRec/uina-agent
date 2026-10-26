@@ -50,6 +50,15 @@ export function projectSummary(state: RunState): RunSummary {
 		unknownEffects: [...state.unknownEffects],
 		unknownEffectsComplete: true,
 	};
+	if (state.phase === "awaiting_decision")
+		return {
+			...base,
+			phase: "awaiting_decision",
+			decision: state.decision!,
+			reason: state.decisionRequest!.reason,
+			reasonComplete: true,
+			completionRef: state.completionRef!,
+		};
 	if (state.phase === "finished") {
 		return {
 			...base,
@@ -69,6 +78,13 @@ export function projectSummary(state: RunState): RunSummary {
 export function runSnapshotOf(state: RunState): RunSnapshot {
 	const summary = projectSummary(state);
 	// I1 无 awaiting_decision：非 finished 只会是 queued/running/stopping 投影
+	if (summary.phase === "awaiting_decision")
+		return {
+			...summary,
+			completion: state.callable.completion,
+			checkpoint: state.checkpoint ?? null,
+			request: state.decisionRequest,
+		};
 	if (summary.phase !== "finished") return summary as unknown as RunSnapshot;
 	return {
 		...summary,
@@ -97,6 +113,17 @@ export function summaryFromRow(row: RunRow): RunSummary {
 		unknownEffects,
 		unknownEffectsComplete: true,
 	};
+	if (row.phase === "awaiting_decision" && row.decision) {
+		const d = JSON.parse(row.decision);
+		return {
+			...base,
+			phase: "awaiting_decision",
+			decision: d.ref,
+			reason: d.request.reason,
+			reasonComplete: true,
+			completionRef: row.completion_ref!,
+		};
+	}
 	if (row.phase === "finished") {
 		return {
 			...base,
@@ -138,6 +165,18 @@ export function snapshotFromRow(row: RunRow | undefined, segment?: SegmentRow): 
 		};
 	}
 	const summary = summaryFromRow(row);
+	if (summary.phase === "awaiting_decision") {
+		const d = JSON.parse(row.decision!);
+		return {
+			...summary,
+			completion: {
+				scope: row.completion_scope as "execution" | "capability",
+				description: row.completion_description,
+			},
+			checkpoint: d.request.checkpoint,
+			request: d.request,
+		};
+	}
 	if (summary.phase !== "finished") return summary as unknown as RunSnapshot;
 	return {
 		...summary,
@@ -151,6 +190,9 @@ export function snapshotFromRow(row: RunRow | undefined, segment?: SegmentRow): 
 export function runRowOf(state: RunState): RunRow {
 	return {
 		run: state.run,
+		decision: state.decision ? JSON.stringify({ ref: state.decision, request: state.decisionRequest }) : null,
+		segment_request_id: state.segmentRequestId ?? state.requestId,
+		started: state.started || state.everStarted ? 1 : 0,
 		owner: state.owner,
 		request_id: state.requestId,
 		revision: state.revision,
@@ -174,6 +216,7 @@ export function segmentRowOf(state: RunState, environment: RunEnvironment | null
 	const root = state.rootCall;
 	return {
 		segment: state.segment,
+		checkpoint: state.checkpoint == null ? null : JSON.stringify(state.checkpoint),
 		run: state.run,
 		revision: state.phase === "finished" ? 2 : 1,
 		record: state.segmentRecord,
@@ -208,6 +251,7 @@ export function callRowOf(callState: CallState): CallRow {
 		ref: callState.callable.ref,
 		implementation: callState.callable.kind,
 		digest: callState.callable.digest,
+		decision_request: callState.decisionRequest ? JSON.stringify(callState.decisionRequest) : null,
 		program:
 			callState.callable.kind === "program"
 				? JSON.stringify({
@@ -243,6 +287,7 @@ export function segmentValueOf(state: RunState, environment: RunEnvironment | nu
 		record: row.record,
 		entry: JSON.parse(row.entry) as JsonValue,
 		input: JSON.parse(row.input) as JsonValue,
+		checkpoint: row.checkpoint ? JSON.parse(row.checkpoint) : null,
 		...(row.environment != null ? { environment: JSON.parse(row.environment) as JsonValue } : {}),
 		...(row.value != null ? { value: JSON.parse(row.value) as JsonValue } : {}),
 		interruptedChildren: JSON.parse(row.interrupted_children) as JsonValue,
@@ -259,6 +304,7 @@ export function segmentFromRow(row: SegmentRow | undefined): Record<string, Json
 		record: row.record,
 		entry: JSON.parse(row.entry) as JsonValue,
 		input: JSON.parse(row.input) as JsonValue,
+		checkpoint: row.checkpoint ? JSON.parse(row.checkpoint) : null,
 		...(row.environment != null ? { environment: JSON.parse(row.environment) as JsonValue } : {}),
 		...(row.value != null ? { value: JSON.parse(row.value) as JsonValue } : {}),
 		interruptedChildren: JSON.parse(row.interrupted_children) as JsonValue,
@@ -289,6 +335,7 @@ function readCallRow(row: CallRow): Record<string, JsonValue> {
 		digest: row.digest,
 		access: row.access,
 		input: JSON.parse(row.input) as JsonValue,
+		...(row.decision_request ? { decisionRequest: JSON.parse(row.decision_request) } : {}),
 		execution: row.execution,
 		completion: JSON.parse(row.completion) as JsonValue,
 		...(row.outcome != null ? { outcome: row.outcome } : {}),
@@ -359,6 +406,10 @@ export function boundedSummary(summary: RunSummary): RunSummary {
 	if (out.phase === "finished" && out.error && Buffer.byteLength(out.error.message) > 1024) {
 		out.error.message = Buffer.from(out.error.message).subarray(0, 1000).toString("utf8");
 		out.error.messageComplete = false;
+	}
+	if (out.phase === "awaiting_decision" && Buffer.byteLength(out.reason) > 1024) {
+		out.reason = Buffer.from(out.reason).subarray(0, 1000).toString("utf8");
+		out.reasonComplete = false;
 	}
 	return out;
 }

@@ -16,6 +16,7 @@ import { callFailure } from "../contracts/values.js";
 import type { AppendItem, WorkerRequest, WorkerResponse } from "./sqlite-worker.js";
 import type { EventQueryParams, EventQueryResult } from "./events.js";
 import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
+import type { WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
 
 /** opening 期缓冲上限：超过即显式 unavailable（RAM 接收不是无限缓存承诺，§13.1）。 */
 const MAX_OPENING_BUFFER = 8192;
@@ -59,6 +60,13 @@ export class HistoryIngest {
 	private readonly containerWaiters = new Map<
 		number,
 		{ resolve: (result: ContainerEvidence | null) => void; reject: (err: Error) => void }
+	>();
+	private readonly mutationWaiters = new Map<
+		number,
+		{
+			resolve: (result: WorldHistoryPruneResult | null) => void;
+			reject: (err: Error) => void;
+		}
 	>();
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
@@ -192,8 +200,9 @@ export class HistoryIngest {
 			return;
 		}
 		if (msg.type === "queryFailed") {
-			const waiter = this.readWaiters.get(msg.id);
+			const waiter = this.readWaiters.get(msg.id) ?? this.mutationWaiters.get(msg.id);
 			this.readWaiters.delete(msg.id);
+			this.mutationWaiters.delete(msg.id);
 			waiter?.reject(
 				callFailure({
 					code: msg.code,
@@ -204,6 +213,16 @@ export class HistoryIngest {
 					recoverable: true,
 				}),
 			);
+			return;
+		}
+		if (msg.type === "retained" || msg.type === "pruned") {
+			if (msg.type === "pruned") {
+				this.version = Math.max(this.version, msg.result.version);
+				for (const [watch, stream] of this.watches) watch.update(this.eventCursor(stream, this.version));
+			}
+			const waiter = this.mutationWaiters.get(msg.id);
+			this.mutationWaiters.delete(msg.id);
+			waiter?.resolve(msg.type === "pruned" ? msg.result : null);
 			return;
 		}
 		if (msg.type === "containerLast") {
@@ -239,10 +258,13 @@ export class HistoryIngest {
 		this.readWaiters.clear();
 		for (const waiter of this.containerWaiters.values()) waiter.reject(storeUnavailable({ reason }));
 		this.containerWaiters.clear();
+		for (const waiter of this.mutationWaiters.values()) waiter.reject(storeUnavailable({ reason }));
+		this.mutationWaiters.clear();
 	}
 
 	/** 提交屏障：先把已接收材料发车，再等 worker 处理到这条消息为止（§6.2）。 */
 	async barrier(): Promise<void> {
+		if (this.closed) throw storeUnavailable({ reason: "history store closed" });
 		if (this._state.state === "opening") await this.historyReady;
 		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
 		this.flush();
@@ -283,6 +305,35 @@ export class HistoryIngest {
 		return await new Promise<ContainerEvidence | null>((resolve, reject) => {
 			this.containerWaiters.set(id, { resolve, reject });
 			this.post({ type: "readContainer", id, params });
+		});
+	}
+
+	async retain(owner: string, evidence: string[]): Promise<void> {
+		await this.mutate({ type: "retain", owner, evidence: [...evidence] });
+	}
+
+	async release(owner: string): Promise<void> {
+		await this.mutate({ type: "release", owner });
+	}
+
+	async prune(options: WorldHistoryPrune): Promise<WorldHistoryPruneResult> {
+		const result = await this.mutate({ type: "prune", options: structuredClone(options) });
+		if (result === null) throw new Error("missing history prune result");
+		return result;
+	}
+
+	private async mutate(
+		request:
+			| { type: "retain"; owner: string; evidence: string[] }
+			| { type: "release"; owner: string }
+			| { type: "prune"; options: WorldHistoryPrune },
+	): Promise<WorldHistoryPruneResult | null> {
+		await this.barrier();
+		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
+		const id = ++this.readSeq;
+		return await new Promise((resolve, reject) => {
+			this.mutationWaiters.set(id, { resolve, reject });
+			this.post({ ...request, id });
 		});
 	}
 

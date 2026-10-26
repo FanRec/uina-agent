@@ -108,6 +108,8 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 Minecraft 批 9A 源码、产物与模型证据见 [等待实施记录](proposals/mc/wait-implementation.md)，正式入口 `pnpm dev:mc:wait`；保持 10 查询 + 15 动作，完整 I2 尚未收口。
 
+Minecraft 批 9B 已接 `mc.decide(reason, checkpoint?)`、根程序只读 checkpoint、显式 continue、多段固定报告及消费有效性、replace_pending/preempt_current；World 提供 retain/release 和指定分区/截止序号的显式历史清理。Runtime schema v5 / history v3 / Executor ledger v3，旧库拒绝自动迁移，Host journal v4 不变。正式 I2 入口 `pnpm dev:mc:i2`，历史维护 `pnpm dev:mc:history -- --help`；仍为25/51能力，feedback、自保和其他玩法未计入。实现及本轮证据见 [批9B实施记录](proposals/mc/decision-implementation.md)。
+
 ## QQ World
 
 QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 14 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile / people / files / fetch / search / expressions）。绑定账号由 World 注入，模型不再填写 account。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`。授权词表仍为 8 个 grant 名，`requiredGrants` 检查所需集合：在线 inbox 需要 observation，同时修改 push 还需要 attention.manage；没有增加授权名称。

@@ -13,6 +13,8 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { applyAdmission, type AdmissionCommand } from "./admission.js";
+export type { AdmissionCommand } from "./admission.js";
 import { parentPort } from "node:worker_threads";
 import { RECORD_SCHEMA, snapshotMutation, queryStorage, type StorageQuery } from "./storage-queries.js";
 import type { DriverExecutionFact } from "../contracts/runtime.js";
@@ -42,6 +44,9 @@ export interface StopIntentRow {
 }
 
 export interface RunRow {
+	decision?: string | null;
+	segment_request_id?: string;
+	started?: number;
 	run: string;
 	owner: string;
 	request_id: string;
@@ -62,6 +67,7 @@ export interface RunRow {
 }
 
 export interface SegmentRow {
+	checkpoint?: string | null;
 	segment: string;
 	run: string;
 	revision: number;
@@ -75,6 +81,7 @@ export interface SegmentRow {
 }
 
 export interface CallRow {
+	decision_request?: string | null;
 	program?: string | null;
 	call: string;
 	run: string;
@@ -130,9 +137,11 @@ export type WorkerRequest =
 	| { type: "open"; dbPath: string; storageId: string; worldOwner: string }
 	| { type: "apply"; items: ApplyItem[] }
 	| { type: "query"; id: number; query: StorageQuery }
+	| { type: "admit"; id: number; command: AdmissionCommand }
 	| { type: "close" };
 
 export interface RecoveredRows {
+	completions?: { segment: string; completionRef: string }[];
 	ownerState?: { gates: string; revision: number };
 	submissions: SubmissionRow[];
 	stopIntents: StopIntentRow[];
@@ -157,7 +166,7 @@ export type WorkerResponse =
 	| { type: "query_reply"; id: number; value?: unknown; error?: { code: string; message: string } }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "4";
+const SCHEMA_VERSION = "5";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -190,6 +199,9 @@ CREATE TABLE IF NOT EXISTS runs (
 	owner TEXT NOT NULL,
 	request_id TEXT NOT NULL,
 	revision INTEGER NOT NULL,
+	decision TEXT,
+	segment_request_id TEXT NOT NULL DEFAULT '',
+	started INTEGER NOT NULL DEFAULT 0,
 	segment TEXT,
 	phase TEXT NOT NULL,
 	waiting TEXT,
@@ -205,6 +217,7 @@ CREATE TABLE IF NOT EXISTS runs (
 	completion_description TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS segments (
+	checkpoint TEXT,
 	segment TEXT PRIMARY KEY,
 	run TEXT NOT NULL,
 	revision INTEGER NOT NULL,
@@ -217,6 +230,7 @@ CREATE TABLE IF NOT EXISTS segments (
 	evidence TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS calls (
+	decision_request TEXT,
 	program TEXT,
 	call TEXT PRIMARY KEY,
 	run TEXT NOT NULL,
@@ -333,6 +347,10 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
 	const gates = db.prepare("SELECT value FROM meta WHERE key='owner_gates'").get() as Row;
 	const revision = db.prepare("SELECT value FROM meta WHERE key='owner_gate_revision'").get() as Row;
 	return {
+		completions: all("SELECT header FROM completions ORDER BY rowid").map((row) => {
+			const header = JSON.parse(String(row.header));
+			return { segment: String(header.segment), completionRef: String(header.completionRef) };
+		}),
 		ownerState: { gates: String(gates.value), revision: Number(revision.value) },
 		submissions: all("SELECT * FROM submissions").map((r) => ({
 			owner: String(r.owner),
@@ -356,6 +374,9 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
 		})),
 		runs: all("SELECT * FROM runs").map((r) => ({
 			run: String(r.run),
+			decision: str(r.decision),
+			segment_request_id: String(r.segment_request_id),
+			started: Number(r.started),
 			owner: String(r.owner),
 			request_id: String(r.request_id),
 			revision: Number(r.revision),
@@ -375,6 +396,7 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
 		})),
 		segments: all("SELECT * FROM segments").map((r) => ({
 			segment: String(r.segment),
+			checkpoint: str(r.checkpoint),
 			run: String(r.run),
 			revision: Number(r.revision),
 			record: String(r.record),
@@ -387,6 +409,7 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
 		})),
 		calls: all("SELECT * FROM calls").map((r) => ({
 			call: String(r.call),
+			decision_request: str(r.decision_request),
 			run: String(r.run),
 			segment: String(r.segment),
 			parent: str(r.parent),
@@ -448,8 +471,7 @@ function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; t
 				item.ticket.sequence,
 				payload,
 			);
-			applyMutation(db, item.mutation);
-			snapshotMutation(db, item.mutation);
+			if (applyMutation(db, item.mutation) !== false) snapshotMutation(db, item.mutation);
 			lastInstance = item.ticket.instance;
 			lastSeq = item.ticket.sequence;
 		}
@@ -461,7 +483,7 @@ function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; t
 	}
 }
 
-function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void {
+function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): false | void {
 	switch (mutation.kind) {
 		case "owner_state": {
 			db.prepare("UPDATE meta SET value=? WHERE key='owner_gates'").run(mutation.gates);
@@ -470,6 +492,15 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 		}
 		case "submission": {
 			const r = mutation.row;
+			// A request stop may arrive after admission committed but before its reply.
+			// Preserve the accepted mapping; the stop_intent still stops that segment.
+			if (
+				r.status === "cancelled" &&
+				db
+					.prepare("SELECT 1 FROM submissions WHERE owner=? AND request_id=? AND status='accepted'")
+					.get(r.owner, r.request_id)
+			)
+				return;
 			db.prepare(
 				"INSERT INTO submissions (owner, request_id, status, operation, segment, run, request, origin, record, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner, request_id) DO UPDATE SET status = excluded.status, operation = excluded.operation, segment = excluded.segment, run = excluded.run, request = excluded.request, origin = excluded.origin, record = excluded.record, error = excluded.error",
 			).run(r.owner, r.request_id, r.status, r.operation, r.segment, r.run, r.request, r.origin, r.record, r.error);
@@ -484,6 +515,14 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 		}
 		case "run": {
 			const r = mutation.row;
+			// A stop already in the writer queue can finish after continue committed.
+			// Its old segment must never replace the newly admitted segment projection.
+			const latest = db.prepare("SELECT segment FROM runs WHERE run=?").get(r.run);
+			if (latest?.segment && latest.segment !== r.segment) {
+				const current = db.prepare("SELECT rowid FROM segments WHERE segment=?").get(latest.segment);
+				const incoming = db.prepare("SELECT rowid FROM segments WHERE segment=?").get(r.segment);
+				if (current && incoming && Number(incoming.rowid) < Number(current.rowid)) return false;
+			}
 			db.prepare(
 				"INSERT INTO runs (run, owner, request_id, revision, segment, phase, waiting, outcome, value, error, completion_ref, control, unknown_effects, record, progress, completion_scope, completion_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run) DO UPDATE SET revision = excluded.revision, segment = excluded.segment, phase = excluded.phase, waiting = excluded.waiting, outcome = excluded.outcome, value = excluded.value, error = excluded.error, completion_ref = excluded.completion_ref, control = excluded.control, unknown_effects = excluded.unknown_effects, record = excluded.record, progress = excluded.progress, completion_scope = excluded.completion_scope, completion_description = excluded.completion_description",
 			).run(
@@ -505,6 +544,12 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 				r.completion_scope,
 				r.completion_description,
 			);
+			db.prepare("UPDATE runs SET decision=?,segment_request_id=?,started=? WHERE run=?").run(
+				r.decision ?? null,
+				r.segment_request_id ?? r.request_id,
+				r.started ?? 0,
+				r.run,
+			);
 			return;
 		}
 		case "segment": {
@@ -523,6 +568,7 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 				r.interrupted_children,
 				r.evidence,
 			);
+			db.prepare("UPDATE segments SET checkpoint=? WHERE segment=?").run(r.checkpoint ?? null, r.segment);
 			return;
 		}
 		case "call": {
@@ -551,6 +597,7 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 				r.evidence,
 				r.completion,
 			);
+			db.prepare("UPDATE calls SET decision_request=? WHERE call=?").run(r.decision_request ?? null, r.call);
 			return;
 		}
 		case "effect_fact": {
@@ -610,6 +657,22 @@ port.on("message", (request: WorkerRequest) => {
 			return;
 		}
 		if (db == null) throw new Error("storage is not opened");
+		if (request.type === "admit") {
+			try {
+				applyAdmission(db, request.command, (mutation) => {
+					if (applyMutation(db!, mutation) !== false) snapshotMutation(db!, mutation);
+				});
+				port.postMessage({ type: "query_reply", id: request.id, value: null } satisfies WorkerResponse);
+			} catch (error) {
+				if (db.isTransaction) db.exec("ROLLBACK");
+				port.postMessage({
+					type: "query_reply",
+					id: request.id,
+					error: { code: (error as { code?: string }).code ?? "ADMISSION_FAILED", message: messageOf(error) },
+				} satisfies WorkerResponse);
+			}
+			return;
+		}
 		if (request.type === "query") {
 			void queryStorage(db, databasePath, request.query).then(
 				(value) => port.postMessage({ type: "query_reply", id: request.id, value } satisfies WorkerResponse),

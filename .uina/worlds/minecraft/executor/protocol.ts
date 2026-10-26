@@ -58,6 +58,13 @@ const schedule = {
 	],
 };
 const stopTarget = { oneOf: [object({ run: ref }), object({ request: ref })] };
+const acceptance = {
+	oneOf: [
+		object({ kind: { const: "accepted" }, requestId: ref, segment: ref, snapshot: summary }),
+		object({ kind: { const: "unknown" }, requestId: ref, reason: { type: "string" } }),
+		object({ kind: { const: "not_accepted" }, requestId: ref, code: ref, message: { type: "string" } }),
+	],
+};
 
 const definitions = {
 	init: {
@@ -98,13 +105,16 @@ const definitions = {
 	},
 	"runtime.submit": {
 		input: object({ requestId: ref, entry, schedule }),
-		output: {
-			oneOf: [
-				object({ kind: { const: "accepted" }, requestId: ref, segment: ref, snapshot: summary }),
-				object({ kind: { const: "unknown" }, requestId: ref, reason: { type: "string" } }),
-				object({ kind: { const: "not_accepted" }, requestId: ref, code: ref, message: { type: "string" } }),
-			],
-		},
+		output: acceptance,
+	},
+	"runtime.continue": {
+		input: object({ requestId: ref, run: ref, decision: ref, entry, environment: { enum: ["inherit", "current"] } }, [
+			"requestId",
+			"run",
+			"decision",
+			"entry",
+		]),
+		output: acceptance,
 	},
 	"runtime.lookup": {
 		input: object({ requestId: ref }),

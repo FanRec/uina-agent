@@ -14,6 +14,7 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
+	ContinueRequest,
 	CallSummary,
 	DeliveryRef,
 	DeliveryState,
@@ -40,7 +41,7 @@ import { RuntimeEngine } from "./engine.js";
 import { RecordQueue } from "./records.js";
 import { RuntimeRefs } from "./refs.js";
 import type { StorageQuery } from "./storage-queries.js";
-import type { RecoveredRows, WorkerRequest, WorkerResponse } from "./runtime-db-worker.js";
+import type { AdmissionCommand, RecoveredRows, WorkerRequest, WorkerResponse } from "./runtime-db-worker.js";
 
 export interface MinecraftRuntimeOptions {
 	/** runtime.db 绝对路径（<worldDataDir>/runtime.db，runtime.md §5.3）。 */
@@ -114,7 +115,8 @@ export class MinecraftRuntime {
 			const pending = this.queries.get(msg.id);
 			if (!pending) return;
 			this.queries.delete(msg.id);
-			if (msg.error) pending.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
+			if (msg.error)
+				pending.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code, acknowledged: true }));
 			else pending.resolve(msg.value);
 		});
 		const fail = (error: Error) => {
@@ -191,9 +193,11 @@ export class MinecraftRuntime {
 				worker.postMessage({ type: "apply", items } satisfies WorkerRequest);
 			},
 		});
+		let runtime: MinecraftRuntime;
 		const engine = new RuntimeEngine({
 			refs,
 			queue,
+			commitAdmission: (command) => runtime.admit(command),
 			world: opts.world,
 			playerPort: opts.playerPort,
 			callables: opts.callables,
@@ -226,7 +230,7 @@ export class MinecraftRuntime {
 			await worker.terminate();
 			throw err;
 		}
-		const runtime = new MinecraftRuntime(worker, queue, engine, flags);
+		runtime = new MinecraftRuntime(worker, queue, engine, flags);
 		return {
 			runtime,
 			start: {
@@ -264,6 +268,22 @@ export class MinecraftRuntime {
 
 	submit(origin: Origin, request: RunRequest): Promise<Acceptance> {
 		return this.engine.submit(origin, request);
+	}
+	continue(origin: Origin, request: ContinueRequest): Promise<Acceptance> {
+		return this.engine.continue(origin, request);
+	}
+	private async admit(command: AdmissionCommand): Promise<void> {
+		await this.queue.flushThrough(this.queue.capture());
+		const id = ++this.queryId;
+		await new Promise<void>((resolve, reject) => {
+			this.queries.set(id, { resolve: () => resolve(), reject });
+			try {
+				this.worker.postMessage({ type: "admit", id, command } satisfies WorkerRequest);
+			} catch (error) {
+				this.queries.delete(id);
+				reject(error);
+			}
+		});
 	}
 
 	attach(origin: Origin): Promise<OwnerState> {

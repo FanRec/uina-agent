@@ -1,9 +1,27 @@
 import type { InvokeResult, ProgramDiagnostic, ProgramValidation } from "../contracts/program.js";
-import type { JsonValue } from "../contracts/values.js";
+import type { DecisionRequest, JsonValue } from "../contracts/values.js";
+export type WireDecision =
+	| { kind: "local"; reason: string; checkpoint?: JsonValue }
+	| { kind: "host"; request: DecisionRequest };
+export type WorkerInvokeResult =
+	| Exclude<InvokeResult, { kind: "decision" }>
+	| { kind: "decision"; decision: WireDecision };
+export type HostReply =
+	| { ok: true; value: JsonValue }
+	| { ok: false; error: JsonValue }
+	| { ok: false; decision: DecisionRequest };
 export type ProgramWorkerRequest =
 	| { type: "compile"; id: number; source: string; digest: string }
-	| { type: "invoke"; id: number; source: string; filename: string; input: JsonValue; cancel: SharedArrayBuffer }
-	| { type: "reply"; id: number; rpc: number; reply: { ok: true; value: JsonValue } | { ok: false; error: JsonValue } }
+	| {
+			type: "invoke";
+			id: number;
+			source: string;
+			filename: string;
+			input: JsonValue;
+			checkpoint: JsonValue | null;
+			cancel: SharedArrayBuffer;
+	  }
+	| { type: "reply"; id: number; rpc: number; reply: HostReply }
 	| { type: "cancel"; id: number }
 	| { type: "telemetry_ack"; id: number };
 export type ProgramWorkerMessage =
@@ -19,5 +37,5 @@ export type ProgramWorkerMessage =
 			computeTotalMs: number;
 			idle: boolean;
 	  }
-	| { type: "result"; id: number; result: InvokeResult }
+	| { type: "result"; id: number; result: WorkerInvokeResult }
 	| { type: "fatal"; failure: ProgramDiagnostic };

@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
+import { getDecisionRequest } from "../contracts/program.js";
 import type {
 	ProgramPort,
 	ProgramSegmentScope,
@@ -21,6 +22,7 @@ interface Active {
 	run: string;
 	segment: string;
 	call: string;
+	program: ResolvedProgram;
 	host: ProgramHostApi;
 	cancel: Int32Array;
 	signal: AbortSignal;
@@ -126,7 +128,25 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 				const a = active.get(msg.id);
 				if (!a) return;
 				if (msg.type === "result") {
-					void settle(msg.id, msg.result);
+					if (msg.result.kind === "decision") {
+						const decision = msg.result.decision;
+						const origin = { call: a.call, program: a.program.name, digest: a.program.digest };
+						void settle(msg.id, {
+							kind: "decision",
+							request:
+								decision.kind === "host"
+									? decision.request
+									: {
+											code: "NEEDS_DECISION",
+											reason: decision.reason,
+											origin,
+											checkpoint:
+												decision.checkpoint !== undefined
+													? { kind: "program", value: decision.checkpoint, origin }
+													: null,
+										},
+						});
+					} else void settle(msg.id, msg.result);
 					return;
 				}
 				if (msg.type === "telemetry") {
@@ -183,6 +203,8 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 						return { ok: true as const, value: json };
 					})
 					.catch((error: unknown) => {
+						const decision = getDecisionRequest(error);
+						if (decision) return { ok: false as const, decision };
 						const e = error as Error & Record<string, unknown>;
 						return {
 							ok: false as const,
@@ -296,8 +318,11 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 					await ensure();
 					if (controller.signal.aborted || req.signal.aborted)
 						return resultFailure("CANCELLED", "program scope retired");
-					if (Buffer.byteLength(JSON.stringify(req.input)) > P.maxValueBytes)
-						return resultFailure("PROGRAM_VALUE", "input exceeds 1 MiB");
+					if (
+						Buffer.byteLength(JSON.stringify(req.input)) > P.maxValueBytes ||
+						Buffer.byteLength(JSON.stringify(req.checkpoint)) > P.maxValueBytes
+					)
+						return resultFailure("PROGRAM_VALUE", "input or checkpoint exceeds 1 MiB");
 					if (active.size >= P.maxResidentGuests)
 						return resultFailure("PROGRAM_CAPACITY", "32 resident guests are already active");
 					const id = ++next,
@@ -307,6 +332,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 						active.set(id, {
 							...request,
 							call: req.call,
+							program: req.program,
 							host: req.host,
 							cancel,
 							signal: req.signal,
@@ -331,6 +357,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 							source: req.program.source,
 							filename: snapshotPath(request.run, req.program.digest),
 							input: req.input,
+							checkpoint: req.checkpoint,
 							cancel: cancel.buffer as SharedArrayBuffer,
 						});
 					});

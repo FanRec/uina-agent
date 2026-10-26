@@ -42,6 +42,14 @@ export interface RunRequest {
 	schedule: Schedule;
 }
 
+export interface ContinueRequest {
+	run: Ref;
+	decision: Ref;
+	requestId: Ref;
+	entry: Entry;
+	environment?: "inherit" | "current";
+}
+
 export interface RunBase {
 	run: Ref;
 	rootRequestId: Ref;

@@ -144,7 +144,8 @@ export interface HarnessHooks {
 }
 
 export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
-	const selfState: SelfState = { ...self, ...hooks.self };
+	// Each harness owns mutable world state, including nested place/position fields.
+	const selfState: SelfState = structuredClone({ ...self, ...hooks.self });
 	const calls: string[] = [];
 	const world: WorldReadPort = {
 		async read<T>(query: { ref: string; input: JsonValue }): Promise<Observation<T>> {

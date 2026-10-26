@@ -55,6 +55,14 @@ async function invoke(
 		await scope.close("finished");
 	}
 }
+async function waitForEntry(entered: Promise<void>, result: Promise<unknown>): Promise<void> {
+	await Promise.race([
+		entered,
+		result.then((value) => {
+			throw new Error(`guest finished before reaching the test barrier: ${JSON.stringify(value)}`);
+		}),
+	]);
+}
 
 test("compile-only does not evaluate top level and execution uses isolated globals", async () => {
 	const { p } = await setup();
@@ -167,14 +175,23 @@ test("synchronous loops are interrupted locally and microtasks do not monopolize
 		failure: { code: "PROGRAM_TIMEOUT" },
 	});
 	const abort = new AbortController();
+	let started!: () => void;
+	const running = new Promise<void>((resolve) => {
+		started = resolve;
+	});
 	const loop = invoke(
 		p,
-		"async function main() { while(true) await Promise.resolve(); }",
-		host(),
+		"async function main(mc) { await mc.call('started@1'); while(true) await Promise.resolve(); }",
+		host({
+			call: async () => {
+				started();
+				return null;
+			},
+		}),
 		abort.signal,
 		"loop",
 	);
-	await new Promise((r) => setTimeout(r, 50));
+	await waitForEntry(running, loop);
 	expect(await invoke(p, "async function main() { return 42; }", host(), undefined, "other")).toMatchObject({
 		kind: "returned",
 		value: 42,
@@ -185,10 +202,19 @@ test("synchronous loops are interrupted locally and microtasks do not monopolize
 test("four sleepers leave the shared worker available and cancellation frees only their own guests", async () => {
 	const { p } = await setup();
 	const stops = Array.from({ length: 4 }, () => new AbortController());
+	let sleepers = 0,
+		enter!: () => void;
+	const entered = new Promise<void>((resolve) => (enter = resolve));
+	const h = host({
+		sleep: async () => {
+			if (++sleepers === 4) enter();
+			return new Promise(() => {});
+		},
+	});
 	const waits = stops.map((a, i) =>
-		invoke(p, "async function main(mc) { await mc.sleep(1000); return 1; }", host(), a.signal, `wait${i}`),
+		invoke(p, "async function main(mc) { await mc.sleep(1000); return 1; }", h, a.signal, `wait${i}`),
 	);
-	await new Promise((r) => setTimeout(r, 80));
+	await waitForEntry(entered, Promise.all(waits));
 	expect(
 		await invoke(
 			p,
@@ -237,7 +263,7 @@ test("resident capacity rejects before dispatch and a memory failure leaves anot
 			signal: stops[i]!.signal,
 		}),
 	);
-	await new Promise((r) => setTimeout(r, 60));
+	await expect.poll(() => p.capacity().calls.filter((call) => call.waiting?.kind === "idle").length).toBe(32);
 	expect(p.capacity().residentGuests).toBe(32);
 	expect(await invoke(p, "async function main(){return 1;}", host(), undefined, "full")).toMatchObject({
 		kind: "failed",
@@ -263,20 +289,27 @@ test("host RPC overflow is explicit and late replies cannot revive a cancelled g
 	const blocked = new Promise<JsonValue>((r) => {
 		release = r;
 	});
+	let started!: () => void;
+	const waiting = new Promise<void>((resolve) => {
+		started = resolve;
+	});
 	const a = new AbortController();
 	const task = invoke(
 		p,
 		"async function main(mc){await mc.call('slow@1');return 1;}",
-		host({ call: () => blocked }),
+		host({
+			call: () => {
+				started();
+				return blocked;
+			},
+		}),
 		a.signal,
 		"late",
 	);
-	await new Promise((r) => setTimeout(r, 50));
+	await waitForEntry(waiting, task);
 	a.abort();
 	expect(await task).toMatchObject({ kind: "failed", failure: { code: "CANCELLED" } });
 	release(3);
-	await new Promise((r) => setTimeout(r, 20));
-	expect(p.capacity().residentGuests).toBe(0);
 	const overflow = await invoke(
 		p,
 		"async function main(mc){ const p=[]; for(let i=0;i<17;i++) p.push(mc.sleep(100)); await Promise.all(p); }",
@@ -285,6 +318,7 @@ test("host RPC overflow is explicit and late replies cannot revive a cancelled g
 		"rpc",
 	);
 	expect(overflow).toMatchObject({ kind: "failed", failure: { code: "PROGRAM_CAPACITY" } });
+	expect(p.capacity().residentGuests).toBe(0);
 });
 
 test("WASM memory growth during jobs neither bypasses the heap policy nor leaks a context on retirement", async () => {
@@ -326,17 +360,30 @@ test("an actual Worker exit seals its guests, reports crash and permits a fresh 
 	});
 	opened.push(p);
 	const program = await p.resolve({ code: "async function main(mc){await mc.sleep(10000);}" });
+	let started!: () => void;
+	const sleeping = new Promise<void>((resolve) => {
+		started = resolve;
+	});
 	const scope = p.openSegment({ run: "run:crash", segment: "seg:crash", signal: abort.signal });
 	const pending = scope.invoke({
 		call: "call:crash",
 		program,
 		input: {},
 		checkpoint: null,
-		host: host(),
+		host: host({
+			sleep: async () => {
+				started();
+				return new Promise(() => {});
+			},
+		}),
 		signal: abort.signal,
 	});
-	await new Promise((r) => setTimeout(r, 60));
-	const worker = spy.mock.instances[0] as Worker;
+	await waitForEntry(sleeping, pending);
+	const invocation = spy.mock.calls.findIndex(
+		([message]) => message.type === "invoke" && message.source === program.source,
+	);
+	expect(invocation).toBeGreaterThanOrEqual(0);
+	const worker = spy.mock.instances[invocation] as Worker;
 	spy.mockRestore();
 	await worker.terminate();
 	expect(await pending).toMatchObject({ kind: "failed", failure: { code: "PROGRAM_CRASH", scope: "worker" } });

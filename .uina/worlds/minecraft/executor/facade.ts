@@ -2,11 +2,12 @@
 import { randomUUID } from "node:crypto";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import type { Acceptance, DeliveryState, RunRequest } from "../contracts/runtime.js";
+import type { Acceptance, DeliveryState, Entry, Schedule } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
 import { MinecraftExecutor } from "./index.js";
 import { DeliveryPump, formatCompletion } from "./delivery.js";
 import { RpcError } from "./ipc.js";
+import type { RequestIntent } from "./ledger-worker.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
 	return { status, result: JSON.stringify(value), details: value };
@@ -97,32 +98,39 @@ export class MinecraftFacade {
 			);
 		}
 	}
-	private async run(params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+	private entry(params: Record<string, unknown>): Entry {
 		if ((typeof params.code === "string") === (typeof params.selector === "string"))
 			throw new RpcError("INVALID_INPUT", "provide exactly one code or selector");
-		const schedule = params.schedule ?? { kind: "enqueue" };
-		if ((schedule as { kind?: string }).kind !== "enqueue")
-			throw new RpcError("SCHEDULE_UNAVAILABLE", "this stage supports enqueue only");
+		return typeof params.code === "string"
+			? { kind: "program", source: { code: params.code }, input: (params.input ?? {}) as JsonValue }
+			: typeof params.selector === "string" && params.selector.includes("@")
+				? { kind: "call", selector: params.selector, input: (params.input ?? {}) as JsonValue }
+				: {
+						kind: "program",
+						source: { name: params.selector as string },
+						input: (params.input ?? {}) as JsonValue,
+					};
+	}
+	private run(params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+		return this.submitRequest(
+			{
+				operation: "submit",
+				request: {
+					requestId: randomUUID(),
+					entry: this.entry(params),
+					schedule: (params.schedule ?? { kind: "enqueue" }) as Schedule,
+				},
+			},
+			signal,
+		);
+	}
+	private async submitRequest(intent: RequestIntent, signal: AbortSignal): Promise<ToolExecutionResult> {
 		if (!this.executor.status().actionsAllowed)
 			return response({ code: "OWNER_GATE_CLOSED", message: "owner action gate is closed" }, "not_started");
-		const requestId = randomUUID();
-		const request: RunRequest = {
-			requestId,
-			entry:
-				typeof params.code === "string"
-					? { kind: "program", source: { code: params.code }, input: (params.input ?? {}) as JsonValue }
-					: typeof params.selector === "string" && params.selector.includes("@")
-						? { kind: "call", selector: params.selector, input: (params.input ?? {}) as JsonValue }
-						: {
-								kind: "program",
-								source: { name: params.selector as string },
-								input: (params.input ?? {}) as JsonValue,
-							},
-			schedule: { kind: "enqueue" },
-		};
+		const { requestId } = intent.request;
 		await this.executor.ledger.putRequest({
+			...intent,
 			requestId,
-			request,
 			activation: this.executor.status().side!.launch,
 			createdAt: new Date().toISOString(),
 		});
@@ -137,7 +145,8 @@ export class MinecraftFacade {
 				"not_started",
 			);
 		this.delivery.heldRequests.add(requestId);
-		const submission = this.executor.submit(request);
+		const submission =
+			intent.operation === "submit" ? this.executor.submit(intent.request) : this.executor.continue(intent.request);
 		// The shared acceptance has its own lifetime, independent of this tool wait.
 		void submission
 			.then(async (accepted) => {
@@ -145,7 +154,7 @@ export class MinecraftFacade {
 					await this.executor.ledger.found(requestId, {
 						kind: "found",
 						requestId,
-						operation: "submit",
+						operation: intent.operation,
 						segment: accepted.segment,
 						snapshot: accepted.snapshot,
 					});
@@ -199,7 +208,11 @@ export class MinecraftFacade {
 				if ((error as { code?: string }).code !== "REQUEST_CANCELLED") throw error;
 				return response(accepted);
 			}
-			if (waited.kind !== "result" || waited.snapshot.phase !== "finished") return response(accepted);
+			if (
+				waited.kind !== "result" ||
+				(waited.snapshot.phase !== "finished" && waited.snapshot.phase !== "awaiting_decision")
+			)
+				return response(accepted);
 			const state = await this.executor.rpc<DeliveryState>("runtime.readDelivery", {
 				ref: waited.snapshot.completionRef,
 			});
@@ -273,7 +286,10 @@ export class MinecraftFacade {
 				const found = await this.executor.lookup(credential.requestId);
 				if (found.kind === "found" || found.kind === "cancelled" || found.kind === "unavailable")
 					return response(found);
-				const accepted = await this.executor.submit(credential.request);
+				const accepted =
+					credential.operation === "continue"
+						? await this.executor.continue(credential.request)
+						: await this.executor.submit(credential.request);
 				return response(
 					accepted,
 					accepted.kind === "unknown" ? "unknown" : accepted.kind === "not_accepted" ? "failed" : "succeeded",
@@ -314,7 +330,19 @@ export class MinecraftFacade {
 				});
 			}
 			case "continue":
-				throw new RpcError("PROGRAM_UNAVAILABLE", "decision continuation is not delivered");
+				return this.submitRequest(
+					{
+						operation: "continue",
+						request: {
+							requestId: randomUUID(),
+							run: p.run as string,
+							decision: p.decision as string,
+							entry: this.entry(p.entry as Record<string, unknown>),
+							...(p.environment === undefined ? {} : { environment: p.environment as "inherit" | "current" }),
+						},
+					},
+					signal,
+				);
 			default:
 				throw new RpcError("INVALID_INPUT", `unknown runs operation ${p.op}`);
 		}

@@ -617,7 +617,7 @@ writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持�
 
 ## 7. Uina ↔ Executor：确定的受理、查询、结果与事件
 
-当前批 4 仅落实平台实际使用的 `Origin/OwnerState/OwnerGateReceipt`、异步持久受理与现有原生读取/停止端口；实现见 `contracts/runtime.ts`、`contracts/executor.ts` 及 [平台实施记录](executor-platform-implementation.md)。批 6 已接固定记录/交付、原生 World façade 与 Host receipt，见 [实施记录](native-host-implementation.md)；下面完整 `ExecutorClient/RunReply` 仍含批 7–9 待实现部分，不因底层 IPC 可用而宣称全部可用。Runtime 库 schema v2；Host journal 的 v4 属于批 5，本批仍为 v3。
+截至批9B，正式 WorldDef/Host 交付、Program/Library/等待、程序决策与 continue、替换/抢占已接通。公共类型与实际端口分别见 `contracts/runtime.ts`、`contracts/program.ts` 和 `contracts/executor.ts`；本轮 Runtime schema v5、World history v3、Executor ledger v3，Host journal v4。实现和验证边界见 [批9B实施记录](decision-implementation.md)；这不表示安全介入、反馈与全部玩法已实现。
 
 > **程序入口（2026-10-18）**：程序以 `{ kind: "program"; source: SourceRequest; input }` 提交，`source` 是 `{name}` 或 `{code}`；Runtime 受理时把它解析成确切字节（快照与头注释见 [program.md §3](modules/program.md)）。执行端口不在本文（见 §6 对照表）：段记录只记程序的名字/来源/摘要/快照，不记源码。
 

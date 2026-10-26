@@ -285,6 +285,13 @@ export async function openExecutionSide(
 					assertActionAllowed();
 					value = await getRuntime().submit(init.origin, payload as unknown as RunRequest);
 					break;
+				case "runtime.continue":
+					assertActionAllowed();
+					value = await getRuntime().continue(
+						init.origin,
+						payload as unknown as import("../contracts/runtime.js").ContinueRequest,
+					);
+					break;
 				case "runtime.lookup":
 					value = getRuntime().lookup(p.requestId as string);
 					break;

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { BootstrapHello, CompanionInit, ExecutionSideStatus } from "../contracts/executor.js";
 import type {
 	Acceptance,
+	ContinueRequest,
 	OwnerGateReceipt,
 	OwnerState,
 	RunRequest,
@@ -369,6 +370,7 @@ export class MinecraftExecutor {
 		this.side = null;
 		this.phase = "faulted";
 		this.lastFault = { code: error instanceof RpcError ? error.code : "EXECUTOR_UNAVAILABLE", message: error.message };
+		console.error(`[mc-executor] ${this.lastFault.code}: ${this.lastFault.message}`);
 		void this.retireSide(false)
 			.then(async (retired) => {
 				if (
@@ -461,6 +463,15 @@ export class MinecraftExecutor {
 		return receipt;
 	}
 	async submit(request: RunRequest): Promise<Acceptance> {
+		return this.admit("runtime.submit", request);
+	}
+	async continue(request: ContinueRequest): Promise<Acceptance> {
+		return this.admit("runtime.continue", request);
+	}
+	private async admit(
+		method: "runtime.submit" | "runtime.continue",
+		request: RunRequest | ContinueRequest,
+	): Promise<Acceptance> {
 		const connection = this.current();
 		if (!this.status().actionsAllowed)
 			return {
@@ -470,7 +481,7 @@ export class MinecraftExecutor {
 				message: "owner action gate is closed",
 			};
 		try {
-			return (await connection.peer.call("runtime.submit", request)) as unknown as Acceptance;
+			return (await connection.peer.call(method, request)) as unknown as Acceptance;
 		} catch (error) {
 			if (error instanceof RpcError) {
 				const refusal = error.failure;

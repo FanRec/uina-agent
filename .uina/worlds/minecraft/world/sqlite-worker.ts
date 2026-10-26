@@ -17,7 +17,7 @@ import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
 import type { CapturedClientFact } from "../contracts/client-facts.js";
 import type { JsonValue } from "../contracts/values.js";
-import type { EventGap } from "../contracts/world.js";
+import type { EventGap, WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
 import type { EventQueryParams, EventQueryResult, EventRow } from "./events.js";
 import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
 
@@ -46,6 +46,9 @@ export type WorkerRequest =
 	| { type: "barrier"; id: number }
 	| { type: "readEvents"; id: number; params: EventQueryParams }
 	| { type: "readContainer"; id: number; params: ContainerQueryParams }
+	| { type: "retain"; id: number; owner: string; evidence: string[] }
+	| { type: "release"; id: number; owner: string }
+	| { type: "prune"; id: number; options: WorldHistoryPrune }
 	| { type: "close" };
 
 export interface DurableAck {
@@ -67,11 +70,13 @@ export type WorkerResponse =
 	| { type: "eventsPage"; id: number; result: EventQueryResult }
 	| { type: "queryFailed"; id: number; code: string; message: string }
 	| { type: "containerLast"; id: number; result: ContainerEvidence | null }
+	| { type: "retained"; id: number }
+	| { type: "pruned"; id: number; result: WorldHistoryPruneResult }
 	| { type: "conflict"; message: string }
 	| { type: "fatal"; message: string }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -91,6 +96,7 @@ CREATE TABLE IF NOT EXISTS streams (
 	ended_through INTEGER
 );
 CREATE TABLE IF NOT EXISTS evidence (
+	store_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 	stream TEXT NOT NULL,
 	seq INTEGER NOT NULL,
 	ref TEXT NOT NULL,
@@ -99,7 +105,8 @@ CREATE TABLE IF NOT EXISTS evidence (
 	scope TEXT NOT NULL,
 	fact TEXT NOT NULL,
 	observed_at TEXT NOT NULL,
-	PRIMARY KEY (stream, seq)
+	UNIQUE (stream, seq),
+	UNIQUE (ref)
 );
 CREATE TABLE IF NOT EXISTS evidence_gaps (
 	stream TEXT NOT NULL,
@@ -114,9 +121,40 @@ CREATE TABLE IF NOT EXISTS watermarks (
 	stream TEXT PRIMARY KEY,
 	durable_through INTEGER NOT NULL
 );
--- rowid 是隐式列，不能直接建索引（SQLite 报 no such column: rowid）；
--- 事件查询按 schema 过滤 + 隐式 rowid 排序，这里只给过滤列建索引。
+CREATE TABLE IF NOT EXISTS evidence_holds (
+	owner TEXT NOT NULL,
+	ref TEXT NOT NULL REFERENCES evidence(ref),
+	PRIMARY KEY (owner, ref)
+);
+-- Compact deletion identities prevent source replay from resurrecting removed payloads.
+CREATE TABLE IF NOT EXISTS pruned_evidence (
+	store_seq INTEGER PRIMARY KEY,
+	stream TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	ref TEXT NOT NULL,
+	schema TEXT NOT NULL,
+	event_kind TEXT,
+	visible_version INTEGER NOT NULL,
+	UNIQUE (stream, seq),
+	UNIQUE (ref)
+);
+CREATE TABLE IF NOT EXISTS retention_gaps (
+	ref TEXT PRIMARY KEY,
+	binding TEXT NOT NULL,
+	world TEXT NOT NULL,
+	world_revision TEXT NOT NULL,
+	visible_version INTEGER NOT NULL,
+	events INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_highwater (
+	binding TEXT NOT NULL,
+	world TEXT NOT NULL,
+	world_revision TEXT NOT NULL,
+	store_seq INTEGER NOT NULL,
+	PRIMARY KEY (binding, world, world_revision)
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_schema ON evidence (schema);
+CREATE INDEX IF NOT EXISTS idx_holds_ref ON evidence_holds (ref);
 CREATE INDEX IF NOT EXISTS idx_streams_partition ON streams (binding, world, world_revision);
 `;
 
@@ -135,6 +173,7 @@ function openDatabase(dbPath: string): OpenedStorage {
 	const db = new DatabaseSync(dbPath);
 	db.exec("PRAGMA journal_mode=WAL");
 	db.exec("PRAGMA synchronous=FULL");
+	db.exec("PRAGMA foreign_keys=ON");
 	const journalRow = db.prepare("PRAGMA journal_mode").get() as Row;
 	const syncRow = db.prepare("PRAGMA synchronous").get() as Row;
 	const journalMode = String(journalRow.journal_mode);
@@ -276,8 +315,10 @@ function appendBatch(db: DatabaseSync, items: AppendItem[]): DurableAck[] {
 				touched.add(record.mark.stream);
 				ensureStream(db, record, version);
 				const existing = db
-					.prepare("SELECT ref FROM evidence WHERE stream = ? AND seq = ?")
-					.get(record.mark.stream, record.mark.sequence) as Row | undefined;
+					.prepare(
+						"SELECT ref FROM evidence WHERE stream = ? AND seq = ? UNION ALL SELECT ref FROM pruned_evidence WHERE stream = ? AND seq = ?",
+					)
+					.get(record.mark.stream, record.mark.sequence, record.mark.stream, record.mark.sequence) as Row | undefined;
 				if (existing != null) {
 					if (existing.ref !== record.ref) {
 						throw new SourceConflict(
@@ -299,6 +340,15 @@ function appendBatch(db: DatabaseSync, items: AppendItem[]): DurableAck[] {
 					JSON.stringify(record.fact),
 					record.fact.observedAt,
 				);
+				if (record.schema === "client.event@1") {
+					db.prepare(`INSERT INTO event_highwater (binding, world, world_revision, store_seq)
+						VALUES (?, ?, ?, last_insert_rowid()) ON CONFLICT(binding,world,world_revision)
+						DO UPDATE SET store_seq=excluded.store_seq`).run(
+						record.scope.binding,
+						record.scope.world,
+						record.scope.worldRevision,
+					);
+				}
 				continue;
 			}
 			touched.add(item.stream);
@@ -352,14 +402,10 @@ function loadWatermarks(db: DatabaseSync): Record<string, number> {
 	return out;
 }
 
-/** 分区内事件最大 rowid（本次扫描上界）；没有事件时返回 0。 */
-function maxEventRowid(db: DatabaseSync, scope: EventQueryParams["scope"]): number {
+/** Persistent scan upper bound: deleting the tail never rolls incremental cursors back. */
+function eventScanUpper(db: DatabaseSync, scope: EventQueryParams["scope"]): number {
 	const row = db
-		.prepare(
-			`SELECT COALESCE(MAX(e.rowid), 0) AS upper
-			 FROM evidence e JOIN streams s ON s.stream = e.stream
-			 WHERE e.schema = 'client.event@1' AND s.binding = ? AND s.world = ? AND s.world_revision = ?`,
-		)
+		.prepare(`SELECT store_seq AS upper FROM event_highwater WHERE binding = ? AND world = ? AND world_revision = ?`)
 		.get(scope.binding, scope.world, scope.worldRevision) as Row | undefined;
 	return row == null ? 0 : Number(row.upper);
 }
@@ -376,7 +422,12 @@ function readEventGaps(db: DatabaseSync, params: EventQueryParams, upper: number
 			 ORDER BY g.rowid ASC`,
 		)
 		.all(scope.binding, scope.world, scope.worldRevision, params.gapAfter, upper) as Row[];
-	return rows.map((row) => ({
+	const retained = db
+		.prepare(`SELECT ref, 'history_retention' AS reason FROM retention_gaps
+		WHERE binding=? AND world=? AND world_revision=? AND events=1
+		AND visible_version>? AND visible_version<=? ORDER BY visible_version, ref`)
+		.all(scope.binding, scope.world, scope.worldRevision, params.gapAfter, upper) as Row[];
+	return [...rows, ...retained].map((row) => ({
 		ref: String(row.ref),
 		reason: String(row.reason),
 		// Source evidence sequence numbers cannot be passed as EventAfter tokens.
@@ -395,28 +446,50 @@ function readEvents(db: DatabaseSync, params: EventQueryParams): EventQueryResul
 	if (params.storage !== null && params.storage !== identity.storage)
 		throw Object.assign(new Error("events token belongs to another history database"), { code: "SNAPSHOT_EXPIRED" });
 	const gapUpper = params.gapUpper ?? identity.version;
-	const upper = params.upper ?? maxEventRowid(db, params.scope);
+	const upper = params.upper ?? eventScanUpper(db, params.scope);
 	const kindArgs = params.kinds ?? [];
+	// Completed after tokens are incremental and report new gaps. Only a fixed
+	// page loses its snapshot when material in its unread range was deleted.
+	if (params.upper !== null) {
+		const kindClause = params.kinds == null ? "" : ` AND p.event_kind IN (${params.kinds.map(() => "?").join(",")})`;
+		const deleted = db
+			.prepare(`SELECT 1 FROM pruned_evidence p JOIN streams s ON s.stream=p.stream
+			WHERE p.schema='client.event@1' AND s.binding=? AND s.world=? AND s.world_revision=?
+			AND p.store_seq>? AND p.store_seq<=? AND p.visible_version>?${kindClause} LIMIT 1`)
+			.get(
+				params.scope.binding,
+				params.scope.world,
+				params.scope.worldRevision,
+				params.afterRowid ?? 0,
+				upper,
+				gapUpper,
+				...kindArgs,
+			);
+		if (deleted)
+			throw Object.assign(new Error("events page material was removed by history retention"), {
+				code: "SNAPSHOT_EXPIRED",
+			});
+	}
 	const kindClause =
 		params.kinds == null
 			? ""
 			: ` AND json_extract(e.fact, '$.value.kind') IN (${params.kinds.map(() => "?").join(", ")})`;
 	const where = `FROM evidence e JOIN streams s ON s.stream = e.stream
 		WHERE e.schema = 'client.event@1' AND s.binding = ? AND s.world = ? AND s.world_revision = ?
-		AND e.rowid <= ?${kindClause}`;
+		AND e.store_seq <= ?${kindClause}`;
 	const select =
-		"SELECT e.rowid AS rowid, e.ref AS ref, e.observed_at AS observed_at, e.scope AS scope, e.fact AS fact";
+		"SELECT e.store_seq AS rowid, e.ref AS ref, e.observed_at AS observed_at, e.scope AS scope, e.fact AS fact";
 	const baseArgs = [params.scope.binding, params.scope.world, params.scope.worldRevision, upper, ...kindArgs];
 
 	let raw: Row[];
 	let hasMore = false;
 	if (params.afterRowid == null) {
 		// 最近窗口只取尾部；hasMore 不适用（尾部就是本次交付范围）。
-		raw = db.prepare(`${select} ${where} ORDER BY e.rowid DESC LIMIT ?`).all(...baseArgs, params.limit) as Row[];
+		raw = db.prepare(`${select} ${where} ORDER BY e.store_seq DESC LIMIT ?`).all(...baseArgs, params.limit) as Row[];
 		raw.reverse();
 	} else {
 		raw = db
-			.prepare(`${select} ${where} AND e.rowid > ? ORDER BY e.rowid ASC LIMIT ?`)
+			.prepare(`${select} ${where} AND e.store_seq > ? ORDER BY e.store_seq ASC LIMIT ?`)
 			.all(...baseArgs, params.afterRowid, params.limit + 1) as Row[];
 		if (raw.length > params.limit) {
 			hasMore = true;
@@ -457,7 +530,7 @@ function readContainer(db: DatabaseSync, params: ContainerQueryParams): Containe
 		AND json_extract(e.fact, '$.value.target.block.x') = ?
 		AND json_extract(e.fact, '$.value.target.block.y') = ?
 		AND json_extract(e.fact, '$.value.target.block.z') = ?
-		ORDER BY e.rowid DESC LIMIT 1`)
+		ORDER BY e.store_seq DESC LIMIT 1`)
 		.get(
 			params.world,
 			params.worldRevision,
@@ -469,6 +542,130 @@ function readContainer(db: DatabaseSync, params: ContainerQueryParams): Containe
 			params.block.z,
 		) as Row | undefined;
 	return row == null ? null : { ref: String(row.ref), fact: JSON.parse(String(row.fact)) as ContainerEvidence["fact"] };
+}
+
+function inputFailure(message: string, code = "INVALID_INPUT"): Error {
+	return Object.assign(new Error(message), { code });
+}
+
+function checkOwner(owner: string): void {
+	if (typeof owner !== "string" || !owner.trim()) throw inputFailure("a durable evidence owner is required");
+}
+
+/** Existence check and additive registration share the same writer transaction as prune. */
+function retain(db: DatabaseSync, owner: string, evidence: string[]): void {
+	checkOwner(owner);
+	if (!Array.isArray(evidence) || evidence.some((ref) => typeof ref !== "string" || !ref.trim()))
+		throw inputFailure("evidence must contain nonempty immutable references");
+	db.exec("BEGIN");
+	try {
+		for (const ref of new Set(evidence)) {
+			if (!db.prepare("SELECT 1 FROM evidence WHERE ref=?").get(ref))
+				throw inputFailure(`evidence is unavailable: ${ref}`, "EVIDENCE_UNAVAILABLE");
+			db.prepare("INSERT OR IGNORE INTO evidence_holds (owner, ref) VALUES (?, ?)").run(owner, ref);
+		}
+		db.exec("COMMIT");
+	} catch (err) {
+		db.exec("ROLLBACK");
+		throw err;
+	}
+}
+
+/** Explicit maintenance only. No wall-clock policy, background expiry or implicit data root. */
+function prune(db: DatabaseSync, options: WorldHistoryPrune): WorldHistoryPruneResult {
+	const { partition, beforeStoreSeq } = options;
+	if (
+		!partition ||
+		[partition.binding, partition.world, partition.worldRevision].some(
+			(value) => typeof value !== "string" || !value.trim(),
+		) ||
+		!Number.isSafeInteger(beforeStoreSeq) ||
+		beforeStoreSeq < 0
+	)
+		throw inputFailure(
+			"prune requires an explicit binding/world/worldRevision partition and nonnegative safe beforeStoreSeq",
+		);
+	let removed = 0;
+	for (;;) {
+		const batch = pruneBatch(db, options);
+		removed += batch.removed;
+		if (batch.removed < PRUNE_BATCH_SIZE) {
+			const retained = db
+				.prepare(`SELECT MIN(e.store_seq) AS oldest,
+			SUM(CASE WHEN e.store_seq<? THEN 1 ELSE 0 END) AS protected
+			FROM evidence e JOIN streams s ON s.stream=e.stream
+			WHERE s.binding=? AND s.world=? AND s.world_revision=?
+			AND e.schema IN ('client.event@1','client.window@1')`)
+				.get(beforeStoreSeq, partition.binding, partition.world, partition.worldRevision);
+			return {
+				removed,
+				version: batch.version,
+				beforeStoreSeq,
+				skippedRetained: Number(retained?.protected ?? 0),
+				oldestRetainedStoreSeq: retained?.oldest == null ? null : Number(retained.oldest),
+			};
+		}
+	}
+}
+
+/** Work chunk size bounds each transaction, never the caller's total retention range. */
+const PRUNE_BATCH_SIZE = 256;
+
+function pruneBatch(
+	db: DatabaseSync,
+	options: WorldHistoryPrune,
+): Pick<WorldHistoryPruneResult, "removed" | "version"> {
+	const { partition, beforeStoreSeq } = options;
+	db.exec("BEGIN");
+	try {
+		// Current history reads copy their complete SQL result inside a worker message.
+		// No read transaction/material pointer escapes that message, so this same
+		// serialized writer boundary also protects every active read. Future pages
+		// are validated against deletion identities instead of silently changing version.
+		const rows = db
+			.prepare(`SELECT e.store_seq, e.stream, e.seq, e.ref, e.schema,
+			json_extract(e.fact, '$.value.kind') AS event_kind FROM evidence e JOIN streams s ON s.stream=e.stream
+			WHERE s.binding=? AND s.world=? AND s.world_revision=? AND e.store_seq<?
+			AND e.schema IN ('client.event@1','client.window@1')
+			AND NOT EXISTS (SELECT 1 FROM evidence_holds h WHERE h.ref=e.ref)
+			AND NOT (e.schema='client.window@1' AND COALESCE(json_type(e.fact,'$.value.target.block')='object',0)
+				AND NOT EXISTS (SELECT 1 FROM evidence newer JOIN streams ns ON ns.stream=newer.stream
+					WHERE newer.schema='client.window@1' AND newer.store_seq>e.store_seq
+					AND ns.world=s.world AND ns.world_revision=s.world_revision
+					AND json_extract(newer.fact,'$.value.target.place.world')=json_extract(e.fact,'$.value.target.place.world')
+					AND json_extract(newer.fact,'$.value.target.place.worldRevision')=json_extract(e.fact,'$.value.target.place.worldRevision')
+					AND json_extract(newer.fact,'$.value.target.place.dimension')=json_extract(e.fact,'$.value.target.place.dimension')
+					AND json_extract(newer.fact,'$.value.target.block.x')=json_extract(e.fact,'$.value.target.block.x')
+					AND json_extract(newer.fact,'$.value.target.block.y')=json_extract(e.fact,'$.value.target.block.y')
+					AND json_extract(newer.fact,'$.value.target.block.z')=json_extract(e.fact,'$.value.target.block.z')))
+			ORDER BY e.store_seq LIMIT ${PRUNE_BATCH_SIZE}`)
+			.all(partition.binding, partition.world, partition.worldRevision, beforeStoreSeq) as Row[];
+		const version = historyIdentity(db).version + (rows.length > 0 ? 1 : 0);
+		for (const row of rows) {
+			db.prepare(`INSERT INTO pruned_evidence (store_seq, stream, seq, ref, schema, event_kind, visible_version)
+				VALUES (?,?,?,?,?,?,?)`).run(row.store_seq, row.stream, row.seq, row.ref, row.schema, row.event_kind, version);
+			db.prepare("DELETE FROM evidence WHERE store_seq=?").run(row.store_seq);
+		}
+		if (rows.length > 0) {
+			const ref = `retention:${historyIdentity(db).storage}:${version}`;
+			db.prepare(
+				`INSERT INTO retention_gaps (ref,binding,world,world_revision,visible_version,events) VALUES (?,?,?,?,?,?)`,
+			).run(
+				ref,
+				partition.binding,
+				partition.world,
+				partition.worldRevision,
+				version,
+				rows.some((row) => row.schema === "client.event@1") ? 1 : 0,
+			);
+			bumpVersion(db, version);
+		}
+		db.exec("COMMIT");
+		return { removed: rows.length, version };
+	} catch (err) {
+		db.exec("ROLLBACK");
+		throw err;
+	}
 }
 
 function messageOf(err: unknown): string {
@@ -524,16 +721,34 @@ port.on("message", (request: WorkerRequest) => {
 			} satisfies WorkerResponse);
 			return;
 		}
+		if (request.type === "retain" || request.type === "release") {
+			if (request.type === "retain") retain(db, request.owner, request.evidence);
+			else {
+				checkOwner(request.owner);
+				db.prepare("DELETE FROM evidence_holds WHERE owner=?").run(request.owner);
+			}
+			port.postMessage({ type: "retained", id: request.id } satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "prune") {
+			const result = prune(db, request.options);
+			port.postMessage({ type: "pruned", id: request.id, result } satisfies WorkerResponse);
+			return;
+		}
 		db.close();
 		db = null;
 		port.postMessage({ type: "closed" } satisfies WorkerResponse);
 		port.close();
 	} catch (err) {
-		if (request.type === "readEvents" && (err as { code?: string }).code === "SNAPSHOT_EXPIRED") {
+		if (
+			(request.type === "readEvents" && (err as { code?: string }).code === "SNAPSHOT_EXPIRED") ||
+			((request.type === "retain" || request.type === "release" || request.type === "prune") &&
+				["INVALID_INPUT", "EVIDENCE_UNAVAILABLE"].includes((err as { code?: string }).code ?? ""))
+		) {
 			port.postMessage({
 				type: "queryFailed",
 				id: request.id,
-				code: "SNAPSHOT_EXPIRED",
+				code: (err as { code: string }).code,
 				message: messageOf(err),
 			} satisfies WorkerResponse);
 		} else if (err instanceof SourceConflict) {

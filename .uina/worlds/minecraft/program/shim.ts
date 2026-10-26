@@ -1,14 +1,25 @@
-/** Evaluated after user declarations; returned helpers are held by the Worker, not globals. */
+/** Capture trusted intrinsics before user code; inject the bridge only after declarations. */
 export const SHIM = String.raw`(() => {
-  const post = globalThis.__uinaPost, now = globalThis.__uinaNow;
-  delete globalThis.__uinaNow;
-  delete globalThis.__uinaPost;
   const failures = new WeakMap();
+  const decisions = new WeakMap();
+  const decisionGet = decisions.get.bind(decisions), decisionSet = decisions.set.bind(decisions);
+  const failureGet = failures.get.bind(failures), failureSet = failures.set.bind(failures);
+  const stringify=JSON.stringify, parse=JSON.parse, keys=Object.keys, values=Object.values, freeze=Object.freeze, assign=Object.assign, GuestError=Error;
+  const trim=Function.prototype.call.bind(String.prototype.trim);
+  const hasOwn=Function.prototype.call.bind(Object.prototype.hasOwnProperty);
+  const then=Function.prototype.call.bind(Promise.prototype.then);
+  const finallyPromise=Function.prototype.call.bind(Promise.prototype.finally);
+  return (post,now,checkpointValue) => {
+  const freezeJson = v => {
+    if(v && typeof v==='object') { for(const child of values(v)) freezeJson(child); freeze(v); }
+    return v;
+  };
+  const checkpoint = freezeJson(checkpointValue);
   let latest = null, logs = [], logSize = 0, pending = 0;
   const error = (code, message) => {
     const e = new Error(message);
     const data = {code, source:'program', scope:'call', message};
-    Object.assign(e,data); failures.set(e,data); return e;
+    assign(e,data); failureSet(e,data); return e;
   };
   const encode = (value, top = false) => {
     const active = new Set();
@@ -18,11 +29,11 @@ export const SHIM = String.raw`(() => {
       if (typeof v !== 'object') throw error('PROGRAM_VALUE','only JSON values cross the program boundary');
       if (active.has(v)) throw error('PROGRAM_VALUE','cyclic JSON value');
       active.add(v);
-      for (const key of Object.keys(v)) check(v[key]);
+      for (const key of keys(v)) check(v[key]);
       active.delete(v);
     };
     check(value);
-    const text = JSON.stringify(top && value === undefined ? null : value);
+    const text = stringify(top && value === undefined ? null : value);
     if (text === undefined) throw error('PROGRAM_VALUE','undefined is only accepted as the main return value');
     return text;
   };
@@ -33,12 +44,18 @@ export const SHIM = String.raw`(() => {
     let result;
     try { result = post(method, text); }
     catch(e) { pending--; throw error(e.name === 'PROGRAM_VALUE' ? 'PROGRAM_VALUE' : 'PROGRAM_ERROR',e.message); }
-    return result.then(reply => {
+    return finallyPromise(then(result,reply => {
     if (reply.ok) return reply.value;
+    if (hasOwn(reply,'decisionJson')) {
+      const request=freezeJson(parse(reply.decisionJson));
+      const e=assign(new GuestError(request.reason),request);
+      decisionSet(e,'{"kind":"host","request":'+reply.decisionJson+'}');
+      throw e;
+    }
     const data = reply.error;
     const e = new Error(data.message || data.code);
-    Object.assign(e, data); failures.set(e, data); throw e;
-    }).finally(() => { pending--; });
+    assign(e, data); failureSet(e, data); throw e;
+    }),() => { pending--; });
   };
   const unavailable = () => { throw error('PROGRAM_UNAVAILABLE','this API is not delivered in batch 7'); };
   const windowHandle = h => ({
@@ -109,8 +126,16 @@ export const SHIM = String.raw`(() => {
         if(change.status==='invalidated')return {kind:'invalidated',reason:change.reason};
         if(change.status==='timeout')return final();
       }
-    }, decide: unavailable,
-    get checkpoint() { return unavailable(); },
+    },
+    decide: (reason,cp) => {
+      if(typeof reason!=='string' || !trim(reason)) throw error('PROGRAM_INPUT_INVALID','decide requires a nonempty reason');
+      const encoded=cp===undefined?undefined:encode(cp);
+      const e=assign(new GuestError(reason),{code:'NEEDS_DECISION',reason,...(encoded===undefined?{}:{checkpoint:parse(encoded)})});
+      // Store bytes separately from Error fields and guest-controlled toJSON hooks.
+      decisionSet(e,'{"kind":"local","reason":'+stringify(reason)+(encoded===undefined?'':',"checkpoint":'+encoded)+'}');
+      throw e;
+    },
+    get checkpoint() { return checkpoint; },
   });
   const console = {};
   for (const level of ['log','info','warn','error']) console[level] = (...args) => {
@@ -121,8 +146,10 @@ export const SHIM = String.raw`(() => {
   globalThis.console = Object.freeze(console);
   return {
     mc, encode,
-    errorData: e => JSON.stringify(failures.get(e) || {code:'PROGRAM_ERROR',scope:'call',source:'program',
+    decisionData: e => decisionGet(e) || null,
+    errorData: e => stringify(failureGet(e) || {code:'PROGRAM_ERROR',scope:'call',source:'program',
       message:String(e && e.message || e), guestStack:String(e && e.stack || '').split('\n').slice(0,12)}),
     flush: () => { const v = JSON.stringify({progress:latest,logs}); latest=null;logs=[];logSize=0;return v; },
+  };
   };
 })()`;
