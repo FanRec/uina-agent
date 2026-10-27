@@ -201,7 +201,6 @@ describe("NeteaseGateway playlist view", () => {
 		serve(playlistDetail);
 
 		// 这份真实响应是别人的公开歌单：privacy 为 0，且不下发 editable。
-		// privacy 是可见性不是可编辑权限——据此推断可写，会让写操作一路走到上游被拒。
 		const playlist = await viewGateway().playlistForWrite(String(playlistDetail.playlist.id));
 
 		expect(playlist).toMatchObject({ ownerId: "434291965", editable: false });

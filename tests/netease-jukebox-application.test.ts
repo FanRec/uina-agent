@@ -118,6 +118,24 @@ describe("JukeboxApplication", () => {
 		expect(gateway.addToPlaylist).not.toHaveBeenCalled();
 	});
 
+	it("verifies a removal against the playlist read back after writing", async () => {
+		const { application, gateway } = makeApplication();
+		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
+		// 写前有这首、写后没有——校验要按"移除后不该包含"来判断，方向反了会把成功报成 unknown。
+		(gateway.playlistForWrite as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({ id: "p1", name: "Playlist", ownerId: "42", editable: true, trackIds: ["1"] })
+			.mockResolvedValueOnce({ id: "p1", name: "Playlist", ownerId: "42", editable: true, trackIds: [] });
+
+		const result = await application.actions.library.run(
+			{ operation: "playlist_track_remove", playlist_id: "p1", song_id: "1", confirm: true },
+			ctx,
+		);
+
+		expect(gateway.removeFromPlaylist).toHaveBeenCalledWith("p1", "1", ctx.signal);
+		expect(result).toMatchObject({ status: "succeeded" });
+		expect(String(result.result)).toContain("已从歌单移除");
+	});
+
 	it("does not call an external write without confirmation", async () => {
 		const { application, gateway, ensureService } = makeApplication();
 		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
@@ -338,6 +356,16 @@ describe("JukeboxApplication playlist reads", () => {
 		const payload = JSON.parse(String(result.result));
 		expect(payload).toMatchObject({ total: 3, offset: 1, limit: 1, returned: 1, hasMore: true, nextOffset: 2 });
 		expect(payload.tracks.map((track: { id: string }) => track.id)).toEqual(["2"]);
+	});
+
+	it("returns an empty page when the liked offset is past the end", async () => {
+		const { application } = makeApplication();
+
+		const result = await application.actions.library.run({ operation: "liked_list", offset: 5 }, library);
+
+		// 翻到末尾之后不该报"还有更多"，也不该凭空造出曲目。
+		const payload = JSON.parse(String(result.result));
+		expect(payload).toMatchObject({ total: 3, offset: 5, returned: 0, tracks: [], hasMore: false, nextOffset: null });
 	});
 
 	it("still reports the liked total when the detail lookup fails", async () => {
