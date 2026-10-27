@@ -24,12 +24,14 @@ const viewGateway = () => new NeteaseGateway("http://netease.test");
 describe("NeteaseGateway playlist writes", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it("uses the dedicated add endpoint", async () => {
+	it("uses the route the module file name maps to", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")
 			.mockResolvedValue(new Response(JSON.stringify({ code: 200 }), { status: 200 }));
 		await new NeteaseGateway("http://netease.test").addToPlaylist("p1", "s1");
-		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/playlist_track_add");
+		// api-enhanced 把模块文件名的每个下划线换成斜杠：playlist_track_add.js → /playlist/track/add。
+		// 直接把文件名当路径发出去，拿到的是 Express 的 404，而不是上游的业务错误。
+		expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/playlist/track/add");
 	});
 
 	it("sends the parameter name each dedicated endpoint actually reads", async () => {
@@ -48,13 +50,14 @@ describe("NeteaseGateway playlist writes", () => {
 		expect(sent[1]).toMatchObject({ id: "p1", ids: "s1" });
 	});
 
-	it("falls back to playlist_tracks when the dedicated endpoint is missing", async () => {
+	it("falls back to the combined tracks endpoint when the dedicated one is missing", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")
 			.mockResolvedValueOnce(new Response("missing", { status: 404 }))
 			.mockResolvedValueOnce(new Response(JSON.stringify({ code: 200 }), { status: 200 }));
 		await new NeteaseGateway("http://netease.test").removeFromPlaylist("p1", "s1");
-		expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/playlist_tracks");
+		// 回退端点同样是文件名换斜杠：playlist_tracks.js → /playlist/tracks。
+		expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toBe("/playlist/tracks");
 	});
 
 	it("does not fall back to a second POST after an uncertain 5xx write", async () => {
@@ -64,7 +67,7 @@ describe("NeteaseGateway playlist writes", () => {
 			NeteaseUncertainWriteError,
 		);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/playlist_track_add");
+		expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/playlist/track/add");
 	});
 
 	it("wraps uncertain POST failures (timeout) as effect-unknown", async () => {

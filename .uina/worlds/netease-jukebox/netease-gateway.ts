@@ -164,12 +164,14 @@ export class NeteaseGateway {
     return this.request("/playlist/update", { id, name, desc: description, tags }, signal, "POST");
   }
   async addToPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
-    // module/playlist_track_add 读的是 pid。
-    return this.playlistTrackMutation("playlist_track_add", "add", { pid: playlistId, ids: songId }, signal);
+    // 路由由模块文件名把下划线换成斜杠得到：playlist_track_add.js → /playlist/track/add。
+    // 用的是 filename——少换一次斜杠就是 Express 的 404，而不是上游的业务错误。
+    // 另外 module/playlist_track_add 读的是 pid。
+    return this.playlistTrackMutation("playlist/track/add", "add", { pid: playlistId, ids: songId }, signal);
   }
   async removeFromPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
     // 同一个族的 module/playlist_track_delete 读的却是 id——发 pid 会让它拿到 undefined。
-    return this.playlistTrackMutation("playlist_track_delete", "del", { id: playlistId, ids: songId }, signal);
+    return this.playlistTrackMutation("playlist/track/delete", "del", { id: playlistId, ids: songId }, signal);
   }
   async comment(kind: "song" | "playlist", id: string, content: string, signal?: AbortSignal): Promise<GatewayResult> { return this.request(kind === "song" ? "/comment" : "/comment", { id, content, type: kind === "song" ? 0 : 2 }, signal, "POST"); }
   private async playlistTrackMutation(
@@ -182,8 +184,9 @@ export class NeteaseGateway {
       return await this.request(`/${path}`, params, signal, "POST");
     } catch (error) {
       if (!isFallbackEligible(error)) throw error;
-      // fallback 端点的参数名固定是 pid/tracks，值取我们本来要发的那一份。
-      return this.request("/playlist_tracks", { op: fallbackOperation, pid: params.pid ?? params.id, tracks: params.ids }, signal, "POST");
+      // 回退端点同样走文件名换斜杠的规则：playlist_tracks.js → /playlist/tracks。
+      // 它的参数名固定是 pid/tracks，值取我们本来要发的那一份。
+      return this.request("/playlist/tracks", { op: fallbackOperation, pid: params.pid ?? params.id, tracks: params.ids }, signal, "POST");
     }
   }
   private async request(path: string, params: Record<string, string | number>, signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<GatewayResult> {
