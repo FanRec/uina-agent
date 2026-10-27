@@ -222,8 +222,8 @@ export class NeteaseApiClient {
   }
 
   /**
-   * 批量取歌曲详情。用于"只有 id 序列"的场景（如红心列表），
-   * 让调用方不必自己拼请求，也不必自己猜上游键名。
+   * 批量取歌曲详情，**按入参 id 顺序返回**。用于"只有 id 序列"的场景（如红心列表），
+   * 让调用方不必自己拼请求，也不必自己猜上游键名或对齐顺序。
    *
    * 任一分块失败即抛出，不返回部分结果：残缺的列表会被调用方当成完整列表，
    * 那比明确失败更难发现。降级策略由调用方决定。
@@ -231,7 +231,7 @@ export class NeteaseApiClient {
   async getSongInfos(songIds: readonly string[], signal?: AbortSignal): Promise<SongInfo[]> {
     const ids = songIds.map((value) => value.trim()).filter(Boolean);
     if (ids.length === 0) return [];
-    const songs: SongInfo[] = [];
+    const byId = new Map<string, SongInfo>();
     for (let start = 0; start < ids.length; start += SONG_DETAIL_CHUNK) {
       const url = new URL(`${this.baseUrl}/song/detail`);
       url.searchParams.set("ids", ids.slice(start, start + SONG_DETAIL_CHUNK).join(","));
@@ -241,10 +241,12 @@ export class NeteaseApiClient {
       });
       for (const raw of data.songs ?? []) {
         const song = projectSong(raw);
-        if (song) songs.push(song);
+        if (song) byId.set(song.id, song);
       }
     }
-    return songs;
+    // 上游按 `c` 数组提交、通常同序返回，但那是它的实现细节不是契约。
+    // 按入参顺序重排，调用方才好把 id 页直接对齐回曲目页。
+    return ids.map((id) => byId.get(id)).filter((song): song is SongInfo => song !== undefined);
   }
 
   private async request<T>(url: string, timeoutMs: number, signal: AbortSignal | undefined, read: (response: Response) => T | Promise<T>): Promise<T> {

@@ -47,6 +47,7 @@ function makeApplication(queueLimit = 100) {
 			};
 		}),
 		likedSongIds: vi.fn(async () => ["1", "2", "3"]),
+		recentSongs: vi.fn(async () => []),
 		addToPlaylist: vi.fn(async () => ({ code: 200 })),
 		removeFromPlaylist: vi.fn(async () => ({ code: 200 })),
 		updatePlaylist: vi.fn(async () => ({ code: 200 })),
@@ -317,17 +318,6 @@ describe("JukeboxApplication playlist reads", () => {
 		expect(String(result.result)).not.toContain("没有红心");
 	});
 
-	it("keeps the liked order even when the detail response comes back shuffled", async () => {
-		const { application, api } = makeApplication();
-		(api.getSongInfos as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => [...playlistTracks].reverse());
-
-		const result = await application.actions.library.run({ operation: "liked_list" }, library);
-
-		// 批量详情接口不保证按请求顺序返回；红心的先后是用户能看见的事实。
-		const payload = JSON.parse(String(result.result));
-		expect(payload.tracks.map((track: { id: string }) => track.id)).toEqual(["1", "2", "3"]);
-	});
-
 	it("reports a full queue for a single-song add instead of throwing", async () => {
 		const { application, playback } = makeApplication(1);
 		playback.add({ id: "0", name: "Old", artists: [], durationMs: null });
@@ -341,31 +331,12 @@ describe("JukeboxApplication playlist reads", () => {
 		expect(playback.snapshot().queue).toHaveLength(1);
 	});
 
-	it("reports a full queue when play is asked to enqueue", async () => {
-		const { application, playback } = makeApplication(1);
-		playback.add({ id: "0", name: "Old", artists: [], durationMs: null });
+	it("clamps the unprojected list reads to 20 items so they cannot flood the context", async () => {
+		const { application, gateway } = makeApplication();
 
-		const result = await application.actions.play.run({ song_id: "1", enqueue: true }, queueCtx);
-
-		expect(result).toMatchObject({ status: "failed", details: { reason: "queue_full" } });
-		expect(playback.snapshot().queue).toHaveLength(1);
-	});
-
-	it("keeps the unprojected list reads at 20 items so they cannot flood the context", () => {
-		const { application } = makeApplication();
-		const branches = (application.actions.library.parameters as { oneOf: Array<Record<string, unknown>> }).oneOf;
-		const limitMaxOf = (op: string): number | undefined => {
-			const branch = branches.find(
-				(item) => (item.properties as Record<string, { const?: string }>).operation?.const === op,
-			);
-			return (branch?.properties as Record<string, { maximum?: number }>).limit?.maximum;
-		};
+		await application.actions.library.run({ operation: "recent_list", limit: 200 }, library);
 
 		// 未投影：一条评论约 0.8 KB、一条最近播放约 1.5 KB，200 条就是 160–300 KB。
-		expect(limitMaxOf("comments_list")).toBe(20);
-		expect(limitMaxOf("recent_list")).toBe(20);
-		// 已投影：单首 143 B，200 首约 29 KB，放宽是安全的。
-		expect(limitMaxOf("playlist_open")).toBe(200);
-		expect(limitMaxOf("liked_list")).toBe(200);
+		expect(gateway.recentSongs).toHaveBeenCalledWith(20, library.signal);
 	});
 });

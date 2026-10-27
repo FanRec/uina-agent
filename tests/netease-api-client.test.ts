@@ -207,12 +207,15 @@ describe("NeteaseApiClient search projection", () => {
 describe("NeteaseApiClient song detail batching", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it("batches ids in chunks of 100 instead of one request per song", async () => {
+	it("batches ids in chunks of 100 and returns them in the requested order", async () => {
 		const ids = Array.from({ length: 250 }, (_, index) => `s${index}`);
+		// 上游反向返回：既验证分块，也验证顺序由我们保证而不是上游顺手给的。
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			const requested = (new URL(String(input)).searchParams.get("ids") ?? "").split(",").filter(Boolean);
 			return new Response(
-				JSON.stringify({ songs: requested.map((id) => ({ id, name: `Song ${id}`, ar: [{ name: "A" }], dt: 1000 })) }),
+				JSON.stringify({
+					songs: [...requested].reverse().map((id) => ({ id, name: `Song ${id}`, ar: [{ name: "A" }], dt: 1000 })),
+				}),
 				{ status: 200 },
 			);
 		});

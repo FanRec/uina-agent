@@ -21,11 +21,11 @@ const writeOperations = new Set([
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 /**
- * recent_list / comments_list 的上限。
+ * recent_list / comments_list 的条数上限。
  *
  * 这两个读接口没有投影，一条评论约 0.8 KB、一条最近播放约 1.5 KB，
  * 200 条就是 160–300 KB——分页读有投影兜底，它们没有。20 是它们原本的默认值，
- * 改成硬上限不改变正常用法，只堵住"随手传 500"。
+ * 在 handler 里夹到这个数不改变正常用法，只堵住"随手传 200"。
  */
 const RAW_LIST_LIMIT = 20;
 
@@ -139,18 +139,17 @@ export class JukeboxApplication {
       content: { type: "string", description: "评论内容。" },
       kind: { type: "string", enum: ["song", "playlist"], description: "目标类型。" },
       offset: { type: "integer", minimum: 0, description: "分页起点，从 0 开始；省略为 0。" },
-      limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_LIMIT, description: "返回条数上限。playlist_open/liked_list 省略为 50、最多 200；recent_list/comments_list 最多 20。" },
+      limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_LIMIT, description: "返回条数上限。playlist_open/liked_list 省略为 50、最多 200；recent_list/comments_list 最多返回 20 条。" },
       privacy: { type: "string", enum: ["public", "private"], description: "新建歌单可见性。" },
     };
-    // limitMax 是 per-op 收紧：共享字段的 200 只对已投影的分页读成立。
-    const ops: Array<{ op: string; note: string; fields: string[]; require?: string[]; either?: [string, string]; limitMax?: number }> = [
+    const ops: Array<{ op: string; note: string; fields: string[]; require?: string[]; either?: [string, string] }> = [
       { op: "account_status", note: "查看账号与登录状态。", fields: [] },
       { op: "login_status", note: "查看登录状态。", fields: [] },
       { op: "playlist_list", note: "列出歌单；uid 缺省用登录账号。", fields: ["uid"] },
       { op: "liked_list", note: "分页列出红心歌曲，返回可读曲目与总数。", fields: ["uid", "offset", "limit"] },
-      { op: "recent_list", note: "列出最近播放（未投影，最多 20 条）。", fields: ["limit"], limitMax: RAW_LIST_LIMIT },
+      { op: "recent_list", note: "列出最近播放（未投影，最多 20 条）。", fields: ["limit"] },
       { op: "playlist_open", note: "分页打开歌单详情，返回曲目与总数。", fields: ["offset", "limit"], require: ["playlist_id"] },
-      { op: "comments_list", note: "读评论（未投影，最多 20 条）；song_id 或 playlist_id 至少给一个。", fields: ["kind", "limit", "song_id", "playlist_id"], either: ["song_id", "playlist_id"], limitMax: RAW_LIST_LIMIT },
+      { op: "comments_list", note: "读评论（未投影，最多 20 条）；song_id 或 playlist_id 至少给一个。", fields: ["kind", "limit", "song_id", "playlist_id"], either: ["song_id", "playlist_id"] },
       { op: "playlist_create", note: "创建歌单。", fields: ["privacy"], require: ["name"] },
       { op: "playlist_update", note: "更新歌单名/描述/标签。", fields: ["name", "description", "tags"], require: ["playlist_id"] },
       { op: "playlist_track_add", note: "加歌曲进歌单；ref/song_id/query 三选一。", fields: ["ref", "song_id", "query"], require: ["playlist_id"] },
@@ -161,7 +160,7 @@ export class JukeboxApplication {
       { op: "unlike", note: "取消红心。", fields: [], require: ["song_id"] },
       { op: "comment_add", note: "发评论；song_id 或 playlist_id 至少给一个。", fields: ["kind", "song_id", "playlist_id"], require: ["content"], either: ["song_id", "playlist_id"] },
     ];
-    const branches = ops.map(({ op, note, fields: optionalFields, require, either, limitMax }): Record<string, unknown> => {
+    const branches = ops.map(({ op, note, fields: optionalFields, require, either }): Record<string, unknown> => {
       const requireList = require ?? [];
       // strict Ajv 要求 required 中的每个字段都在 properties 里声明。
       const propKeys = [...new Set([...optionalFields, ...requireList])];
@@ -171,9 +170,7 @@ export class JukeboxApplication {
         properties: {
           operation: { type: "string", const: op, description: note },
           confirm: { type: "boolean", description: "写操作必须传 true；需用户明确要求。" },
-          ...Object.fromEntries(
-            propKeys.map((key) => [key, key === "limit" && limitMax ? { ...fields.limit, maximum: limitMax } : fields[key]]),
-          ),
+          ...Object.fromEntries(propKeys.map((key) => [key, fields[key]])),
         },
         required: ["operation", ...requireList],
         ...(either ? { anyOf: either.map((key) => ({ required: [key], properties: { [key]: fields[key] } })) } : {}),
@@ -443,8 +440,8 @@ export class JukeboxApplication {
       return JSON.stringify(await this.deps.gateway.playlistView(playlistId, offset, limit, ctx.signal));
     }
     if (operation === "liked_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return this.likedList(uid, args, ctx); }
-    if (operation === "recent_list") return JSON.stringify(await this.deps.gateway.recentSongs(Number(args.limit ?? 20), ctx.signal));
-    if (operation === "comments_list") return JSON.stringify(await this.deps.gateway.comments(args.kind === "playlist" ? "playlist" : "song", String(args.song_id ?? args.playlist_id), Number(args.limit ?? 20), ctx.signal));
+    if (operation === "recent_list") return JSON.stringify(await this.deps.gateway.recentSongs(Math.min(Number(args.limit ?? RAW_LIST_LIMIT), RAW_LIST_LIMIT), ctx.signal));
+    if (operation === "comments_list") return JSON.stringify(await this.deps.gateway.comments(args.kind === "playlist" ? "playlist" : "song", String(args.song_id ?? args.playlist_id), Math.min(Number(args.limit ?? RAW_LIST_LIMIT), RAW_LIST_LIMIT), ctx.signal));
     if (operation === "playlist_create") return JSON.stringify(await this.deps.gateway.createPlaylist(String(args.name ?? ""), args.privacy === "private" ? "private" : "public", ctx.signal));
     if (operation === "playlist_update") return this.updatePlaylist(args, uid, ctx);
     if (operation === "playlist_track_add" || operation === "playlist_track_remove") return this.changePlaylistTrack(operation, args, uid, ctx);
@@ -483,18 +480,14 @@ export class JukeboxApplication {
         { total: ids.length, offset, limit },
       );
     }
-    // 批量详情不保证按请求顺序返回，而红心的先后是用户看得见的事实，按 id 序列重排。
-    // 缺详情的 id 直接跳过：宁可少给一首，也不拿别的歌顶上。
-    const byId = new Map(tracks.map((track) => [track.id, track]));
-    const ordered = page.map((id) => byId.get(id)).filter((track): track is SongInfo => track !== undefined);
     // 翻页按 id 序列推进，不按返回曲目数：否则缺一首详情就会把同一页再取一遍。
     const nextOffset = offset + page.length;
     return JSON.stringify({
       total: ids.length,
       offset,
       limit,
-      returned: ordered.length,
-      tracks: ordered,
+      returned: tracks.length,
+      tracks,
       hasMore: nextOffset < ids.length,
       nextOffset: nextOffset < ids.length ? nextOffset : null,
     });
