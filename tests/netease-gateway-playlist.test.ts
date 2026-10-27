@@ -32,6 +32,22 @@ describe("NeteaseGateway playlist writes", () => {
 		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/playlist_track_add");
 	});
 
+	it("sends the parameter name each dedicated endpoint actually reads", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response(JSON.stringify({ code: 200 }), { status: 200 }));
+		const gateway = new NeteaseGateway("http://netease.test");
+
+		await gateway.addToPlaylist("p1", "s1");
+		await gateway.removeFromPlaylist("p1", "s1");
+
+		// 同族两个端点的参数名不同：playlist_track_add 读 pid，playlist_track_delete 读 id。
+		// 发错那个不会报错，只会让 delete 拿着 undefined 去删一个不存在的歌单。
+		const sent = fetchMock.mock.calls.map(([, init]) => Object.fromEntries(new URLSearchParams(String(init?.body))));
+		expect(sent[0]).toMatchObject({ pid: "p1", ids: "s1" });
+		expect(sent[1]).toMatchObject({ id: "p1", ids: "s1" });
+	});
+
 	it("falls back to playlist_tracks when the dedicated endpoint is missing", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")

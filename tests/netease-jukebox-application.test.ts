@@ -32,6 +32,8 @@ function makeApplication(queueLimit = 100) {
 			ownerId: "42",
 			editable: true,
 			trackIds: ["1"],
+			description: "原来的简介",
+			tags: ["民谣", "ACG"],
 		})),
 		// 与真实实现同构地切片，否则分页参数一路透传下去也测不出来。
 		playlistView: vi.fn(async (_id: string, offset = 0, limit = 50) => {
@@ -123,8 +125,24 @@ describe("JukeboxApplication", () => {
 		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
 		// 写前有这首、写后没有——校验要按"移除后不该包含"来判断，方向反了会把成功报成 unknown。
 		(gateway.playlistForWrite as ReturnType<typeof vi.fn>)
-			.mockResolvedValueOnce({ id: "p1", name: "Playlist", ownerId: "42", editable: true, trackIds: ["1"] })
-			.mockResolvedValueOnce({ id: "p1", name: "Playlist", ownerId: "42", editable: true, trackIds: [] });
+			.mockResolvedValueOnce({
+				id: "p1",
+				name: "Playlist",
+				ownerId: "42",
+				editable: true,
+				trackIds: ["1"],
+				description: "",
+				tags: [],
+			})
+			.mockResolvedValueOnce({
+				id: "p1",
+				name: "Playlist",
+				ownerId: "42",
+				editable: true,
+				trackIds: [],
+				description: "",
+				tags: [],
+			});
 
 		const result = await application.actions.library.run(
 			{ operation: "playlist_track_remove", playlist_id: "p1", song_id: "1", confirm: true },
@@ -148,14 +166,15 @@ describe("JukeboxApplication", () => {
 		expect(ensureService).not.toHaveBeenCalled();
 	});
 
-	it("passes tags through playlist updates", async () => {
+	it("fills the fields a playlist update does not mention instead of clearing them", async () => {
 		const { application, gateway } = makeApplication();
 		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
 		await application.actions.library.run(
 			{ operation: "playlist_update", playlist_id: "p1", name: "New", tags: "rock", confirm: true },
 			ctx,
 		);
-		expect(gateway.updatePlaylist).toHaveBeenCalledWith("p1", "New", undefined, "rock", ctx.signal);
+		// 上游三个字段一起提交、缺省即清空：没提简介就必须把原简介带上，否则改名会顺手清空简介。
+		expect(gateway.updatePlaylist).toHaveBeenCalledWith("p1", "New", "原来的简介", "rock", ctx.signal);
 	});
 
 	it("clears the queue only after a successful replace_queue play", async () => {
