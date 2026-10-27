@@ -16,8 +16,8 @@ HUD 发布采用最新快照策略；HUD 服务暂时不可用时不会积压旧
 
 歌单与红心列表按投影后的可读曲目分页返回，不再把上游响应整份交给模型。`playlist_open` 的 `offset`/`limit` 省略为 0/50，上限 200；`declaredTotal` 与 `playableTotal` 不等时用 `missing` 如实报出上游没给的曲目数，翻页只按实际曲目数推进，不伪造占位曲目。`liked_list` 先取 id 序列再补当前页详情，按 id 序列重排后返回（批量详情不保证顺序），第二段失败时仍报出红心总数。`recent_list` 与 `comments_list` 未做投影（一条评论约 0.8 KB、一条最近播放约 1.5 KB），因此 `limit` 最多 20 条，不放宽到 200。曲目字段统一为 `id`/`name`/`artists`/`durationMs`/`album`，搜索、详情、批量详情与歌单四处共用同一份投影。
 
-World 入口只负责资源装配和生命周期；action 参数解析、搜索 ref、歌词缓存与账号库编排位于 `application.ts`。歌单歌曲写入优先使用 api-enhanced 的专用 endpoint，服务不提供时回退到 `playlist_tracks`。
+World 入口只负责资源装配和生命周期；action 参数解析、搜索 ref、歌词缓存与账号库编排位于 `application.ts`。歌单歌曲的增删只用 `playlist_tracks`（`op=add|del`）一个接口：上游另有 `/playlist/track/add`、`/playlist/track/delete`，名字更像，但那是视频歌单用的，对普通歌曲歌单恒回 401「无权限操作歌单」。
 
-搜索结果使用 `ref=song:<歌曲ID>`，同一 World 生命周期内后续搜索不会让已有 ref 改指其他歌曲。读取请求遇到 HTTP 502/503/504 或瞬时连接错误时最多重试一次，并受原请求总超时与调用取消信号约束；持续失败会返回状态码和尝试次数。歌单写入遇到 5xx、超时或网络错误时结果可能未知，不自动切换到另一条写接口；只有明确的接口不支持响应才使用 `playlist_tracks` fallback。
+搜索结果使用 `ref=song:<歌曲ID>`，同一 World 生命周期内后续搜索不会让已有 ref 改指其他歌曲。读取请求遇到 HTTP 502/503/504 或瞬时连接错误时最多重试一次，并受原请求总超时与调用取消信号约束；持续失败会返回状态码和尝试次数。歌单写入遇到 5xx、超时或网络错误时结果可能未知，不自动重发——副作用可能已经发生，重发会有第二份。
 
 `/song/url/v1` 默认走 xeapi 加密通道，该通道依赖 `os.tmpdir()/xeapi_public_key`。服务只在进程启动时拉取一次公钥，失败后端口仍然健康、搜索正常，但所有 xeapi 接口会返回由内部异常合成的 `404 Not Found`。`CompanionManager` 在拉起服务前检查该文件，缺失时调用服务自带的 `generateConfig` 补一次（失败只写入 stderr，不阻断启动）；播放地址请求遇到这类合成 404 时改用 `crypto=weapi` 再请求一次，上游真实的 404 不降级。
