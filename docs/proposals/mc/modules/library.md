@@ -273,7 +273,7 @@ interface LibraryPort {
 
 ## 7. 实现边界
 
-批 8 已实现三类文件管理、统一扫描/头解析、compile-only、确切 Call 来源保存和统一发现。实现与证据见 [批 8 记录](../library-implementation.md)。蓝图解释/Target 验证与工程现场属于施工包；本批不宣布完整 Library 的 Construction 集成验收。
+批 8 已实现三类文件管理、统一扫描/头解析、compile-only、确切 Call 来源保存和统一发现。实现与证据见 [批 8 记录](../archive/library-implementation.md)。蓝图解释/Target 验证与工程现场属于施工包；本批不宣布完整 Library 的 Construction 集成验收。
 
 只实现普通文件扫描、元数据和 CRUD。历史 Assets 的发布、版本链与证据副本方案见 [变更记录](../changelog.md)，不作为当前实现路径。Library 不控制身体、不运行游戏任务，也不维护另一份执行结论。
 

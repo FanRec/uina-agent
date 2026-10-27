@@ -1,10 +1,10 @@
 # Program（程序）详细设计
 
-日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**批 7 执行子集已实现；源码/产物与模型验收见 [实施记录](../program-implementation.md)**。源码中的旧 Program/Assets 类型不代表本规格已接线。
+日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**批 7 执行子集已实现；源码/产物与模型验收见 [实施记录](../archive/program-implementation.md)**。源码中的旧 Program/Assets 类型不代表本规格已接线。
 
 本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
-批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；批 9A 已实现 waitUntil（见 [实施记录](../wait-implementation.md)）；批 9B 已接位置参数 decide(reason, checkpoint?)、只读 checkpoint 与显式 continue；批10已接 body.feedback/loop、帧有效期和独立身体退役；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
+批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；批 9A 已实现 waitUntil（见 [实施记录](../archive/wait-implementation.md)）；批 9B 已接位置参数 decide(reason, checkpoint?)、只读 checkpoint 与显式 continue；批10已接 body.feedback/loop、帧有效期和独立身体退役；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
 
 ## 0. 最终体验与验收目标
 

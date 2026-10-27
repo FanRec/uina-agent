@@ -1,9 +1,9 @@
 # Minecraft World：研究证据与架构验证
 
-> **2026-10-18 证据范围说明。** 本文件保留历史研究、旧源码行为和当时的实验观察，不作为当前执行合同。终态 Program 设计为共享 worker/独立 guest、逐层 NEEDS_DECISION、waitUntil 和普通文件库，唯一规范见 [Program](modules/program.md)。旧方案、旧实现和微基准不证明新设计已实现或验收；Minecraft 旧源码与专属测试已在 2026-10-18 清理。
+> **2026-10-18 证据范围说明。** 本文件保留历史研究、旧源码行为和当时的实验观察，不作为当前执行合同。终态 Program 设计为共享 worker/独立 guest、逐层 NEEDS_DECISION、waitUntil 和普通文件库，唯一规范见 [Program](../modules/program.md)。旧方案、旧实现和微基准不证明新设计已实现或验收；Minecraft 旧源码与专属测试已在 2026-10-18 清理。
 
 
-研究整理日期：2026-10-15（Asia/Shanghai）。推荐设计见 [design.md](design.md)，设计状态与已确认选择见 [README.md](README.md)。本文记录判断依据、替代方案和验证方法，不重复定义运行合同。文中“当前源码”均指各条记录标注日期的工作树；Minecraft 源码已于 2026-10-18 清理。
+研究整理日期：2026-10-15（Asia/Shanghai）。推荐设计见 [design.md](../design.md)，设计状态与已确认选择见 [README.md](../README.md)。本文记录判断依据、替代方案和验证方法，不重复定义运行合同。文中“当前源码”均指各条记录标注日期的工作树；Minecraft 源码已于 2026-10-18 清理。
 
 ## 1. 证据范围
 
@@ -24,12 +24,12 @@ Uina 源码核查基点为 `db658580aed9415d8acc0c1e2fb98cda2470cef9`，并读�
 
 | 当前源码事实 | 依据 | 对设计的影响（推论） |
 | --- | --- | --- |
-| 一个 World 工具会把各 action 的说明和参数合并进 `oneOf` | [world-tool.ts](../../../src/extensions/world-framework/world-tool.ts) | 一个 façade 并不自动节省上下文；入口稳定，详细能力按需发现 |
-| World 激活作用域管理工具与生命周期，事件的 `urgent` 映射为 `steer` | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts) | 可承接接入和资源回收；即时避险不能依靠模型抢占 |
-| 工具批次与输入递送由 Subject 执行循环管理 | [loop.ts](../../../src/agent/loop.ts) | 模型事件递送不能被解释为即时身体停止 |
-| 请求投影通过 `turn.transformContext` 链构建，检查和重建可再次执行投影 | [host.ts](../../../src/host/host.ts)、[loop.ts](../../../src/agent/loop.ts) | 状态投影保持纯读；不在构造请求时消耗“模型已看过”的变化游标 |
-| World 可暴露同进程活引用，扩展接缝可连接其他能力 | [types.ts](../../../src/extensions/world-framework/types.ts)、[index.ts](../../../src/extensions/world-framework/index.ts) | 可提供状态读口；活引用不能直接跨游戏进程运输 |
-| 工具结果有五种状态，`details` 不进入模型正文；外部效果要在正文说明 | [当前工具结果合同](../../current-runtime.md#工具结果) | 受理、游戏效果和未知结论必须进入可见回执 |
+| 一个 World 工具会把各 action 的说明和参数合并进 `oneOf` | [world-tool.ts](../../../../src/extensions/world-framework/world-tool.ts) | 一个 façade 并不自动节省上下文；入口稳定，详细能力按需发现 |
+| World 激活作用域管理工具与生命周期，事件的 `urgent` 映射为 `steer` | [world-activation.ts](../../../../src/extensions/world-framework/world-activation.ts) | 可承接接入和资源回收；即时避险不能依靠模型抢占 |
+| 工具批次与输入递送由 Subject 执行循环管理 | [loop.ts](../../../../src/agent/loop.ts) | 模型事件递送不能被解释为即时身体停止 |
+| 请求投影通过 `turn.transformContext` 链构建，检查和重建可再次执行投影 | [host.ts](../../../../src/host/host.ts)、[loop.ts](../../../../src/agent/loop.ts) | 状态投影保持纯读；不在构造请求时消耗“模型已看过”的变化游标 |
+| World 可暴露同进程活引用，扩展接缝可连接其他能力 | [types.ts](../../../../src/extensions/world-framework/types.ts)、[index.ts](../../../../src/extensions/world-framework/index.ts) | 可提供状态读口；活引用不能直接跨游戏进程运输 |
+| 工具结果有五种状态，`details` 不进入模型正文；外部效果要在正文说明 | [当前工具结果合同](../../../current-runtime.md#工具结果) | 受理、游戏效果和未知结论必须进入可见回执 |
 
 这些事实足以支持 World 接入、事件和状态投影的概要设计，不证明 Minecraft 后台任务已经具备跨回合、取消或跨重启恢复能力。相关机制仍需在 Minecraft World 内实现和验证。
 
@@ -37,17 +37,17 @@ Uina 源码核查基点为 `db658580aed9415d8acc0c1e2fb98cda2470cef9`，并读�
 
 ### 2.1 详细设计前的当前源码复核
 
-2026-10-15 在同一 HEAD 重新静态核查，新增以下限制。它们是源码事实，未运行 Minecraft 或真实 Provider；推荐行为集中在 [详细契约](contracts.md)。
+2026-10-15 在同一 HEAD 重新静态核查，新增以下限制。它们是源码事实，未运行 Minecraft 或真实 Provider；推荐行为集中在 [详细契约](../contracts.md)。
 
 | 已核实事实 | 源码依据 | 设计影响 |
 | --- | --- | --- |
-| ActionContext 只有 operationIdentity/signal；Broker 已有 ownerId/callerId/invocationId，但 WorldTool 没透传第三参数 | [types.ts](../../../src/extensions/world-framework/types.ts)、[world-tool.ts](../../../src/extensions/world-framework/world-tool.ts)、[broker.ts](../../../src/tools/broker.ts) | 操作名不等于调用来源。可在 World framework 透传现有上下文，不需要增加 Core 身份机制；root ownerId 也不是持久 subjectId |
-| World stop 先 scope.close 后 onStop；scope 等待在途 Promise，后台句柄返回后的工作不由原 Promise 自动追踪 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../src/extensions/lifecycle-scope.ts) | 受理后独立管理 run；生命周期 abort 立即封闭动作并请求停止，onStop 再等待，防止关闭互等 |
-| 当前没有 tool_result_recorded；tool_result 广播早于 canonical tool append | [events.ts](../../../src/runtime/events.ts)、[loop.ts](../../../src/agent/loop.ts) | 短直返非 canonical ACK，允许故障补报/查询缺口，不增 Core 记录后事件 |
-| Extension 有 session.list/read；JSONL append 完整写入并 sync 后更新查询 state；MemorySessionStore 无同等持久承诺 | [runner.ts](../../../src/extensions/runner.ts)、[access.ts](../../../src/session/access.ts)、[jsonl-store.ts](../../../src/session/jsonl-store.ts) | 不扫描会话判递送；输入用 committed，工具只记交接，未做断电实验 |
-| 查询可读 main/all 已提交节点，不能查 queued Mailbox；deferred render 闭包不持久化，恢复后 placeholder 可因 missing_render 退役 | [session types](../../../src/session/types.ts)、[loop.ts](../../../src/agent/loop.ts)、[recovery.ts](../../../src/session/recovery.ts) | 正常路径可抑制重复，重启仍有递送不确定；同引用补报不等于恰好一次，也不证明模型已读 |
-| 外部 Worlds 在 builtin world-framework 激活时加载；/reload 仅重载项目扩展；disable/enable 复用已导入 WorldDef | [host.ts](../../../src/host/host.ts)、[world index](../../../src/extensions/world-framework/index.ts)、[runner.ts](../../../src/extensions/runner.ts)、[registry](../../../src/extensions/world-framework/world-registry.ts) | 不假设 /reload 重载 World/能力或停止后台运行；接入生命周期不应依赖项目扩展重载来停止游戏 |
-| 已有 BodyEndpoint safeStop/resume/interrupt 与已登记端点的 stopAll；interrupt 缺省回退 safeStop，具身卸载的 stopAll 未被 await | [seams.ts](../../../src/extensions/world-framework/seams.ts)、[body-router.ts](../../../.uina/extensions/embodiment/body-router.ts)、[embodiment index](../../../.uina/extensions/embodiment/index.ts) | Minecraft 显式实现 interrupt 保留后台任务；safeStop 接持久急停门，World 自己等待 teardown，不能声称 Host/Core 已有统一持久急停锁 |
+| ActionContext 只有 operationIdentity/signal；Broker 已有 ownerId/callerId/invocationId，但 WorldTool 没透传第三参数 | [types.ts](../../../../src/extensions/world-framework/types.ts)、[world-tool.ts](../../../../src/extensions/world-framework/world-tool.ts)、[broker.ts](../../../../src/tools/broker.ts) | 操作名不等于调用来源。可在 World framework 透传现有上下文，不需要增加 Core 身份机制；root ownerId 也不是持久 subjectId |
+| World stop 先 scope.close 后 onStop；scope 等待在途 Promise，后台句柄返回后的工作不由原 Promise 自动追踪 | [world-activation.ts](../../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../../src/extensions/lifecycle-scope.ts) | 受理后独立管理 run；生命周期 abort 立即封闭动作并请求停止，onStop 再等待，防止关闭互等 |
+| 当前没有 tool_result_recorded；tool_result 广播早于 canonical tool append | [events.ts](../../../../src/runtime/events.ts)、[loop.ts](../../../../src/agent/loop.ts) | 短直返非 canonical ACK，允许故障补报/查询缺口，不增 Core 记录后事件 |
+| Extension 有 session.list/read；JSONL append 完整写入并 sync 后更新查询 state；MemorySessionStore 无同等持久承诺 | [runner.ts](../../../../src/extensions/runner.ts)、[access.ts](../../../../src/session/access.ts)、[jsonl-store.ts](../../../../src/session/jsonl-store.ts) | 不扫描会话判递送；输入用 committed，工具只记交接，未做断电实验 |
+| 查询可读 main/all 已提交节点，不能查 queued Mailbox；deferred render 闭包不持久化，恢复后 placeholder 可因 missing_render 退役 | [session types](../../../../src/session/types.ts)、[loop.ts](../../../../src/agent/loop.ts)、[recovery.ts](../../../../src/session/recovery.ts) | 正常路径可抑制重复，重启仍有递送不确定；同引用补报不等于恰好一次，也不证明模型已读 |
+| 外部 Worlds 在 builtin world-framework 激活时加载；/reload 仅重载项目扩展；disable/enable 复用已导入 WorldDef | [host.ts](../../../../src/host/host.ts)、[world index](../../../../src/extensions/world-framework/index.ts)、[runner.ts](../../../../src/extensions/runner.ts)、[registry](../../../../src/extensions/world-framework/world-registry.ts) | 不假设 /reload 重载 World/能力或停止后台运行；接入生命周期不应依赖项目扩展重载来停止游戏 |
+| 已有 BodyEndpoint safeStop/resume/interrupt 与已登记端点的 stopAll；interrupt 缺省回退 safeStop，具身卸载的 stopAll 未被 await | [seams.ts](../../../../src/extensions/world-framework/seams.ts)、[body-router.ts](../../../../.uina/extensions/embodiment/body-router.ts)、[embodiment index](../../../../.uina/extensions/embodiment/index.ts) | Minecraft 显式实现 interrupt 保留后台任务；safeStop 接持久急停门，World 自己等待 teardown，不能声称 Host/Core 已有统一持久急停锁 |
 
 固定上游源码的新复核：
 
@@ -57,10 +57,10 @@ Uina 源码核查基点为 `db658580aed9415d8acc0c1e2fb98cda2470cef9`，并读�
 
 ### 2.2 公开接口评审后的取舍
 
-以下保留选型依据，现行合同在 [行为契约](contracts.md)、[公开接口](public-api.md) 和所属模块维护：
+以下保留选型依据，现行合同在 [行为契约](../contracts.md)、[公开接口](../public-api.md) 和所属模块维护：
 
-- 提交 ID 由接入先生成/持久保存。当前 invocationId 可选，model 路径由 provider call.id 拼成；[Gemini 适配](../../../src/ai/providers.ts) 每个请求重置合成计数，缺原生 ID 时可在不同请求得到相同 gemini-call-1。因此不把它直接当持久幂等键，也不让模型承担 ID 管理。
-- tool_result 早于 canonical append，不能确认工具结果已正式记录。终态继续使用同一 completion 的短窗口直返/后台通知，但统一凭 [Host 持久回执](../runtime/delivery-receipts.md) 确认；input_settled 只触发核对，不凭交接标记放弃待交付。早期接受呈现缺口的选择已由此取代，历史见变更记录。
+- 提交 ID 由接入先生成/持久保存。当前 invocationId 可选，model 路径由 provider call.id 拼成；[Gemini 适配](../../../../src/ai/providers.ts) 每个请求重置合成计数，缺原生 ID 时可在不同请求得到相同 gemini-call-1。因此不把它直接当持久幂等键，也不让模型承担 ID 管理。
+- tool_result 早于 canonical append，不能确认工具结果已正式记录。终态继续使用同一 completion 的短窗口直返/后台通知，但统一凭 [Host 持久回执](../../runtime/delivery-receipts.md) 确认；input_settled 只触发核对，不凭交接标记放弃待交付。早期接受呈现缺口的选择已由此取代，历史见变更记录。
 - 保存程序是单一 async 入口。内部确切 ref 调用即可防止推荐别名变化，记录实际调用与原生环境即可追溯；当前没有多文件 npm 程序包需求的证据，撤回目录快照、模块作用域导入图和公共原生冲突系统。缺失确切实现明确报错。
 - 正常 API 采用同一 callable 描述与调用包装；查询/规划不另建执行器。显式身体作用域给插件和脚本闭包确定寿命，原生/程序共用等待；反馈函数留在脚本域，参数化传感和输出才经数据桥接。
 
@@ -74,7 +74,7 @@ Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录�
 
 ### 2.3 Driver 详细设计的固定源码复核
 
-2026-10-15 对照用户提供的完整 Driver 稿及评审，落入[模块正文](modules/driver.md)。下表是固定提交的源码事实与设计影响，不表示最终依赖已经选定、适配已实现或游戏测试通过。本轮额外重新只读抓取 physics、inventory、pathfinder 和 prismarine-windows 的关键路径；其他依据沿用本次设计讨论已读取的同提交源码。
+2026-10-15 对照用户提供的完整 Driver 稿及评审，落入[模块正文](../modules/driver.md)。下表是固定提交的源码事实与设计影响，不表示最终依赖已经选定、适配已实现或游戏测试通过。本轮额外重新只读抓取 physics、inventory、pathfinder 和 prismarine-windows 的关键路径；其他依据沿用本次设计讨论已读取的同提交源码。
 
 | 固定源码事实 | 设计影响与未验证边界 |
 | --- | --- |
@@ -95,7 +95,7 @@ Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录�
 
 2026-10-15 按“不推翻架构、不新建通用框架”复核 Driver。活动修订集中在模块 §5/6/8/9/10/17/18；公共合同只补兼容子操作的委托语义、可信当前调用、作用域内输入释放和域外终止责任，以及 dig 的 target/preserve 瞄准选项。其他生命周期、当前事实/窗口代次、反馈背压和模块所有权保持原设计。
 
-本次缓存 7 份固定源码（Mineflayer physics/inventory/digging/generic_place/promise_utils，Pathfinder index，PVP 类），保留提交及 SHA-256。完整探针、原始来源、运行输出及修订前文档见[审查证据](../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)。Node v24.13.1 / Windows x64 已执行：
+本次缓存 7 份固定源码（Mineflayer physics/inventory/digging/generic_place/promise_utils，Pathfinder index，PVP 类），保留提交及 SHA-256。完整探针、原始来源、运行输出及修订前文档见[审查证据](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)。Node v24.13.1 / Windows x64 已执行：
 
 | 探针 | 已验证的原始失败场景/执行边界 | 对设计的约束 |
 | --- | --- | --- |
@@ -114,26 +114,26 @@ Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录�
 
 ### 2.5 World 详细设计：交付、切面与历史证据
 
-2026-10-15 根据当前合同、固定上游与独立反例审查建立 [World 详细设计](modules/world.md)。这不是 Minecraft 实现。保留 Driver 当前事实权威、World 历史/领域存储、领域语义所有者、记录 CAS、SQLite 和保守订阅；不修改 Uina Core，不恢复旧机制。
+2026-10-15 根据当前合同、固定上游与独立反例审查建立 [World 详细设计](../modules/world.md)。这不是 Minecraft 实现。保留 Driver 当前事实权威、World 历史/领域存储、领域语义所有者、记录 CAS、SQLite 和保守订阅；不修改 Uina Core，不恢复旧机制。
 
 独立判断：保留捕获/跨域发送/接收/持久分层、R/连续 D、Section 和引用保留，否定“RPC 返回即可同步原子”和“所有 read 追平历史”。按实际依赖固定：纯当前不读 DB/pin tail/等历史 F 或 GC，纯历史不请求 Driver；联合查询只有声明同源前缀保证才用证据 fence，并只重验相关版本。当前检查点轻量对账仍保证 read→watch 不漏失效；同域共享材料，不模拟双份 outbox/传输重发；Section 历史与区域读共用，不为全部预测长期留版本。仅明确缺口对账可跨源洞，ACK 不隐去缺口。尚无性能实测证明成本足够低。
 
 后续反例复查确认三处需要补清：最新 stamp 不证明空间范围已分类，未知区间按当前源一次保守失效后推进连续覆盖 C，而非 MAX 空间序号；数据库打不开不应挡当前接入，可信运行期绑定不足时用 unbound，历史/持久写明确降级；Observation.history 按源表达固定接收前缀与同 S 的比较目标，区分 behind/gapped/unknown/caught_up，后者也不代表 durable。未新增 notice 字段/区间日志、第二个 World 服务或全局强 fence。
 
-重新核对固定 Mineflayer `7b4bb8d2b56be9cdb832474af873acd37e609746` 的以下路径，并从干净本地缓存保存原文及 SHA-256，见[源清单](../../../.artifacts/minecraft-world-design-20261015/upstream-manifest.json)：
+重新核对固定 Mineflayer `7b4bb8d2b56be9cdb832474af873acd37e609746` 的以下路径，并从干净本地缓存保存原文及 SHA-256，见[源清单](../../../../.artifacts/minecraft-world-design-20261015/upstream-manifest.json)：
 
 | 源码事实 | 对 World 的约束 |
 | --- | --- |
-| [inventory L771–775](../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js) 先清 currentWindow 再发 windowClose | 后续 sample 无法还原已关闭内容，须原始入口捕获 |
-| [entities L292–301 / L381–384](../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--entities.js) entityGone 后删除对象，damage_event 只发事件且攻击来源可缺 | 保存出现/离开/事件载荷，不推断死亡或未知攻击者 |
-| [chat L113–144](../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--chat.js) 即时 emit，未建立可查询消息历史 | 不能靠当前 view/合并 notice 事后恢复聊天 |
-| [health L24–38](../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--health.js) 更新健康、death 后可随后 spawn | 最终健康值不足以还原中间死亡 |
-| [blocks L242–274](../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--blocks.js) 卸载列、仅光照可新建空 Chunk | 覆盖按真实方块入包建立；对象存在不是已知空气 |
-| [furnace L36–39](../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--furnace.js) 关窗移除进度监听 | 到时只安排能力重新取得身体复查，不证明产出 |
+| [inventory L771–775](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js) 先清 currentWindow 再发 windowClose | 后续 sample 无法还原已关闭内容，须原始入口捕获 |
+| [entities L292–301 / L381–384](../../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--entities.js) entityGone 后删除对象，damage_event 只发事件且攻击来源可缺 | 保存出现/离开/事件载荷，不推断死亡或未知攻击者 |
+| [chat L113–144](../../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--chat.js) 即时 emit，未建立可查询消息历史 | 不能靠当前 view/合并 notice 事后恢复聊天 |
+| [health L24–38](../../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--health.js) 更新健康、death 后可随后 spawn | 最终健康值不足以还原中间死亡 |
+| [blocks L242–274](../../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--blocks.js) 卸载列、仅光照可新建空 Chunk | 覆盖按真实方块入包建立；对象存在不是已知空气 |
+| [furnace L36–39](../../../../.artifacts/minecraft-world-design-20261015/upstream/mineflayer--furnace.js) 关窗移除进度监听 | 到时只安排能力重新取得身体复查，不证明产出 |
 
-SQLite [isolation](https://www.sqlite.org/isolation.html) 与 [WAL](https://www.sqlite.org/wal.html) 支持数据库内部固定读快照，同时说明长读与 checkpoint 的关系；它们不提供跨 Driver 原子性。当前 [WorldActivation](../../../src/extensions/world-framework/world-activation.ts) 提供数据目录和生命周期，未实现本设计的证据/切面协议。
+SQLite [isolation](https://www.sqlite.org/isolation.html) 与 [WAL](https://www.sqlite.org/wal.html) 支持数据库内部固定读快照，同时说明长读与 checkpoint 的关系；它们不提供跨 Driver 原子性。当前 [WorldActivation](../../../../src/extensions/world-framework/world-activation.ts) 提供数据目录和生命周期，未实现本设计的证据/切面协议。
 
-有限协议模型和文档检查保存在[证据目录](../../../.artifacts/minecraft-world-design-20261015/README.md)。原模型枚举落盘/ACK/固定/计算、联合 fence 与 Watch，并用错误 latest DB、活 tail、MAX 和只听未来作反例；它验证需要历史/联合保证时的边界，不要求每个 read 都执行这些步骤。依赖修订另有 dependency-query-probe：枚举历史积压/gap/存储不可用时的当前读取、Driver 离线下的历史读取、联合完整/部分前缀、当前/历史 Watch；检查模型实际访问的依赖与固定结果。运行时间/数量以最新 JSON 为准。两组都不运行 SQLite/真实 IPC/游戏，操作计数不证明实际性能。公开 TS、JS 语法、本地链接/锚点另作静态检查，不执行游戏示例。
+有限协议模型和文档检查保存在[证据目录](../../../../.artifacts/minecraft-world-design-20261015/README.md)。原模型枚举落盘/ACK/固定/计算、联合 fence 与 Watch，并用错误 latest DB、活 tail、MAX 和只听未来作反例；它验证需要历史/联合保证时的边界，不要求每个 read 都执行这些步骤。依赖修订另有 dependency-query-probe：枚举历史积压/gap/存储不可用时的当前读取、Driver 离线下的历史读取、联合完整/部分前缀、当前/历史 Watch；检查模型实际访问的依赖与固定结果。运行时间/数量以最新 JSON 为准。两组都不运行 SQLite/真实 IPC/游戏，操作计数不证明实际性能。公开 TS、JS 语法、本地链接/锚点另作静态检查，不执行游戏示例。
 
 availability-watch-probe 另检查 20→21 范围迟到、22先到不能越洞、同 H 不重复自激；DB opening/failed/read_only 与可信/未绑定身份的可用性组合；固定 history 进度及 gap/未知目标；存储恢复不偷换分区。其 passed 仍只属于有限模型，不证明 SQLite 损坏处理、实际跨线程顺序或真实崩溃恢复。
 
@@ -145,7 +145,7 @@ availability-watch-probe 另检查 20→21 范围迟到、22先到不能越洞�
 
 2026-10-16 曾按"SQLite 目录 + 不可变对象包 + 发布 CAS"设计资产仓库，并核对了 Node v24.13.1 内置 SQLite 的 BLOB 绑定、Windows/NTFS 的 write-through 与 rename 语义。这些核对本身成立，但结论在 2026-10-18 被推翻：单作者、几百个文件的规模不需要版本目录；目录与内容一致性、孤儿、损坏治理反而是它自己制造的问题。
 
-现在只保留**文件约定**（`programs/`、`blueprints/`、`experiences/`、`runs/`），确切内容由使用方在入场时记录摘要固定，见 [Library](modules/library.md) §1、§2、§7。随之删除的还有：发布幂等表、证据副本、`AssetRepository` 对象、跨仓库引用。
+现在只保留**文件约定**（`programs/`、`blueprints/`、`experiences/`、`runs/`），确切内容由使用方在入场时记录摘要固定，见 [Library](../modules/library.md) §1、§2、§7。随之删除的还有：发布幂等表、证据副本、`AssetRepository` 对象、跨仓库引用。
 
 **未验证项随之改变**：不再需要验证 SQLite 事务/断电，改为验证普通文件库在多进程写入、崩溃中断与并发编辑下的行为（例如 `save` 写到一半、两个进程同时改同一文件），这一项尚未实测。
 
@@ -235,7 +235,7 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 
 ## 5. 重要替代方案与未采纳理由
 
-以下是设计推论，不是对备选方案普遍优劣的判定；选定行为以 [概要设计](design.md) 为准。
+以下是设计推论，不是对备选方案普遍优劣的判定；选定行为以 [概要设计](../design.md) 为准。
 
 | 选择 | 有竞争力的替代方案 | 推荐与代价 |
 | --- | --- | --- |
@@ -295,7 +295,7 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 
 ### 6.2 公共契约的专门检验
 
-下表检验概要设计新增的协作语义，仍是待执行要求，不是已通过的测试。合同只在 [设计正文](design.md) 定义，本文不另设一套规则。
+下表检验概要设计新增的协作语义，仍是待执行要求，不是已通过的测试。合同只在 [设计正文](../design.md) 定义，本文不另设一套规则。
 
 | 契约场景 | 应检验的边界 |
 | --- | --- |
@@ -336,12 +336,12 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 
 | 原稿 | 保留并归入 | 调整、删除及理由 |
 | --- | --- | --- |
-| `1.md`：工程设计规范 | [目标](design.md)、[架构](design.md)、[感知](design.md)、[持久化](design.md)；核心场景移入本文第 6 节 | 取消阶段排期、完整类型与目录施工方案；改正全任务串行、强制自保优先级和“一份全知事实” |
-| `2.md`：工具、技能与内核边界 | [接口](design.md)、[控制](design.md)、[结果](design.md) | 去掉独立 Steps Runner、通用只读预演与多层重复核验；功能规划由具体能力提供 |
-| `3.md`：程序资产与成长 | [复用](design.md)、[持久化](design.md) | 保留代码留存、版本、检索、修订与证据；取消 Routine 必须验证发布后晋升 Learned Skill 的身份链 |
-| `4.md`：精细控制 | [程序](design.md)、[控制](design.md)；精细操作场景移入本文第 6 节 | 去掉实现伪代码和 Tick 常数；有限终止条件不作为局部反馈的唯一入口 |
-| `5.md`：Program API | [程序](design.md)、[接口](design.md)、[感知](design.md)、[结果](design.md) | 不冻结完整函数目录；开箱核验属于行动；程序输出计数不直接代表实际效果；不要求每次等待任意超时 |
-| `6.md`：逻辑架构 | [架构](design.md)、[控制](design.md)、[运行流程](design.md) | 保留纵向功能组织与依赖方向；不用三套 Registry 扩张基础设施，删除阶段实施安排和过早类型定义 |
+| `1.md`：工程设计规范 | [目标](../design.md)、[架构](../design.md)、[感知](../design.md)、[持久化](../design.md)；核心场景移入本文第 6 节 | 取消阶段排期、完整类型与目录施工方案；改正全任务串行、强制自保优先级和“一份全知事实” |
+| `2.md`：工具、技能与内核边界 | [接口](../design.md)、[控制](../design.md)、[结果](../design.md) | 去掉独立 Steps Runner、通用只读预演与多层重复核验；功能规划由具体能力提供 |
+| `3.md`：程序资产与成长 | [复用](../design.md)、[持久化](../design.md) | 保留代码留存、版本、检索、修订与证据；取消 Routine 必须验证发布后晋升 Learned Skill 的身份链 |
+| `4.md`：精细控制 | [程序](../design.md)、[控制](../design.md)；精细操作场景移入本文第 6 节 | 去掉实现伪代码和 Tick 常数；有限终止条件不作为局部反馈的唯一入口 |
+| `5.md`：Program API | [程序](../design.md)、[接口](../design.md)、[感知](../design.md)、[结果](../design.md) | 不冻结完整函数目录；开箱核验属于行动；程序输出计数不直接代表实际效果；不要求每次等待任意超时 |
+| `6.md`：逻辑架构 | [架构](../design.md)、[控制](../design.md)、[运行流程](../design.md) | 保留纵向功能组织与依赖方向；不用三套 Registry 扩张基础设施，删除阶段实施安排和过早类型定义 |
 
 原稿中的建筑扫描、蓝图导入导出与修订、几何建造、补光与临时支撑、物资规划、长期世界过程、事故恢复和跨次游玩需求仍属于目标能力。原稿中的能力名称用作覆盖线索，不构成封闭操作清单；具体执行与数据归属由概要设计集中说明。
 
@@ -351,20 +351,20 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 
 ## 9. Executor 设计依据（2026-10-18）
 
-§9.1–§9.3 是初稿时的定向源码/平台资料核查，当时没有运行实验；随后审查中的有限 Windows 探针见 §9.4。当前选择见 [Executor](modules/executor.md)，资料、局部观察与完整验收分开。
+§9.1–§9.3 是初稿时的定向源码/平台资料核查，当时没有运行实验；随后审查中的有限 Windows 探针见 §9.4。当前选择见 [Executor](../modules/executor.md)，资料、局部观察与完整验收分开。
 
 ### 9.1 当前项目真正提供的接缝
 
 | 源码事实 | 依据 | 设计影响 |
 |---|---|---|
-| World 工厂无参，宿主能力从 onStart 注入；先 onStart 再注册工具 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[types.ts](../../../src/extensions/world-framework/types.ts) | 连接/进程不在工厂启动；握手失败回滚，不留下假可用工具 |
-| stop 先关闭 scope、取消 signal 并等待 action，然后才 onStop | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../src/extensions/lifecycle-scope.ts) | 必须监听独立生命周期 signal，先触发停止，onStop 只汇合同一个 close |
-| createWorldTool 从 WorldDef.actions 再生成 action/params | [world-tool.ts](../../../src/extensions/world-framework/world-tool.ts) | 新 Minecraft World 直接登记六 action；旧双层占位入口已删除 |
-| ActionContext 只有 operationIdentity/signal，没有可信调用者 ID | [types.ts](../../../src/extensions/world-framework/types.ts) | Origin 不伪造 caller；按来源替换要求显式 targets |
-| emitEvent 转交 submitInput；事件允许 deferred render；input_accepted/input_settled 可订阅 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[loop.ts](../../../src/agent/loop.ts) | 事件只触发 Host 回执核对。emitEvent Promise 可能跨模型回合，不能持着接入串行区等它 |
-| accept 只拒绝已在 canonical 的重复 ID；InputQueues.add 不作相同 ID 入队去重 | [loop.ts](../../../src/agent/loop.ts)、[queue.ts](../../../src/agent/queue.ts) | 通用接缝须增加带 receipt 输入的接收去重和尝试 CAS 退役；不假设旧版同 ID 重投已幂等 |
-| 已有“typed message map + pending RPC + 错误序列化 + 状态投影”的 Worker 代理 | [Live2D proxy](../../../.uina/worlds/live2d/worker/proxy.ts)、[protocol](../../../.uina/worlds/live2d/worker/protocol.ts) | 复用组织方式；不直接搬用其取消和线程退出语义来代替独立进程、持久受理和 OS 退役 |
-| 退出登记表只按自有 PID kill，明确未覆盖宿主 taskkill/系统崩溃 | [child-process-registry.ts](../../../src/extensions/world-framework/child-process-registry.ts) | 不能拿该表证明整个 Minecraft 树退役 |
+| World 工厂无参，宿主能力从 onStart 注入；先 onStart 再注册工具 | [world-activation.ts](../../../../src/extensions/world-framework/world-activation.ts)、[types.ts](../../../../src/extensions/world-framework/types.ts) | 连接/进程不在工厂启动；握手失败回滚，不留下假可用工具 |
+| stop 先关闭 scope、取消 signal 并等待 action，然后才 onStop | [world-activation.ts](../../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../../src/extensions/lifecycle-scope.ts) | 必须监听独立生命周期 signal，先触发停止，onStop 只汇合同一个 close |
+| createWorldTool 从 WorldDef.actions 再生成 action/params | [world-tool.ts](../../../../src/extensions/world-framework/world-tool.ts) | 新 Minecraft World 直接登记六 action；旧双层占位入口已删除 |
+| ActionContext 只有 operationIdentity/signal，没有可信调用者 ID | [types.ts](../../../../src/extensions/world-framework/types.ts) | Origin 不伪造 caller；按来源替换要求显式 targets |
+| emitEvent 转交 submitInput；事件允许 deferred render；input_accepted/input_settled 可订阅 | [world-activation.ts](../../../../src/extensions/world-framework/world-activation.ts)、[loop.ts](../../../../src/agent/loop.ts) | 事件只触发 Host 回执核对。emitEvent Promise 可能跨模型回合，不能持着接入串行区等它 |
+| accept 只拒绝已在 canonical 的重复 ID；InputQueues.add 不作相同 ID 入队去重 | [loop.ts](../../../../src/agent/loop.ts)、[queue.ts](../../../../src/agent/queue.ts) | 通用接缝须增加带 receipt 输入的接收去重和尝试 CAS 退役；不假设旧版同 ID 重投已幂等 |
+| 已有“typed message map + pending RPC + 错误序列化 + 状态投影”的 Worker 代理 | [Live2D proxy](../../../../.uina/worlds/live2d/worker/proxy.ts)、[protocol](../../../../.uina/worlds/live2d/worker/protocol.ts) | 复用组织方式；不直接搬用其取消和线程退出语义来代替独立进程、持久受理和 OS 退役 |
+| 退出登记表只按自有 PID kill，明确未覆盖宿主 taskkill/系统崩溃 | [child-process-registry.ts](../../../../src/extensions/world-framework/child-process-registry.ts) | 不能拿该表证明整个 Minecraft 树退役 |
 | 旧 Executor 占位把运行管理也命名为 Executor | 2026-10-18 已删除的 Minecraft 源码 | 新实现按终态合同拆分 Uina 侧 Executor 与游戏侧 Runtime |
 
 ### 9.2 平台资料及推论
@@ -397,7 +397,7 @@ Windows Job 支持进程集合终止、默认子进程归属和最后句柄关�
 
 ### 9.5 终态交付接缝的源码依据
 
-本轮继续沿 [Subject.settleToolExchange/executeOne](../../../src/agent/loop.ts)、[pipeline](../../../src/tools/pipeline.ts) 与 [SessionStore](../../../src/session/jsonl-store.ts) 核查：tool_result 和 tool_finished 先于 canonical tool message append；磁盘 append 在 sync 后才更新常驻 canonical 状态。现有 [World 上下文](../../../src/extensions/world-framework/types.ts) 没有按交付 key 的查询/退役端口。故不能靠旧事件或接口返回推导持久接收，终态采用 [通用 Host 回执](../runtime/delivery-receipts.md)，不再把它当 Minecraft 专用补报算法。
+本轮继续沿 [Subject.settleToolExchange/executeOne](../../../../src/agent/loop.ts)、[pipeline](../../../../src/tools/pipeline.ts) 与 [SessionStore](../../../../src/session/jsonl-store.ts) 核查：tool_result 和 tool_finished 先于 canonical tool message append；磁盘 append 在 sync 后才更新常驻 canonical 状态。现有 [World 上下文](../../../../src/extensions/world-framework/types.ts) 没有按交付 key 的查询/退役端口。故不能靠旧事件或接口返回推导持久接收，终态采用 [通用 Host 回执](../../runtime/delivery-receipts.md)，不再把它当 Minecraft 专用补报算法。
 
 双 Job 的新增成本主要在两个资源身份/句柄，原生监管接缝仍是一个；减少为一个 Job 不能消除父崩溃/继承外部 Job 的验证要求。长期选型保留现有双 Job，拒绝跨 Uina 自动抢占，不提前建设替代锁。16 KiB 摘要不再决定完整记录是否落盘；完整响应预算与大文件出口分离。以上为终态设计判断，未进行新的 OS/Host/游戏实现验收。
 
@@ -432,6 +432,6 @@ Windows Job 支持进程集合终止、默认子进程归属和最后句柄关�
 
 另外核查固定 Mineflayer 7b4bb8d 的 [entities.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/entities.js)、[blocks.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/blocks.js)、[chat.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/chat.js)：air supply 转换为 oxygenLevel；blockEntityData 与普通方块更新不同；updateSign 会先做四行/45 UTF-16 单元检查且本身只发送包；message/messagestr/actionBar 可来自同一个入包；公告名单与实体分别维护。这些事实要求显式覆盖/归属和写后观察，不能把现成函数返回当效果确认。
 
-Uina 当前 [ImageContent](../../../src/core/content.ts)、[ToolExecutionResult](../../../src/tools/broker.ts) 和 [read_image](../../../src/extensions/workspace-tools/index.ts) 已有图片字节交付路径。新设计复用它们；源码存在不证明新地图的 PNG、IPC、Provider 图片呈现或游戏读写已经接通。所有新行为仍需按开发规划分别验收。
+Uina 当前 [ImageContent](../../../../src/core/content.ts)、[ToolExecutionResult](../../../../src/tools/broker.ts) 和 [read_image](../../../../src/extensions/workspace-tools/index.ts) 已有图片字节交付路径。新设计复用它们；源码存在不证明新地图的 PNG、IPC、Provider 图片呈现或游戏读写已经接通。所有新行为仍需按开发规划分别验收。
 
 本轮静态检查：15 个完整 JS 块通过语法检查、8 个 JSON 块可解析、21 个 TypeScript 块合并后通过严格类型检查；本地链接/锚点、Markdown 结构和 git diff --check 通过。检查覆盖新增输入互斥、分页不能越过未读窗口、告示牌四行、未知值与效果归属；不证明描述的生命周期、协议行为或游戏效果已经实现。

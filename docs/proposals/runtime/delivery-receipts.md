@@ -1,6 +1,6 @@
 # Host 持久交付回执
 
-日期：2026-10-18。状态：批 5 已实现（2026-10-25）；实现与验证见 [实施记录](../mc/host-delivery-implementation.md)。本文拥有通用工具结果/运行时输入的交付标记、状态查询与尝试退役；不拥有生产者的任务、通知内容或重试策略。Minecraft 的使用方式见 [Executor §8](../mc/modules/executor.md)。
+日期：2026-10-18。状态：批 5 已实现（2026-10-25）；实现与验证见 [实施记录](../mc/archive/host-delivery-implementation.md)。本文拥有通用工具结果/运行时输入的交付标记、状态查询与尝试退役；不拥有生产者的任务、通知内容或重试策略。Minecraft 的使用方式见 [Executor §8](../mc/modules/executor.md)。
 
 ## 1. 保证与所有权
 

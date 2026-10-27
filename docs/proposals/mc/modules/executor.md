@@ -1,8 +1,8 @@
 # Executor 详细设计
 
-日期：2026-10-25。状态：终态详细设计，批 4 的平台/传输与受管执行侧已实现；批 6 已接通工具投影、请求凭证、可靠通知及 WorldDef，见 [实施记录](../native-host-implementation.md)。目标部署为本机 Windows 10+，当前真实验收仅 Windows 11 x64。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
+日期：2026-10-25。状态：终态详细设计，批 4 的平台/传输与受管执行侧已实现；批 6 已接通工具投影、请求凭证、可靠通知及 WorldDef，见 [实施记录](../archive/native-host-implementation.md)。目标部署为本机 Windows 10+，当前真实验收仅 Windows 11 x64。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
 
-批 4 状态与实际证据见 [平台实施记录](../executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Program 执行与批 8 Library 文件/发现已接通；Microsoft、等待/决策续段仍明确不可用。后续按同一装配继续，不另建桥。
+批 4 状态与实际证据见 [平台实施记录](../archive/executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Program 执行与批 8 Library 文件/发现已接通；Microsoft、等待/决策续段仍明确不可用。后续按同一装配继续，不另建桥。
 
 ## 1. Uina 得到什么
 
@@ -57,7 +57,7 @@
 
 终态承诺：World 启用、持久材料可用且 Host/存储最终恢复处理时，仍适用的完成通知至少持久进入会话一次；通知含结论、摘要和读取引用，完整正文仍以 Runtime 记录为准。允许重复，不重跑动作。普通 progress 不主动唤醒。Host 通用回执是完整交付的实现依赖，不以“已交出”替代持久接收。
 
-同进程方案缺少域外终止能力；独立常驻服务多出发现、身份移交和升级生命周期。本设计选择受管子进程。平台依据、当前源码和替代方案见 [研究记录 §9](../research.md#executor-evidence)。
+同进程方案缺少域外终止能力；独立常驻服务多出发现、身份移交和升级生命周期。本设计选择受管子进程。平台依据、当前源码和替代方案见 [研究记录 §9](../archive/research.md#executor-evidence)。
 
 ## 2. 工具接口与结果
 
@@ -484,7 +484,7 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 
 ### 8.1 权威报告与 Host 回执
 
-Runtime 只持久保存 pending/committed 两种交付处置；committed 只接受真实 HostCommitReceipt，不因接口返回、流水线 tool_result 或 render 成功而确认。报告仍是同一 CompletionReport，不新增补报报告。所需的通用接口与内核接线见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，该通用接缝已在批 5 实现，见 [实施记录](../host-delivery-implementation.md)；Executor 的实际消费与可靠通知已在批 6 接通，见 [原生接入实施](../native-host-implementation.md)。
+Runtime 只持久保存 pending/committed 两种交付处置；committed 只接受真实 HostCommitReceipt，不因接口返回、流水线 tool_result 或 render 成功而确认。报告仍是同一 CompletionReport，不新增补报报告。所需的通用接口与内核接线见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，该通用接缝已在批 5 实现，见 [实施记录](../archive/host-delivery-implementation.md)；Executor 的实际消费与可靠通知已在批 6 接通，见 [原生接入实施](../archive/native-host-implementation.md)。
 
 Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 completionRef，attempt 使用宿主生成的本次交付 UUID；输入渠道可直接令 inputId=attempt。返回的 receipt 必须匹配当前端口、生产者 key 与真实持久记录；guest/模型的同形 JSON 无效。持久后 settleDelivery(receipt) 幂等将原项改 committed；ACK 丢失可重复同一确认，不能降回 pending。不同会话无法核实旧回执时允许重新呈现同 key，不推断游戏动作没执行。
 

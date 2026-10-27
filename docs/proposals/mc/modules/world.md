@@ -1,6 +1,6 @@
 ﻿# World / 观察与记录详细设计
 
-日期：2026-10-18，2026-10-24 校正状态。终态规格中，当前/静态读取、当前事实 Watch、事件与窗口观察历史及 SQLite Worker 已实现；批 9A 已补确切查询版本、事件 Watch 和历史库 v2（见 [实施记录](../wait-implementation.md)）；批 9B 已接现有事件/窗口材料的 retain/release、显式清理与历史库 v3；通用领域记录、空间切片、名单/地图仍缺。容器历史复用 client.window@1 证据，不建第二份库存。文中历史研究不代替当前验收；标注“条件条款”的小节随实际消费者接入。
+日期：2026-10-18，2026-10-24 校正状态。终态规格中，当前/静态读取、当前事实 Watch、事件与窗口观察历史及 SQLite Worker 已实现；批 9A 已补确切查询版本、事件 Watch 和历史库 v2（见 [实施记录](../archive/wait-implementation.md)）；批 9B 已接现有事件/窗口材料的 retain/release、显式清理与历史库 v3；通用领域记录、空间切片、名单/地图仍缺。容器历史复用 client.window@1 证据，不建第二份库存。文中历史研究不代替当前验收；标注“条件条款”的小节随实际消费者接入。
 
 本文负责 World 的内部数据流、当前观察、查询快照、失效订阅、历史、领域记录及恢复。它承接已确认产品选择与 Driver 推荐，不重开身体控制设计。方法、参数、返回和错误形状的唯一来源是 [public-api §4.1–5](../public-api.md)；协作边界见 [contracts](../contracts.md)；Driver 的采集实现归 [Driver §11](driver.md)。本文不授权产品实现，不规定开发阶段、工期或人员。
 
@@ -103,7 +103,7 @@ flowchart LR
 
 合并的 changed 只表示某处需要复查。开窗后关窗与从未开窗都可能得到 window=null；实体出现又离开后也可能得到同样的最终实体集合。事后 sample 不能恢复已经失效的值。
 
-固定 Mineflayer 的窗口关闭路径先置 currentWindow=null，再发布 windowClose，见[固定源码](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js)。实体消失、即时消息及伤害同样需要在实际入口保留载荷；证据定位集中在 [research](../research.md)。不能把这些源码事实说成 Uina 已实现可靠历史。
+固定 Mineflayer 的窗口关闭路径先置 currentWindow=null，再发布 windowClose，见[固定源码](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js)。实体消失、即时消息及伤害同样需要在实际入口保留载荷；证据定位集中在 [research](../archive/research.md)。不能把这些源码事实说成 Uina 已实现可靠历史。
 
 ### 5.2 四个承诺边界
 
@@ -579,7 +579,7 @@ World 停用、重绑、源重建、存储恢复只使实际受影响的旧查�
 | 所有领域写都检查通用观察版本 | 看似严格 | 混淆旧判断与当前条件事务，制造无关冲突 |
 | 自动世界指纹识别 | 减少人工绑定 | 不能可靠证明重置；显式绑定和可靠证据更诚实 |
 
-本文只描述 World 的内部机制与取舍。对外的类型、字段与错误码一律以 [public-api.md §2/§5](../public-api.md) 为唯一来源：`Observation.history`、`DomainRecord.worldRevision`、`WorldEvidencePort` 的增补理由记在 [research.md](../research.md) 与 [changelog.md](../changelog.md)，不在这里再抄一份（抄两份必然漂移）。
+本文只描述 World 的内部机制与取舍。对外的类型、字段与错误码一律以 [public-api.md §2/§5](../public-api.md) 为唯一来源：`Observation.history`、`DomainRecord.worldRevision`、`WorldEvidencePort` 的增补理由记在 [../archive/research.md](../archive/research.md) 与 [changelog.md](../changelog.md)，不在这里再抄一份（抄两份必然漂移）。
 
 基础查询 schema 需要随实际 descriptor 完整发布，不宣称当前已有全部原版 query 实现。接口开放不等于任意版本/服务器都支持。
 
@@ -633,4 +633,4 @@ World 停用、重绑、源重建、存储恢复只使实际受影响的旧查�
 
 本稿依据当前权威文档、固定 Mineflayer 源码、Uina World 生命周期及 SQLite 官方合同。原 1–6.md 未恢复为规范；不以旧稿篇幅或第三方 AI 结论代替当前反例。
 
-本轮文档/模型验证的范围与命令集中于 [research §2.5](../research.md)。真实游戏、父子域同时崩溃、真实断电、Driver 实时延迟、长期内存/磁盘增长、全原版/模组覆盖和游玩质量仍未验证。它们不能由本稿不变量、ACK 字段名或模型探针宣称成立。
+本轮文档/模型验证的范围与命令集中于 [research §2.5](../archive/research.md)。真实游戏、父子域同时崩溃、真实断电、Driver 实时延迟、长期内存/磁盘增长、全原版/模组覆盖和游玩质量仍未验证。它们不能由本稿不变量、ACK 字段名或模型探针宣称成立。

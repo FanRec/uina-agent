@@ -93,4 +93,4 @@ Library 管普通工作文件与来源保存，见 [Library §5](modules/library
 
 ## 10. 验收归属
 
-开发阶段与依赖见 [开发规划](development-plan.md)。各模块正文保留自己的接口、故障与验收场景；研究和历史证据在 [research](research.md)，不作为现行合同。文档静态检查、本地实现测试、真实进程/OS 验证、Minecraft 与模型游玩验收分别报告。
+开发阶段与依赖见 [开发规划](development-plan.md)。各模块正文保留自己的接口、故障与验收场景；研究和历史证据在 [research](archive/research.md)，不作为现行合同。文档静态检查、本地实现测试、真实进程/OS 验证、Minecraft 与模型游玩验收分别报告。

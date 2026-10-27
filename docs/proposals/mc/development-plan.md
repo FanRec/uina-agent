@@ -1,8 +1,8 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](wait-implementation.md)；**批 9B 的决策、调度、现有历史引用清理与 I2 已实现**，实现与验收边界见 [实施记录](decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；**批 9B 的决策、调度、现有历史引用清理与 I2 已实现**，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
 
-K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
+K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](archive/native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
 目标：完成当前设计的 **16 个查询、35 个动作**，以及支持它们的运行、控制、观察、文件复用与恢复机制。先后交付的是正式实现的一部分，最终范围不因首个可用流程缩减。
 
@@ -20,7 +20,7 @@ K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的�
 | Host/World 已有生命周期、工具、输入、图片与 HostDeliveryPort/receipt 接缝 | 批 6 直接消费正式端口，不以 emitEvent 返回代替持久接收 |
 | 会话为 journal v4；带标记 canonical 记录增量形成提交索引，旧 v3 明确拒绝 | H 已实现，保留真实旧日志；验收使用独立会话，见批 5 实施记录 |
 | 类型检查与构建均已包含 Minecraft（tsconfig.build 纳入 `.uina/worlds/minecraft`，Worker 路径按产物/源码双态解析） | 构建接线已完成；后续 Worker/WASM 资产按首次采用时补复制规则 |
-| package.json 固定 mineflayer=4.39.0、mineflayer-pathfinder=2.4.5、vec3=0.1.7；QuickJS 0.32.0 已在批 7 锁定（含窄宿主补丁） | 批 7 已接引擎、WASM/Worker 与正式桥；证据和限制见 program-implementation.md |
+| package.json 固定 mineflayer=4.39.0、mineflayer-pathfinder=2.4.5、vec3=0.1.7；QuickJS 0.32.0 已在批 7 锁定（含窄宿主补丁） | 批 7 已接引擎、WASM/Worker 与正式桥；证据和限制见 archive/program-implementation.md |
 | Executor/Companion 已受管装配原生执行侧，批 6 WorldDef/工具/可靠通知已接通，Program 执行与最小只读材料已接入，Library 管理/发现已在批 8 接通 | 批 6 接正式原生主脑入口；批 7–9 接程序与复用，不造临时模型桥 |
 | Runtime 已受理原生 call / Program + enqueue；feedback、通用领域记录、事件 Watch 和效果核验器尚缺 | 按下文实际消费者补齐；原生集成不冒充完整 Runtime、Driver 或 I2 |
 
@@ -251,9 +251,9 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ## 9. 现在可直接开工的任务
 
-1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](native-host-implementation.md)。
+1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](archive/native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **下一工作包为地点记录与路径探索**：批10已接高频 feedback/loop、默认自保与 safety 记录；places/remember/forget 和 route.plan/explore 按直接依赖推进。批10范围与验证见 feedback-implementation.md，仍不计完整战斗或51项完成。
+3. **下一工作包为地点记录与路径探索**：批10已接高频 feedback/loop、默认自保与 safety 记录；places/remember/forget 和 route.plan/explore 按直接依赖推进。批10范围与验证见 archive/feedback-implementation.md，仍不计完整战斗或51项完成。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -283,12 +283,12 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 | 批 | 交付物与归属 | 直接前置 | 完成判据 |
 |---|---|---|---|
-| **4 · Executor 平台底座（已实现）** | `executor/`、`companion/` 及 Windows x64 native：两个命名 Job、受管 bootstrap、启动身份、固定 IPC、Owner 门/心跳、关闭与退役；同步修正 Runtime 持久受理 | 已有 A/I1；Executor 平台合同 | 实际结果见 [实施记录](executor-platform-implementation.md)：真实 OS/Node、SQLite/Worker 和源码/产物受管入口；此批不宣称模型工具已可用，Windows 10 与 ARM 未验收 |
+| **4 · Executor 平台底座（已实现）** | `executor/`、`companion/` 及 Windows x64 native：两个命名 Job、受管 bootstrap、启动身份、固定 IPC、Owner 门/心跳、关闭与退役；同步修正 Runtime 持久受理 | 已有 A/I1；Executor 平台合同 | 实际结果见 [实施记录](archive/executor-platform-implementation.md)：真实 OS/Node、SQLite/Worker 和源码/产物受管入口；此批不宣称模型工具已可用，Windows 10 与 ARM 未验收 |
 | **5 · H 通用持久回执（已实现）** | 按既定规范同批完成 Host/Subject/Tool/Session receipt、inspect/retire、恢复索引与 journal v4；扩展上下文提供同一端口 | 既有 Host/Session；独立于批 4、Program 与玩法 | 临时 v4 会话走真实 Host/Subject/SessionStore：append 前后中断、同键去重、retire 竞争、回调丢失与回溯均有事实依据；旧 v3 明确拒绝，真实日志不迁移 |
 | **6 · 正式原生主脑闭环与首次校准（已实现）** | `worlddef/`、`companion/`、`executor/` 与必要 Runtime 交付接缝：配置/绑定、目录发现、查询、原生 run/chat、请求查证/停止/记录、短结果/后台可靠通知、BodyEndpoint；先支持已验收的 offline 1.21.11 范围 | 批 4 + 批 5 + 现有 R/D/W/25 项能力 | 源码/产物各经真实 WorldTool/Host 路径运行；工具取消只结束等待、显式 stop 才停止 Run，停用/急停撤销写源；完成通知由真实 Host receipt 确认，恢复不重放动作。随后真模型仅凭短指南完成发现、采集生产、缺料纠错与停止，记录首次校准 |
 | **7 · Program 执行闭环（已实现）** | `program/`、Program 合同、Runtime 程序入口与正式 IPC 分派：真实 QuickJS/Worker、compile-only、JSON/错误桥、公平 pump、局部取消/退役、容量与段内源码固定；先接 read/call/progress/sleep/withBody 及已有精细 body/window 操作 | 已有 R/D/W；引擎可提前独立施工；模型验收需批 6 | 真实引擎验证同步/微任务死循环、等待者并存、晚消息与局部取消；普通 JS 经正式入口组合现有能力，保存确切执行源码，能解释父/子 Call 和部分/未知效果。未接等待、决策、反馈的 API 不宣称可用 |
 | **8 · Library 文件与发现复用（已实现）** | `library/` 及发现装配：程序/经验/蓝图文件的命名、头/metadata、CRUD 与扫描；程序 compile-only 和 save from 复用批 7 的编译/精确源码接缝。蓝图解释和现场 Project 随施工包实现 | 批 7 的编译与执行材料；文件部分可独立实现 | 真实临时文件验证坏头、并发修改和来源追溯；模型完成试做→纠错→save from→局部改文件→新段复用。在途段仍用原字节；经验判断不冒充事实 |
-| **9A · 可等待查询与程序等待（已实现）** | 当前查询的确切版本、events 合法增量等待、SQLite 提交版本与库身份、Program waitUntil、world_change 投影及停止清理；历史库 v2 | 批 6–8 | 实际范围、源码/产物真服与模型证据见 [实施记录](wait-implementation.md)；不计作完整 I2 |
+| **9A · 可等待查询与程序等待（已实现）** | 当前查询的确切版本、events 合法增量等待、SQLite 提交版本与库身份、Program waitUntil、world_change 投影及停止清理；历史库 v2 | 批 6–8 | 实际范围、源码/产物真服与模型证据见 [实施记录](archive/wait-implementation.md)；不计作完整 I2 |
 | **9B · 决策、调度与 I2 收口（已实现）** | decide/checkpoint、continue、决策传播与消费；replace_pending/preempt_current；World 保留/引用保护与历史清理；相关停止/交付竞争 | 批 6–8 + 9A；对应 World/Runtime/Program 合同 | 决定交还后只由显式 continue 开新段，重复/过时决策拒绝；关闭重开只恢复事实；引用与清理不制造悬空。经正式模型入口完成完整 I2 |
 
 批 6 是同一正式 World 的阶段性交付，具体可用范围与状态口径见 [Executor §3.1](modules/executor.md#31-配置与入口)。已声明应装配的模块或资产缺失仍启动失败，不能把损坏部署当成尚未交付。批 9 的 I2 不等待蓝图、完整战斗或全部活动，但仍须兑现所用 API 的正式合同；高频反馈与高级能力继续按下节补齐。
@@ -303,7 +303,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | 路径与探索（K3） | route.plan、explore | 已有寻路与当前 block/entities/world 事实；plan/执行复用目标语义，覆盖未知不算目标不存在 | 无硬编码资源坐标找到方块/动物/群系；耗尽预算保留真实结果；结合地点返回基地 |
 | 跟随与逃离（K3） | follow、flee | 已有导航、实体引用/失效和控制归属；共享实际重规划/停止机制，不复制另一套身体仲裁 | 目标移动时跟随绕障；失去跟踪不冒认到达；逃离达到声明距离 |
 | 洞穴/水下脱困（K3） | surface | 导航、受控挖掘/游动与可站立/露天判据；单独解决竖向运动风险，不当成普通 goto 包装 | 从洞穴和水下分别回到满足判据的位置；不可达/超时与部分动作如实 |
-| 高频反馈与默认自保（批10已接通，见 feedback-implementation.md） | Driver feedback/loop/背压，Program 控制桥，Runtime safety 介入和效果归属 | 同一 ClientFactsPort、控制资格与停止合同；默认自保是明确交付项，主脑可按玩法调整 | 测完整 sample→guest→apply 时延和过期输入撤销；移动/挖掘等动作被介入后进度、控制与未知效果保留，禁止旧写源复活 |
+| 高频反馈与默认自保（批10已接通，见 archive/feedback-implementation.md） | Driver feedback/loop/背压，Program 控制桥，Runtime safety 介入和效果归属 | 同一 ClientFactsPort、控制资格与停止合同；默认自保是明确交付项，主脑可按玩法调整 | 测完整 sample→guest→apply 时延和过期输入撤销；移动/挖掘等动作被介入后进度、控制与未知效果保留，禁止旧写源复活 |
 | 完整战斗（K3） | fight | 反馈与自保、跟随/逃离、装备与攻击；cautious 使用的 surface 路径就绪 | 真服三僵尸打完或撤退、血量≥6，三档 stance 可复现；目标失踪不算击杀 |
 | 地形切片（K4） | region | Driver 实际已加载区块、World 当前/历史来源与编码；不依赖 fight | 解码与真实区域一致；未加载/历史格明确标注；大小上限与切片提示符合合同 |
 | 空间作业（K4） | tunnel、excavate | 必要导航、挖掘/支撑与目标差异核验，region 可供现场读取；不依赖完整战斗 | 阶梯矿道连通可走、清空目标计数正确，落沙/液体/冲突、缺工具与取消保留进度 |
@@ -360,7 +360,7 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 | replace_pending/preempt_current、decide/continue/checkpoint | 批 9B 由 Runtime/Program/World 各自实现并集成，不把受理/决策状态复制到 Executor |
 | World 事件等待、历史保留、Runtime 引用保护 | 可等待查询已在 9A 接齐；持续运行所需清理/精确引用保护由 9B 在 I2 收口，不能永久只增不清 |
 | ctx.verify 与后续效果核验 | 首个需要显式复查 unknown 的真实能力工作包落地对应 verifier（默认空间/施工包），同步 Runtime 接缝；最终验收关闭缺口，不先建无人消费的注册框架 |
-| feedback、过期输入、默认自保与 safety 记录 | 批10已接通；完整 fight 随后实现。当前含真实 guest 控制桥、控制撤销与 safety 持久记录，见 feedback-implementation.md |
+| feedback、过期输入、默认自保与 safety 记录 | 批10已接通；完整 fight 随后实现。当前含真实 guest 控制桥、控制撤销与 safety 持久记录，见 archive/feedback-implementation.md |
 | goto 站姿/空间完成判据 | 路径/脱困工作包落实实际可站立判据，保留现有 GoalNear 的真实节点语义，不用欧氏距离误拒 |
 | Microsoft 认证与账号身份核验 | 正式原生入口后可独立开工；有授权账号时验收客户端认证、profile/账号独占，未验收前仅声明 offline 范围。最终完整交付仍须支持两条认证路径 |
 | 其他协议版本、窗口与物品组件差异 | 真实接入该版本/工作站时在同一 DriverProtocol 窄口处理；当前只确认 1.21.11，不提前声明兼容 |
@@ -399,4 +399,4 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 
 ### 10.7.2 生产链审查修复
 
-批 3 后续修复替换了初版的产量净差、长持身体等待和固定64燃料截断：合成/熔炼各自实现，搬运复用实例匹配与跨槽分装，确认时快照直接推进记账。熔炼等待前关闭窗口、释放自有身体，实际开炉复查后取货；累计进度覆盖失败和取消。燃料按实际槽位/刻数预算，自动选择一次固定一种，不建设混合燃料规划。当前验证证据和边界见 [生产链修复实施](production-repair-implementation.md)。
+批 3 后续修复替换了初版的产量净差、长持身体等待和固定64燃料截断：合成/熔炼各自实现，搬运复用实例匹配与跨槽分装，确认时快照直接推进记账。熔炼等待前关闭窗口、释放自有身体，实际开炉复查后取货；累计进度覆盖失败和取消。燃料按实际槽位/刻数预算，自动选择一次固定一种，不建设混合燃料规划。当前验证证据和边界见 [生产链修复实施](archive/production-repair-implementation.md)。

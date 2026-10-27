@@ -5,20 +5,20 @@
 - ClientHost 生命周期监听与化身退役修正；self 氧气、最大生命值和效果寿命沿实际客户端数据读取。
 - Driver 在既有物理模拟前安装/核验反馈输入，模拟实际完成后采样并确认；Program 接 body.feedback/loop，流采用单在算帧/latest-only 待交付、250ms有效期与所属输入撤销。
 - Runtime 在同一身体队列中退役旧作用域、授予 safety；默认岩浆/缺氧/低血新伤害反射不另建 Run，不自动吃、挖、放或反击。记录归 safety，旧程序可在外层捕获中断并重新观察。
-- Runtime schema v6，旧v5拒绝自动迁移；history v3、ledger v3、Host journal v4保持。状态与重要提示可查实际介入记录；完整证据见 [批10实施记录](feedback-implementation.md)。能力仍25/51，下一包地点与路径探索。
+- Runtime schema v6，旧v5拒绝自动迁移；history v3、ledger v3、Host journal v4保持。状态与重要提示可查实际介入记录；完整证据见 [批10实施记录](archive/feedback-implementation.md)。能力仍25/51，下一包地点与路径探索。
 
 ## 2026-10-25 · 批 8 Library 文件与发现复用
 
 - 三类普通文件 CRUD、统一扫描/头诊断、compile-only、确切 Call 来源保存、四类统一发现和正式工具/IPC 已接通；Program 只消费注入的只读材料。
 - 工作文件摘要和执行来源摘要分开，metadata 补丁不改正文；在途段固定源码，新段重读，删库文件不删运行快照。
 - 蓝图本批只管理 Raw 与元数据；Target 只报告 schema/digest 和 validation:unavailable，语义验证及施工仍归 Construction。原件可读不代表格式有效。
-- Runtime/Host 持久格式不变，能力数量仍为 25/51；下一批等待/决策与 I2。验证、裁决与未验证范围见 [实施记录](library-implementation.md)。
+- Runtime/Host 持久格式不变，能力数量仍为 25/51；下一批等待/决策与 I2。验证、裁决与未验证范围见 [实施记录](archive/library-implementation.md)。
 
 ## 2026-10-25 · 批 6 正式原生主脑入口
 
 - WorldDef、六 action 原生 façade、同源目录、请求凭证与显式重试、固定报告和 Host receipt 可靠交付已接通；Program/Library 保持明确不可用。
 - Runtime schema v3 保存不可变截面和交付处置；Executor ledger v2 保存原请求与尝试，旧数据拒绝自动迁移。
-- BodyEndpoint、abort/stop、源/产物 manifest 与开发入口同步；首次真实模型完成采集生产、缺料纠错和显式停止。证据、校准修正及剩余范围见 [实施记录](native-host-implementation.md)。
+- BodyEndpoint、abort/stop、源/产物 manifest 与开发入口同步；首次真实模型完成采集生产、缺料纠错和显式停止。证据、校准修正及剩余范围见 [实施记录](archive/native-host-implementation.md)。
 
 ## 2026-10-25 · 批 5 Host 通用持久回执
 
@@ -26,13 +26,13 @@
 - 工具/输入携带 receipt；Broker 验证后同步登记尝试，canonical append 才确认。提交索引由既有 reducer 增量维护，回溯不删除历史交付事实。
 - Mailbox 按来源/key 去重，render 后重验提交资格，retire 对 attempt 做 CAS；工具退役不删除协议消息，输入退役与原队列撤回共用持久路径。
 - Host、Extension 与 World 共享来源绑定的 inspect/retire 端口。批 6 继续正式 MC 模型入口与可靠通知，本批未接真实模型或改变玩法数量。
-- 实际进程中断、Host 重开与最终验证见 [实施记录](host-delivery-implementation.md)。
+- 实际进程中断、Host 重开与最终验证见 [实施记录](archive/host-delivery-implementation.md)。
 
 ## 2026-10-25 · 批 4 Executor 平台底座
 
 - 新增 Windows x64 私有 Node-API 双 Job、精确进程句柄/异步退役、受管 bootstrap、Companion 静态装配、固定 IPC、身份/launch/本地门意图账本。没有添加模型工具或临时通知桥。
 - Runtime 增加 Owner/心跳/独立三门及 CAS；受理与开始先提交，关闭停止控制再结算。库 schema v2 固定 worldOwner/storageId，旧库拒绝，不迁移真实数据。
-- 开发 harness 复用执行侧装配，`submit` 的直接消费者改为 await；新入口 `pnpm dev:mc:executor`。实际 OS、故障、SQLite 与源码/产物真服证据见 [实施记录](executor-platform-implementation.md)。
+- 开发 harness 复用执行侧装配，`submit` 的直接消费者改为 await；新入口 `pnpm dev:mc:executor`。实际 OS、故障、SQLite 与源码/产物真服证据见 [实施记录](archive/executor-platform-implementation.md)。
 - 下一任务为批 5 通用 Host 回执；Host journal 仍为 v3，WorldDef/模型入口与可靠通知留批 6。
 
 ## 2026-10-25 · 开发规划按正式接入与模型反馈重排
@@ -48,7 +48,7 @@
 - 合成/熔炼拆为独立动作，删除旧混合实现；取货共用组件匹配、多槽分装及实际堆叠上限。合成移除错误容量预测，消耗/入包分开累计。
 - 熔炼在世界等待前关窗并释放自有身体，复查重新核验身份与炉子；批量同时受燃料与槽位约束，失败/取消保留累计装料、取货与剩余量。
 - 点击回执直接携带确认时的服务端快照，删除已确认回执与记账之间再次读取的取消竞争；所有消费者直接替换，不留兼容入口。
-- Paper 字节码核实最小燃料表，删除四种下界木材，干海带块修正4001刻。当前类型/9条边界、MC28文件236项、构建通过；真服最终证据见 [生产链修复实施](production-repair-implementation.md)。
+- Paper 字节码核实最小燃料表，删除四种下界木材，干海带块修正4001刻。当前类型/9条边界、MC28文件236项、构建通过；真服最终证据见 [生产链修复实施](archive/production-repair-implementation.md)。
 
 
 ## 2026-10-25 · 批 3 生产链落地（craft@1 / smelt@1）
@@ -64,7 +64,7 @@
 
 ## 2026-10-25 · 状态校正与批 3 前置登记
 
-- 提交归属校正：K1 收口、真服复验、批 1 采集、批 2 窗口容器四轮均已在 **d77d20f** 入库（84 files）；2026-10-25 修复与 Driver 收敛在 **6157834**。`dev/MC-WORLD.md`、[窗口容器实施记录](window-container-implementation.md) 与 [Driver 修复实施](driver-repair-implementation.md) 此前记作"未提交"，已更正。
+- 提交归属校正：K1 收口、真服复验、批 1 采集、批 2 窗口容器四轮均已在 **d77d20f** 入库（84 files）；2026-10-25 修复与 Driver 收敛在 **6157834**。`dev/MC-WORLD.md`、[窗口容器实施记录](archive/window-container-implementation.md) 与 [Driver 修复实施](archive/driver-repair-implementation.md) 此前记作"未提交"，已更正。
 - 新增 [development-plan §10.7](development-plan.md)：批 3 的三处底层前置按源码登记——`WindowSession.layout()` 只接受普通容器窗口（`crafting`/`furnace` 报 `UNSUPPORTED_WINDOW`，`container@1` 白名单同样不含这两种方块）；`KnowledgeRecipe` 拍平 `inShape`，摆格图案丢失；该数据版本无熔炼配方与燃料刻数。批 3 的前置列改为引用该节。
 - 测试基线校正：MC 确定性回归实际为 **24 files / 176 tests**（入口文档此前仍写 16/125）。
 - 未改动任何行为合同与源码。
@@ -76,7 +76,7 @@
 - ItemValue 与选择器统一；采集工具由实际 harvestTools 集合判断，移除材质排序猜测。toss 改为 `{receipt,removed,remaining}`，drop 分别保留确认离包与地面观察进度。
 - 采矿不再把客户端预测空气当服务端破坏；牌面取消后不再提交。查询恢复统一 schema 入口，导航禁放置覆盖全部耗材移动，Runtime 修复直接/嵌套未知效果的成功误报。
 - 真服首轮暴露 Goto 欧氏完成复查与 GoalNear 节点判据不一致；先增加真实依赖失败回归，再统一 nodeGap，修正容器动作及继发历史读取失败。
-- 本轮工程：`pnpm typecheck`（9 条边界）、MC 显式 **24 文件 / 176 项**、`pnpm build` 通过。最终 Paper 1.21.11 上 `pnpm dev:mc:repair` 与构建产物各 **15/15 PASS**，独立 Temp 数据根，含真实 max_damage/max_stack_size 覆盖、取消与完整关闭重开历史。取舍、独立审查五项修复和日志归属见 [Driver 修复实施](driver-repair-implementation.md)。
+- 本轮工程：`pnpm typecheck`（9 条边界）、MC 显式 **24 文件 / 176 项**、`pnpm build` 通过。最终 Paper 1.21.11 上 `pnpm dev:mc:repair` 与构建产物各 **15/15 PASS**，独立 Temp 数据根，含真实 max_damage/max_stack_size 覆盖、取消与完整关闭重开历史。取舍、独立审查五项修复和日志归属见 [Driver 修复实施](archive/driver-repair-implementation.md)。
 
 ## 2026-10-24 · 批 2 窗口与容器落地
 
@@ -85,7 +85,7 @@
 - 独立复查修正双完整回包串到后次点击、取消未打开窗口却假称屏障已过两处缺陷；后一种情况复用既有连接封闭机制，要求重连。真实 Paper 的 block-use 突发丢包通过看向目标后等待一个实际物理步解决，不另建限流框架。
 - World 复用 client.window@1/evidence 表保存观察，只聚合容器区域；同世界/存档代次/维度按位置查最后观察，不受临时 binding 变化阻断。实体容器观察不伪装成方块历史。补混合 schema、订阅前重放、reset 保留未确认材料、关闭前 flush。
 - 真服场景 `pnpm dev:mc:containers`：独立测试区、实际区块/平台/落脚核验，13 项；构建产物同场景也通过。MC 确定性回归 16 files / 125 tests；pnpm typecheck、pnpm build 通过。准备和游戏动作分开，工具等待超时的显式停止只发生在验收脚本。
-- 详细设计、替代方案与实施裁决见 [窗口容器实施记录](window-container-implementation.md)。本轮没有实现 Program/Library、Host 回执或正式 WorldDef。
+- 详细设计、替代方案与实施裁决见 [窗口容器实施记录](archive/window-container-implementation.md)。本轮没有实现 Program/Library、Host 回执或正式 WorldDef。
 
 ## 2026-10-24 · 批 1 采集闭环（collect / pickup / drop）落地
 
@@ -300,7 +300,7 @@
 
 ## 2026-10-15 · 目录整理
 
-六份编号讨论稿合并为本目录的概要（`design.md`）、行为契约（`contracts.md`）、公开接口（`public-api.md`）、研究记录（`research.md`）与各模块详细设计；原稿快照存 `../../../.artifacts/minecraft-design-originals-20261015-144602.zip`。
+六份编号讨论稿合并为本目录的概要（`design.md`）、行为契约（`contracts.md`）、公开接口（`public-api.md`）、研究记录（`archive/research.md`）与各模块详细设计；原稿快照存 `../../../.artifacts/minecraft-design-originals-20261015-144602.zip`。
 
 ## 2026-10-15 ~ 10-17 · 各模块定稿与重构（原先写在正文首屏，已移到这里）
 

@@ -2,7 +2,7 @@
 
 日期：2026-10-18（Asia/Shanghai），2026-10-27 校正实现状态。状态：终态实施规格；原生 I1 子集已实现，K1、采集及窗口容器沿同一 Runtime 接入。批6固定记录与交付、批7程序、批9A等待和批9B决策续段/调度已接通；批10已接安全介入、独立身体退役及持久记录（schema v6）；显式效果核验器尚未实现。
 
-跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
+跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [../archive/research.md](../archive/research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 
 ## 1. 职责与不变量
 
@@ -336,7 +336,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v5 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../native-host-implementation.md)，批 9B 已接正式 I2，见 decision-implementation.md |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v5 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../archive/native-host-implementation.md)，批 9B 已接正式 I2，见 ../archive/decision-implementation.md |
 | Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
 | Library | 旧 SQLite/CAS Assets 已清理；批 7 程序只读材料与共用头解析、批 8 文件管理/发现与来源保存已实现 | 沿 [Library](library.md) 文件合同使用，不兼容旧 Assets 仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
@@ -344,7 +344,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | Uina 接入 | 批 5 Host 通用回执、批 6 原生 World/可靠交付已接通 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
-QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；批 7 已有真实 QuickJS/Worker、Host/Session 与 Paper 程序执行验收，详见 [实施记录](../program-implementation.md)；断电、完整 I2 与长期运行仍未验收，不能互相替代。
+QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；批 7 已有真实 QuickJS/Worker、Host/Session 与 Paper 程序执行验收，详见 [实施记录](../archive/program-implementation.md)；断电、完整 I2 与长期运行仍未验收，不能互相替代。
 
 ### 9.2 技术取舍与待验证项
 

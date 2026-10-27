@@ -4,7 +4,7 @@
 
 日期：2026-10-15（Asia/Shanghai），2026-10-17 修订。修订经过与理由见 [changelog](../changelog.md)，本文只写当前合同。
 
-**设计依据：**[概要](../design.md)、[跨模块行为](../contracts.md)、[唯一公开接口](../public-api.md)及[固定源码证据](../research.md)。
+**设计依据：**[概要](../design.md)、[跨模块行为](../contracts.md)、[唯一公开接口](../public-api.md)及[固定源码证据](../archive/research.md)。
 
 本文只定义 Driver 的内部职责、操作算法、状态、第三方适配、版本兼容和验证要求。跨模块方法及数据类型以 `public-api.md` 为唯一设计来源，不在本文维护第二套公开接口。玩法算法、Callable 机制、Program 执行域和 World 历史的职责归属见[概要 §2.2](../design.md)；本文只说明与它们接触的边界，不设计其内部实现。
 
@@ -666,7 +666,7 @@ updatePosition / movement packet
 
 采用确定语义：第 N 步模拟完成 → 采样 N 的结果 → 执行域计算 → 输出进入待应用槽 → 在仍有效的第 M 步模拟前安装，其中 M>N。异步延迟可能使 M>N+1；不能许诺每帧一定赶上下一步，也不把输出补记到 N。
 
-**窄接缝是条件条款（2026-10-17 依据 research.md#driver-audit 降级）。** 上游并未提供现成接缝。按固定源码核查，同进程中在模拟之间同步安装输入并监听 `physicsTick` 计数，可实现设计要求的前安装、后计数语义。新实现应先沿此窄路径验证；只有异步输入安装或需要归属插件模拟后修改/wire 取证时，才以最小补丁实现（优先 wrap `physics.simulatePlayer` 单点，不 fork 循环）。
+**窄接缝是条件条款（2026-10-17 依据 ../archive/research.md#driver-audit 降级）。** 上游并未提供现成接缝。按固定源码核查，同进程中在模拟之间同步安装输入并监听 `physicsTick` 计数，可实现设计要求的前安装、后计数语义。新实现应先沿此窄路径验证；只有异步输入安装或需要归属插件模拟后修改/wire 取证时，才以最小补丁实现（优先 wrap `physics.simulatePlayer` 单点，不 fork 循环）。
 
 ```text
 原有 play/实体/区块等模拟条件检查
@@ -682,11 +682,11 @@ updatePosition / movement packet
 
 必要的一次性输入可在提交边界派发，但其回执仍区分派发与随后真实消费步。完整原生插件在 physicsTick 写的按键通常供未来步消费；若其在此时改位置、速度或视角，则另列为模拟后修改，可能进入本次移动包。发包前快照仅是本地候选状态；updatePosition 仍会限速、转换/舍入视角等，实际字段须在原 sendPacket/协议派发入口取证，不能用 bot.entity 快照冒充 wire 值。采样不得把监听顺序碰巧取得的混合状态冒充纯 M 步结果；事实入口可发布这些额外变化，但保留不同来源/本地水位。沿用原有物理循环、追赶与发包规则，不另起模拟器或第二个定时器。
 
-`physicsTick` 本身仍是模拟后事件，不将监听器排序当模拟前接缝。若插件在模拟后、移动包前改变位置或视角，该变化另外归属于该 Operation，并标本地修改，不能算作已经被第 N 步物理消费的输入。相关源码与验证边界见[研究复核](../research.md)。
+`physicsTick` 本身仍是模拟后事件，不将监听器排序当模拟前接缝。若插件在模拟后、移动包前改变位置或视角，该变化另外归属于该 Operation，并标本地修改，不能算作已经被第 N 步物理消费的输入。相关源码与验证边界见[研究复核](../archive/research.md)。
 
 ### 8.5 背压与健康
 
-批10当前实现使用同一物理循环约20Hz采样、250ms帧有效期和2秒物理停滞判据。支持额外传感 self/inventory/block/entities/world；其余查询建流前报 SENSOR_UNAVAILABLE。旧帧/重复帧为 FRAME_EXPIRED/FRAME_STALE。模拟适配按真实客户端 control 对象及 apply 边界识别消费步，不修改 Pathfinder 的独立预测状态。确切实现和现场时延见 [批10记录](../feedback-implementation.md)。
+批10当前实现使用同一物理循环约20Hz采样、250ms帧有效期和2秒物理停滞判据。支持额外传感 self/inventory/block/entities/world；其余查询建流前报 SENSOR_UNAVAILABLE。旧帧/重复帧为 FRAME_EXPIRED/FRAME_STALE。模拟适配按真实客户端 control 对象及 apply 边界识别消费步，不修改 Pathfinder 的独立预测状态。确切实现和现场时延见 [批10记录](../archive/feedback-implementation.md)。
 
 - 高频反馈使用有界缓冲。
 - 旧帧优先丢弃或合并，不补播过期动作。
@@ -1150,7 +1150,7 @@ Window Session 绑定：
 
 需要重同步时，以受控操作执行。
 
-固定版本的 `_syncWindow` 是主动点击请求全量槽位，并非被动 read；它本身没有完整停止/超时合同。适配必须预登记响应、串行执行，在关闭/断线时取消，并校验其 no-op 所需的未开始拖拽等前提。Prismarine windows 2.9.0 的 drag/doubleClick 尚未实现，协议 mode 合法也不能放行未实现路径；具体依赖依据见[研究复核](../research.md)。
+固定版本的 `_syncWindow` 是主动点击请求全量槽位，并非被动 read；它本身没有完整停止/超时合同。适配必须预登记响应、串行执行，在关闭/断线时取消，并校验其 no-op 所需的未开始拖拽等前提。Prismarine windows 2.9.0 的 drag/doubleClick 尚未实现，协议 mode 合法也不能放行未实现路径；具体依赖依据见[研究复核](../archive/research.md)。
 
 ### 12.4 结果确认
 
@@ -1561,7 +1561,7 @@ Window W1
 | [Physics](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/physics-probe.mjs) | Tick 监听改键只影响下一模拟；监听排序改变所读快照，模拟后修改进入发包；未模拟也可发 tick_end | 原始 tickPhysics 的替身物理/传输，不是游戏物理精度、输入接缝或反馈延迟验证 |
 | [权限/执行域边界](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/boundary-probe.mjs) | 错误绑定代理会恢复旧 act；事件不自动继承登记来源；堵塞子进程内 stop/定时器不运行，独立父进程能终止并确认 exit | 权限 guard 仅边界示范；未验证真实 Runtime/Program IPC、服务器清理、父进程崩溃或 Job Object |
 
-缓存源码、提交、SHA-256、运行命令和完整 JSON 输出见[审查证据目录](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)；长期研究结论见[研究复核](../research.md)。修复后的并行、停止与权限集成仍须在实际 Adapter 和真实服务器边界执行 §18.1–18.6，不能将本表换个名称当作通过。
+缓存源码、提交、SHA-256、运行命令和完整 JSON 输出见[审查证据目录](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)；长期研究结论见[研究复核](../archive/research.md)。修复后的并行、停止与权限集成仍须在实际 Adapter 和真实服务器边界执行 §18.1–18.6，不能将本表换个名称当作通过。
 
 ---
 

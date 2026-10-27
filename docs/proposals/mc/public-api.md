@@ -597,7 +597,7 @@ interface EventGap { ref: Ref; reason: string; after: string | null; through: st
 interface EventPage { events: GameEventRecord[]; gaps: EventGap[]; next?: string; after?: string } // next/after 互斥
 ```
 
-批 9A：events 仅在输入固定 `after`、不是分页输入且本页没有 `next` 时提供历史提交观察 cursor，可经相同 watch 端口等待。最近窗口、分页、尚有 next 的结果 cursor=null。`after` 是持久增量位置，`next` 固定分页窗口，ObservationCursor 是查询失效版本，三者不能混用。当前查询的可等待性以 QueryDescriptor 为准；静态、派生查询和 container.last 不可等待。见 [批 9A 实施](wait-implementation.md)。
+批 9A：events 仅在输入固定 `after`、不是分页输入且本页没有 `next` 时提供历史提交观察 cursor，可经相同 watch 端口等待。最近窗口、分页、尚有 next 的结果 cursor=null。`after` 是持久增量位置，`next` 固定分页窗口，ObservationCursor 是查询失效版本，三者不能混用。当前查询的可等待性以 QueryDescriptor 为准；静态、派生查询和 container.last 不可等待。见 [批 9A 实施](archive/wait-implementation.md)。
 
 read 的切面、cursor/分页、当前与历史降级由 [World §6–§9/§13](modules/world.md) 定义。顺序为 read → 原样交出 cursor → watch → next；changed 后重读，reset 后旧游标失效。Watch 是复查提示，不是事件日志或主动游戏操作。
 
@@ -617,7 +617,7 @@ writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持�
 
 ## 7. Uina ↔ Executor：确定的受理、查询、结果与事件
 
-截至批9B，正式 WorldDef/Host 交付、Program/Library/等待、程序决策与 continue、替换/抢占已接通。公共类型与实际端口分别见 `contracts/runtime.ts`、`contracts/program.ts` 和 `contracts/executor.ts`；本轮 Runtime schema v5、World history v3、Executor ledger v3，Host journal v4。实现和验证边界见 [批9B实施记录](decision-implementation.md)；这不表示安全介入、反馈与全部玩法已实现。
+截至批9B，正式 WorldDef/Host 交付、Program/Library/等待、程序决策与 continue、替换/抢占已接通。公共类型与实际端口分别见 `contracts/runtime.ts`、`contracts/program.ts` 和 `contracts/executor.ts`；本轮 Runtime schema v5、World history v3、Executor ledger v3，Host journal v4。实现和验证边界见 [批9B实施记录](archive/decision-implementation.md)；这不表示安全介入、反馈与全部玩法已实现。
 
 > **程序入口（2026-10-18）**：程序以 `{ kind: "program"; source: SourceRequest; input }` 提交，`source` 是 `{name}` 或 `{code}`；Runtime 受理时把它解析成确切字节（快照与头注释见 [program.md §3](modules/program.md)）。执行端口不在本文（见 §6 对照表）：段记录只记程序的名字/来源/摘要/快照，不记源码。
 
@@ -848,4 +848,4 @@ DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 saf
 
 ## 批 7 实现说明（2026-10-25）
 
-当前执行子集见 [Program 实施记录](program-implementation.md)。Driver 的 BodySession 提供可信 Runtime 使用的 runScoped（局部取消、ControlOwner 与每次写入资格检查），不向 guest 暴露该入口。DriverExecutionFact 可携带该可信作用域捕获的 owner，晚事实保留首次效果归属。程序调用记录增加 program 来源、摘要、确切 snapshot 路径与失败诊断；Runtime schema v4，不自动迁移旧库，Host journal 仍 v4。Window 仍只支持 mode-0 左右点击；本批不开放等待/决策/反馈或 Library 管理接口。
+当前执行子集见 [Program 实施记录](archive/program-implementation.md)。Driver 的 BodySession 提供可信 Runtime 使用的 runScoped（局部取消、ControlOwner 与每次写入资格检查），不向 guest 暴露该入口。DriverExecutionFact 可携带该可信作用域捕获的 owner，晚事实保留首次效果归属。程序调用记录增加 program 来源、摘要、确切 snapshot 路径与失败诊断；Runtime schema v4，不自动迁移旧库，Host journal 仍 v4。Window 仍只支持 mode-0 左右点击；本批不开放等待/决策/反馈或 Library 管理接口。
