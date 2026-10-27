@@ -39,6 +39,21 @@ export class PlaybackCoordinator {
   load(url: string, song: SongInfo): Promise<void> { return this.enqueue(() => this.loadInternal(url, song)); }
   async loadSong(song: SongInfo, signal?: AbortSignal): Promise<void> { const generation = ++this.generation; return this.loadSongWithGeneration(song, generation, signal); }
   add(song: SongInfo): void { if (this.queue.length >= this.queueLimit) throw new Error(`播放队列已满（上限 ${this.queueLimit}）`); this.queue.push(song); this.emit(); }
+  /**
+   * 批量入队。容量夹取与计数在同一次调用内完成。
+   *
+   * 让调用方 for 循环逐首 `add`，第 N+1 首抛错时队列已被改了一半，
+   * 而工具只能报"失败"——报告与实际相反，比 `unknown` 更糟。
+   *
+   * `skipped` 只表示"取到了但装不下"，与"根本没取"是两件事，调用方必须分开报。
+   * 空批次不 emit：没有状态变化就不该推一版快照给 HUD。
+   */
+  addMany(songs: readonly SongInfo[]): { accepted: number; skipped: number; capacity: number; remaining: number } {
+    const capacity = this.queueLimit;
+    const taking = songs.slice(0, Math.max(0, capacity - this.queue.length));
+    if (taking.length > 0) { this.queue.push(...taking); this.emit(); }
+    return { accepted: taking.length, skipped: songs.length - taking.length, capacity, remaining: Math.max(0, capacity - this.queue.length) };
+  }
   remove(index: number): SongInfo | null { if (!Number.isInteger(index) || index < 0 || index >= this.queue.length) return null; const [song] = this.queue.splice(index, 1); this.emit(); return song ?? null; }
   move(from: number, to: number): boolean { if (![from, to].every(Number.isInteger) || from < 0 || to < 0 || from >= this.queue.length || to >= this.queue.length) return false; const [song] = this.queue.splice(from, 1); if (!song) return false; this.queue.splice(to, 0, song); this.emit(); return true; }
   shuffle(): void { for (let i = this.queue.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [this.queue[i], this.queue[j]] = [this.queue[j]!, this.queue[i]!]; } this.emit(); }

@@ -86,6 +86,37 @@ function waitForRetry(signal: AbortSignal | undefined, deadline: number): Promis
   });
 }
 
+/**
+ * 把上游歌曲对象投影成 SongInfo。
+ *
+ * 上游在不同接口里对同一事实用不同键名（`ar` / `artists`、`dt` / `duration`、`al` / `album`），
+ * 且每首歌会带 50 余个与本项目无关的字段（码率、版权、标签、跳转信息）。详情、批量详情、
+ * 歌单曲目共用这一份映射，避免三处各自猜键名，也保证模型看到的曲目形状一致。
+ *
+ * 缺少 id 的条目返回 null，由调用方过滤——不伪造占位歌曲。
+ */
+export function projectSong(raw: unknown): SongInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const song = raw as Record<string, unknown>;
+  const id = song.id === undefined || song.id === null ? "" : String(song.id);
+  if (!id) return null;
+  const artists = Array.isArray(song.ar) ? song.ar : Array.isArray(song.artists) ? song.artists : [];
+  const album = song.al && typeof song.al === "object" ? (song.al as Record<string, unknown>).name : song.album;
+  const duration = typeof song.dt === "number" ? song.dt : typeof song.duration === "number" ? song.duration : null;
+  return {
+    id,
+    name: typeof song.name === "string" && song.name ? song.name : `歌曲 #${id}`,
+    artists: artists
+      .map((artist) => (artist && typeof artist === "object" ? String((artist as Record<string, unknown>).name ?? "") : ""))
+      .filter(Boolean),
+    durationMs: duration,
+    ...(typeof album === "string" && album ? { album } : {}),
+  };
+}
+
+/** 上游 /song/detail 支持逗号分隔 ids（源码注释：不超过 1000），按 100 分块避免 URL 过长。 */
+const SONG_DETAIL_CHUNK = 100;
+
 export class NeteaseApiClient {
   private readonly baseUrl: string;
 
@@ -193,25 +224,35 @@ export class NeteaseApiClient {
     url.searchParams.set("ids", id);
     return this.request(url.toString(), 15_000, signal, async (res) => {
       await ensureSuccessfulResponse(res, "网易云歌曲详情查询失败");
-      const data = await res.json() as {
-        songs?: Array<{
-          id: number | string;
-          name?: string;
-          ar?: Array<{ name?: string }>;
-          dt?: number;
-          al?: { name?: string };
-        }>;
-      };
-      const song = data.songs?.[0];
-      if (!song) return null;
-      return {
-        id: String(song.id),
-        name: song.name ?? `歌曲 #${id}`,
-        artists: (song.ar ?? []).map((artist) => artist.name ?? "").filter(Boolean),
-        durationMs: song.dt ?? null,
-        album: song.al?.name,
-      };
+      const data = await res.json() as { songs?: unknown[] };
+      return projectSong(data.songs?.[0]);
     });
+  }
+
+  /**
+   * 批量取歌曲详情。用于"只有 id 序列"的场景（如红心列表），
+   * 让调用方不必自己拼请求，也不必自己猜上游键名。
+   *
+   * 任一分块失败即抛出，不返回部分结果：残缺的列表会被调用方当成完整列表，
+   * 那比明确失败更难发现。降级策略由调用方决定。
+   */
+  async getSongInfos(songIds: readonly string[], signal?: AbortSignal): Promise<SongInfo[]> {
+    const ids = songIds.map((value) => value.trim()).filter(Boolean);
+    if (ids.length === 0) return [];
+    const songs: SongInfo[] = [];
+    for (let start = 0; start < ids.length; start += SONG_DETAIL_CHUNK) {
+      const url = new URL(`${this.baseUrl}/song/detail`);
+      url.searchParams.set("ids", ids.slice(start, start + SONG_DETAIL_CHUNK).join(","));
+      const data = await this.request(url.toString(), 15_000, signal, async (res) => {
+        await ensureSuccessfulResponse(res, "网易云歌曲详情查询失败");
+        return await res.json() as { songs?: unknown[] };
+      });
+      for (const raw of data.songs ?? []) {
+        const song = projectSong(raw);
+        if (song) songs.push(song);
+      }
+    }
+    return songs;
   }
 
   private async request<T>(url: string, timeoutMs: number, signal: AbortSignal | undefined, read: (response: Response) => T | Promise<T>): Promise<T> {

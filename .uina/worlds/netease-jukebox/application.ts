@@ -14,6 +14,13 @@ const writeOperations = new Set([
   "playlist_subscribe", "playlist_unsubscribe", "like", "unlike", "comment_add",
 ]);
 
+/**
+ * 分页默认值与上限。schema 里声明的 `maximum` 是硬拒（Ajv 校验失败即 failed），
+ * 这里的上限用于 handler 侧兜底与批量入队的取数上限。两处引用同一对常量，不各写一遍。
+ */
+const DEFAULT_PAGE_LIMIT = 50;
+const MAX_PAGE_LIMIT = 200;
+
 type ServiceStatus = { running: boolean; detail?: string };
 type EnsureService = (ctx: ActionContext) => Promise<ServiceStatus>;
 
@@ -63,8 +70,8 @@ export class JukeboxApplication {
         this.play.bind(this),
       ),
       queue: this.action(
-        "管理待播队列：add/list/remove/clear/move/shuffle；只在需要改变队列时使用。",
-        { operation: { type: "string", enum: ["add", "list", "remove", "clear", "move", "shuffle"] }, ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, index: { type: "integer", minimum: 0, description: "remove 时：待移除的队列位置。" }, from: { type: "integer", minimum: 0, description: "move 时：原位置。" }, to: { type: "integer", minimum: 0, description: "move 时：目标位置。" } },
+        "管理待播队列：add/list/remove/clear/move/shuffle；只在需要改变队列时使用。add 给 playlist_id 时把该歌单曲目批量加入，超出队列上限的部分不加入并如实报告。",
+        { operation: { type: "string", enum: ["add", "list", "remove", "clear", "move", "shuffle"] }, ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, playlist_id: { type: "string", description: "歌单 ID；给定时批量入队，忽略 ref/song_id/query。" }, limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_LIMIT, description: "批量入队时最多取歌单前 N 首；省略则取到队列容量为止。" }, index: { type: "integer", minimum: 0, description: "remove 时：待移除的队列位置。" }, from: { type: "integer", minimum: 0, description: "move 时：原位置。" }, to: { type: "integer", minimum: 0, description: "move 时：目标位置。" } },
         ["operation"],
         this.queue.bind(this),
       ),
@@ -123,16 +130,17 @@ export class JukeboxApplication {
       tags: { type: "string", description: "歌单标签。" },
       content: { type: "string", description: "评论内容。" },
       kind: { type: "string", enum: ["song", "playlist"], description: "目标类型。" },
-      limit: { type: "integer", minimum: 1, description: "返回条数上限。" },
+      offset: { type: "integer", minimum: 0, description: "分页起点，从 0 开始；省略为 0。" },
+      limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_LIMIT, description: "返回条数上限；playlist_open/liked_list 省略为 50，其余省略为 20。" },
       privacy: { type: "string", enum: ["public", "private"], description: "新建歌单可见性。" },
     };
     const ops: Array<{ op: string; note: string; fields: string[]; require?: string[]; either?: [string, string] }> = [
       { op: "account_status", note: "查看账号与登录状态。", fields: [] },
       { op: "login_status", note: "查看登录状态。", fields: [] },
       { op: "playlist_list", note: "列出歌单；uid 缺省用登录账号。", fields: ["uid"] },
-      { op: "liked_list", note: "列出红心歌曲；uid 缺省用登录账号。", fields: ["uid"] },
+      { op: "liked_list", note: "分页列出红心歌曲，返回可读曲目与总数。", fields: ["uid", "offset", "limit"] },
       { op: "recent_list", note: "列出最近播放。", fields: ["limit"] },
-      { op: "playlist_open", note: "打开歌单详情。", fields: [], require: ["playlist_id"] },
+      { op: "playlist_open", note: "分页打开歌单详情，返回曲目与总数。", fields: ["offset", "limit"], require: ["playlist_id"] },
       { op: "comments_list", note: "读评论；song_id 或 playlist_id 至少给一个。", fields: ["kind", "limit", "song_id", "playlist_id"], either: ["song_id", "playlist_id"] },
       { op: "playlist_create", note: "创建歌单。", fields: ["privacy"], require: ["name"] },
       { op: "playlist_update", note: "更新歌单名/描述/标签。", fields: ["name", "description", "tags"], require: ["playlist_id"] },
@@ -247,8 +255,7 @@ export class JukeboxApplication {
     if (isToolResult(song)) return song;
     if (args.enqueue === true) {
       if (args.replace_queue === true) this.deps.playback.clear();
-      this.deps.playback.add(song);
-      return `已加入队列：${song.name}`;
+      return this.enqueueOne(song);
     }
     try {
       await this.deps.playback.loadSong(song, ctx.signal);
@@ -284,6 +291,8 @@ export class JukeboxApplication {
         this.deps.playback.shuffle();
         return "已随机打乱队列。";
       case "add":
+        // playlist_id 走批量路径：一次请求拿到曲目，容量夹取在 coordinator 内部完成。
+        if (typeof args.playlist_id === "string" && args.playlist_id.trim()) return this.addPlaylist(args, ctx);
         break;
       default:
         return fail("未知队列操作。", "invalid_operation");
@@ -292,8 +301,64 @@ export class JukeboxApplication {
     if (unavailable) return unavailable;
     const song = await this.resolveSong(args, ctx);
     if (isToolResult(song)) return song;
-    this.deps.playback.add(song);
+    return this.enqueueOne(song);
+  }
+
+  /** 单曲入队。队列满时给出与批量路径相同的 reason，而不是让异常穿到框架层变成无原因的 failed。 */
+  private enqueueOne(song: SongInfo): ToolExecutionResult | string {
+    try {
+      this.deps.playback.add(song);
+    } catch (error) {
+      return fail(
+        `队列已满：${error instanceof Error ? error.message : String(error)}。先用 queue clear 清空或 queue remove 腾出位置。`,
+        "queue_full",
+        { songId: song.id },
+      );
+    }
     return `已加入队列：${song.name}`;
+  }
+
+  /**
+   * 把整张歌单加入队列。
+   *
+   * 只发一次 /playlist/detail，曲目直接从响应里投影，不额外逐首查详情。
+   * 容量不足时入得下多少算多少，并把"还有多少首没进"写进 result——模型只读 result 文本，
+   * details 不进模型请求，数字必须落在文案里。状态用 succeeded + effect=applied：
+   * 部分入队是"已生效但没全成"，用 failed 会被序列化成 is_error，模型会当成硬错误重试，
+   * 在不去重的前提下等于往队列里塞重复曲目。
+   */
+  private async addPlaylist(args: Record<string, unknown>, ctx: ActionContext): Promise<ToolExecutionResult> {
+    const unavailable = await this.requireService(ctx);
+    if (unavailable) return unavailable;
+    const playlistId = String(args.playlist_id).trim();
+    const limit = Math.max(1, Number(args.limit ?? MAX_PAGE_LIMIT));
+    const view = await this.deps.gateway.playlistView(playlistId, 0, limit, ctx.signal);
+    const outcome = this.deps.playback.addMany(view.tracks);
+    if (outcome.accepted === 0) {
+      return fail(
+        `队列已满（上限 ${outcome.capacity}），未加入任何歌曲。先用 queue clear 清空或 queue remove 腾出位置。`,
+        "queue_full",
+        { playlistId, declaredTotal: view.declaredTotal, capacity: outcome.capacity },
+      );
+    }
+    // 两个"没进队列"的原因必须分开说：装不下要腾地方，没取到要调 limit。
+    // 混成一句"另有 N 首未加入"会让模型对着没满的队列去做 queue clear。
+    const fetched = view.tracks.length;
+    const notFetched = Math.max(0, view.playableTotal - fetched);
+    const notes = [`歌单共 ${view.declaredTotal} 首`];
+    if (outcome.skipped > 0) notes.push(`队列上限 ${outcome.capacity}，有 ${outcome.skipped} 首选到了但装不下，先 queue clear 腾空再重试`);
+    if (notFetched > 0) notes.push(`本次只取了前 ${fetched} 首，还有 ${notFetched} 首没取`);
+    return worldSucceeded(`已加入队列 ${outcome.accepted} 首（${notes.join("；")}）。`, {
+      playlistId,
+      declaredTotal: view.declaredTotal,
+      playableTotal: view.playableTotal,
+      fetched,
+      accepted: outcome.accepted,
+      skippedByCapacity: outcome.skipped,
+      notFetched,
+      capacity: outcome.capacity,
+      remaining: outcome.remaining,
+    }, "applied");
   }
 
   private async playbackAction(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
@@ -358,8 +423,11 @@ export class JukeboxApplication {
     const uid = String(args.uid ?? profile?.userId ?? accountInfo?.id ?? "");
     if (["account_status", "login_status"].includes(operation)) return JSON.stringify(account);
     if (operation === "playlist_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return JSON.stringify(await this.deps.gateway.playlists(uid, ctx.signal)); }
-    if (operation === "playlist_open") return JSON.stringify(await this.deps.gateway.playlist(String(args.playlist_id), ctx.signal));
-    if (operation === "liked_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return JSON.stringify(await this.deps.gateway.likedSongs(uid, ctx.signal)); }
+    if (operation === "playlist_open") {
+      const { offset, limit } = this.pageArgs(args);
+      return JSON.stringify(await this.deps.gateway.playlistView(String(args.playlist_id), offset, limit, ctx.signal));
+    }
+    if (operation === "liked_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return this.likedList(uid, args, ctx); }
     if (operation === "recent_list") return JSON.stringify(await this.deps.gateway.recentSongs(Number(args.limit ?? 20), ctx.signal));
     if (operation === "comments_list") return JSON.stringify(await this.deps.gateway.comments(args.kind === "playlist" ? "playlist" : "song", String(args.song_id ?? args.playlist_id), Number(args.limit ?? 20), ctx.signal));
     if (operation === "playlist_create") return JSON.stringify(await this.deps.gateway.createPlaylist(String(args.name ?? ""), args.privacy === "private" ? "private" : "public", ctx.signal));
@@ -369,6 +437,47 @@ export class JukeboxApplication {
     if (operation === "like" || operation === "unlike") return JSON.stringify(await this.deps.gateway.like(String(args.song_id), operation === "like", ctx.signal));
     if (operation === "comment_add") return JSON.stringify(await this.deps.gateway.comment(args.kind === "playlist" ? "playlist" : "song", String(args.song_id ?? args.playlist_id), String(args.content ?? ""), ctx.signal));
     return fail(`账号库操作“${operation}”暂未接入。`, "not_implemented");
+  }
+
+  /**
+   * 分页参数的默认值与换算。Ajv 未开 useDefaults，schema 里的 default 不生效，
+   * 默认值只能在 handler 里算——写在一处，避免每个 op 各写一遍。
+   */
+  private pageArgs(args: Record<string, unknown>): { offset: number; limit: number } {
+    return { offset: Math.max(0, Number(args.offset ?? 0)), limit: Math.max(1, Number(args.limit ?? DEFAULT_PAGE_LIMIT)) };
+  }
+
+  /**
+   * 红心歌曲分两段取：先拿 id 序列，再把当前页补成可读曲目。
+   *
+   * 第二段失败时仍把总数报出来——第一段已经拿到的那个事实不该跟着丢，
+   * 也不该把"详情查不到"说成"没有红心歌曲"。
+   */
+  private async likedList(uid: string, args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
+    const { offset, limit } = this.pageArgs(args);
+    const ids = await this.deps.gateway.likedSongIds(uid, ctx.signal);
+    const page = ids.slice(offset, offset + limit);
+    if (page.length === 0) return JSON.stringify({ total: ids.length, offset, limit, returned: 0, tracks: [], hasMore: false, nextOffset: null });
+    let tracks: SongInfo[];
+    try {
+      tracks = await this.deps.api.getSongInfos(page, ctx.signal);
+    } catch (error) {
+      return fail(
+        `红心共 ${ids.length} 首，但歌曲详情查询失败：${error instanceof Error ? error.message : String(error)}。稍后重试即可，id 序列没有丢。`,
+        "song_detail_unavailable",
+        { total: ids.length, offset, limit },
+      );
+    }
+    const nextOffset = offset + page.length;
+    return JSON.stringify({
+      total: ids.length,
+      offset,
+      limit,
+      returned: tracks.length,
+      tracks,
+      hasMore: nextOffset < ids.length,
+      nextOffset: nextOffset < ids.length ? nextOffset : null,
+    });
   }
 
   private async requireEditablePlaylist(id: string, uid: string, ctx: ActionContext): Promise<EditablePlaylist | ToolExecutionResult> {
