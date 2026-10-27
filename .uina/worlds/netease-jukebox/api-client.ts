@@ -87,11 +87,24 @@ function waitForRetry(signal: AbortSignal | undefined, deadline: number): Promis
 }
 
 /**
+ * 取上游某个字段里的"名字"。同一个事实在上游有两种写法：`al: {name}` 这种对象，
+ * 或直接给字符串。写成一个函数，省得每处各猜一次——猜漏的那一处会静默丢字段。
+ */
+function nameOf(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const name = (value as Record<string, unknown>).name;
+    return typeof name === "string" ? name : "";
+  }
+  return "";
+}
+
+/**
  * 把上游歌曲对象投影成 SongInfo。
  *
  * 上游在不同接口里对同一事实用不同键名（`ar` / `artists`、`dt` / `duration`、`al` / `album`），
- * 且每首歌会带 50 余个与本项目无关的字段（码率、版权、标签、跳转信息）。详情、批量详情、
- * 歌单曲目共用这一份映射，避免三处各自猜键名，也保证模型看到的曲目形状一致。
+ * 且每首歌会带 50 余个与本项目无关的字段（码率、版权、标签、跳转信息）。搜索结果、详情、
+ * 批量详情、歌单曲目都走这一份映射，避免各处各自猜键名，也保证模型看到的曲目形状一致。
  *
  * 缺少 id 的条目返回 null，由调用方过滤——不伪造占位歌曲。
  */
@@ -101,16 +114,14 @@ export function projectSong(raw: unknown): SongInfo | null {
   const id = song.id === undefined || song.id === null ? "" : String(song.id);
   if (!id) return null;
   const artists = Array.isArray(song.ar) ? song.ar : Array.isArray(song.artists) ? song.artists : [];
-  const album = song.al && typeof song.al === "object" ? (song.al as Record<string, unknown>).name : song.album;
+  const album = nameOf(song.al) || nameOf(song.album);
   const duration = typeof song.dt === "number" ? song.dt : typeof song.duration === "number" ? song.duration : null;
   return {
     id,
     name: typeof song.name === "string" && song.name ? song.name : `歌曲 #${id}`,
-    artists: artists
-      .map((artist) => (artist && typeof artist === "object" ? String((artist as Record<string, unknown>).name ?? "") : ""))
-      .filter(Boolean),
+    artists: artists.map(nameOf).filter(Boolean),
     durationMs: duration,
-    ...(typeof album === "string" && album ? { album } : {}),
+    ...(album ? { album } : {}),
   };
 }
 
@@ -145,32 +156,13 @@ export class NeteaseApiClient {
 
     const data = await this.request(url.toString(), 15_000, signal, async (res) => {
       await ensureSuccessfulResponse(res, "网易云搜索失败");
-      return await res.json() as {
-        result?: {
-          songs?: Array<{
-            id: number | string;
-            name: string;
-            ar?: Array<{ name: string }>;
-            artists?: Array<{ name: string }>;
-            dt?: number;
-            duration?: number;
-            al?: { name: string };
-            album?: { name: string };
-          }>;
-        };
-      };
+      return await res.json() as { result?: { songs?: unknown[] } };
     });
 
     const songs = data.result?.songs;
     if (!Array.isArray(songs)) throw new Error("网易云搜索响应格式错误");
 
-    return songs.map((s) => ({
-      id: String(s.id),
-      name: s.name ?? "未知曲目",
-      artists: (s.ar ?? s.artists ?? []).map((a) => a.name).filter(Boolean),
-      durationMs: s.dt ?? s.duration ?? null,
-      album: s.al?.name ?? s.album?.name,
-    }));
+    return songs.map(projectSong).filter((song): song is SongInfo => song !== null);
   }
 
   /**
