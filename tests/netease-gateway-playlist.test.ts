@@ -43,6 +43,22 @@ describe("NeteaseGateway playlist writes", () => {
 		expect(body(remove?.[1])).toEqual({ op: "del", pid: "p1", tracks: "s1" });
 	});
 
+	it("gives every request a distinct URL so the gateway cache cannot replay it", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response(JSON.stringify({ code: 200 }), { status: 200 }));
+		const gateway = new NeteaseGateway("http://netease.test");
+
+		await gateway.addToPlaylist("p1", "s1");
+		await gateway.addToPlaylist("p1", "s2");
+
+		// api-enhanced 按 hostname + URL + cookies 缓存 200 响应 2 分钟，key 里没有方法也没有 body。
+		// 两次写若是同一个 URL，第二次会直接拿回第一次的缓存、根本没发出去——歌单里只会多出第一首。
+		const urls = fetchMock.mock.calls.map(([input]) => String(input));
+		expect(urls[0]).not.toBe(urls[1]);
+		expect(new URL(urls[1] ?? "").searchParams.get("_")).not.toBe(new URL(urls[0] ?? "").searchParams.get("_"));
+	});
+
 	it("surfaces a permission 401 without retrying another endpoint", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")

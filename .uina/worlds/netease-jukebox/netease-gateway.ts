@@ -2,6 +2,15 @@ import { NeteaseApiClient, projectSong } from "./api-client.js";
 import type { SongInfo } from "./types.js";
 export interface PlaylistInfo { id: string; name: string; trackCount: number; creator: string | null; }
 export interface GatewayResult { code?: number; [key: string]: unknown; }
+
+/**
+ * 打散 api-enhanced 的 URL 级响应缓存，见 `request()`。
+ *
+ * 前缀取进程级随机量：重新起进程后序号会从 0 重来，若只有序号就可能撞上上一个进程
+ * 留在缓存里还没过期的条目。
+ */
+const cacheBusterSeed = Math.random().toString(36).slice(2, 8);
+let cacheBusterSeq = 0;
 export interface EditablePlaylist {
   id: string;
   name: string;
@@ -182,7 +191,13 @@ export class NeteaseGateway {
   async comment(kind: "song" | "playlist", id: string, content: string, signal?: AbortSignal): Promise<GatewayResult> { return this.request(kind === "song" ? "/comment" : "/comment", { id, content, type: kind === "song" ? 0 : 2 }, signal, "POST"); }
   private async request(path: string, params: Record<string, string | number>, signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<GatewayResult> {
     signal?.throwIfAborted();
-    const url = new URL(`${this.gatewayBaseUrl}${path}`); if (method === "GET") for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    const url = new URL(`${this.gatewayBaseUrl}${path}`);
+    // api-enhanced 把每个 200 响应按 `hostname + URL + cookies` 缓存 2 分钟（util/apicache），
+    // key 里既没有请求方法也没有 body。写操作全是同一个 POST URL，于是第一次之后的写会直接
+    // 拿回缓存、根本没发出去；紧接着的读回又命中写前的旧详情。每个请求带一个不同的查询参数
+    // 才能各自成立一条 key——这不是"绕过缓存优化"，是读写一致性本来就要求每次都是真请求。
+    url.searchParams.set("_", `${cacheBusterSeed}${cacheBusterSeq++}`);
+    if (method === "GET") for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("网易云请求超时")), 15000);
     const abort = () => controller.abort(signal?.reason);
