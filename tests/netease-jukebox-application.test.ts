@@ -22,7 +22,10 @@ function makeApplication(queueLimit = 100) {
 		getLyrics: vi.fn(async () => null),
 	};
 	const gateway = {
-		accountStatus: vi.fn(async () => ({ profile: { userId: 42 } })),
+		// 与 /login/status 的真实返回一致：body 包在 data 下，uid 在 account.id。
+		accountStatus: vi.fn(async () => ({
+			data: { code: 200, account: { id: 42 }, profile: { userId: 42 } },
+		})),
 		playlistForWrite: vi.fn(async () => ({
 			id: "p1",
 			name: "Playlist",
@@ -47,6 +50,7 @@ function makeApplication(queueLimit = 100) {
 			};
 		}),
 		likedSongIds: vi.fn(async () => ["1", "2", "3"]),
+		playlists: vi.fn(async () => []),
 		recentSongs: vi.fn(async () => []),
 		addToPlaylist: vi.fn(async () => ({ code: 200 })),
 		removeFromPlaylist: vi.fn(async () => ({ code: 200 })),
@@ -82,6 +86,36 @@ describe("JukeboxApplication", () => {
 		);
 		expect(result).toMatchObject({ status: "succeeded" });
 		expect(gateway.addToPlaylist).toHaveBeenCalledWith("p1", "1", ctx.signal);
+	});
+
+	it("uses the logged-in account when no uid is given", async () => {
+		const { application, gateway } = makeApplication();
+		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
+
+		await application.actions.library.run({ operation: "playlist_list" }, ctx);
+
+		// uid 解析不出来时这条路径会在调用 gateway 之前就失败，所以"调用到"本身就是断言。
+		expect(gateway.playlists).toHaveBeenCalledWith("42", ctx.signal);
+	});
+
+	it("refuses a write to another account's playlist", async () => {
+		const { application, gateway } = makeApplication();
+		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
+		(gateway.playlistForWrite as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			id: "p2",
+			name: "别人的",
+			ownerId: "999",
+			editable: false,
+			trackIds: [],
+		});
+
+		const result = await application.actions.library.run(
+			{ operation: "playlist_track_add", playlist_id: "p2", song_id: "1", confirm: true },
+			ctx,
+		);
+
+		expect(result).toMatchObject({ status: "failed", details: { reason: "playlist_not_editable" } });
+		expect(gateway.addToPlaylist).not.toHaveBeenCalled();
 	});
 
 	it("does not call an external write without confirmation", async () => {
