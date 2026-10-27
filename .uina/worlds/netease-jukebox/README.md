@@ -12,7 +12,7 @@ HUD 播放真实 mpv 音频时会让 FFmpeg 解码同一个播放 URL，使用�
 
 HUD 发布采用最新快照策略；HUD 服务暂时不可用时不会积压旧请求，恢复后从最新播放状态继续。播放时长未知显示为 `--:--`，歌词请求失败会按有限退避重试，仍无歌词时显示无歌词提示。HUD Companion 自动启动失败只会把 HUD 连接标为 degraded，不会阻止点歌机播放。
 
-`library` 提供账号状态、歌单、喜欢、最近播放和评论入口，并支持 `playlist_track_add`、`playlist_track_remove`、`playlist_update` 等歌单写操作。所有写操作必须传入 `confirm: true`；歌单写入前会检查当前账号的可编辑权限，写入后用完整的 `trackIds`（不受读路径分页影响）重新读取歌单验证结果，无法确认时返回 `unknown`。账号库仍依赖本机 loopback `api-enhanced` 的真实登录态。
+`library` 提供账号状态、歌单、喜欢、最近播放和评论入口，并支持 `playlist_track_add`、`playlist_track_remove`、`playlist_update` 等歌单写操作。所有写操作必须传入 `confirm: true`；歌单写入前用登录账号（`/login/status` 的 `data.account.id`）自查归属，只提交自己的歌单或上游标记 `editable` 的歌单，写入后用完整的 `trackIds`（不受读路径分页影响）重新读取歌单验证结果，无法确认时返回 `unknown`。账号库仍依赖本机 loopback `api-enhanced` 的真实登录态。
 
 歌单与红心列表按投影后的可读曲目分页返回，不再把上游响应整份交给模型。`playlist_open` 的 `offset`/`limit` 省略为 0/50，上限 200；`declaredTotal` 与 `playableTotal` 不等时用 `missing` 如实报出上游没给的曲目数，翻页只按实际曲目数推进，不伪造占位曲目。`liked_list` 先取 id 序列再补当前页详情，按 id 序列重排后返回（批量详情不保证顺序），第二段失败时仍报出红心总数。`recent_list` 与 `comments_list` 未做投影（一条评论约 0.8 KB、一条最近播放约 1.5 KB），因此 `limit` 最多 20 条，不放宽到 200。曲目字段统一为 `id`/`name`/`artists`/`durationMs`/`album`，搜索、详情、批量详情与歌单四处共用同一份投影。
 
