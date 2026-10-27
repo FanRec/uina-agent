@@ -28,12 +28,7 @@ const MAX_PAGE_LIMIT = 200;
  * 在 handler 里夹到这个数不改变正常用法，只堵住"随手传 200"。
  */
 const RAW_LIST_LIMIT = 20;
-/**
- * 未登录时的统一文案。
- *
- * 旧文案是「未能确定登录账号 uid」，读起来像参数缺失，模型会去给写操作补传 uid
- * （而 schema 里根本没有这个字段），两次都撞在同一个地方。
- */
+/** 文案里不出现参数名：写成「未能确定登录账号 uid」时，模型会去补传一个根本不存在的字段。 */
 const LOGIN_REQUIRED = "未检测到登录账号，请先在网易云客户端登录后再试。";
 
 type ServiceStatus = { running: boolean; detail?: string };
@@ -433,11 +428,9 @@ export class JukeboxApplication {
     const unavailable = await this.requireService(ctx);
     if (unavailable) return unavailable;
     const account = await this.deps.gateway.accountStatus(ctx.signal);
-    // /login/status 把上游 body 包在 data 下：{ data: { code, account: { id } } }。
-    // 未登录（code≠200）时它不包装，payload 退回顶层，account 读不到就是空 uid。
+    // /login/status 把 body 包在 data 下，uid 在 data.account.id；未登录时不包装，退回顶层读不到 account。
     const payload = (account.data ?? account) as Record<string, unknown>;
     const accountInfo = payload.account as Record<string, unknown> | undefined;
-    // 空串按"没给"处理：下面的 !uid 检查本来就不把空串当有效 uid。
     const uid = String(args.uid || accountInfo?.id || "");
     if (["account_status", "login_status"].includes(operation)) return JSON.stringify(account);
     if (operation === "playlist_list") { if (!uid) return fail(LOGIN_REQUIRED, "login_required"); return JSON.stringify(await this.deps.gateway.playlists(uid, ctx.signal)); }
@@ -478,7 +471,6 @@ export class JukeboxApplication {
     const { offset, limit } = this.pageArgs(args);
     const ids = await this.deps.gateway.likedSongIds(uid, ctx.signal);
     const page = ids.slice(offset, offset + limit);
-    if (page.length === 0) return JSON.stringify({ total: ids.length, offset, limit, returned: 0, tracks: [], hasMore: false, nextOffset: null });
     let tracks: SongInfo[];
     try {
       tracks = await this.deps.api.getSongInfos(page, ctx.signal);
@@ -517,15 +509,15 @@ export class JukeboxApplication {
     if (isToolResult(before)) return before;
     const song = await this.resolveSong(args, ctx);
     if (isToolResult(song)) return song;
-    if (operation === "playlist_track_add") await this.deps.gateway.addToPlaylist(playlistId, song.id, ctx.signal);
+    const adding = operation === "playlist_track_add";
+    if (adding) await this.deps.gateway.addToPlaylist(playlistId, song.id, ctx.signal);
     else await this.deps.gateway.removeFromPlaylist(playlistId, song.id, ctx.signal);
     const after = await this.deps.gateway.playlistForWrite(playlistId, ctx.signal);
     const verified = after?.trackIds;
     if (!verified) return unknown("歌单写操作已发出，但无法确认最终歌单状态。");
     const contains = verified.includes(song.id);
-    const expected = operation === "playlist_track_add";
-    if (contains !== expected) return unknown("歌单写操作已发出，但网易云返回的歌单状态未达到预期。");
-    return { result: `${expected ? "已加入歌单" : "已从歌单移除"}：${song.name}。`, status: "succeeded", details: { playlistId, songId: song.id } };
+    if (contains !== adding) return unknown("歌单写操作已发出，但网易云返回的歌单状态未达到预期。");
+    return { result: `${adding ? "已加入歌单" : "已从歌单移除"}：${song.name}。`, status: "succeeded", details: { playlistId, songId: song.id } };
   }
 
   private async updatePlaylist(args: Record<string, unknown>, uid: string, ctx: ActionContext): Promise<ToolExecutionResult> {
