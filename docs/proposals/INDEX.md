@@ -24,6 +24,8 @@
 
 ## 待决策或未完成的设计
 
+- [记忆系统设计](memory-system-design.md)：第一性原理推导的四平面九部件结构、九张图与一致性规则；未授权施工。
+- [记忆系统技术调研](memory-tech-survey.md)：分层技术清单与本机实测（FTS5/分词/向量/图遍历）；尚无架构提案，未授权施工。
 - [Live2D 程序化动画作者层重设计](live2d/live2d-animation-authoring-redesign.md)：Timeline 与已确认 A2 决策冲突，仍是未授权提案。
 - [Live2D Cue 链路修复计划](live2d/live2d-cue-action-repair-plan.md)：parser 生命周期与结果语义边界见文首复核。
 
