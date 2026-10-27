@@ -40,12 +40,27 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 
 		const context = buildContext({
 			history,
-			includeThinking: false,
+			thinkingReplay: "none",
 		});
 
 		// Ghost empty assistant message must not be sent
 		expect(context.map((m) => m.role)).toEqual(["system", "user", "user"]);
 		expect(context.map((m) => m.content)).toEqual([expect.any(String), "question 1", "question 2"]);
+	});
+
+	it("retains thinking only on tool-call frames under tool-calls replay", () => {
+		const history: ChatMsg[] = [
+			{ role: "user", content: "q1" },
+			{ role: "assistant", content: "plain", thinking: "t1" },
+			{ role: "user", content: "q2" },
+			{ role: "assistant", content: "", thinking: "t2", tool_calls: [{ id: "c1", name: "f", args: {} }] },
+			{ role: "tool", tool_call_id: "c1", content: "ok" },
+		];
+
+		const context = buildContext({ history, thinkingReplay: "tool-calls" });
+		const assistants = context.filter((m) => m.role === "assistant");
+		expect(assistants[0]?.thinking).toBeUndefined();
+		expect(assistants[1]?.thinking).toBe("t2");
 	});
 
 	it("strips dangling tool_calls that have no corresponding tool responses", () => {

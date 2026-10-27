@@ -151,7 +151,6 @@ git diff | uina "总结这次改动"   # 管道也一样可用
 | `geminiThinkingFormat` | string | 见说明 | `level` 或 `budget`；Gemini 声明了 `thinkingLevels` 时必填（`level` 仅能表达 `minimal`/`low`/`medium`/`high`） |
 | `geminiToolCallIds` | boolean | 否 | 仅当已确认该模型要求 function call 携带调用 id 时置 `true` |
 | `imageInput` | boolean | 否 | 置 `false` 时拒绝图片输入；省略时保持未知，不阻拦请求 |
-| `includeThinking` | boolean | 否 | 是否把思考历史投影进上下文；省略时按协议推导 |
 
 已被移除的旧字段：`contextWindow`。请改用 `modelContextWindow`，需要自设上限再叠加 `maxContextWindow`；写旧字段会在启动时明确报错。
 

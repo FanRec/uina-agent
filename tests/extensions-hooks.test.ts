@@ -24,7 +24,7 @@ function mockPair(
 		{ kind: "finish", reason: "stop" },
 	],
 	name = "mock-model",
-	contextWindow = 4096,
+	contextWindow = 128_000,
 	thinkingLevels: readonly ThinkingLevel[] = ["off", "low", "high"],
 ): { model: Model; stream: ModelStreamFn } {
 	const model: Model = {

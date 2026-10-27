@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
 import { createModel } from "../src/ai/providers.js";
+import { convertToLlm } from "../src/agent/context.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import type { ChatMsg, Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 
@@ -180,5 +181,65 @@ describe("deepseek reasoning_content 出站回传", () => {
 			"openai",
 		) as Array<Record<string, unknown>>;
 		expect("reasoning_content" in wire[0]!).toBe(false);
+	});
+
+	it("非工具且无 thinking 的 assistant 帧不写 reasoning_content", () => {
+		const wire = toWireMessages([{ role: "assistant", content: "好" }] as ChatMsg[], "deepseek") as Array<
+			Record<string, unknown>
+		>;
+		expect("reasoning_content" in wire[0]!).toBe(false);
+	});
+});
+
+describe("thinking 回放范围", () => {
+	const history: ChatMsg[] = [
+		{ role: "user", content: "q1" },
+		{
+			role: "assistant",
+			content: "plain",
+			thinking: "t1",
+			thinkingSignature: "s1",
+			providerReplay: { format: "anthropic", blocks: [{ type: "thinking", thinking: "t1" }] },
+		},
+		{ role: "user", content: "q2" },
+		{ role: "assistant", content: "", thinking: "t2", tool_calls: [{ id: "c1", name: "f", args: {} }] },
+		{ role: "tool", tool_call_id: "c1", content: "ok" },
+	];
+
+	const assistants = (thinkingReplay: "none" | "tool-calls" | "all") =>
+		convertToLlm(history, { thinkingReplay }).filter((message) => message.role === "assistant");
+
+	it("tool-calls 只保留发生过工具调用的轮次", () => {
+		const [plain, withTool] = assistants("tool-calls");
+		expect(plain).toMatchObject({ role: "assistant", thinking: undefined, providerReplay: undefined });
+		expect(withTool).toMatchObject({ role: "assistant", thinking: "t2" });
+	});
+
+	it("none 丢弃 thinking、signature 与 providerReplay", () => {
+		const [plain, withTool] = assistants("none");
+		expect(plain).toMatchObject({ thinking: undefined, thinkingSignature: undefined, providerReplay: undefined });
+		expect(withTool).toMatchObject({ thinking: undefined, thinkingSignature: undefined, providerReplay: undefined });
+	});
+
+	it("all 全部保留", () => {
+		const [plain, withTool] = assistants("all");
+		expect(plain).toMatchObject({ thinking: "t1", thinkingSignature: "s1" });
+		expect(plain?.providerReplay).toEqual({ format: "anthropic", blocks: [{ type: "thinking", thinking: "t1" }] });
+		expect(withTool).toMatchObject({ thinking: "t2" });
+	});
+});
+
+describe("thinking-only 终态", () => {
+	it("只有思考且 finish(length) 时仍落盘 assistant", async () => {
+		const pair = providerFromDeltas([
+			{ kind: "thinking", text: "只有思考" },
+			{ kind: "finish", reason: "length" },
+		]);
+		const harness = SubjectHarness.create({ model: pair.model, stream: pair.stream, thinkingLevel: "high" });
+		await harness.run("问题");
+
+		const assistants = harness.historySnapshot().filter((message) => message.role === "assistant");
+		expect(assistants).toHaveLength(1);
+		expect(assistants[0]).toMatchObject({ content: "", thinking: "只有思考", status: "length" });
 	});
 });

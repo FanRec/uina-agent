@@ -28,7 +28,10 @@ export interface ProjectionPolicy {
 	/** journal→memory 投影（大半径极少使用；state 供 policy 访问 auxiliary timeline）。 */
 	projectHistory?: (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[];
 	/** memory→provider 形塑（provider 边界；每请求态，失败只报 provider 错、不伤 journal）。 */
-	convertToLlm?: (messages: readonly (AgentMessage | ChatMsg)[], opts?: { includeThinking?: boolean }) => ChatMsg[];
+	convertToLlm?: (
+		messages: readonly (AgentMessage | ChatMsg)[],
+		opts?: { thinkingReplay?: import("../core/types.js").ThinkingReplay },
+	) => ChatMsg[];
 }
 
 /** 解析后的策略：两个字段均为现役实现（缺省回落默认，无静默空位）。 */

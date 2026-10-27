@@ -65,15 +65,15 @@ export function filterCompactionMessages<T extends StreamMessageView>(messages: 
 	return messages.filter((message) => !isRuntimePerception(message));
 }
 
-/** 估算口径必须与 preflight 测量（measureRequestContext）及真实发送（loop buildContext
- * 的 model.includeThinking）一致。 */
-export function estimateStreamTokens(messages: readonly StreamMessageView[], includeThinking = false): number {
-	return estimateRequestTokens(messages as readonly ChatMsg[], [], includeThinking);
+/** 估算口径必须与 preflight 测量（measureRequestContext）及真实发送
+ * （loop buildContext 的 model.thinkingReplay）一致。 */
+export function estimateStreamTokens(messages: readonly StreamMessageView[], countThinking = false): number {
+	return estimateRequestTokens(messages as readonly ChatMsg[], [], countThinking);
 }
 
 export function semanticUnits(
 	messages: readonly StreamMessageView[],
-	includeThinking = false,
+	countThinking = false,
 ): Array<{ start: number; end: number; tokens: number }> {
 	const result: Array<{ start: number; end: number; tokens: number }> = [];
 	for (let start = 0; start < messages.length; ) {
@@ -86,7 +86,7 @@ export function semanticUnits(
 		} else if (message.role === "assistant" && message.tool_calls?.length) {
 			while (end < messages.length && messages[end]!.role === "tool") end++;
 		}
-		result.push({ start, end, tokens: estimateStreamTokens(messages.slice(start, end), includeThinking) });
+		result.push({ start, end, tokens: estimateStreamTokens(messages.slice(start, end), countThinking) });
 		start = end;
 	}
 	return result;
@@ -96,24 +96,24 @@ export function semanticUnits(
  * 寻找保留尾部的切分边界。
  * @param messages 过滤掉 runtime perception 的上下文消息序列
  * @param targetKeepTokens 期望保留的最近历史 token 数（如 20_000，或小窗口下的安全预算）
- * @param includeThinking 是否包含 thinking token
+ * @param countThinking 是否包含 thinking token
  * @param maxTailBudget 尾部单步/结果允许占用的最大上下文上限（防止最新单步超窗口，缺省为 targetKeepTokens）
  */
 export function findTrimBoundary(
 	messages: readonly StreamMessageView[],
 	targetKeepTokens: number,
-	includeThinking = false,
+	countThinking = false,
 	maxTailBudget?: number,
 ): number | null {
-	if (estimateStreamTokens(messages, includeThinking) <= targetKeepTokens) return null;
+	if (estimateStreamTokens(messages, countThinking) <= targetKeepTokens) return null;
 	let systemEnd = 0;
 	while (messages[systemEnd]?.role === "system") systemEnd++;
-	const systemTokens = estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
+	const systemTokens = estimateStreamTokens(messages.slice(0, systemEnd), countThinking);
 
 	const tailCeiling = maxTailBudget ?? targetKeepTokens;
 	let accumulatedTokens = 0;
 	let keepFrom = messages.length;
-	const units = semanticUnits(messages, includeThinking).filter((u) => u.start >= systemEnd);
+	const units = semanticUnits(messages, countThinking).filter((u) => u.start >= systemEnd);
 
 	for (let i = units.length - 1; i >= 0; i--) {
 		const unit = units[i]!;
@@ -651,12 +651,22 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		if (inspection.inputBudget === undefined) throw new Error("当前模型上下文窗口未知，无法安全压缩");
 		const messages = filterCompactionMessages(inspection.projection.messages as readonly StreamMessageView[]);
 		const toolCost = estimateRequestTokens([], inspection.projection.tools);
-		const messageBudget = Math.max(0, inspection.inputBudget - toolCost);
-		const summaryReserve = Math.min(1024, Math.floor(messageBudget / 4));
-		const trimBudget = Math.max(0, messageBudget - summaryReserve - REBUILD_HEADROOM_TOKENS);
-		const includeThinking = pi.models.current().includeThinking === true;
-		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, trimBudget);
-		const boundary = findTrimBoundary(messages, targetKeepTokens, includeThinking, trimBudget);
+		const perceptionCost = estimateRequestTokens(
+			inspection.projection.messages.filter((m) => isRuntimePerception(m as StreamMessageView)) as readonly ChatMsg[],
+			[],
+		);
+		// perception 消息不参与裁剪但会重新追加，必须先从消息预算里扣掉。
+		const messageBudget = Math.max(0, inspection.inputBudget - toolCost - perceptionCost);
+		const countThinking = (pi.models.current().thinkingReplay ?? "none") !== "none";
+		// system prompt 每次请求都在，必须先从保留尾预算里扣掉，否则大 prompt 会让
+		// system + 摘要 + 尾部在重建时超出输入预算。摘要至少保留截断标记的固定开销，
+		// 摘要正文不足时按 summaryBudget 截断，不再为它预留整块预算挤掉尾部。
+		let systemEnd = 0;
+		while (messages[systemEnd]?.role === "system") systemEnd++;
+		const systemCost = estimateStreamTokens(messages.slice(0, systemEnd), countThinking);
+		const trimBudget = Math.max(0, messageBudget - TRUNCATION_OVERHEAD);
+		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, Math.max(0, trimBudget - systemCost));
+		const boundary = findTrimBoundary(messages, targetKeepTokens, countThinking, trimBudget);
 		if (boundary === null) {
 			await pi.emitEvent({
 				type: "session_compact",
@@ -711,17 +721,8 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		);
 
 		// 计算摘要可用的精确上限，保证重建请求 100% 落入可用预算
-		let systemEnd = 0;
-		while (messages[systemEnd]?.role === "system") systemEnd++;
-		const systemCost = estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
-		const tailCost = estimateStreamTokens(messages.slice(coverTarget), includeThinking);
-		const perceptionCost = estimateRequestTokens(
-			inspection.projection.messages.filter((m) => isRuntimePerception(m as StreamMessageView)) as readonly ChatMsg[],
-			[],
-			includeThinking,
-		);
-		const summaryBudget =
-			inspection.inputBudget - toolCost - systemCost - tailCost - perceptionCost - REBUILD_HEADROOM_TOKENS;
+		const tailCost = estimateStreamTokens(messages.slice(coverTarget), countThinking);
+		const summaryBudget = messageBudget - systemCost - tailCost - REBUILD_HEADROOM_TOKENS;
 		const maxSummaryMessageTokens = Math.max(TRUNCATION_OVERHEAD, Math.min(MAX_SUMMARY_MESSAGE_TOKENS, summaryBudget));
 		if (summaryMessageTokens(summary) > maxSummaryMessageTokens) {
 			summary = truncateSummary(summary, maxSummaryMessageTokens);

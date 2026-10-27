@@ -18,7 +18,7 @@ import {
 	effectiveContextWindow,
 	type ProviderConfig,
 	type ProviderKind,
-	protocolCarriesThinking,
+	protocolThinkingReplay,
 	type UinaConfig,
 } from "./config.js";
 import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest } from "./gateway.js";
@@ -38,7 +38,7 @@ export function createModel(conf: ProviderConfig, providerId: string): Model {
 		maxOutputTokens: conf.maxOutputTokens,
 		inputBudgetTokens: conf.inputBudgetTokens,
 		thinkingLevels: levels,
-		includeThinking: conf.includeThinking ?? protocolCarriesThinking(kind, conf.thinkingFormat, levels),
+		thinkingReplay: protocolThinkingReplay(kind, conf.thinkingFormat, levels),
 		thinkingBudgets: conf.thinkingBudgets,
 		compat: {
 			thinkingFormat: conf.thinkingFormat,
@@ -923,16 +923,15 @@ export class ModelRegistry {
 					throw new Error(`动态发现的模型 ${modelOrProviderName} 缺少 contextWindow，不可选择`);
 				}
 				const kind = base?.type ?? "openai-compatible";
+				const levels = base?.thinkingLevels ?? discovered.thinkingLevels;
 				const model: Model = {
 					id: modelId,
 					imageInput: discovered.imageInput,
 					name: modelId,
 					providerId,
 					contextWindow: Math.min(discovered.contextWindow, base?.maxContextWindow ?? discovered.contextWindow),
-					thinkingLevels: discovered.thinkingLevels?.filter(
-						(level) => !base?.thinkingLevels || base.thinkingLevels.includes(level),
-					),
-					includeThinking: protocolCarriesThinking(kind, base?.thinkingFormat, discovered.thinkingLevels),
+					thinkingLevels: levels,
+					thinkingReplay: protocolThinkingReplay(kind, base?.thinkingFormat, levels),
 					compat: {
 						thinkingFormat: base?.thinkingFormat,
 						geminiToolCallIds: base?.geminiToolCallIds,

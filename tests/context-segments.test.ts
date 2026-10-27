@@ -4,6 +4,8 @@ import {
 	calculateContextSegments,
 	estimateRequestTokens,
 	estimateContextTokens,
+	estimateContextSegments,
+	estimateTextTokens,
 	IMAGE_TOKEN_ESTIMATE,
 	measureRequestContext,
 } from "../src/agent/context.js";
@@ -164,7 +166,7 @@ describe("Context Segments & Unified Token Estimation", () => {
 		expect(estimateRequestTokens(messages, [], true)).toBe(10);
 	});
 
-	it("measureRequestContext includeThinking option overrides the thinkingLevel heuristic", () => {
+	it("measureRequestContext countThinking follows the replay scope", () => {
 		const projection: RequestProjection = {
 			projectionId: "p1",
 			modelKey: "mock",
@@ -173,12 +175,24 @@ describe("Context Segments & Unified Token Estimation", () => {
 			thinkingLevel: "high",
 		};
 
-		const heuristic = measureRequestContext(projection);
-		const withThinking = measureRequestContext(projection, undefined, { includeThinking: true });
-		const withoutThinking = measureRequestContext(projection, undefined, { includeThinking: false });
+		const withThinking = measureRequestContext(projection, undefined, { countThinking: true });
+		const withoutThinking = measureRequestContext(projection, undefined, { countThinking: false });
 
-		// 缺省回落 thinkingLevel 判据（兼容既有调用方）；显式传入时按 wire 口径。
-		expect(heuristic.inputTokens).toBe(withThinking.inputTokens);
 		expect(withoutThinking.inputTokens).toBe(withThinking.inputTokens - 5);
+	});
+
+	it("providerReplay is measured as the wire payload instead of its component fields", () => {
+		const replay = { format: "anthropic", blocks: [{ type: "thinking", thinking: "abcd", signature: "" }] };
+		const messages: ChatMsg[] = [{ role: "assistant", content: "5678", thinking: "abcd", providerReplay: replay }];
+
+		// wire 只发送 providerReplay 块：assistant 段按 JSON 长度计，thinking 不再单独累计。
+		const seg = countContextSegmentChars(messages, []);
+		expect(seg.assistant).toBe(JSON.stringify(replay).length);
+		expect(seg.thinking).toBe(0);
+
+		const estimate = estimateContextSegments(messages, []);
+		expect(estimate.assistant).toBe(estimateTextTokens(JSON.stringify(replay)));
+		expect(estimate.thinking).toBe(0);
+		expect(estimateRequestTokens(messages, [], true)).toBe(estimate.assistant);
 	});
 });

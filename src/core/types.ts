@@ -3,6 +3,11 @@ import type { ImageContent } from "./content.js";
 
 export type DeliveryMode = "direct" | "steer" | "followUp";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/** 协议决定的历史 thinking 回放范围。缺省语义为 none。
+ * - none：从不回放；
+ * - tool-calls：只回放发生过工具调用的 assistant 轮（DeepSeek 协议要求）；
+ * - all：每轮 assistant 都回放。 */
+export type ThinkingReplay = "none" | "tool-calls" | "all";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type FinishReason = "stop" | "tool_calls" | "length";
@@ -360,8 +365,8 @@ export interface Model {
 	readonly inputBudgetTokens?: number;
 	/** 支持的思考等级档位 */
 	readonly thinkingLevels?: readonly ThinkingLevel[];
-	/** 上下文投影是否携带历史 thinking */
-	readonly includeThinking?: boolean;
+	/** 历史 thinking 的回放范围；缺省按 none 处理 */
+	readonly thinkingReplay?: ThinkingReplay;
 	/** 思考档位与数值 token 的预算映射 */
 	readonly thinkingBudgets?: Partial<Record<ThinkingLevel, number>>;
 	/** 协议兼容参数 */

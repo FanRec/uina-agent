@@ -493,7 +493,7 @@ export class Subject {
 		const measurement = measureRequestContext(
 			projection,
 			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
-			{ includeThinking: model.includeThinking === true },
+			{ countThinking: (model.thinkingReplay ?? "none") !== "none" },
 		);
 		return {
 			projection,
@@ -1390,7 +1390,7 @@ export class Subject {
 			const measurement = measureRequestContext(
 				projection,
 				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
-				{ includeThinking: model.includeThinking === true },
+				{ countThinking: (model.thinkingReplay ?? "none") !== "none" },
 			);
 			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass, signal: turnSignal });
 			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
@@ -1432,10 +1432,10 @@ export class Subject {
 			...buildContext({
 				history: this.history,
 				systemPrompt,
-				includeThinking: model.includeThinking,
+				thinkingReplay: model.thinkingReplay,
 				convertToLlm: this.projection.convertToLlm,
 			}),
-			...this.projection.convertToLlm(beforeMessages),
+			...this.projection.convertToLlm(beforeMessages, { thinkingReplay: model.thinkingReplay }),
 		];
 		const messages = built;
 		const base: RequestProjection = immutableProjection({
@@ -1509,7 +1509,7 @@ export class Subject {
 	}
 
 	private async recordTerminalAssistant(result: StreamCollectorResult, notExecutedReason?: string): Promise<void> {
-		if (result.reply.trim() || result.toolCalls.length > 0) {
+		if (result.reply.trim() || result.toolCalls.length > 0 || result.thinking.trim()) {
 			await this.appendMessage(this.buildAssistantMessage(result));
 			for (const call of result.toolCalls) {
 				await this.appendMessage({

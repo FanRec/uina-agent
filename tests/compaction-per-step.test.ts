@@ -645,7 +645,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			id: "mock",
 			name: "mock",
 			contextWindow: 12_000,
-			includeThinking: true,
+			thinkingReplay: "all",
 			thinkingLevels: ["off", "low", "high"],
 		});
 		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).reply("摘".repeat(300));

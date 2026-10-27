@@ -1,4 +1,11 @@
-import type { AgentMessage, ChatMsg, InputProvenance, InputSource, ModelContextMeta } from "../../core/types.js";
+import type {
+	AgentMessage,
+	ChatMsg,
+	InputProvenance,
+	InputSource,
+	ModelContextMeta,
+	ThinkingReplay,
+} from "../../core/types.js";
 import type { ImageContent } from "../../core/content.js";
 import { createHash } from "node:crypto";
 import { convertToLlm } from "../../agent/context.js";
@@ -131,7 +138,7 @@ export function encodeExternalInput(message: AgentMessage | ChatMsg): ChatMsg[] 
 
 export function projectEventFrames(
 	messages: readonly (AgentMessage | ChatMsg)[],
-	options?: { includeThinking?: boolean },
+	options?: { thinkingReplay?: ThinkingReplay },
 ): ChatMsg[] {
 	// Encode inputs before the default protocol cleaner so real tool pairs are cleaned together.
 	const prepared: ChatMsg[] = [];

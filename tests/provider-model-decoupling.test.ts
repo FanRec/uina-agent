@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiscoveredModel, Model, ModelRequest, Provider, StreamDelta } from "../src/core/types.js";
 import { ModelRegistry, createModel } from "../src/ai/providers.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { assertProviderFacts, effectiveContextWindow, protocolCarriesThinking } from "../src/ai/config.js";
+import { assertProviderFacts, effectiveContextWindow, protocolThinkingReplay } from "../src/ai/config.js";
 import { SubjectHarness } from "./harness/index.js";
 
 describe("Pi-aligned Model and Provider Decoupling", () => {
@@ -118,6 +118,40 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		expect(harness.getContextWindow()).toBe(64_000);
 	});
 
+	it("dynamic discovery keeps explicit thinkingLevels and derives replay from them", async () => {
+		const registry = new ModelRegistry({
+			default: "a",
+			providers: {
+				a: {
+					baseUrl: "https://test",
+					apiKey: "k",
+					model: "configured",
+					modelContextWindow: 64_000,
+					type: "anthropic",
+					maxOutputTokens: 1024,
+					thinkingLevels: ["off", "high"],
+					thinkingBudgets: { high: 1024 },
+				},
+			},
+		});
+		registry.registerProvider(
+			{
+				id: "a",
+				async stream() {},
+				async refreshModels() {
+					return [{ id: "dyn", contextWindow: 32_000 }];
+				},
+			},
+			{ replace: true },
+		);
+		await registry.refreshModels();
+
+		const model = registry.resolve("a/dyn");
+		// 目录未报告 thinkingLevels 时保留显式配置，而不是抹成未知。
+		expect(model.thinkingLevels).toEqual(["off", "high"]);
+		expect(model.thinkingReplay).toBe("all");
+	});
+
 	it("preserves all 5 P0 security guarantees", () => {
 		// 1. maxContextWindow 只能收紧有效窗口
 		expect(
@@ -159,11 +193,11 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 			}),
 		).toThrow("maxOutputTokens");
 
-		// 3. protocolCarriesThinking 精准协议推导
-		expect(protocolCarriesThinking("anthropic", undefined, ["off", "high"])).toBe(true);
-		expect(protocolCarriesThinking("gemini", undefined, undefined)).toBe(false);
-		expect(protocolCarriesThinking("openai-compatible", "deepseek", ["off", "high"])).toBe(true);
-		expect(protocolCarriesThinking("openai-compatible", "openai", ["off", "high"])).toBe(false);
+		// 3. protocolThinkingReplay 精准协议推导
+		expect(protocolThinkingReplay("anthropic", undefined, ["off", "high"])).toBe("all");
+		expect(protocolThinkingReplay("gemini", undefined, undefined)).toBe("none");
+		expect(protocolThinkingReplay("openai-compatible", "deepseek", ["off", "high"])).toBe("tool-calls");
+		expect(protocolThinkingReplay("openai-compatible", "openai", ["off", "high"])).toBe("none");
 
 		// 4. Model 创建包含完整纯数据事实
 		const created = createModel(

@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { GeminiThinkingFormat, ThinkingLevel, ThinkingWireFormat } from "../core/types.js";
+import type { GeminiThinkingFormat, ThinkingLevel, ThinkingReplay, ThinkingWireFormat } from "../core/types.js";
 
 export type ProviderKind = "openai-compatible" | "anthropic" | "gemini";
 
@@ -34,22 +34,22 @@ export interface ProviderConfig {
 	type?: ProviderKind;
 	thinkingFormat?: ThinkingWireFormat;
 	thinkingLevels?: readonly ThinkingLevel[];
-	includeThinking?: boolean;
 }
 
 /**
- * 依据协议与配置推导上下文投影是否携带思考历史。
- * openai-compatible 仅 deepseek 携带；anthropic 与 gemini 声明 thinking 时携带。
+ * 依据协议与配置推导历史 thinking 的回放范围。
+ * openai-compatible 只有 deepseek 会在回传时校验 reasoning_content，因此只回放工具轮；
+ * anthropic 与 gemini 声明了非 off 档位时整轮回放。
  */
-export function protocolCarriesThinking(
+export function protocolThinkingReplay(
 	kind: ProviderKind,
 	thinkingFormat?: ThinkingWireFormat,
 	levels?: readonly ThinkingLevel[],
-): boolean {
+): ThinkingReplay {
 	if (kind === "openai-compatible") {
-		return thinkingFormat === "deepseek";
+		return thinkingFormat === "deepseek" ? "tool-calls" : "none";
 	}
-	return Boolean(levels?.some((level) => level !== "off"));
+	return levels?.some((level) => level !== "off") ? "all" : "none";
 }
 
 /**
@@ -290,7 +290,6 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				: { thinkingFormat: provider.thinkingFormat as ThinkingWireFormat }),
 			...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
 			...(provider.imageInput === undefined ? {} : { imageInput: provider.imageInput as boolean }),
-			...(provider.includeThinking === undefined ? {} : { includeThinking: Boolean(provider.includeThinking) }),
 		};
 	}
 	if (!providers[raw.default]) {
