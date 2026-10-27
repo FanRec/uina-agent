@@ -130,7 +130,8 @@ export class NeteaseGateway {
       id: String(data.id ?? id),
       name: String(data.name ?? "未命名歌单"),
       ownerId: creatorId === undefined || creatorId === null ? null : String(creatorId),
-      editable: data.editable === true || data.privacy === 0,
+      // privacy 是可见性（0 = 公开），不是可编辑；上游不下发 editable 时不能据此推断写权限。
+      editable: data.editable === true,
       trackIds,
     };
   }

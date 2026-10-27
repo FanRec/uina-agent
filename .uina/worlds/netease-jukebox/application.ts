@@ -28,6 +28,13 @@ const MAX_PAGE_LIMIT = 200;
  * 在 handler 里夹到这个数不改变正常用法，只堵住"随手传 200"。
  */
 const RAW_LIST_LIMIT = 20;
+/**
+ * 未登录时的统一文案。
+ *
+ * 旧文案是「未能确定登录账号 uid」，读起来像参数缺失，模型会去给写操作补传 uid
+ * （而 schema 里根本没有这个字段），两次都撞在同一个地方。
+ */
+const LOGIN_REQUIRED = "未检测到登录账号，请先在网易云客户端登录后再试。";
 
 type ServiceStatus = { running: boolean; detail?: string };
 type EnsureService = (ctx: ActionContext) => Promise<ServiceStatus>;
@@ -426,12 +433,14 @@ export class JukeboxApplication {
     const unavailable = await this.requireService(ctx);
     if (unavailable) return unavailable;
     const account = await this.deps.gateway.accountStatus(ctx.signal);
-    const accountObject = account as Record<string, unknown>;
-    const profile = accountObject.profile as Record<string, unknown> | undefined;
-    const accountInfo = accountObject.account as Record<string, unknown> | undefined;
-    const uid = String(args.uid ?? profile?.userId ?? accountInfo?.id ?? "");
+    // /login/status 把上游 body 包在 data 下：{ data: { code, account: { id } } }。
+    // 未登录（code≠200）时它不包装，payload 退回顶层，account 读不到就是空 uid。
+    const payload = (account.data ?? account) as Record<string, unknown>;
+    const accountInfo = payload.account as Record<string, unknown> | undefined;
+    // 空串按"没给"处理：下面的 !uid 检查本来就不把空串当有效 uid。
+    const uid = String(args.uid || accountInfo?.id || "");
     if (["account_status", "login_status"].includes(operation)) return JSON.stringify(account);
-    if (operation === "playlist_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return JSON.stringify(await this.deps.gateway.playlists(uid, ctx.signal)); }
+    if (operation === "playlist_list") { if (!uid) return fail(LOGIN_REQUIRED, "login_required"); return JSON.stringify(await this.deps.gateway.playlists(uid, ctx.signal)); }
     if (operation === "playlist_open") {
       // required 只保证字段存在，不保证非空；空串会一路打到上游变成无意义的 502。
       const playlistId = String(args.playlist_id ?? "").trim();
@@ -439,7 +448,7 @@ export class JukeboxApplication {
       const { offset, limit } = this.pageArgs(args);
       return JSON.stringify(await this.deps.gateway.playlistView(playlistId, offset, limit, ctx.signal));
     }
-    if (operation === "liked_list") { if (!uid) return fail("未能确定登录账号 uid。", "login_required"); return this.likedList(uid, args, ctx); }
+    if (operation === "liked_list") { if (!uid) return fail(LOGIN_REQUIRED, "login_required"); return this.likedList(uid, args, ctx); }
     if (operation === "recent_list") return JSON.stringify(await this.deps.gateway.recentSongs(Math.min(Number(args.limit ?? RAW_LIST_LIMIT), RAW_LIST_LIMIT), ctx.signal));
     if (operation === "comments_list") return JSON.stringify(await this.deps.gateway.comments(args.kind === "playlist" ? "playlist" : "song", String(args.song_id ?? args.playlist_id), Math.min(Number(args.limit ?? RAW_LIST_LIMIT), RAW_LIST_LIMIT), ctx.signal));
     if (operation === "playlist_create") return JSON.stringify(await this.deps.gateway.createPlaylist(String(args.name ?? ""), args.privacy === "private" ? "private" : "public", ctx.signal));
@@ -494,7 +503,7 @@ export class JukeboxApplication {
   }
 
   private async requireEditablePlaylist(id: string, uid: string, ctx: ActionContext): Promise<EditablePlaylist | ToolExecutionResult> {
-    if (!uid) return fail("未能确定登录账号 uid。", "login_required");
+    if (!uid) return fail(LOGIN_REQUIRED, "login_required");
     const playlist = await this.deps.gateway.playlistForWrite(id, ctx.signal);
     if (!playlist) return fail("未能读取目标歌单，无法执行账号写操作。", "playlist_not_found");
     if (playlist.ownerId !== uid && !playlist.editable) return fail(`目标歌单不可编辑：${playlist.name}。`, "playlist_not_editable");
