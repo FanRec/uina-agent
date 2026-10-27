@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NeteaseApiClient } from "../.uina/worlds/netease-jukebox/api-client.js";
+import { NeteaseApiClient, projectSong } from "../.uina/worlds/netease-jukebox/api-client.js";
 
 describe("NeteaseApiClient transient read failures", () => {
 	afterEach(() => vi.restoreAllMocks());
@@ -117,5 +117,86 @@ describe("NeteaseApiClient 404 semantics", () => {
 			message: expect.stringContaining("歌曲不存在"),
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("projectSong", () => {
+	it("maps the playlist dialect onto SongInfo and leaves the other fifty fields behind", () => {
+		const projected = projectSong({
+			id: 3358787335,
+			name: "如生之不竭",
+			ar: [
+				{ id: 1, name: "HOYO-MiX" },
+				{ id: 2, name: "" },
+			],
+			al: { id: 3, name: "原神-朔望凝待之庭", picUrl: "http://p3.music.126.net/x.jpg" },
+			dt: 162534,
+			fee: 0,
+			pop: 95,
+			h: { br: 320000 },
+			mv: 0,
+		});
+
+		expect(projected).toEqual({
+			id: "3358787335",
+			name: "如生之不竭",
+			artists: ["HOYO-MiX"],
+			durationMs: 162534,
+			album: "原神-朔望凝待之庭",
+		});
+	});
+
+	it("accepts the search dialect so three endpoints share one mapping", () => {
+		expect(projectSong({ id: "42", name: "Song", artists: [{ name: "A" }], duration: 1000, album: "Album" })).toEqual({
+			id: "42",
+			name: "Song",
+			artists: ["A"],
+			durationMs: 1000,
+			album: "Album",
+		});
+	});
+
+	it("returns null rather than inventing a placeholder for an entry without an id", () => {
+		expect(projectSong({ name: "no id" })).toBeNull();
+		expect(projectSong({ id: null, name: "null id" })).toBeNull();
+		expect(projectSong(null)).toBeNull();
+		expect(projectSong("song")).toBeNull();
+	});
+
+	it("keeps a song usable when upstream omits the album", () => {
+		expect(projectSong({ id: 7, name: "Bare" })).toEqual({ id: "7", name: "Bare", artists: [], durationMs: null });
+	});
+});
+
+describe("NeteaseApiClient song detail batching", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("batches ids in chunks of 100 instead of one request per song", async () => {
+		const ids = Array.from({ length: 250 }, (_, index) => `s${index}`);
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const requested = (new URL(String(input)).searchParams.get("ids") ?? "").split(",").filter(Boolean);
+			return new Response(
+				JSON.stringify({ songs: requested.map((id) => ({ id, name: `Song ${id}`, ar: [{ name: "A" }], dt: 1000 })) }),
+				{ status: 200 },
+			);
+		});
+
+		const songs = await new NeteaseApiClient("http://netease.test").getSongInfos(ids);
+
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		const chunkSizes = fetchMock.mock.calls.map(
+			([input]) => (new URL(String(input)).searchParams.get("ids") ?? "").split(",").filter(Boolean).length,
+		);
+		expect(chunkSizes).toEqual([100, 100, 50]);
+		// 顺序必须跟着入参走：调用方靠这个把 id 页对应回曲目页。
+		expect(songs.map((song) => song.id)).toEqual(ids);
+	});
+
+	it("skips the request entirely when there is nothing to look up", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		await expect(new NeteaseApiClient("http://netease.test").getSongInfos(["", "  "])).resolves.toEqual([]);
+
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

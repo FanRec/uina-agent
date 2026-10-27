@@ -10,7 +10,8 @@
 			".uina/worlds/live2d/**/*.ts",
 			".uina/worlds/live2d/**/*.mjs",
 			".uina/worlds/minecraft/**/*.ts",
-			".uina/worlds/minecraft/**/*.mjs"
+			".uina/worlds/minecraft/**/*.mjs",
+			"!tests/fixtures/**/*.json"
 		]
 	},
 	"formatter": {

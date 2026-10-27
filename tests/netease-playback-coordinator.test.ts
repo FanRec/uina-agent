@@ -123,3 +123,46 @@ describe("PlaybackCoordinator", () => {
 		await coordinator.close();
 	});
 });
+
+describe("PlaybackCoordinator.addMany", () => {
+	it("fills the queue up to its limit and reports what did not fit", () => {
+		const coordinator = new PlaybackCoordinator(new SimulatedMusicPlayer(), 3);
+
+		const outcome = coordinator.addMany([song("1"), song("2"), song("3"), song("4"), song("5")]);
+
+		expect(outcome).toEqual({ accepted: 3, skipped: 2, capacity: 3, remaining: 0 });
+		expect(coordinator.snapshot().queue.map((item) => item.id)).toEqual(["1", "2", "3"]);
+	});
+
+	it("accepts nothing when the queue is already full", () => {
+		const coordinator = new PlaybackCoordinator(new SimulatedMusicPlayer(), 1);
+		coordinator.add(song("0"));
+
+		const outcome = coordinator.addMany([song("1"), song("2")]);
+
+		expect(outcome).toEqual({ accepted: 0, skipped: 2, capacity: 1, remaining: 0 });
+		expect(coordinator.snapshot().queue.map((item) => item.id)).toEqual(["0"]);
+	});
+
+	it("emits one snapshot for the whole batch", () => {
+		const coordinator = new PlaybackCoordinator(new SimulatedMusicPlayer(), 10);
+		const snapshots: number[] = [];
+		coordinator.subscribe((snapshot) => snapshots.push(snapshot.queue.length));
+
+		coordinator.addMany([song("1"), song("2"), song("3")]);
+
+		// 一首一次 emit 会把 HUD 广播打成三条，批量入队就白做了。
+		expect(snapshots).toEqual([3]);
+	});
+
+	it("stays silent when the batch changes nothing", () => {
+		const coordinator = new PlaybackCoordinator(new SimulatedMusicPlayer(), 1);
+		coordinator.add(song("0"));
+		const snapshots: number[] = [];
+		coordinator.subscribe((snapshot) => snapshots.push(snapshot.queue.length));
+
+		coordinator.addMany([song("1")]);
+
+		expect(snapshots).toEqual([]);
+	});
+});

@@ -5,13 +5,19 @@ import { PlaybackCoordinator } from "../.uina/worlds/netease-jukebox/playback-co
 import { SimulatedMusicPlayer } from "../.uina/worlds/netease-jukebox/player.js";
 
 const song = { id: "1", name: "Song 1", artists: ["Artist"], durationMs: 1000 };
+const playlistTracks = [
+	song,
+	{ id: "2", name: "Song 2", artists: ["Artist"], durationMs: 1000 },
+	{ id: "3", name: "Song 3", artists: ["Artist"], durationMs: 1000 },
+];
 
-function makeApplication() {
-	const playback = new PlaybackCoordinator(new SimulatedMusicPlayer());
+function makeApplication(queueLimit = 100) {
+	const playback = new PlaybackCoordinator(new SimulatedMusicPlayer(), queueLimit);
 	playback.setLoader(async (track) => ({ url: `simulated://${track.id}`, song: track }));
 	const api = {
 		searchSongs: vi.fn(async () => [song]),
 		getSongInfo: vi.fn(async () => song),
+		getSongInfos: vi.fn(async (ids: readonly string[]) => playlistTracks.filter((track) => ids.includes(track.id))),
 		getSongUrl: vi.fn(async () => "https://audio.test/song"),
 		getLyrics: vi.fn(async () => null),
 	};
@@ -24,6 +30,23 @@ function makeApplication() {
 			editable: true,
 			trackIds: ["1"],
 		})),
+		// 与真实实现同构地切片，否则分页参数一路透传下去也测不出来。
+		playlistView: vi.fn(async (_id: string, offset = 0, limit = 50) => {
+			const page = playlistTracks.slice(offset, offset + limit);
+			const nextOffset = offset + page.length;
+			const hasMore = nextOffset < playlistTracks.length;
+			return {
+				id: "p1",
+				name: "Playlist",
+				creator: "Owner",
+				declaredTotal: playlistTracks.length,
+				playableTotal: playlistTracks.length,
+				missing: 0,
+				tracks: page,
+				paging: { offset, limit, returned: page.length, hasMore, nextOffset: hasMore ? nextOffset : null },
+			};
+		}),
+		likedSongIds: vi.fn(async () => ["1", "2", "3"]),
 		addToPlaylist: vi.fn(async () => ({ code: 200 })),
 		removeFromPlaylist: vi.fn(async () => ({ code: 200 })),
 		updatePlaylist: vi.fn(async () => ({ code: 200 })),
@@ -190,5 +213,107 @@ describe("JukeboxApplication", () => {
 		const result = await application.actions.play.run({ query: "nothing" }, ctx);
 
 		expect(result).toMatchObject({ status: "failed", details: { reason: "song_not_found" } });
+	});
+});
+
+describe("JukeboxApplication playlist reads", () => {
+	const library = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
+	const queueCtx = { operationIdentity: "world:jukebox/queue" as const, signal: new AbortController().signal };
+
+	it("enqueues a whole playlist from a single upstream request", async () => {
+		const { application, api, gateway, playback } = makeApplication();
+
+		const result = await application.actions.queue.run({ operation: "add", playlist_id: "p1" }, queueCtx);
+
+		expect(result).toMatchObject({ status: "succeeded", details: { effectStatus: "applied", accepted: 3 } });
+		expect(String(result.result)).toContain("已加入队列 3 首");
+		expect(playback.snapshot().queue.map((item) => item.id)).toEqual(["1", "2", "3"]);
+		// 只发一次歌单详情；逐首查详情就是另一条把上下文和时间一起烧掉的路径。
+		expect(gateway.playlistView).toHaveBeenCalledWith("p1", 0, 200, queueCtx.signal);
+		expect(api.getSongInfo).not.toHaveBeenCalled();
+	});
+
+	it("fills what fits and still reports the batch as a success", async () => {
+		const { application, playback } = makeApplication(2);
+
+		const result = await application.actions.queue.run({ operation: "add", playlist_id: "p1" }, queueCtx);
+
+		// failed 会被序列化成 is_error，模型当成硬错误重试，在不去重的前提下等于重复入队。
+		expect(result).toMatchObject({ status: "succeeded", details: { accepted: 2, skippedByCapacity: 1 } });
+		expect(String(result.result)).toContain("有 1 首选到了但装不下");
+		expect(playback.snapshot().queue).toHaveLength(2);
+	});
+
+	it("blames the limit, not the queue, when the caller asked for fewer songs", async () => {
+		const { application, playback } = makeApplication(10);
+
+		const result = await application.actions.queue.run({ operation: "add", playlist_id: "p1", limit: 1 }, queueCtx);
+
+		expect(result).toMatchObject({
+			status: "succeeded",
+			details: { accepted: 1, skippedByCapacity: 0, notFetched: 2 },
+		});
+		expect(String(result.result)).toContain("还有 2 首没取");
+		// 队列还有空位，此时让模型去 queue clear 就是错误建议。
+		expect(String(result.result)).not.toContain("queue clear");
+		expect(playback.snapshot().queue).toHaveLength(1);
+	});
+
+	it("refuses the whole playlist when the queue is already full", async () => {
+		const { application, playback } = makeApplication(1);
+		playback.add(song);
+
+		const result = await application.actions.queue.run({ operation: "add", playlist_id: "p1" }, queueCtx);
+
+		expect(result).toMatchObject({ status: "failed", details: { reason: "queue_full" } });
+		expect(String(result.result)).toContain("上限 1");
+		expect(playback.snapshot().queue.map((item) => item.id)).toEqual(["1"]);
+	});
+
+	it("pages a playlist open instead of dumping the whole response", async () => {
+		const { application, gateway } = makeApplication();
+
+		const result = await application.actions.library.run(
+			{ operation: "playlist_open", playlist_id: "p1", offset: 1, limit: 1 },
+			library,
+		);
+
+		expect(gateway.playlistView).toHaveBeenCalledWith("p1", 1, 1, library.signal);
+		const payload = JSON.parse(String(result.result));
+		expect(payload.tracks.map((track: { id: string }) => track.id)).toEqual(["2"]);
+		expect(payload.paging).toEqual({ offset: 1, limit: 1, returned: 1, hasMore: true, nextOffset: 2 });
+	});
+
+	it("falls back to the 50-item page default because Ajv does not apply schema defaults", async () => {
+		const { application, gateway } = makeApplication();
+
+		await application.actions.library.run({ operation: "playlist_open", playlist_id: "p1" }, library);
+
+		expect(gateway.playlistView).toHaveBeenCalledWith("p1", 0, 50, library.signal);
+	});
+
+	it("expands liked ids into readable tracks", async () => {
+		const { application, api, gateway } = makeApplication();
+
+		const result = await application.actions.library.run({ operation: "liked_list", offset: 1, limit: 1 }, library);
+
+		expect(gateway.likedSongIds).toHaveBeenCalledWith("42", library.signal);
+		// 只补当前页的详情，不是把整份红心逐首查一遍。
+		expect(api.getSongInfos).toHaveBeenCalledWith(["2"], library.signal);
+		const payload = JSON.parse(String(result.result));
+		expect(payload).toMatchObject({ total: 3, offset: 1, limit: 1, returned: 1, hasMore: true, nextOffset: 2 });
+		expect(payload.tracks.map((track: { id: string }) => track.id)).toEqual(["2"]);
+	});
+
+	it("still reports the liked total when the detail lookup fails", async () => {
+		const { application, api } = makeApplication();
+		(api.getSongInfos as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("HTTP 502"));
+
+		const result = await application.actions.library.run({ operation: "liked_list" }, library);
+
+		expect(result).toMatchObject({ status: "failed", details: { reason: "song_detail_unavailable", total: 3 } });
+		expect(String(result.result)).toContain("红心共 3 首");
+		// 第一段已经拿到的那个事实不该跟着丢，也不该被说成"没有红心歌曲"。
+		expect(String(result.result)).not.toContain("没有红心");
 	});
 });
