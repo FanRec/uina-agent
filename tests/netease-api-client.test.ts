@@ -166,6 +166,42 @@ describe("projectSong", () => {
 	it("keeps a song usable when upstream omits the album", () => {
 		expect(projectSong({ id: 7, name: "Bare" })).toEqual({ id: "7", name: "Bare", artists: [], durationMs: null });
 	});
+
+	it("reads the album name from either shape upstream uses", () => {
+		// 详情与歌单给 `al: {name}`，搜索给 `album: {name}`。只认一种就会静默丢字段。
+		expect(projectSong({ id: 1, name: "A", al: { name: "FromAl" } })).toMatchObject({ album: "FromAl" });
+		expect(projectSong({ id: 1, name: "A", album: { name: "FromObject" } })).toMatchObject({
+			album: "FromObject",
+		});
+		expect(projectSong({ id: 1, name: "A", al: { name: "" }, album: { name: "Fallback" } })).toMatchObject({
+			album: "Fallback",
+		});
+	});
+});
+
+describe("NeteaseApiClient search projection", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("projects search results through the same mapping as details", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					result: {
+						songs: [
+							{ id: 7, name: "Song", ar: [{ name: "A" }], al: { name: "Album" }, dt: 1000, fee: 0, pop: 95 },
+							// 无 id 的条目：各自实现的旧版本会产出 id="undefined" 的假曲目。
+							{ name: "broken" },
+						],
+					},
+				}),
+				{ status: 200 },
+			),
+		);
+
+		await expect(new NeteaseApiClient("http://netease.test").searchSongs("song")).resolves.toEqual([
+			{ id: "7", name: "Song", artists: ["A"], durationMs: 1000, album: "Album" },
+		]);
+	});
 });
 
 describe("NeteaseApiClient song detail batching", () => {
