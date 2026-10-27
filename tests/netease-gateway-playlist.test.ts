@@ -24,17 +24,7 @@ const viewGateway = () => new NeteaseGateway("http://netease.test");
 describe("NeteaseGateway playlist writes", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it("uses the route the module file name maps to", async () => {
-		const fetchMock = vi
-			.spyOn(globalThis, "fetch")
-			.mockResolvedValue(new Response(JSON.stringify({ code: 200 }), { status: 200 }));
-		await new NeteaseGateway("http://netease.test").addToPlaylist("p1", "s1");
-		// api-enhanced 把模块文件名的每个下划线换成斜杠：playlist_track_add.js → /playlist/track/add。
-		// 直接把文件名当路径发出去，拿到的是 Express 的 404，而不是上游的业务错误。
-		expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/playlist/track/add");
-	});
-
-	it("sends the parameter name each dedicated endpoint actually reads", async () => {
+	it("adds and removes through the song-playlist endpoint", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")
 			.mockImplementation(async () => new Response(JSON.stringify({ code: 200 }), { status: 200 }));
@@ -43,31 +33,34 @@ describe("NeteaseGateway playlist writes", () => {
 		await gateway.addToPlaylist("p1", "s1");
 		await gateway.removeFromPlaylist("p1", "s1");
 
-		// 同族两个端点的参数名不同：playlist_track_add 读 pid，playlist_track_delete 读 id。
-		// 发错那个不会报错，只会让 delete 拿着 undefined 去删一个不存在的歌单。
-		const sent = fetchMock.mock.calls.map(([, init]) => Object.fromEntries(new URLSearchParams(String(init?.body))));
-		expect(sent[0]).toMatchObject({ pid: "p1", ids: "s1" });
-		expect(sent[1]).toMatchObject({ id: "p1", ids: "s1" });
+		// 添加与删除只差一个 op，参数名完全一样。名字更像的 /playlist/track/add 属于视频歌单：
+		// 拿它操作歌曲歌单会被上游回 401「无权限操作歌单」，跟登录态无关。
+		const body = (init: RequestInit | undefined) => Object.fromEntries(new URLSearchParams(String(init?.body)));
+		const [add, remove] = fetchMock.mock.calls;
+		expect(new URL(String(add?.[0])).pathname).toBe("/playlist/tracks");
+		expect(new URL(String(remove?.[0])).pathname).toBe("/playlist/tracks");
+		expect(body(add?.[1])).toEqual({ op: "add", pid: "p1", tracks: "s1" });
+		expect(body(remove?.[1])).toEqual({ op: "del", pid: "p1", tracks: "s1" });
 	});
 
-	it("falls back to the combined tracks endpoint when the dedicated one is missing", async () => {
+	it("surfaces a permission 401 without retrying another endpoint", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")
-			.mockResolvedValueOnce(new Response("missing", { status: 404 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ code: 200 }), { status: 200 }));
-		await new NeteaseGateway("http://netease.test").removeFromPlaylist("p1", "s1");
-		// 回退端点同样是文件名换斜杠：playlist_tracks.js → /playlist/tracks。
-		expect(new URL(String(fetchMock.mock.calls[1]?.[0])).pathname).toBe("/playlist/tracks");
+			.mockResolvedValue(new Response(JSON.stringify({ code: 401, msg: "无权限操作歌单" }), { status: 401 }));
+
+		// 401 是上游的业务拒绝。换接口重试只会把同一个拒绝再演一遍，必须原样抛给调用方。
+		await expect(new NeteaseGateway("http://netease.test").addToPlaylist("p1", "s1")).rejects.toThrow("HTTP 401");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not fall back to a second POST after an uncertain 5xx write", async () => {
+	it("does not retry an uncertain write", async () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gateway error", { status: 502 }));
 
 		await expect(new NeteaseGateway("http://netease.test").addToPlaylist("p1", "s1")).rejects.toBeInstanceOf(
 			NeteaseUncertainWriteError,
 		);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/playlist/track/add");
+		expect(new URL(String(fetchMock.mock.calls[0]?.[0])).pathname).toBe("/playlist/tracks");
 	});
 
 	it("wraps uncertain POST failures (timeout) as effect-unknown", async () => {

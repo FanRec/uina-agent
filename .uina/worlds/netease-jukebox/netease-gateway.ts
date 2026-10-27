@@ -164,31 +164,22 @@ export class NeteaseGateway {
     return this.request("/playlist/update", { id, name, desc: description, tags }, signal, "POST");
   }
   async addToPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
-    // 路由由模块文件名把下划线换成斜杠得到：playlist_track_add.js → /playlist/track/add。
-    // 用的是 filename——少换一次斜杠就是 Express 的 404，而不是上游的业务错误。
-    // 另外 module/playlist_track_add 读的是 pid。
-    return this.playlistTrackMutation("playlist/track/add", "add", { pid: playlistId, ids: songId }, signal);
+    return this.playlistTracks("add", playlistId, songId, signal);
   }
   async removeFromPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
-    // 同一个族的 module/playlist_track_delete 读的却是 id——发 pid 会让它拿到 undefined。
-    return this.playlistTrackMutation("playlist/track/delete", "del", { id: playlistId, ids: songId }, signal);
+    return this.playlistTracks("del", playlistId, songId, signal);
+  }
+  /**
+   * 歌曲歌单的增删只有这一个端点。
+   *
+   * 名字更像的 playlist/track/add 与 playlist/track/delete 是「视频歌单」那两个接口（文档
+   * 「收藏视频到视频歌单」一节），拿它们操作普通歌曲歌单，上游一律回 401「无权限操作歌单」。
+   * 那条 401 与登录态无关，换 cookie 也不会好。
+   */
+  private playlistTracks(operation: "add" | "del", playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
+    return this.request("/playlist/tracks", { op: operation, pid: playlistId, tracks: songId }, signal, "POST");
   }
   async comment(kind: "song" | "playlist", id: string, content: string, signal?: AbortSignal): Promise<GatewayResult> { return this.request(kind === "song" ? "/comment" : "/comment", { id, content, type: kind === "song" ? 0 : 2 }, signal, "POST"); }
-  private async playlistTrackMutation(
-    path: string,
-    fallbackOperation: "add" | "del",
-    params: Record<string, string>,
-    signal?: AbortSignal,
-  ): Promise<GatewayResult> {
-    try {
-      return await this.request(`/${path}`, params, signal, "POST");
-    } catch (error) {
-      if (!isFallbackEligible(error)) throw error;
-      // 回退端点同样走文件名换斜杠的规则：playlist_tracks.js → /playlist/tracks。
-      // 它的参数名固定是 pid/tracks，值取我们本来要发的那一份。
-      return this.request("/playlist/tracks", { op: fallbackOperation, pid: params.pid ?? params.id, tracks: params.ids }, signal, "POST");
-    }
-  }
   private async request(path: string, params: Record<string, string | number>, signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<GatewayResult> {
     signal?.throwIfAborted();
     const url = new URL(`${this.gatewayBaseUrl}${path}`); if (method === "GET") for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
@@ -232,10 +223,6 @@ export class NeteaseGateway {
 function wrapUncertainWrite(error: unknown, method: "GET" | "POST"): unknown {
   if (method !== "POST" || error instanceof NeteaseUncertainWriteError || !isUncertainWriteError(error)) return error;
   return new NeteaseUncertainWriteError(`网易云写请求结果未知：${error instanceof Error ? error.message : String(error)}`, { cause: error });
-}
-
-function isFallbackEligible(error: unknown): boolean {
-  return error instanceof NeteaseGatewayHttpError && [404, 405, 501].includes(error.status);
 }
 
 function isTransientStatus(status: number): boolean {
