@@ -4,7 +4,7 @@
 
 播放状态由 `PlaybackCoordinator` 持有，并向可选的 `ThirdParty/broadcast-hud` 发布快照。HUD 不可用时不影响播放；播放器连接、搜索和播放会在 World 停用时释放。mpv 与频谱 ffmpeg 由宿主 spawn 并登记到宿主子进程兜底表（`world-framework/child-process-registry`）：宿主退出时——包括优雅清理超时的非优雅路径——会同步击杀这些由它自己启动的子进程；api-enhanced 有意不登记，宿主退出后继续存活，下次启动直接复用健康实例。
 
-队列默认上限 100，历史仅保留本次运行最近 50 首。播放模式支持 `single_once`、`queue_order`、`list_loop`、`single_loop` 和 `shuffle`。`previous` 在当前曲目已播放超过 5 秒时回到曲目开头，否则回退历史。自动续播遇到加载失败的曲目会将其移出队列并跳过，连续失败 3 次后停止并保留剩余队列。播放模式与音量写入 World 的 `preferences.json`，不恢复外部播放器位置或音频队列；旧配置中的 `list_order` 会按 `queue_order` 读取。
+队列默认上限 100，历史仅保留本次运行最近 50 首。`queue add` 给 `playlist_id` 时走批量路径：只发一次歌单详情，把整张歌单按顺序入队，超上限的部分不加入并把剩余数量写进结果；单曲入队超限仍然拒绝。批量路径只对本次新增发一次快照，不为每首歌各推一版。播放模式支持 `single_once`、`queue_order`、`list_loop`、`single_loop` 和 `shuffle`。`previous` 在当前曲目已播放超过 5 秒时回到曲目开头，否则回退历史。自动续播遇到加载失败的曲目会将其移出队列并跳过，连续失败 3 次后停止并保留剩余队列。播放模式与音量写入 World 的 `preferences.json`，不恢复外部播放器位置或音频队列；旧配置中的 `list_order` 会按 `queue_order` 读取。
 
 `lyrics` 查询完整歌词；设置 `current: true` 时返回当前句窗口。歌词按歌曲 ID 做本次进程内缓存，不处理翻译歌词、逐字歌词或跨进程缓存。
 
@@ -12,7 +12,9 @@ HUD 播放真实 mpv 音频时会让 FFmpeg 解码同一个播放 URL，使用�
 
 HUD 发布采用最新快照策略；HUD 服务暂时不可用时不会积压旧请求，恢复后从最新播放状态继续。播放时长未知显示为 `--:--`，歌词请求失败会按有限退避重试，仍无歌词时显示无歌词提示。HUD Companion 自动启动失败只会把 HUD 连接标为 degraded，不会阻止点歌机播放。
 
-`library` 提供账号状态、歌单、喜欢、最近播放和评论入口，并支持 `playlist_track_add`、`playlist_track_remove`、`playlist_update` 等歌单写操作。所有写操作必须传入 `confirm: true`；歌单写入前会检查当前账号的可编辑权限，写入后会重新读取歌单验证结果，无法确认时返回 `unknown`。账号库仍依赖本机 loopback `api-enhanced` 的真实登录态。
+`library` 提供账号状态、歌单、喜欢、最近播放和评论入口，并支持 `playlist_track_add`、`playlist_track_remove`、`playlist_update` 等歌单写操作。所有写操作必须传入 `confirm: true`；歌单写入前会检查当前账号的可编辑权限，写入后用完整的 `trackIds`（不受读路径分页影响）重新读取歌单验证结果，无法确认时返回 `unknown`。账号库仍依赖本机 loopback `api-enhanced` 的真实登录态。
+
+歌单与红心列表按投影后的可读曲目分页返回，不再把上游响应整份交给模型。`playlist_open` 的 `offset`/`limit` 省略为 0/50，上限 200；`declaredTotal` 与 `playableTotal` 不等时用 `missing` 如实报出上游没给的曲目数，翻页只按实际曲目数推进，不伪造占位曲目。`liked_list` 先取 id 序列再补当前页详情，第二段失败时仍报出红心总数。曲目字段统一为 `id`/`name`/`artists`/`durationMs`/`album`，搜索、详情与歌单三处共用同一份投影。
 
 World 入口只负责资源装配和生命周期；action 参数解析、搜索 ref、歌词缓存与账号库编排位于 `application.ts`。歌单歌曲写入优先使用 api-enhanced 的专用 endpoint，服务不提供时回退到 `playlist_tracks`。
 

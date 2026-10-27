@@ -260,7 +260,7 @@ interface BroadcastHudSnapshot {
 
 所有结果采用当前 World action 的 `string | ToolExecutionResult` 合同，失败、取消和未确认状态不能以普通成功文本替代。
 
-当前没有独立的网易云“列表游标”状态；`list_order` 与 `list_loop` 把当前队列视为列表执行。因此它们不会凭空声称支持歌单分页或跨列表恢复，歌单加载必须先显式进入队列。
+当前没有独立的网易云“列表游标”状态；`list_order` 与 `list_loop` 把当前队列视为列表执行，因此它们不会凭空声称支持跨列表恢复。歌单读取与入队是两件事：`library playlist_open` 用 `offset`/`limit` 直接分页读歌单，不必先进队列；`queue add playlist_id` 才把歌单曲目搬进队列。
 
 ### 5.3 持久化
 
@@ -280,7 +280,8 @@ interface BroadcastHudSnapshot {
 - FFmpeg 不可用：频谱来源为 `silent`；当前实现不生成 `synthetic` 频谱。
 - bridge 端口冲突：bridge 状态为 error，World 播放和工具仍可用。
 - WebSocket 客户端慢：只发送最新快照，不为 OBS 建立无限队列。
-- 队列上限默认 100，可配置但必须有限；超限拒绝入队。
+- 队列上限默认 100，可配置但必须有限。单曲入队超限拒绝；整张歌单入队时能放多少放多少，并在结果里说明有多少首没进——部分入队仍返回 `succeeded`，用 `failed` 会被当成硬错误重试，在不去重的前提下等于重复入队。
+- 歌单读结果必须投影与分页：上游一次返回 232 首约 565 KB（每首 50 余字段，另有 `privileges` 版权对象），模型只需要曲目名、歌手、时长。投影后单首约 143 字节，一页 50 首约 8 KB。结构化事实不截断——截断后的 JSON 是坏对象，比不给更糟。
 - 所有长 IO 透传 `ActionContext.signal`；World 停止通过 scope signal 取消未完成请求和 bridge 订阅。
 
 ### 6.1 配置与默认行为
@@ -292,7 +293,7 @@ interface BroadcastHudSnapshot {
 | `api.mode` | `external` | 使用已运行的 loopback `api-enhanced`；`managed` 才允许 World 拉起指定目录的子进程；`simulation` 只用于测试。 |
 | `api.baseUrl` | `http://127.0.0.1:3000` | 只允许 loopback HTTP。 |
 | `player` | `mpv` | 找不到 mpv 时明确 unavailable；不自动切到静音模拟。 |
-| `queueLimit` | `100` | 有限且可观察，超限拒绝。 |
+| `queueLimit` | `100` | 有限且可观察。单曲入队超限拒绝；整张歌单入队时截到上限并如实报告未加入的数量。 |
 | `broadcastHud.mode` | `manual` | `disabled` 不连接；`manual` 只连接已有 Companion；`auto` 不存在时由 World 启动。 |
 | `broadcastHud.dir` | `E:\Uina\ThirdParty\broadcast-hud` | Companion 安装目录，可配置覆盖。 |
 | `broadcastHud.port` | `18130` | 只监听 loopback，端口冲突只影响 HUD。 |
