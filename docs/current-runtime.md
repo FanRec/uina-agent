@@ -145,6 +145,14 @@ QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字�
 
 工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。自动验证包含隔离平台测试以及 World → Subject → JsonlSessionStore 集成，不证明真实 QQ 对端呈现或模型理解质量。2026-10-11 真实只读连接探测不可用，身份、在线目录与平台历史仍未获真实服务证据；验收映射与验证命令见 [QQ World 验收](qq/qq-world-acceptance.md)。
 
+## Rhythm World（自主节拍）
+
+当前 rhythm 位于 `.uina/worlds/rhythm/`，是主体唯一的通用唤醒来源（旧 ticker/pacing-ticker 已整体更名重写，不留兼容层）。工具面为 6 个动作：`status`、`set_interval`、`pause`、`resume`、`remind`、`cancel_reminder`。
+
+节拍到期发送 `pacing-opportunity` 内部事件（queued、channel world），正文由引擎在投递时刻用现场快照合成：除时间外自带一行"当前节奏"（实际间隔、下次唤醒），主体在被唤醒时即知道自己的节奏，无需先查询。实际间隔 = max(基准, 安静退避下限)，退避只放慢不反向加速，外界有动静即回落；忙碌与 30 秒人类避让存在但属工程防碰撞。写动作返回一律回显生效后的真实节奏行，不只报被设置的值。
+
+提醒 `remind` 按相对秒数设置，到期以 `reminder-due` 事件原文再现，不受静默/退避/日配额影响；投递至少一次（入队成功且移除写盘成功才消失，失败 15 秒重试，重启补投）。日配额读 `worldDataDir/config.json` 的 `maxDailyAttempts`，缺失即无上限并在 status 中如实呈现"未设"。全部文案出自 `src/format.ts` 单一格式器。机制事实与边界见 [.uina/worlds/rhythm/DESIGN.md](../.uina/worlds/rhythm/DESIGN.md)。
+
 ## 能力注册
 
 所有能力经 ResourceScope 注册：

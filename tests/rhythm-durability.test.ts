@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TickerEngine, type ClockSource } from "../.uina/worlds/pacing-ticker/src/ticker-engine.js";
-import type { TickerDurableState, TickerHostPort } from "../.uina/worlds/pacing-ticker/src/types.js";
+import { RhythmEngine, type ClockSource } from "../.uina/worlds/rhythm/src/engine.js";
+import type { RhythmDurableState, RhythmHostPort } from "../.uina/worlds/rhythm/src/types.js";
 
 class Clock implements ClockSource {
 	mono = 1_000;
@@ -49,10 +49,10 @@ const deferred = () => {
 	return { promise, resolve, reject };
 };
 
-describe("ticker durable time rules", () => {
+describe("rhythm durable time rules", () => {
 	it("does not consume a daily opportunity when delivery fails", async () => {
 		const clock = new Clock();
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {
 				throw new Error("delivery failed");
@@ -60,7 +60,7 @@ describe("ticker durable time rules", () => {
 			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
-		const engine = new TickerEngine(host, { baseIntervalMs: 60_000 }, undefined, clock);
+		const engine = new RhythmEngine(host, { baseIntervalMs: 60_000 }, undefined, clock);
 		engine.start();
 		await clock.advance(60_000);
 		expect(engine.getStatus().dailyAttemptsUsed).toBe(0);
@@ -71,7 +71,7 @@ describe("ticker durable time rules", () => {
 		const clock = new Clock();
 		let busyChecks = 0;
 		let submitted = 0;
-		const engine = new TickerEngine(
+		const engine = new RhythmEngine(
 			{
 				isBusy: () => {
 					busyChecks++;
@@ -102,7 +102,7 @@ describe("ticker durable time rules", () => {
 		const clock = new Clock();
 		const firstSave = deferred();
 		const saved: number[] = [];
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
 			submitReminder: async () => {},
@@ -111,7 +111,7 @@ describe("ticker durable time rules", () => {
 				if (saved.length === 1) await firstSave.promise;
 			},
 		};
-		const engine = new TickerEngine(host, undefined, undefined, clock);
+		const engine = new RhythmEngine(host, undefined, undefined, clock);
 		engine.start();
 		const first = engine.setInterval(10);
 		const second = engine.setInterval(20);
@@ -128,7 +128,7 @@ describe("ticker durable time rules", () => {
 	it("keeps the prior pause when replacing it fails", async () => {
 		const clock = new Clock();
 		let fail = false;
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
 			submitReminder: async () => {},
@@ -136,7 +136,7 @@ describe("ticker durable time rules", () => {
 				if (fail) throw new Error("disk full");
 			},
 		};
-		const engine = new TickerEngine(host, undefined, undefined, clock);
+		const engine = new RhythmEngine(host, undefined, undefined, clock);
 		engine.start();
 		await engine.pause(10);
 		fail = true;
@@ -150,7 +150,7 @@ describe("ticker durable time rules", () => {
 	it("keeps the pause when resume cannot be saved", async () => {
 		const clock = new Clock();
 		let fail = false;
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
 			submitReminder: async () => {},
@@ -158,7 +158,7 @@ describe("ticker durable time rules", () => {
 				if (fail) throw new Error("disk full");
 			},
 		};
-		const engine = new TickerEngine(host, undefined, undefined, clock);
+		const engine = new RhythmEngine(host, undefined, undefined, clock);
 		engine.start();
 		await engine.pause(10);
 		fail = true;
@@ -169,7 +169,7 @@ describe("ticker durable time rules", () => {
 
 	it("does not retain a temporary pause when concurrent pause writes all fail", async () => {
 		const clock = new Clock();
-		const engine = new TickerEngine(
+		const engine = new RhythmEngine(
 			{
 				isBusy: () => false,
 				submitOpportunity: async () => {},
@@ -193,14 +193,14 @@ describe("ticker durable time rules", () => {
 		const clock = new Clock();
 		const submitted: string[] = [];
 		const today = new Date(clock.epoch).toDateString();
-		const initial: TickerDurableState = {
+		const initial: RhythmDurableState = {
 			baseIntervalMs: 60_000,
 			pausedUntilEpochMs: null,
 			dailyAttempts: { date: today, count: 1 },
 			reminders: [],
 			nextReminderSequence: 1,
 		};
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async (text) => {
 				submitted.push(text);
@@ -210,7 +210,7 @@ describe("ticker durable time rules", () => {
 				throw new Error("disk full");
 			},
 		};
-		const engine = new TickerEngine(host, initial, { maxDailyAttempts: 1 }, clock);
+		const engine = new RhythmEngine(host, initial, { maxDailyAttempts: 1 }, clock);
 		engine.start();
 		await clock.advance(60_000);
 		expect(submitted).toEqual([]);
@@ -221,7 +221,7 @@ describe("ticker durable time rules", () => {
 	it("keeps long pauses scheduled within the timer limit", async () => {
 		const clock = new Clock();
 		const submitted: string[] = [];
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async (text) => {
 				submitted.push(text);
@@ -229,7 +229,7 @@ describe("ticker durable time rules", () => {
 			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
-		const engine = new TickerEngine(host, undefined, undefined, clock);
+		const engine = new RhythmEngine(host, undefined, undefined, clock);
 		engine.start();
 		await engine.pause(50_000);
 		// Node coerces delays above 2^31 - 1 ms to 1 ms.
@@ -242,13 +242,13 @@ describe("ticker durable time rules", () => {
 
 	it("reports zero usage after local midnight before the next tick", async () => {
 		const clock = new Clock();
-		const host: TickerHostPort = {
+		const host: RhythmHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
 			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
-		const engine = new TickerEngine(
+		const engine = new RhythmEngine(
 			host,
 			{
 				baseIntervalMs: 120_000,

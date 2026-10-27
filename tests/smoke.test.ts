@@ -228,8 +228,8 @@ describe("Subject", () => {
 				id: "internal-1",
 				order: 2,
 				mode: "followUp",
-				text: "自主机会",
-				source: { kind: "runtime", type: "pacing-opportunity", ref: "ticker", origin: "internal", channel: "world" },
+				text: "自主节拍",
+				source: { kind: "runtime", type: "pacing-opportunity", ref: "rhythm", origin: "internal", channel: "world" },
 			},
 		]);
 		await harness.subject.resumePending();

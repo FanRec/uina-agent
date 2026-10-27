@@ -13,7 +13,7 @@ QQ World 是一个主体长期使用的账号环境。Uina 能主动找人、看
 
 这些删减基于当前需求不足，不是证明它们永远没用。串行写不排除所有旧状态决策，但目前没有要求“仅当旧版本仍成立才修改”的真实场景。删除条件更新后，revision 仅作诊断计数，不能被调用者当作修改前置条件。
 
-QQ 提供自主使用权，不提供主体通用活动来源。有当前活动、通用 ticker/其他 World 机会或主体明确预约的跟进提醒时，Uina 可选择使用 QQ；没有活动来源就不会凭空思考。QQ 不新增无消息 heartbeat，也不自动启用默认关闭的 ticker。
+QQ 提供自主使用权，不提供主体通用活动来源。有当前活动、通用 rhythm（自主节拍）/其他 World 机会或主体明确预约的跟进提醒时，Uina 可选择使用 QQ；没有活动来源就不会凭空思考。QQ 不新增无消息 heartbeat，也不自动启用默认关闭的 rhythm。
 
 ## 2. 所有权与授权
 
@@ -106,7 +106,7 @@ World 拥有连接、timer、listener、在途工作与日志/控制写方。启
 
 QQ 实现在 `.uina/worlds/qq/`，transport/state/attention/scene/actions/media 是职责划分，不强制一职责一类。Core/Host/UI 不增加 QQ 分支或权威状态。
 
-当前可以组合 World actions、onStart/onStop、worldDataDir、emitEvent/render、input_settled、canonical 工具回注、event-frame、通用 compaction、world_store 与 ticker。
+当前可以组合 World actions、onStart/onStop、worldDataDir、emitEvent/render、input_settled、canonical 工具回注、event-frame、通用 compaction、world_store 与 rhythm。
 
 实施时只审查两个已有机制的 Extension 透传：World 事实订阅增加已有 agent_end/agent_settled；World facade 透传现有 executionMode，让 qq 声明 sequential。调用 context 仅诊断有需求时透传，不作强幂等键。当前模型 call.id 没有跨请求唯一保证。
 

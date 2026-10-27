@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createPacingOpportunityId } from "../.uina/worlds/pacing-ticker/src/app.js";
+import { createPacingOpportunityId } from "../.uina/worlds/rhythm/src/world.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 
-describe("pacing ticker opportunity identity", () => {
+describe("rhythm opportunity identity", () => {
 	it("generates a unique id for each emission", () => {
 		const first = createPacingOpportunityId();
 		const second = createPacingOpportunityId();
@@ -19,11 +19,11 @@ describe("pacing ticker opportunity identity", () => {
 				id,
 				order: order + 1,
 				mode: "followUp" as const,
-				text: "[自主机会]",
+				text: "[自主节拍]",
 				source: {
 					kind: "runtime" as const,
 					type: "pacing-opportunity",
-					ref: "ticker",
+					ref: "rhythm",
 					origin: "internal" as const,
 					channel: "world" as const,
 				},

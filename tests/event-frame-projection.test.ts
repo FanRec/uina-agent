@@ -74,14 +74,14 @@ describe("external event projection", () => {
 		expect(msgs[0]!.content).not.toContain("[内部信息");
 		expect(() => p.validateContext!(msgs)).not.toThrow();
 	});
-	it("presents ticker reminders as their own natural event text", () => {
+	it("presents rhythm reminders as their own natural event text", () => {
 		const text = "[提醒到期 r1]\n看看窗边的植物";
 		const message = projectInputMessage({
 			id: "reminder-due:1",
 			order: 1,
 			mode: "followUp",
 			text,
-			source: { kind: "runtime", type: "reminder-due", ref: "ticker", origin: "internal", channel: "world" },
+			source: { kind: "runtime", type: "reminder-due", ref: "rhythm", origin: "internal", channel: "world" },
 		} as import("../src/session/types.js").QueuedInput);
 		const projected = createEventFrameProfile().projection.convertToLlm!([message]);
 

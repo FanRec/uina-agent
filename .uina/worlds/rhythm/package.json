@@ -1,0 +1,10 @@
+{
+  "name": "rhythm",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "description": "自主节拍与一次性提醒",
+  "uina": {
+    "type": "world"
+  }
+}

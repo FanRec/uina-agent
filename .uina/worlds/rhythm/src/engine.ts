@@ -1,15 +1,17 @@
+import { clockLabel, opportunityText } from "./format.js";
 import {
 	BACKOFF_RULES,
 	HUMAN_COOLDOWN_MS,
 	type ActivityEvent,
-	type TickerDurableState,
-	type TickerGuardrails,
-	type TickerHostPort,
-	type TickerReminder,
-	type TickerStatusSnapshot,
+	type NextWakeReason,
+	type RhythmDurableState,
+	type RhythmGuardrails,
+	type RhythmHostPort,
+	type RhythmReminder,
+	type RhythmStatusSnapshot,
 } from "./types.js";
 
-/** 可插拔时钟接口，用于测试时间和调度。 */
+/** 可插拔时钟接口，用于测试时间与调度。 */
 export interface ClockSource {
 	nowMono(): number;
 	nowEpoch(): number;
@@ -25,10 +27,12 @@ const DEFAULT_CLOCK: ClockSource = {
 };
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const REMINDER_RETRY_MS = 15_000;
+const DAILY_LIMIT_DEFER_MS = 3_600_000;
+const RETRY_MS = 15_000;
 
-export class TickerEngine {
-	private readonly guardrails: TickerGuardrails;
-	private durableState: TickerDurableState;
+export class RhythmEngine {
+	private readonly guardrails: RhythmGuardrails;
+	private durableState: RhythmDurableState;
 	private readonly clock: ClockSource;
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
@@ -45,20 +49,22 @@ export class TickerEngine {
 	private readonly cancellingReminderRefs = new Set<string>();
 
 	// Runtime times use the monotonic clock; reminder deadlines remain wall-clock facts on disk.
+	private readonly constructedMonoMs: number;
 	private lastExternalActivityMonoMs: number;
 	private lastHumanInteractionMonoMs = 0;
-	private nextWakeMonoMs = 0;
 	private nextPacingWakeMonoMs = 0;
+	private lastPacingWakeMonoMs = 0;
 	private pauseUntilMonoMs = 0;
 
 	constructor(
-		private readonly host: TickerHostPort,
-		initialDurableState?: Partial<TickerDurableState>,
-		guardrails?: TickerGuardrails,
+		private readonly host: RhythmHostPort,
+		initialDurableState?: Partial<RhythmDurableState>,
+		guardrails?: RhythmGuardrails,
 		clock: ClockSource = DEFAULT_CLOCK,
 	) {
 		this.clock = clock;
-		this.lastExternalActivityMonoMs = this.clock.nowMono();
+		this.constructedMonoMs = this.clock.nowMono();
+		this.lastExternalActivityMonoMs = this.constructedMonoMs;
 		this.guardrails = {
 			maxDailyAttempts: guardrails?.maxDailyAttempts ?? null,
 		};
@@ -67,7 +73,7 @@ export class TickerEngine {
 		const reminders = (initialDurableState?.reminders ?? []).map((reminder) => ({ ...reminder }));
 		const nextSequence = initialDurableState?.nextReminderSequence ?? nextReminderSequence(reminders);
 		if (!Number.isSafeInteger(nextSequence) || nextSequence < nextReminderSequence(reminders)) {
-			throw new Error("Ticker 下一个提醒引用序号无效");
+			throw new Error("Rhythm 下一个提醒引用序号无效");
 		}
 		this.durableState = {
 			baseIntervalMs: initialDurableState?.baseIntervalMs ?? 180_000,
@@ -122,7 +128,7 @@ export class TickerEngine {
 		this.lastExternalActivityMonoMs = now;
 		if (event.origin === "human") this.lastHumanInteractionMonoMs = now;
 
-		// 仅在周期节拍已经进入长退避时提前重置；不因高频活动持续推迟机会。
+		// 仅在周期节拍已经进入长退避时提前回落；不因高频活动持续推迟机会。
 		if (now >= this.pauseUntilMonoMs) {
 			const remainingMs = this.nextPacingWakeMonoMs - now;
 			if (remainingMs > this.durableState.baseIntervalMs) {
@@ -133,7 +139,7 @@ export class TickerEngine {
 	}
 
 	async setInterval(minutes: number): Promise<void> {
-		if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) throw new Error("节拍周期必须是 1 到 120 之间的有限数字");
+		if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) throw new Error("节拍基准周期必须是 1 到 120 之间的有限数字");
 		await this.saveChange((state) => ({ ...state, baseIntervalMs: minutes * 60_000 }));
 		if (this.clock.nowMono() >= this.pauseUntilMonoMs) {
 			this.nextPacingWakeMonoMs = this.clock.nowMono() + this.calculateNextInterval();
@@ -141,17 +147,17 @@ export class TickerEngine {
 		}
 	}
 
-	async setReminder(afterSeconds: number, message: string): Promise<TickerReminder> {
+	async setReminder(afterSeconds: number, message: string): Promise<RhythmReminder> {
 		if (!Number.isSafeInteger(afterSeconds) || afterSeconds < 1) throw new Error("提醒时长必须是至少 1 秒的安全整数");
 		if (typeof message !== "string" || message.trim().length === 0) throw new Error("提醒内容不能为空");
 		const dueAtEpochMs = this.clock.nowEpoch() + afterSeconds * 1000;
 		if (!Number.isSafeInteger(dueAtEpochMs) || new Date(dueAtEpochMs).getTime() !== dueAtEpochMs) throw new Error("提醒截止时间无效");
 
-		let created!: TickerReminder;
+		let created!: RhythmReminder;
 		await this.saveChange((state) => {
 			const sequence = state.nextReminderSequence;
 			if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence >= Number.MAX_SAFE_INTEGER) {
-				throw new Error("Ticker 提醒引用序号已超出可用范围");
+				throw new Error("Rhythm 提醒引用序号已超出可用范围");
 			}
 			created = { reminderRef: `r${sequence}`, message, dueAtEpochMs };
 			return {
@@ -164,7 +170,7 @@ export class TickerEngine {
 		return { ...created };
 	}
 
-	listReminders(): TickerReminder[] {
+	listReminders(): RhythmReminder[] {
 		return this.durableState.reminders
 			.map((reminder) => ({ ...reminder }))
 			.sort((a, b) => a.dueAtEpochMs - b.dueAtEpochMs || referenceSequence(a.reminderRef) - referenceSequence(b.reminderRef));
@@ -198,7 +204,7 @@ export class TickerEngine {
 	}
 
 	async pause(minutes: number): Promise<void> {
-		if (!Number.isFinite(minutes) || minutes < 1) throw new Error("暂停时长必须是有限的正数");
+		if (!Number.isFinite(minutes) || minutes < 1) throw new Error("静默时长必须是有限的正数");
 		const operation = this.pauseTail.then(() => this.applyPause(minutes));
 		this.pauseTail = operation.then(() => {}, () => {});
 		return operation;
@@ -206,7 +212,7 @@ export class TickerEngine {
 
 	private async applyPause(minutes: number): Promise<void> {
 		const deadline = Math.ceil(this.clock.nowEpoch() + minutes * 60_000);
-		if (!Number.isSafeInteger(deadline) || deadline < 0) throw new Error("暂停截止时间无效");
+		if (!Number.isSafeInteger(deadline) || deadline < 0) throw new Error("静默截止时间无效");
 
 		const previousNextPacingWake = this.nextPacingWakeMonoMs;
 		const previousPauseUntil = this.pauseUntilMonoMs;
@@ -250,7 +256,7 @@ export class TickerEngine {
 		return operation;
 	}
 
-	/** 基于外部空闲时长计算周期节拍退避。 */
+	/** 基于外界静默时长计算周期节拍退避。只放慢，不反向加速。 */
 	calculateNextInterval(): number {
 		const idleDuration = this.clock.nowMono() - this.lastExternalActivityMonoMs;
 		let minInterval = this.durableState.baseIntervalMs;
@@ -266,7 +272,6 @@ export class TickerEngine {
 		const targetMonoMs = Math.min(this.nextPacingWakeMonoMs, this.nextReminderWakeMonoMs());
 		const now = this.clock.nowMono();
 		const delayMs = Math.max(targetMonoMs - now, 0);
-		this.nextWakeMonoMs = now + delayMs;
 		this.timer = this.clock.setTimeout(() => {
 			this.timer = null;
 			if (!this.started || generation !== this.generation) return;
@@ -295,7 +300,7 @@ export class TickerEngine {
 		return next;
 	}
 
-	/** Wake dispatcher: due reminders are independent from the periodic opportunity policy. */
+	/** Wake dispatcher: due reminders are independent from the periodic pacing policy. */
 	async onTick(generation = this.generation): Promise<void> {
 		if (!this.started || generation !== this.generation || this.tickInFlight) return;
 		this.tickInFlight = true;
@@ -303,7 +308,7 @@ export class TickerEngine {
 			await this.runWake(generation);
 		} catch {
 			if (this.started && generation === this.generation) {
-				this.nextPacingWakeMonoMs = Math.max(this.nextPacingWakeMonoMs, this.clock.nowMono() + 15_000);
+				this.nextPacingWakeMonoMs = Math.max(this.nextPacingWakeMonoMs, this.clock.nowMono() + RETRY_MS);
 				this.scheduleNextWake(generation);
 			}
 		} finally {
@@ -331,7 +336,7 @@ export class TickerEngine {
 		await this.runPacingOpportunity(generation);
 	}
 
-	private findDueReminder(): TickerReminder | undefined {
+	private findDueReminder(): RhythmReminder | undefined {
 		const nowEpoch = this.clock.nowEpoch();
 		const nowMono = this.clock.nowMono();
 		return this.durableState.reminders
@@ -344,7 +349,7 @@ export class TickerEngine {
 			.sort((a, b) => a.dueAtEpochMs - b.dueAtEpochMs || referenceSequence(a.reminderRef) - referenceSequence(b.reminderRef))[0];
 	}
 
-	private async deliverReminder(reminder: TickerReminder): Promise<void> {
+	private async deliverReminder(reminder: RhythmReminder): Promise<void> {
 		this.inFlightReminderRefs.add(reminder.reminderRef);
 		try {
 			await this.host.submitReminder({ ...reminder });
@@ -373,9 +378,9 @@ export class TickerEngine {
 		}
 		const today = new Date(this.clock.nowEpoch()).toDateString();
 		const usedToday = today === this.durableState.dailyAttempts.date ? this.durableState.dailyAttempts.count : 0;
-		const dailyLimit = this.guardrails.maxDailyAttempts;
+		const dailyLimit = this.guardrails.maxDailyAttempts ?? null;
 		if (dailyLimit != null && usedToday >= dailyLimit) {
-			this.nextPacingWakeMonoMs = this.clock.nowMono() + 3600_000;
+			this.nextPacingWakeMonoMs = this.clock.nowMono() + DAILY_LIMIT_DEFER_MS;
 			this.scheduleNextWake(generation);
 			return;
 		}
@@ -384,18 +389,16 @@ export class TickerEngine {
 		const humanElapsed = nowMono - this.lastHumanInteractionMonoMs;
 		const isHumanRecent = this.lastHumanInteractionMonoMs > 0 && humanElapsed < HUMAN_COOLDOWN_MS;
 		if (isBusy || isHumanRecent) {
-			const retryDelay = isHumanRecent ? Math.max(5000, HUMAN_COOLDOWN_MS - humanElapsed) : 15_000;
+			const retryDelay = isHumanRecent ? Math.max(5000, HUMAN_COOLDOWN_MS - humanElapsed) : RETRY_MS;
 			this.nextPacingWakeMonoMs = nowMono + retryDelay;
 			this.scheduleNextWake(generation);
 			return;
 		}
 
-		const idleMinutes = Math.round((nowMono - this.lastExternalActivityMonoMs) / 60_000);
-		const timeStr = new Date(this.clock.nowEpoch()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-		const idleText = idleMinutes > 0 ? `约${idleMinutes}分钟` : "不足1分钟";
-		const opportunityText =
-			`[自主机会]\n当前时间 ${timeStr}；距上次输入${idleText}。` +
-			"你可以留意世界、思考、与世界互动或行动，也可以暂不行动。";
+		// 先把下次唤醒排到真实未来，再用快照合成正文：
+		// "下次自主节拍"须从这次醒来算起；lastPacingWake 仍停在上次醒来，"距上次节拍到来"才为真。
+		this.nextPacingWakeMonoMs = this.clock.nowMono() + this.calculateNextInterval();
+		const text = opportunityText(this.getStatus(), clockLabel(this.clock.nowEpoch()));
 
 		try {
 			await this.saveChange((state) => {
@@ -404,16 +407,18 @@ export class TickerEngine {
 			});
 		} catch {
 			if (this.started && generation === this.generation) {
-				this.nextPacingWakeMonoMs = this.clock.nowMono() + 15_000;
+				this.nextPacingWakeMonoMs = this.clock.nowMono() + RETRY_MS;
 				this.scheduleNextWake(generation);
 			}
 			return;
 		}
 		if (!this.started || generation !== this.generation) return;
 
+		let delivered = true;
 		try {
-			await this.host.submitOpportunity(opportunityText);
+			await this.host.submitOpportunity(text);
 		} catch {
+			delivered = false;
 			// Failed delivery must not consume the daily pacing quota.
 			try {
 				await this.saveChange((state) => {
@@ -426,12 +431,12 @@ export class TickerEngine {
 		}
 
 		if (this.started && generation === this.generation) {
-			this.nextPacingWakeMonoMs = this.clock.nowMono() + this.calculateNextInterval();
+			if (delivered) this.lastPacingWakeMonoMs = this.clock.nowMono();
 			this.scheduleNextWake(generation);
 		}
 	}
 
-	private saveChange(change: (state: TickerDurableState) => TickerDurableState): Promise<void> {
+	private saveChange(change: (state: RhythmDurableState) => RhythmDurableState): Promise<void> {
 		const operation = this.persistTail.then(async () => {
 			const next = change(this.durableState);
 			await this.host.saveDurableState(next);
@@ -441,17 +446,35 @@ export class TickerEngine {
 		return operation;
 	}
 
-	getStatus(): TickerStatusSnapshot {
-		const now = this.clock.nowMono();
+	getStatus(): RhythmStatusSnapshot {
+		const nowMono = this.clock.nowMono();
 		const today = new Date(this.clock.nowEpoch()).toDateString();
+		const baseIntervalMs = this.durableState.baseIntervalMs;
+		const effectiveMs = this.calculateNextInterval();
+		const usedToday = today === this.durableState.dailyAttempts.date ? this.durableState.dailyAttempts.count : 0;
+		const dailyLimit = this.guardrails.maxDailyAttempts ?? null;
+		const idleMs = nowMono - this.lastExternalActivityMonoMs;
+		const humanElapsed = nowMono - this.lastHumanInteractionMonoMs;
+
+		let reason: NextWakeReason = "normal";
+		if (nowMono < this.pauseUntilMonoMs) reason = "paused";
+		else if (dailyLimit != null && usedToday >= dailyLimit) reason = "daily_limit";
+		else if (this.host.isBusy()) reason = "avoiding_busy";
+		else if (this.lastHumanInteractionMonoMs > 0 && humanElapsed < HUMAN_COOLDOWN_MS) reason = "avoiding_recent_input";
+		else if (effectiveMs > baseIntervalMs) reason = "backoff";
+
 		return {
-			baseIntervalMinutes: Math.round(this.durableState.baseIntervalMs / 60_000),
-			idleMinutes: Math.round((now - this.lastExternalActivityMonoMs) / 60_000),
-			effectiveIntervalMinutes: Math.round(this.calculateNextInterval() / 60_000),
-			remainingSeconds: Math.max(0, Math.round((this.nextWakeMonoMs - now) / 1000)),
-			isPaused: now < this.pauseUntilMonoMs,
-			dailyAttemptsUsed: this.durableState.dailyAttempts.date === today ? this.durableState.dailyAttempts.count : 0,
-			dailyAttemptsLimit: this.guardrails.maxDailyAttempts ?? null,
+			isPaused: nowMono < this.pauseUntilMonoMs,
+			pausedRemainingSeconds: Math.max(0, Math.round((this.pauseUntilMonoMs - nowMono) / 1000)),
+			baseIntervalMinutes: Math.round(baseIntervalMs / 60_000),
+			effectiveIntervalMinutes: Math.round(effectiveMs / 60_000),
+			quietMinutes: Math.round(idleMs / 60_000),
+			nextWakeReason: reason,
+			nextPacingWakeInSeconds: Math.max(0, Math.round((this.nextPacingWakeMonoMs - nowMono) / 1000)),
+			// 首个节拍到来前以引擎构造为锚——不谎报"距上次节拍"的历史。
+			secondsSinceLastWake: Math.round((nowMono - (this.lastPacingWakeMonoMs || this.constructedMonoMs)) / 1000),
+			dailyAttemptsUsed: usedToday,
+			dailyAttemptsLimit: dailyLimit,
 		};
 	}
 }
@@ -461,7 +484,7 @@ function referenceSequence(reminderRef: string): number {
 	return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
-function nextReminderSequence(reminders: readonly TickerReminder[]): number {
+function nextReminderSequence(reminders: readonly RhythmReminder[]): number {
 	let max = 0;
 	for (const reminder of reminders) max = Math.max(max, referenceSequence(reminder.reminderRef));
 	return max + 1;

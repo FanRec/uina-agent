@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TickerEngine, type ClockSource } from "../.uina/worlds/pacing-ticker/src/ticker-engine.js";
-import type { TickerDurableState } from "../.uina/worlds/pacing-ticker/src/types.js";
+import { RhythmEngine, type ClockSource } from "../.uina/worlds/rhythm/src/engine.js";
+import type { RhythmDurableState } from "../.uina/worlds/rhythm/src/types.js";
 
 interface Reminder {
 	readonly reminderRef: string;
@@ -54,13 +54,13 @@ function createHarness(options: {
 	clock: ReminderClock;
 	busy?: () => boolean;
 	submitReminder?: (reminder: Reminder) => Promise<void>;
-	saveState?: (state: TickerDurableState) => Promise<void>;
-	initial?: Partial<TickerDurableState>;
+	saveState?: (state: RhythmDurableState) => Promise<void>;
+	initial?: Partial<RhythmDurableState>;
 }) {
 	const reminders: Reminder[] = [];
-	const saved: TickerDurableState[] = [];
+	const saved: RhythmDurableState[] = [];
 	const opportunities: string[] = [];
-	const engine = new TickerEngine(
+	const engine = new RhythmEngine(
 		{
 			isBusy: options.busy ?? (() => false),
 			submitOpportunity: async (text) => {
@@ -82,7 +82,7 @@ function createHarness(options: {
 	return { engine, reminders, saved, opportunities };
 }
 
-describe("ticker one-shot reminders", () => {
+describe("rhythm one-shot reminders", () => {
 	it("fires at its due time and removes the reminder after queue acceptance", async () => {
 		const clock = new ReminderClock();
 		const { engine, reminders, saved } = createHarness({ clock });
@@ -151,7 +151,7 @@ describe("ticker one-shot reminders", () => {
 		engine.stop();
 	});
 
-	it("replays a reminder that became due while the ticker was stopped", async () => {
+	it("replays a reminder that became due while rhythm was stopped", async () => {
 		const clock = new ReminderClock();
 		const first = createHarness({ clock });
 		const reminder = await first.engine.setReminder(1, "离线期间到期");

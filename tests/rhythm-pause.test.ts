@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TickerEngine, type ClockSource } from "../.uina/worlds/pacing-ticker/src/ticker-engine.js";
+import { RhythmEngine, type ClockSource } from "../.uina/worlds/rhythm/src/engine.js";
 
 class Clock implements ClockSource {
 	now = 0;
@@ -31,10 +31,10 @@ class Clock implements ClockSource {
 	}
 }
 
-describe("pacing ticker state boundaries", () => {
+describe("rhythm state boundaries", () => {
 	it("rejects non-finite pauses", async () => {
 		const clock = new Clock();
-		const engine = new TickerEngine(
+		const engine = new RhythmEngine(
 			{
 				isBusy: () => false,
 				submitOpportunity: async () => {},
@@ -55,7 +55,7 @@ describe("pacing ticker state boundaries", () => {
 			release = resolve;
 		});
 		let submitted = 0;
-		const engine = new TickerEngine(
+		const engine = new RhythmEngine(
 			{
 				isBusy: () => false,
 				submitOpportunity: async () => {
