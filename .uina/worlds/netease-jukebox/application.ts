@@ -524,7 +524,12 @@ export class JukeboxApplication {
     const playlistId = String(args.playlist_id ?? "").trim();
     const target = await this.requireEditablePlaylist(playlistId, uid, ctx);
     if (isToolResult(target)) return target;
-    await this.deps.gateway.updatePlaylist(playlistId, typeof args.name === "string" ? args.name : undefined, typeof args.description === "string" ? args.description : undefined, typeof args.tags === "string" ? args.tags : undefined, ctx.signal);
-    return { result: `已更新歌单信息：${target.name}。`, status: "succeeded", details: { playlistId } };
+    // 上游三个字段是一起提交的整份状态，缺省即清空：只传 name 会清掉简介和标签，
+    // 只传 description 会把歌单名写成字符串 "undefined"。用当前值补齐才等于"只改这一项"。
+    const name = typeof args.name === "string" ? args.name : target.name;
+    const description = typeof args.description === "string" ? args.description : target.description;
+    const tags = typeof args.tags === "string" ? args.tags : target.tags.join(",");
+    await this.deps.gateway.updatePlaylist(playlistId, name, description, tags, ctx.signal);
+    return { result: `已更新歌单信息：${name}。`, status: "succeeded", details: { playlistId } };
   }
 }

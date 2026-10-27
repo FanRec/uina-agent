@@ -8,6 +8,8 @@ export interface EditablePlaylist {
   ownerId: string | null;
   editable: boolean;
   trackIds: readonly string[] | null;
+  description: string;
+  tags: readonly string[];
 }
 
 /**
@@ -133,6 +135,8 @@ export class NeteaseGateway {
       // privacy 是可见性（0 = 公开），不是可编辑；上游不下发 editable 时不能据此推断写权限。
       editable: data.editable === true,
       trackIds,
+      description: typeof data.description === "string" ? data.description : "",
+      tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     };
   }
   /**
@@ -150,22 +154,36 @@ export class NeteaseGateway {
   async like(songId: string, like: boolean, signal?: AbortSignal): Promise<GatewayResult> { return this.request("/like", { id: songId, like: String(like) }, signal); }
   async createPlaylist(name: string, privacy: "public" | "private", signal?: AbortSignal): Promise<GatewayResult> { return this.request("/playlist/create", { name, privacy: privacy === "private" ? 10 : 0 }, signal, "POST"); }
   async subscribePlaylist(id: string, subscribe: boolean, signal?: AbortSignal): Promise<GatewayResult> { return this.request("/playlist/subscribe", { id, t: subscribe ? 1 : 2 }, signal, "POST"); }
-  async updatePlaylist(id: string, name: string | undefined, description: string | undefined, tags: string | undefined, signal?: AbortSignal): Promise<GatewayResult> {
-    return this.request("/playlist/update", { id, ...(name === undefined ? {} : { name }), ...(description === undefined ? {} : { desc: description }), ...(tags === undefined ? {} : { tags }) }, signal, "POST");
+  /**
+   * 编辑歌单。
+   *
+   * 上游把 name/desc/tags 当成整份状态一起提交，没有"保持不变"这个取值：缺 desc 就是清空，
+   * 缺 name 就是改名成字符串 "undefined"。所以三个参数都是必填，由调用方补齐当前值。
+   */
+  async updatePlaylist(id: string, name: string, description: string, tags: string, signal?: AbortSignal): Promise<GatewayResult> {
+    return this.request("/playlist/update", { id, name, desc: description, tags }, signal, "POST");
   }
   async addToPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
-    return this.playlistTrackMutation("playlist_track_add", "add", playlistId, songId, signal);
+    // module/playlist_track_add 读的是 pid。
+    return this.playlistTrackMutation("playlist_track_add", "add", { pid: playlistId, ids: songId }, signal);
   }
   async removeFromPlaylist(playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
-    return this.playlistTrackMutation("playlist_track_delete", "del", playlistId, songId, signal);
+    // 同一个族的 module/playlist_track_delete 读的却是 id——发 pid 会让它拿到 undefined。
+    return this.playlistTrackMutation("playlist_track_delete", "del", { id: playlistId, ids: songId }, signal);
   }
   async comment(kind: "song" | "playlist", id: string, content: string, signal?: AbortSignal): Promise<GatewayResult> { return this.request(kind === "song" ? "/comment" : "/comment", { id, content, type: kind === "song" ? 0 : 2 }, signal, "POST"); }
-  private async playlistTrackMutation(path: string, fallbackOperation: "add" | "del", playlistId: string, songId: string, signal?: AbortSignal): Promise<GatewayResult> {
+  private async playlistTrackMutation(
+    path: string,
+    fallbackOperation: "add" | "del",
+    params: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<GatewayResult> {
     try {
-      return await this.request(`/${path}`, { pid: playlistId, ids: songId }, signal, "POST");
+      return await this.request(`/${path}`, params, signal, "POST");
     } catch (error) {
       if (!isFallbackEligible(error)) throw error;
-      return this.request("/playlist_tracks", { op: fallbackOperation, pid: playlistId, tracks: songId }, signal, "POST");
+      // fallback 端点的参数名固定是 pid/tracks，值取我们本来要发的那一份。
+      return this.request("/playlist_tracks", { op: fallbackOperation, pid: params.pid ?? params.id, tracks: params.ids }, signal, "POST");
     }
   }
   private async request(path: string, params: Record<string, string | number>, signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<GatewayResult> {
