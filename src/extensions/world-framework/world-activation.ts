@@ -122,7 +122,7 @@ export class WorldActivation {
 									origin: event.origin,
 									channel: event.channel,
 								},
-								text: event.text ?? "[deferred world event]",
+								...(event.text ? { text: event.text } : {}),
 								...(render ? { render } : {}),
 								data: event.data,
 								receipt: event.receipt,

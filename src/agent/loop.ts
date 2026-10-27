@@ -94,8 +94,9 @@ function yieldToLoop(): Promise<void> {
 	});
 }
 
-function isWorldInput(item: QueuedMessage): boolean {
-	return item.mode === "followUp" && item.source?.kind === "runtime" && item.source.channel === "world";
+/** Runtime 来源的 followUp：合批消费防事件风暴独占唯一 active run；合批依据是来源种类，不属于任何具体频道。 */
+function isRuntimeFollowUp(item: QueuedMessage): boolean {
+	return item.mode === "followUp" && item.source?.kind === "runtime";
 }
 
 export interface AgentInput {
@@ -818,7 +819,8 @@ export class Subject {
 				return Promise.resolve();
 		}
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
-		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
+		if (!input.id || (!input.text?.trim() && !input.render))
+			return Promise.reject(new Error("AgentInput 必须包含 id，且 text 或 render 至少一个非空"));
 		if (this.inputDeliveries.has(input.id) || this.queues.has(input.id) || this.store?.state.queued.has(input.id))
 			return Promise.reject(new Error(`输入 id 已在队列中: ${input.id}`));
 		if (this.store?.state.recordIds.has(input.id)) {
@@ -826,7 +828,7 @@ export class Subject {
 		}
 
 		const queued: QueuedMessage = {
-			...this.queues.create(input.text.trim(), input.mode, {
+			...this.queues.create((input.text ?? "").trim(), input.mode, {
 				source: input.source,
 				...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
 				data: input.data,
@@ -1093,7 +1095,7 @@ export class Subject {
 		try {
 			if (queuedInputs.length > 0) {
 				const committed = await this.consumeQueueItems(queuedInputs, onInputCommitted);
-				if (!committed && queuedInputs.every(isWorldInput)) {
+				if (!committed && queuedInputs.every(isRuntimeFollowUp)) {
 					this.abort = null;
 					this.activity = undefined;
 					if (this.queues.size > 0) await this.resumeQueued();
@@ -1220,11 +1222,11 @@ export class Subject {
 		if (!item) return;
 		this.resumingQueue = false;
 		let queuedInputs = [item];
-		if (item.mode === "followUp" && isWorldInput(item)) {
+		if (isRuntimeFollowUp(item)) {
 			queuedInputs = [];
 			const origin = item.source?.origin;
 			for (const candidate of this.queues.all().filter((candidate) => candidate.order >= item.order)) {
-				if (!isWorldInput(candidate)) break;
+				if (!isRuntimeFollowUp(candidate)) break;
 				if (candidate.source?.origin !== origin) break;
 				queuedInputs.push(candidate);
 			}
@@ -1371,7 +1373,7 @@ export class Subject {
 				toolCallCount: streamResult.toolCalls.length,
 			});
 			if (stopDecision.stop) return { kind: "completed" };
-			await this.drainQueuedInputs("steer", onTurnTransition, getCurrentTurn);
+			await this.drainSteerInputs(onTurnTransition, getCurrentTurn);
 		}
 	}
 
@@ -1559,12 +1561,11 @@ export class Subject {
 		return { stopped: batch.results.some((res) => res.continuation === "stop") };
 	}
 
-	private async drainQueuedInputs(
-		mode: "steer" | "followUp",
+	private async drainSteerInputs(
 		onTurnTransition?: (nextTurn: number) => void,
 		getCurrentTurn?: () => number,
 	): Promise<boolean> {
-		const items = this.queues.peekMany(mode);
+		const items = this.queues.peekMany("steer");
 		if (items.length === 0) return false;
 		// Claim all items synchronously before the first await so none of them can be
 		// restored to the editor while a previous item is being persisted.
@@ -1868,7 +1869,8 @@ export class Subject {
 				return false;
 			}
 			item = { ...item, text: rendered.trim() };
-		} else if (item.text === "[deferred world event]") {
+		} else if (!item.text.trim()) {
+			// 空正文只可能是受理时靠 render 过关的延迟输入：闭包已随重启丢失，无内容可提交，诚实退役。
 			console.warn(`[Subject:Mailbox] 队列条目 ${item.id} 的延迟渲染函数已丢失，安全退役`);
 			if (this.store?.state.queued.has(item.id)) {
 				if (attempt) await retire();

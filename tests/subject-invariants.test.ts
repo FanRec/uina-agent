@@ -135,7 +135,6 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 			id: "world-input-1",
 			mode: "followUp",
 			source: { kind: "runtime", type: "chat-messages", ref: "bilibili-live", origin: "external", channel: "world" },
-			text: "[deferred world event]",
 			render: () => '[弹幕]\nAlice(1): "hello"',
 		});
 		await h.waitForIdle();
@@ -667,7 +666,7 @@ describe("不变量：失败/打断回合的队列保留与显式投递", () => 
 			id: "colliding-id",
 			order: 2,
 			mode: "followUp",
-			text: "[deferred world event]",
+			text: "",
 		});
 		await store.appendEvent("queue_enqueued", {
 			id: "fresh-id",
@@ -682,7 +681,7 @@ describe("不变量：失败/打断回合的队列保留与显式投递", () => 
 				id: "colliding-id",
 				order: 2,
 				mode: "followUp",
-				text: "[deferred world event]",
+				text: "",
 			},
 			{
 				id: "fresh-id",

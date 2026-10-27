@@ -310,7 +310,6 @@ describe("project extension runner", () => {
 				id: "event-1",
 				mode: "followUp",
 				source,
-				text: "[deferred world event]",
 				data,
 				render: async () => state,
 			});

@@ -243,6 +243,42 @@ describe("Subject", () => {
 		).toEqual(["external-1", "internal-1"]);
 	});
 
+	// 合批判据是 kind === "runtime"（来源种类），不是某个频道的名字。
+	// 无 channel 的 runtime followUp 同样合批为单次请求，防止内核重新认识扩展词汇。
+	test("无 channel 的 runtime follow-up 同样合批消费", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{
+				id: "runtime-1",
+				order: 1,
+				mode: "followUp",
+				text: "占位",
+				source: { kind: "runtime", type: "tick", origin: "internal" },
+			},
+			{
+				id: "runtime-2",
+				order: 2,
+				mode: "followUp",
+				text: "占位",
+				source: { kind: "runtime", type: "tick", origin: "internal" },
+			},
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		expect(scenario.calls).toHaveLength(1);
+		expect(
+			harness.subject
+				.historySnapshot()
+				.filter((message) => message.id === "runtime-1" || message.id === "runtime-2")
+				.map((message) => message.id),
+		).toEqual(["runtime-1", "runtime-2"]);
+	});
+
 	test("轮中被消费的排队项必须为每条产生 turn_start（TUI 用户消息渲染依赖它）", async () => {
 		let release: (() => void) | undefined;
 		const model: Model = {
