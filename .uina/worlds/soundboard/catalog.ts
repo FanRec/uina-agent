@@ -1,166 +1,86 @@
-import { readdir, stat } from "node:fs/promises";
-import { join, extname, basename } from "node:path";
-import type { SoundItem, SoundOverride, MatchResult } from "./types.js";
+import { readdir } from "node:fs/promises";
+import { extname, join } from "node:path";
+import type { MatchResult, SoundItem, SoundOverride } from "./types.js";
 
-const SUPPORTED_EXTENSIONS = new Set([".wav", ".mp3", ".ogg", ".flac", ".m4a"]);
+const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".ogg", ".flac", ".m4a"]);
 
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * 扫描音效目录。
+ *
+ * 文件名即元数据：`<id>-<名称>.<ext>`，按**第一个** `-` 切分（名称里可以再有 `-`）。
+ * 没有 `-` 时 id 与名称都取整个基名。目录不存在或读不了就返回空数组，
+ * 由调用方决定怎么报告——"没有音效"和"目录坏了"在工具结果里是同一回事。
+ */
+export async function scanSounds(dir: string, overrides: Record<string, SoundOverride> = {}): Promise<SoundItem[]> {
+	const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+	if (!entries) return [];
+
+	const items: SoundItem[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		const ext = extname(entry.name).toLowerCase();
+		if (!AUDIO_EXTENSIONS.has(ext)) continue;
+
+		const base = entry.name.slice(0, entry.name.length - ext.length).trim();
+		const dash = base.indexOf("-");
+		const id = (dash > 0 ? base.slice(0, dash) : base).trim().toLowerCase();
+		if (!id) continue;
+
+		const rawName = (dash > 0 ? base.slice(dash + 1) : base).trim();
+		const override = overrides[id];
+		const name = override?.name ?? rawName;
+		items.push({
+			id,
+			filename: entry.name,
+			filepath: join(dir, entry.name),
+			name,
+			aliases: uniqueWords([id, name, rawName, ...(override?.aliases ?? [])]),
+			volumeOffset: override?.volumeOffset,
+		});
+	}
+
+	return items.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**
- * 扫描指定目录并解析所有合法音频文件为 SoundItem
+ * 解一个用户/模型给的名字。四级确定性匹配，命中即返回，绝不猜：
+ * 精确 id → 精确名称或别名 → 唯一子串 → 歧义 → 无。
  */
-export async function scanSoundCatalog(
-  dir: string,
-  overrides: Record<string, SoundOverride> = {},
-): Promise<SoundItem[]> {
-  if (!(await pathExists(dir))) {
-    return [];
-  }
+export function matchSounds(sounds: readonly SoundItem[], rawQuery: string): MatchResult {
+	const query = rawQuery.trim().toLowerCase();
+	if (!query) return { type: "none" };
 
-  const items: SoundItem[] = [];
-  try {
-    const dirEntries = await readdir(dir, { withFileTypes: true });
+	const byId = sounds.find((sound) => sound.id === query);
+	if (byId) return { type: "match", sound: byId };
 
-    for (const entry of dirEntries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isFile()) continue;
+	const byWord = sounds.find((sound) => exactWords(sound).includes(query));
+	if (byWord) return { type: "match", sound: byWord };
 
-      const ext = extname(entry.name).toLowerCase();
-      if (!SUPPORTED_EXTENSIONS.has(ext)) continue;
-
-      const rawBase = basename(entry.name, ext);
-      const dashIdx = rawBase.indexOf("-");
-
-      let id = "";
-      let desc = "";
-
-      if (dashIdx > 0) {
-        id = rawBase.slice(0, dashIdx).trim().toLowerCase();
-        desc = rawBase.slice(dashIdx + 1).trim();
-      } else {
-        id = rawBase.trim().toLowerCase();
-        desc = rawBase.trim();
-      }
-
-      if (!id) continue;
-
-      const override = overrides[id];
-      const name = override?.name ?? desc;
-      const extraAliases = override?.aliases ?? [];
-      const gainOffset = override?.gainOffset;
-
-      const aliases = Array.from(
-        new Set([id, name, desc, ...extraAliases].map((s) => s.trim()).filter(Boolean)),
-      );
-
-      items.push({
-        id,
-        filename: entry.name,
-        filepath: join(dir, entry.name),
-        name,
-        description: desc,
-        aliases,
-        gainOffset,
-      });
-    }
-  } catch {
-    // 目录不可读时安全返回空数组
-  }
-
-  return items;
+	const hits = sounds.filter((sound) => matches(sound, query));
+	if (hits.length === 1) return { type: "match", sound: hits[0] };
+	if (hits.length > 1) return { type: "ambiguous", candidates: hits };
+	return { type: "none" };
 }
 
-/**
- * 4 级确定性匹配流水线：
- * 1. 精确 ID 匹配
- * 2. 精确全名/别名匹配
- * 3. 唯一包含匹配
- * 4. 多重并列消歧
- */
-export function matchSound(sounds: readonly SoundItem[], rawQuery: string): MatchResult {
-  const q = rawQuery.trim().toLowerCase();
-  if (!q) {
-    return { type: "none" };
-  }
-
-  // Level 1: 精确 ID 匹配
-  const exactId = sounds.find((s) => s.id === q);
-  if (exactId) {
-    return { type: "match", sound: exactId };
-  }
-
-  // Level 2: 精确全名/别名匹配
-  const exactAlias = sounds.find(
-    (s) =>
-      s.name.toLowerCase() === q ||
-      s.description.toLowerCase() === q ||
-      s.aliases.some((a) => a.toLowerCase() === q),
-  );
-  if (exactAlias) {
-    return { type: "match", sound: exactAlias };
-  }
-
-  // Level 3: 包含/子串匹配
-  const matched = sounds.filter(
-    (s) =>
-      s.id.includes(q) ||
-      s.name.toLowerCase().includes(q) ||
-      s.description.toLowerCase().includes(q) ||
-      s.aliases.some((a) => a.toLowerCase().includes(q)),
-  );
-
-  if (matched.length === 1) {
-    return { type: "match", sound: matched[0] };
-  }
-
-  if (matched.length > 1) {
-    return { type: "ambiguous", candidates: matched };
-  }
-
-  return { type: "none" };
+/** list 的过滤：空查询原样返回，否则子串过滤。 */
+export function filterSounds(sounds: readonly SoundItem[], rawQuery: string): SoundItem[] {
+	const query = rawQuery.trim().toLowerCase();
+	return query ? sounds.filter((sound) => matches(sound, query)) : [...sounds];
 }
 
-export class SoundCatalog {
-  private _sounds: SoundItem[] = [];
+function matches(sound: SoundItem, query: string): boolean {
+	return exactWords(sound).some((word) => word.includes(query));
+}
 
-  async scan(dir: string, overrides: Record<string, SoundOverride> = {}): Promise<readonly SoundItem[]> {
-    this._sounds = await scanSoundCatalog(dir, overrides);
-    return this._sounds;
-  }
+function exactWords(sound: SoundItem): string[] {
+	return [sound.id, sound.name, ...sound.aliases].map((word) => word.toLowerCase());
+}
 
-  get sounds(): readonly SoundItem[] {
-    return this._sounds;
-  }
-
-  get size(): number {
-    return this._sounds.length;
-  }
-
-  get(id: string): SoundItem | undefined {
-    return this._sounds.find((s) => s.id === id.toLowerCase());
-  }
-
-  match(query: string): MatchResult {
-    return matchSound(this._sounds, query);
-  }
-
-  list(query?: string): readonly SoundItem[] {
-    if (!query || !query.trim()) {
-      return this._sounds;
-    }
-    const q = query.trim().toLowerCase();
-    return this._sounds.filter(
-      (s) =>
-        s.id.includes(q) ||
-        s.name.toLowerCase().includes(q) ||
-        s.description.toLowerCase().includes(q) ||
-        s.aliases.some((a) => a.toLowerCase().includes(q)),
-    );
-  }
+function uniqueWords(values: readonly string[]): string[] {
+	const seen = new Set<string>();
+	for (const value of values) {
+		const word = value.trim();
+		if (word) seen.add(word);
+	}
+	return [...seen];
 }

@@ -100,11 +100,11 @@ const rules = [
 		test: (source) => /(\.\.\/)+extensions\//.test(source) || /\.uina\/extensions/.test(source),
 	},
 	{
-		// live2d 重写世界的 src 依赖白名单：world-framework（契约与接缝词汇）与
-		// src/tools/broker（ToolExecutionResult 结果形状）。agent/ai/ui/session/host/core/runtime
+		// 受约束世界（live2d、soundboard）的 src 依赖白名单：world-framework（契约与接缝词汇）
+		// 与 src/tools/broker（ToolExecutionResult 结果形状）。agent/ai/ui/session/host/core/runtime
 		// 一律不可达。其余既有世界不回溯约束。
-		name: "live2d world may import src only via world-framework and broker result types",
-		roots: [".uina/worlds/live2d"],
+		name: "strict worlds may import src only via world-framework and broker result types",
+		roots: [".uina/worlds/live2d", ".uina/worlds/soundboard"],
 		test: (source) =>
 			["/src/agent/", "/src/ai/", "/src/ui/", "/src/session/", "/src/host/", "/src/core/", "/src/runtime/"].some(
 				(segment) => source.includes(segment),

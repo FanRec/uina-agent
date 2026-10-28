@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 /**
  * mpv 二进制定位：显式配置 > MPV_PATH 环境变量 > Windows 常见安装位置。
  * 供需要 mpv 的 world（soundboard、netease-jukebox）共用；找不到返回 null，
- * 由调用方决定降级策略（模拟播放器或不可用提示）。
+ * 由调用方决定怎么报告（不可用提示由各 world 自己给）。
  */
 export function resolveMpvPath(customPath?: string): string | null {
 	if (customPath && existsSync(customPath)) {
@@ -22,7 +22,6 @@ export function resolveMpvPath(customPath?: string): string | null {
 			"C:\\Program Files (x86)\\mpv\\mpv.exe",
 			"C:\\tools\\mpv\\mpv.com",
 			"C:\\tools\\mpv\\mpv.exe",
-			"E:\\Uina_Core\\tools\\mpv.exe",
 		];
 		for (const c of candidates) {
 			if (existsSync(c)) {

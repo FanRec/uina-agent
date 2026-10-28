@@ -1,9 +1,37 @@
 {
-  "soundsDir": "./sounds",
-  "defaultVolume": 80,
-  "soundOverrides": {
-    "metal_pipe": {
-      "gainOffset": -30
-    }
-  }
+	"soundsDir": "./sounds",
+	"defaultVolume": 80,
+	"soundOverrides": {
+		"metal_pipe": {
+			"volumeOffset": -30,
+			"aliases": ["钢管", "很吵", "金属"]
+		},
+		"critical_error_windows_xp": {
+			"aliases": ["报错", "崩溃", "蓝屏", "错误"]
+		},
+		"shutdown_windows_xp": {
+			"aliases": ["关机", "再见", "退场"]
+		},
+		"startup_windows_xp": {
+			"aliases": ["开机", "启动"]
+		},
+		"return_to_death": {
+			"aliases": ["死亡回归", "复活", "重来"]
+		},
+		"minecraft_hurt": {
+			"aliases": ["受伤", "挨打", "疼"]
+		},
+		"minecraft_levelup": {
+			"aliases": ["升级"]
+		},
+		"minecraft_eating": {
+			"aliases": ["吃饭", "吃"]
+		},
+		"minecraft_drink": {
+			"aliases": ["喝水", "喝"]
+		},
+		"moo": {
+			"aliases": ["牛", "哞", "牛叫"]
+		}
+	}
 }

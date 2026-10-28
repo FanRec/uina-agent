@@ -11,6 +11,7 @@
 			".uina/worlds/live2d/**/*.mjs",
 			".uina/worlds/minecraft/**/*.ts",
 			".uina/worlds/minecraft/**/*.mjs",
+			".uina/worlds/soundboard/**/*.ts",
 			"!tests/fixtures/**/*.json"
 		]
 	},

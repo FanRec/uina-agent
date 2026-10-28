@@ -50,7 +50,7 @@ ctx.emitEvent({
 
 运行时向 World 提供 `worldDataDir`，用于日志、缓存和持久状态；缺失时显式失败，禁止回退到源码安装目录。持久 JSON 一律用框架的 `writeJsonAtomic`（`world-framework/json-file.ts`），不要手写 tmp+rename。子进程登记、mpv 定位等共用机制从 `world-framework` 引入（`child-process-registry`、`mpv-path`），不在 World 内复制。不要把动态状态写入 `WorldDef` 或稳定环境说明。连接、文件监听、定时器和子进程都必须绑定 `ctx.signal`，并在停用时结束。
 
-soundboard 是上述合同（数据目录、进程登记、取消透传）的参照实现。
+soundboard 是进程登记（`child-process-registry`）与 mpv 定位（`mpv-path`）的参照实现；它不写数据目录，每个动作在 150ms 内结算，不承载长操作。
 
 ## 不再存在的机制
 
