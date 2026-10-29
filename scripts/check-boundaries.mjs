@@ -93,6 +93,21 @@ const rules = [
 		test: (source) => ["host", "ui", "ai"].some((segment) => importsSegment(source, segment)),
 	},
 	{
+		// Presentation Core 是平台中立的展示语义层：不得依赖任何具体展示面
+		// （ui/cli/extensions/ai）或主机实现；Host/Session/Core/Runtime/Agent/Tools
+		// 只允许 `import type` 引用公开契约，不得携带运行时代码依赖。
+		name: "presentation core must stay platform-neutral (type-only host/session/core)",
+		roots: ["src/presentation"],
+		test: (source) => {
+			const runtimeSource = stripTypeOnlyImports(source);
+			const forbiddenSegments = ["ui", "cli", "extensions", "ai", "host", "session", "core", "runtime", "tools", "agent"];
+			return (
+				forbiddenSegments.some((segment) => importsSegment(runtimeSource, segment)) ||
+				["node:tty", "node:process", "node:fs"].some((name) => importsPackage(runtimeSource, name))
+			);
+		},
+	},
+	{
 		// 世界层禁止横向抓取系统扩展：World↔Extension 只经 expose 共享表交互，
 		// 类型词汇一律取自 world-framework/seams。横向 import 会造成接缝双源漂移。
 		name: "worlds must not import sibling system extensions",
@@ -162,22 +177,32 @@ const selfTestSamples = [
 	},
 	{
 		rule: 6,
+		bad: 'import { readFileSync } from "node:fs";',
+		good: 'import type { HostEventRecord } from "../host/events.js";',
+	},
+	{
+		rule: 6,
+		bad: 'import type { HostEventRecord } from "../host/events.js";\nimport { emit } from "../host/events.js";',
+		good: 'import type { SessionEntry } from "../session/types.js";',
+	},
+	{
+		rule: 7,
 		bad: 'import { BodyRouter } from "../../extensions/embodiment/body-router.js";',
 		good: 'import type { BodyEndpoint } from "../../../src/extensions/world-framework/seams.js";',
 	},
 	{
-		rule: 7,
+		rule: 8,
 		bad: 'import { Subject } from "../../../src/agent/loop.js";',
 		good: 'import type { ToolExecutionResult } from "../../../src/tools/broker.js";',
 	},
 	{
-		rule: 8,
+		rule: 9,
 		file: ".uina/worlds/minecraft/driver/index.ts",
 		bad: 'import { createBot } from "mineflayer";',
 		good: 'import type { PlayerPort } from "./contracts/body.js";',
 	},
 	{
-		rule: 8,
+		rule: 9,
 		file: ".uina/worlds/minecraft/driver/mineflayer/adapter.ts",
 		// 适配层内两种 import 都合法：这条样本只验证白名单在同一规则下真的放行。
 		bad: 'import { createBot } from "mineflayer";',
@@ -185,6 +210,13 @@ const selfTestSamples = [
 		expectBad: false,
 	},
 ];
+
+/** Remove type-only import/export statements so type references do not trip runtime rules. */
+function stripTypeOnlyImports(source) {
+	return source
+		.replace(/import\s+type\s+[\s\S]*?\s+from\s*['"][^'"]+['"]\s*;?/g, "")
+		.replace(/export\s+type\s+[\s\S]*?\s+from\s*['"][^'"]+['"]\s*;?/g, "");
+}
 
 function runSelfTest() {
 	const failures = [];
@@ -230,7 +262,15 @@ function stripComments(source) {
 }
 
 async function* files(directory) {
-	for (const entry of await readdir(directory, { withFileTypes: true })) {
+	let entries;
+	try {
+		entries = await readdir(directory, { withFileTypes: true });
+	} catch (error) {
+		// 根目录尚未建立时视为空集：规则在目录出现前不制造噪声。
+		if (error && error.code === "ENOENT") return;
+		throw error;
+	}
+	for (const entry of entries) {
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) yield* files(path);
 		else yield path;
