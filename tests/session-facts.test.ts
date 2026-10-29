@@ -1,17 +1,17 @@
-import { afterEach, describe, expect, it } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, it } from "vitest";
+import { projectModelHistory } from "../src/agent/projection.js";
 import type { ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import execCommand from "../src/extensions/runtime-tools/exec-command/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
-import { projectModelHistory } from "../src/agent/projection.js";
 import type { QueuedInput } from "../src/session/types.js";
-import { ToolBroker, type Tool } from "../src/tools/broker.js";
+import { type Tool, ToolBroker } from "../src/tools/broker.js";
+import { formatToolCardLines, TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
-import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
-import { IsolatedEnv, Scenario, getTestUIHost, mockModel, SubjectHarness, mockTool, record } from "./harness/index.js";
+import { getTestUIHost, IsolatedEnv, mockModel, mockTool, record, Scenario, SubjectHarness } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 afterEach(async () => {

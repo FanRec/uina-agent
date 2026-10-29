@@ -6,18 +6,18 @@
  * 记录 calls 是为了证明"没做多余的事"（例如拿身体之前就失败）。
  */
 
-import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
+import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type {
 	BodyOps,
-	SelfState,
-	ItemValue,
 	ItemSelector,
+	ItemValue,
+	SelfState,
 	WindowSession,
 } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../.uina/worlds/minecraft/contracts/knowledge.js";
 import type { CallFailure, JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 
 export const registry: RegistryLike = {

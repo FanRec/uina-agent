@@ -1,8 +1,8 @@
-import { describe, expect, test, mockTool } from "./harness/index.js";
 import { vi } from "vitest";
+import type { ToolResultStatus } from "../src/core/types.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { executeToolPipeline } from "../src/tools/pipeline.js";
-import type { ToolResultStatus } from "../src/core/types.js";
+import { describe, expect, mockTool, test } from "./harness/index.js";
 
 describe("Tool Execution Pipeline", () => {
 	function createTestBroker() {

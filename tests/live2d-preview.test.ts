@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
-import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { keys, motion, offset } from "../.uina/worlds/live2d/authoring/index.js";
-import { refactorRig } from "./live2d-refactor-fixture.js";
+import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import {
 	buildOfflinePreviewSnapshot,
-	parsePreviewArguments,
 	mixedScenarioSchedule,
+	parsePreviewArguments,
 	runPerformanceScenario,
 } from "../scripts/mo-preview.mjs";
+import { refactorRig } from "./live2d-refactor-fixture.js";
 
 describe("Live2D author preview", () => {
 	it("runs the complete mixed scene without clamps and exercises actual in-flight cancellation", async () => {

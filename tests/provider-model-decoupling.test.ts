@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DiscoveredModel, Model, ModelRequest, Provider, StreamDelta } from "../src/core/types.js";
-import { ModelRegistry, createModel } from "../src/ai/providers.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { assertProviderFacts, effectiveContextWindow, protocolThinkingReplay } from "../src/ai/config.js";
+import { createModel, ModelRegistry } from "../src/ai/providers.js";
+import type { DiscoveredModel, Model, ModelRequest, Provider, StreamDelta } from "../src/core/types.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { SubjectHarness } from "./harness/index.js";
 
 describe("Pi-aligned Model and Provider Decoupling", () => {

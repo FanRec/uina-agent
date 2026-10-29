@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
+import { absolute, compileAction, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import { AutonomicGenerator } from "../.uina/worlds/live2d/director/autonomic.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileAction, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
-import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 
 const step = <T extends { step(dtMs: number): unknown }>(g: T, ms: number, dt = 16): void => {
 	for (let elapsed = 0; elapsed < ms; elapsed += dt) g.step(Math.min(dt, ms - elapsed));

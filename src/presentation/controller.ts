@@ -12,8 +12,8 @@ import type { PresentationIntent } from "./actions.js";
 import { FactStore } from "./facts.js";
 import { ingestLive } from "./ingest-live.js";
 import { ingestReplay } from "./ingest-replay.js";
-import { PresentationProjection, type PresentationNode } from "./projection.js";
-import { TrajectoryProjection, type TrajectoryNode } from "./trajectory.js";
+import { type PresentationNode, PresentationProjection } from "./projection.js";
+import { type TrajectoryNode, TrajectoryProjection } from "./trajectory.js";
 
 export interface PresentationView {
 	readonly transcript: readonly PresentationNode[];

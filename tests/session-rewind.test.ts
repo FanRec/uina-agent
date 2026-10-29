@@ -1,32 +1,32 @@
-import {
-	describe,
-	expect,
-	test,
-	it,
-	UinaTestHarness,
-	SubjectHarness,
-	Scenario,
-	seedSession,
-	rewindTo,
-} from "./harness/index.js";
-import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { createSessionAccess } from "../src/session/access.js";
-import { commitRewindTransition } from "../src/agent/rewind.js";
+import { join } from "node:path";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
-import {
-	projectAgentHistory,
-	protectRewindContext,
-	summarizeAbandonedEffects,
-	projectInputMessage,
-} from "../src/session/recovery.js";
-import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
+import { commitRewindTransition } from "../src/agent/rewind.js";
+import { createSessionAccess } from "../src/session/access.js";
+import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import {
 	listSessionBranches,
 	listSessionNodes,
 	readSessionBranch,
 	readSessionNode,
 } from "../src/session/navigation.js";
-import { join } from "node:path";
+import {
+	projectAgentHistory,
+	projectInputMessage,
+	protectRewindContext,
+	summarizeAbandonedEffects,
+} from "../src/session/recovery.js";
+import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
+import {
+	describe,
+	expect,
+	it,
+	rewindTo,
+	Scenario,
+	SubjectHarness,
+	seedSession,
+	test,
+	UinaTestHarness,
+} from "./harness/index.js";
 
 const SEED_MESSAGES = ["original task", "bad plan", "stop writing files"];
 const seed = (store: any) => seedSession(store, SEED_MESSAGES);
@@ -105,10 +105,10 @@ describe("session mainline persistence", () => {
 	});
 });
 
-import { ToolBroker } from "../src/tools/broker.js";
-import { mockModel } from "./harness/index.js";
 import { readFile } from "node:fs/promises";
 import type { SessionRewindRecord } from "../src/session/types.js";
+import { ToolBroker } from "../src/tools/broker.js";
+import { mockModel } from "./harness/index.js";
 
 describe("rewind runtime safe points", () => {
 	test("settles the whole tool batch before rewinding, preserves files and resumes the new mainline", async ({
@@ -400,8 +400,8 @@ describe("rewind composition", () => {
 	});
 });
 
-import { vi } from "vitest";
 import { open } from "node:fs/promises";
+import { vi } from "vitest";
 import { JsonlSessionStore } from "../src/session/jsonl-store.js";
 
 test("rolls back a failed rewind fsync without changing either the file or cached head", async ({ env }) => {

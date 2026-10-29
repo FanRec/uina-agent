@@ -1,5 +1,5 @@
-import type { CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
 import type { ActionAuthoring } from "../.uina/worlds/live2d/authoring/action.js";
+import type { CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
 import type { LocalChannels } from "../.uina/worlds/live2d/authoring/curves.js";
 import { absolute, keys, motion, offset } from "../.uina/worlds/live2d/authoring/index.js";
 import type { SpatialEvent } from "../.uina/worlds/live2d/authoring/spatial.js";

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-	countContextSegmentChars,
 	calculateContextSegments,
-	estimateRequestTokens,
-	estimateContextTokens,
+	countContextSegmentChars,
 	estimateContextSegments,
+	estimateContextTokens,
+	estimateRequestTokens,
 	estimateTextTokens,
 	IMAGE_TOKEN_ESTIMATE,
 	measureRequestContext,

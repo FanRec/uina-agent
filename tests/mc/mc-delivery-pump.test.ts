@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import type { ServiceCompanionContext, WorldEvent } from "../../src/extensions/world-framework/types.js";
-import type { HostDeliveryState } from "../../src/core/types.js";
 import type { DeliveryState } from "../../.uina/worlds/minecraft/contracts/runtime.js";
-import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import { DeliveryPump } from "../../.uina/worlds/minecraft/executor/delivery.js";
+import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
+import type { HostDeliveryState } from "../../src/core/types.js";
+import type { ServiceCompanionContext, WorldEvent } from "../../src/extensions/world-framework/types.js";
 
 test("a lost Runtime ACK reply cannot retain an already committed input slot", async () => {
 	const pending = new Set(["first", "next"]),

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinecraftExecutor } from "../../../.uina/worlds/minecraft/executor/index.js";
+
 const root = await mkdtemp(join(tmpdir(), "uina-spawn-failure-"));
 const original = process.execPath;
 try {

@@ -1,16 +1,16 @@
-import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
-import type { ActionContext, ServiceCompanionContext, WorldDef } from "../src/extensions/world-framework/types.js";
-import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
-import type { ToolExecutionResult } from "../src/tools/broker.js";
-import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { absolute, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { EFFECT_STATUSES, VERIFICATIONS } from "../.uina/worlds/live2d/results.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
+import type { ActionContext, ServiceCompanionContext, WorldDef } from "../src/extensions/world-framework/types.js";
+import type { ToolExecutionResult } from "../src/tools/broker.js";
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 
 /**
  * P4-1：WorldDef 工具面 + 结果词汇表（边界 #11）+ gate 链（§2.1/§7）+ 目录编译校验 + 作者会话标记门。

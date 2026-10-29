@@ -1,7 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { TtsSpeakError } from "../.uina/extensions/tts/client.js";
-import { TtsBridgeClient } from "../.uina/extensions/tts/client.js";
+import { TtsBridgeClient, TtsSpeakError } from "../.uina/extensions/tts/client.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
 
 let processHandle: ChildProcess;

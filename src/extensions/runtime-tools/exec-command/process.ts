@@ -1,7 +1,7 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { errorMessage } from "../../../core/errors.js";
-import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
+import { errorMessage } from "../../../core/errors.js";
 
 export interface ProcessResult {
 	code: number | null;

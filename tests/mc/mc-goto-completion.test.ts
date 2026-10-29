@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
+
 const source = `
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';

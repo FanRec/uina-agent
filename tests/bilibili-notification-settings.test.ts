@@ -1,14 +1,14 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createBilibiliLiveWorld } from "../.uina/worlds/bilibili-live/src/index.js";
 import {
 	DEFAULT_NOTIFICATION_SETTINGS,
 	loadNotificationSettings,
 	parseNotificationSettings,
 	saveNotificationSettings,
 } from "../.uina/worlds/bilibili-live/src/notification-settings.js";
-import { createBilibiliLiveWorld } from "../.uina/worlds/bilibili-live/src/index.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
 describe("bilibili notification settings", () => {

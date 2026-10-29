@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileAction, sampleAction } from "../.uina/worlds/live2d/authoring/action.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { cuteNod, cuteNodCheerfulVariant } from "../.uina/worlds/live2d/models/mo/motions/nod.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO Procedural Cute Nod Action (Pure Physics Dynamics)", () => {
 	it("compiles clean against MO rig and stays within 1800ms-2100ms", async () => {

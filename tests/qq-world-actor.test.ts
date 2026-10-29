@@ -7,11 +7,11 @@ import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import type { DeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import type { DeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
-import { conversationRef, userRef, type MessageFact } from "../.uina/worlds/qq/src/types.js";
+import { conversationRef, type MessageFact, userRef } from "../.uina/worlds/qq/src/types.js";
 
 /**
  * 行动积木（设计 §4.5~§4.9 / T08/T09 前置）：参数映射层复用旧链路，

@@ -1,10 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { VTSClient, type VTSParamValue, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { VTSInputSetupError } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
+import {
+	VTSClient,
+	VTSInputSetupError,
+	type VTSParamValue,
+	type WebSocketLike,
+} from "../.uina/worlds/live2d/adapter/vts-client.js";
 
 /** 独立 WebSocketLike 假体：按请求类型同步回包，记录全部上行帧。 */
 class Device implements WebSocketLike {

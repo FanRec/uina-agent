@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { BodyCallScope, CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 import { FUEL_TICKS } from "../../.uina/worlds/minecraft/driver/facts/smelting.js";
-import { failureOf, makeHarness, type HarnessState } from "./mc-capability-harness.js";
-import { furnaceLayout, stack, WindowFixture, type FixtureStack } from "./mc-window-fixture.js";
+import { failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
+import { type FixtureStack, furnaceLayout, stack, WindowFixture } from "./mc-window-fixture.js";
 
 const at = { x: 11, y: 64, z: 10 };
 const itemNames = [

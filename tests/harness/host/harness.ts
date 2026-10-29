@@ -1,6 +1,6 @@
-import { UinaHost } from "../../../src/host/host.js";
 import type { AgentInput } from "../../../src/agent/loop.js";
 import type { AgentMessage, ChatMsg, Model } from "../../../src/core/types.js";
+import { UinaHost } from "../../../src/host/host.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 
 import { IsolatedEnv } from "../environment/isolated-env.js";

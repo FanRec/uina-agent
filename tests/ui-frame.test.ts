@@ -16,7 +16,6 @@
  * 底色永不复位、"空洞"断言结构性失明，测试成败由模型伪影决定。
  */
 import { describe, expect, it } from "vitest";
-import { UIHost } from "../src/ui/ui-host.js";
 import { MainScreenRenderer } from "../src/ui/core/renderer.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import {
@@ -28,7 +27,8 @@ import {
 	resolveCarriageReturns,
 	visibleWidth,
 } from "../src/ui/core/utils.js";
-import { VtScreen, dispatchUIHostInput, toolDoneNode, toolStartNode } from "./harness/index.js";
+import { UIHost } from "../src/ui/ui-host.js";
+import { dispatchUIHostInput, toolDoneNode, toolStartNode, VtScreen } from "./harness/index.js";
 
 const COLUMNS = 171;
 const ROWS = 30;

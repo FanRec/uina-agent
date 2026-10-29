@@ -3,30 +3,30 @@ import { compileAction, sampleAction } from "../.uina/worlds/live2d/authoring/ac
 import { absolute, during, keys, timeline } from "../.uina/worlds/live2d/authoring/curves.js";
 import { createSeededRandom } from "../.uina/worlds/live2d/authoring/random.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { curious, curiousDoubleTiltVariant } from "../.uina/worlds/live2d/models/mo/motions/curious.js";
 import { chinUp } from "../.uina/worlds/live2d/models/mo/motions/chin_up.js";
-import { headToss, headTossPoutVariant } from "../.uina/worlds/live2d/models/mo/motions/head_toss.js";
-import { surprise } from "../.uina/worlds/live2d/models/mo/motions/surprise.js";
-import { glance, glanceDoubleTakeVariant } from "../.uina/worlds/live2d/models/mo/motions/glance.js";
-import { joyHop } from "../.uina/worlds/live2d/models/mo/motions/joy_hop.js";
-import { petrify } from "../.uina/worlds/live2d/models/mo/motions/petrify.js";
 import { closeUp } from "../.uina/worlds/live2d/models/mo/motions/close_up.js";
+import { curious, curiousDoubleTiltVariant } from "../.uina/worlds/live2d/models/mo/motions/curious.js";
 import { edgePeek } from "../.uina/worlds/live2d/models/mo/motions/edge_peek.js";
+import { glance, glanceDoubleTakeVariant } from "../.uina/worlds/live2d/models/mo/motions/glance.js";
+import { headToss, headTossPoutVariant } from "../.uina/worlds/live2d/models/mo/motions/head_toss.js";
 import { cuteIdle } from "../.uina/worlds/live2d/models/mo/motions/idle.js";
+import { joyHop } from "../.uina/worlds/live2d/models/mo/motions/joy_hop.js";
+import { panic } from "../.uina/worlds/live2d/models/mo/motions/panic.js";
+import { petrify } from "../.uina/worlds/live2d/models/mo/motions/petrify.js";
+import { pout } from "../.uina/worlds/live2d/models/mo/motions/pout.js";
+import { sleepy } from "../.uina/worlds/live2d/models/mo/motions/sleepy.js";
+import { smugLaugh } from "../.uina/worlds/live2d/models/mo/motions/smug_laugh.js";
+import { spin } from "../.uina/worlds/live2d/models/mo/motions/spin.js";
+import { surprise } from "../.uina/worlds/live2d/models/mo/motions/surprise.js";
 import {
 	swayChaoticBouncyVariant,
 	swayClassic,
 	swayCornerPeekVariant,
 	swayVShapeVariant,
 } from "../.uina/worlds/live2d/models/mo/motions/sway.js";
-import { spin } from "../.uina/worlds/live2d/models/mo/motions/spin.js";
 import { cuteThinking } from "../.uina/worlds/live2d/models/mo/motions/thinking.js";
-import { pout } from "../.uina/worlds/live2d/models/mo/motions/pout.js";
-import { panic } from "../.uina/worlds/live2d/models/mo/motions/panic.js";
-import { sleepy } from "../.uina/worlds/live2d/models/mo/motions/sleepy.js";
-import { smugLaugh } from "../.uina/worlds/live2d/models/mo/motions/smug_laugh.js";
 import { cuteWinkDoubleVariant } from "../.uina/worlds/live2d/models/mo/motions/wink.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO Authoring Motions Test Suite", () => {
 	it("compiles all actions cleanly on MO rig without exceeding control boundaries", async () => {

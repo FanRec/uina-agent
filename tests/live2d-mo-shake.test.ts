@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileAction, sampleAction } from "../.uina/worlds/live2d/authoring/action.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { cuteShake, cuteShakePlayfulVariant } from "../.uina/worlds/live2d/models/mo/motions/shake.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO Cute Shake Action Authoring (Procedural Physics Dynamics)", () => {
 	it("compiles clean against MO rig and supports all three torso axes", async () => {

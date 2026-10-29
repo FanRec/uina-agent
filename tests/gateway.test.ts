@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest, toWireMessages } from "../src/ai/gateway.js";
 import { ProviderProtocolError } from "../src/ai/sse.js";
 import type { Model, StreamDelta } from "../src/core/types.js";

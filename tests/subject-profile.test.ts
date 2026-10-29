@@ -6,15 +6,16 @@
  * 2. 每个数据根恰好一个活动写入进程（wx 排他锁 + ownerToken/PID）；
  * 3. 无 --profile 时，全部现有路径解析行为逐字节不变（对照测试锁定）。
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
+
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveProfile, releaseProfileLock, type SubjectProfile } from "../src/host/profile.js";
-import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveSessionPath } from "../src/cli/session-path.js";
+import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
 import { UinaHost } from "../src/host/host.js";
+import { releaseProfileLock, resolveProfile, type SubjectProfile } from "../src/host/profile.js";
 import { Scenario } from "./harness/provider/scenario.js";
 
 let root: string;

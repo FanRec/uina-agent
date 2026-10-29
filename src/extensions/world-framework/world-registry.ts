@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import type { ExtensionAPI } from "../runner.js";
+import { type WorldDef, type WorldExposedRegistry, type WorldRuntime } from "./types.js";
 import { WorldActivation } from "./world-activation.js";
 import { createFileWorldStateStore, type WorldStateStore } from "./world-state-store.js";
-import { type WorldDef, type WorldExposedRegistry, type WorldRuntime } from "./types.js";
 
 interface SaveOutcome {
 	readonly ok: boolean;

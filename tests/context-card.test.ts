@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { ContextCardComponent, type ContextCardData } from "../src/ui/components/transcript/context-card.js";
+import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { PromptOverlay } from "../src/ui/features/overlays/prompt-overlay.js";
 
 const prompt: ContextCardData = {

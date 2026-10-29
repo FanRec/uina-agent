@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { Live2DRuntimeProxy } from "../.uina/worlds/live2d/worker/proxy.js";
 import type { EngineToMain, MainToEngine } from "../.uina/worlds/live2d/worker/protocol.js";
+import { Live2DRuntimeProxy } from "../.uina/worlds/live2d/worker/proxy.js";
 import type { BodyEndpoint } from "../src/extensions/world-framework/seams.js";
 
 class FixturePort extends EventEmitter {

@@ -1,9 +1,9 @@
 // 批次 4（ui-crap-debt-plan）：runApp/renderStdio/shutdown 拆出的纯决策内核钉住。
 // 运行模式判定、启动横幅、退出码、stdio 事件文案逐字节等价。
 import { describe, expect, it } from "vitest";
-import type { HostEvent } from "../src/host/events.js";
 import { composeInitialPrompt, formatStartupBanner, resolveExitCode, resolveRunMode } from "../src/cli/run-mode.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "../src/cli/stdio-render.js";
+import type { HostEvent } from "../src/host/events.js";
 
 describe("composeInitialPrompt", () => {
 	it("管道输入与 -p 叠加拼接", () => {

@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionAPI } from "../src/extensions/index.js";
 import { McpCatalog } from "../.uina/extensions/mcp/catalog.js";
 import { createMcpProxyTool } from "../.uina/extensions/mcp/proxy-tool.js";
 import { McpServerManager } from "../.uina/extensions/mcp/server-manager.js";
+import type { ExtensionAPI } from "../src/extensions/index.js";
 import { FakeMcpServer } from "./mcp-helpers.js";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=";

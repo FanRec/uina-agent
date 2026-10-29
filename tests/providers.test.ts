@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createModel, createProvider, ModelRegistry } from "../src/ai/providers.js";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/ai/config.js";
+import { createModel, createProvider, ModelRegistry } from "../src/ai/providers.js";
 import type { Model, ModelRequest, Provider, StreamDelta } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 

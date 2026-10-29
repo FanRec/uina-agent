@@ -3,10 +3,10 @@
  * 每个用例对应一个曾被手工变异验证过"现有测试杀不死"的缺口。
  */
 
-import { describe, it, expect } from "vitest";
-import { computeLineDiff, computeWordDiff } from "../src/ui/components/transcript/diff-view.js";
+import { describe, expect, it } from "vitest";
 import { abortableDelay } from "../src/ai/gateway.js";
 import { errorMessage } from "../src/core/errors.js";
+import { computeLineDiff, computeWordDiff } from "../src/ui/components/transcript/diff-view.js";
 
 describe("computeLineDiff：LCS 帽外内容不得静默丢失", () => {
 	const BIG = 1200;

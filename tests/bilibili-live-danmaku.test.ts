@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
+import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 import type { WorldEvent } from "../src/extensions/world-framework/types.js";
 
 const event = (uid: number, uname: string, text: string) => ({

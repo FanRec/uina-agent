@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
-import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { AgentMessage, ChatMsg } from "../core/types.js";
+import type { CanonicalState } from "./recovery.js";
 import {
 	applyRecord,
 	canonicalReplay,
@@ -13,7 +14,6 @@ import {
 	queuedInputs,
 	SessionFormatError,
 } from "./recovery.js";
-import type { CanonicalState } from "./recovery.js";
 import type {
 	QueuedInput,
 	SessionEventName,

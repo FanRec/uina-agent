@@ -2,9 +2,9 @@ import { writeFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 import { createMinecraftWorld } from "../.uina/worlds/minecraft/worlddef/index.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
-import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
-import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import type { BodyEndpoint } from "../src/extensions/world-framework/seams.js";
+import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
+import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
 import { IsolatedEnv, Scenario, UinaTestHarness } from "./harness/index.js";
 
 test("real Host canonical append acknowledges a native Minecraft completion and closes its managed World", async () => {

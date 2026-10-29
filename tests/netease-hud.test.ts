@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJukeboxWorld } from "../.uina/worlds/netease-jukebox/index.js";
 

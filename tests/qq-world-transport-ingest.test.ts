@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { OneBotTransport } from "../.uina/worlds/qq/src/transport.js";
-import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
+import { OneBotTransport } from "../.uina/worlds/qq/src/transport.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
 
 /* ---------- 假 WebSocket（SDK 注入接缝） ---------- */

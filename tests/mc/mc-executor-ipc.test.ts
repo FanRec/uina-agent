@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { RpcPeer, type WireEndpoint } from "../../.uina/worlds/minecraft/executor/ipc.js";
-import { accountKey, parseExecutorConfig } from "../../.uina/worlds/minecraft/executor/config.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { accountKey, parseExecutorConfig } from "../../.uina/worlds/minecraft/executor/config.js";
+import { RpcPeer, type WireEndpoint } from "../../.uina/worlds/minecraft/executor/ipc.js";
 
 function link() {
 	const listeners = [new Set<(v: unknown) => void>(), new Set<(v: unknown) => void>()];

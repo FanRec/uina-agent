@@ -11,10 +11,11 @@
  *
  * 重排 host.start() 的激活顺序、tail 相位规则或请求管线顺序而不更新本测试，属于破坏性变更。
  */
-import { describe, expect, test } from "./harness/index.js";
-import { UinaTestHarness } from "./harness/host/harness.js";
-import { Scenario } from "./harness/provider/scenario.js";
+
 import { openJsonlSession } from "../src/session/jsonl-store.js";
+import { UinaTestHarness } from "./harness/host/harness.js";
+import { describe, expect, test } from "./harness/index.js";
+import { Scenario } from "./harness/provider/scenario.js";
 
 describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上下文注入", () => {
 	test("超预算历史下：摘要先于上下文块、帧组原子、预算门通过", async ({ env }) => {

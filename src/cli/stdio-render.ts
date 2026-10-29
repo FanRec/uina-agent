@@ -5,7 +5,7 @@
  */
 import type { HostEvent } from "../host/events.js";
 import { TOOL_STATUS_SPEC } from "../presentation/tool-status.js";
-import { sanitizeTerminalText, toolStartLine, toolResultLines, type ToolResultStyle } from "../ui/format.js";
+import { sanitizeTerminalText, type ToolResultStyle, toolResultLines, toolStartLine } from "../ui/format.js";
 
 const PLAIN_STYLE: ToolResultStyle = {
 	ok: (value) => value,

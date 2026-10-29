@@ -2,10 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
+import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
-import { conversationRef, messageRef, userRef, type MessageFact } from "../.uina/worlds/qq/src/types.js";
+import { conversationRef, type MessageFact, messageRef, userRef } from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001";
 const G1 = conversationRef("group", "30001");

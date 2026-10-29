@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
+import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { ClientFactNotice, ClientWindowObservation } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import { resolveContainerQuery } from "../../.uina/worlds/minecraft/world/containers.js";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
 function observation(count = 3): ClientWindowObservation {

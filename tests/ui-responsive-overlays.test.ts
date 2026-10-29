@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ContextBarComponent } from "../src/ui/components/widgets/context-bar.js";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 import { EffortSlider } from "../src/ui/features/overlays/effort-slider.js";
@@ -6,7 +7,6 @@ import { HelpMenu } from "../src/ui/features/overlays/help-menu.js";
 import { ModelPicker } from "../src/ui/features/overlays/model-picker.js";
 import { PromptOverlay } from "../src/ui/features/overlays/prompt-overlay.js";
 import { TrajectoryScene } from "../src/ui/features/overlays/trajectory-scene.js";
-import { ContextBarComponent } from "../src/ui/components/widgets/context-bar.js";
 
 const emptySession = {
 	list: () => ({ nodes: [] }),

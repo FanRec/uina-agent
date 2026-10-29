@@ -7,8 +7,8 @@
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
-import { failureOf, makeHarness, type HarnessState, type SlotFixture } from "./mc-capability-harness.js";
-import { type FixtureStack, craftingWindow, furnaceWindow, stack, type WindowFixture } from "./mc-window-fixture.js";
+import { failureOf, type HarnessState, makeHarness, type SlotFixture } from "./mc-capability-harness.js";
+import { craftingWindow, type FixtureStack, furnaceWindow, stack, type WindowFixture } from "./mc-window-fixture.js";
 
 const items = {
 	oak_log: { id: 17, name: "oak_log", stackSize: 64 },

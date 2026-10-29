@@ -1,4 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import type { ExtensionAPI, ImageContent } from "../index.js";
+import { atomicWriteFile } from "./atomic-write.js";
 import { activateEditFile } from "./edit-file.js";
 import { activateFindFile } from "./find-file.js";
 import { activateGrepFile } from "./grep-file.js";
@@ -10,9 +13,6 @@ import {
 	READ_MAX_LINES,
 	truncateReadLines,
 } from "./read-truncate.js";
-import { dirname, resolve } from "node:path";
-import type { ExtensionAPI, ImageContent } from "../index.js";
-import { atomicWriteFile } from "./atomic-write.js";
 
 /** Trusted filesystem capabilities; no shell process or Core changes. */
 export default function activate(api: ExtensionAPI): void {

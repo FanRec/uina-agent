@@ -1,10 +1,10 @@
-import { readdir, readFile, stat, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { createJiti } from "jiti";
 import type { ExtensionAPI } from "../runner.js";
-import type { WorldRegistry } from "./world-registry.js";
 import type { WorldDef } from "./types.js";
+import type { WorldRegistry } from "./world-registry.js";
 
 const SOURCE_FILE_PATTERN = /\.(?:[cm]?js|[cm]?ts)$/;
 

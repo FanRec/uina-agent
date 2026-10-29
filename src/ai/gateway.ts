@@ -1,8 +1,8 @@
 import { assertImageInput } from "../core/content.js";
 import type { Model, ModelRequest, Provider, ThinkingLevel, ThinkingWireFormat, Usage } from "../core/types.js";
-import type { ProviderHooks } from "../runtime/hooks.js";
-import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
+import type { ProviderHooks } from "../runtime/hooks.js";
+import { ProviderProtocolError, parseSSE } from "./sse.js";
 
 /**
  * provider 以非 2xx 拒绝了请求。status 与 body 是结构化字段：上层若要按 provider

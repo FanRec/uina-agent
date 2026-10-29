@@ -12,44 +12,36 @@
  * - createSilentTerminal: 静音虚拟终端
  */
 
-export { test, expect, mockTool } from "./fixtures.js";
-export type { UinaTestFixtures } from "./fixtures.js";
-export { describe, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-
-export { Scenario, createScenario, mockModel } from "./provider/scenario.js";
-export { StreamBuilder, stream } from "./provider/stream-builder.js";
-
-export { UinaTestHarness } from "./host/harness.js";
-export type { HarnessOptions } from "./host/harness.js";
-
-export { SubjectHarness } from "./core/subject-harness.js";
+export { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 export type { SubjectHarnessOptions } from "./core/subject-harness.js";
-
-export { EventCollector } from "./host/event-collector.js";
-
-export { VirtualClock } from "./environment/virtual-clock.js";
+export { SubjectHarness } from "./core/subject-harness.js";
 export { IsolatedEnv } from "./environment/isolated-env.js";
-export { createSilentTerminal, stripAnsiColors } from "./environment/silent-terminal.js";
 export type { SilentTerminalResult } from "./environment/silent-terminal.js";
+export { createSilentTerminal, stripAnsiColors } from "./environment/silent-terminal.js";
+export { VirtualClock } from "./environment/virtual-clock.js";
+export type { Run, VtCell } from "./environment/vt-screen.js";
 export { VtScreen } from "./environment/vt-screen.js";
-export type { VtCell, Run } from "./environment/vt-screen.js";
+export type { ExtensionHarnessOptions } from "./extensions/extension-harness.js";
+export { createExtensionHarness, ExtensionHarness } from "./extensions/extension-harness.js";
+export type { UinaTestFixtures } from "./fixtures.js";
+export { expect, mockTool, test } from "./fixtures.js";
+export { EventCollector } from "./host/event-collector.js";
+export type { HarnessOptions } from "./host/harness.js";
+export { UinaTestHarness } from "./host/harness.js";
 
 export { assertDAGInvariants, assertNoResourceLeaks } from "./matchers/invariants.js";
-
-export {
-	UITestHarness,
-	createTestTUI,
-	getTestUIHost,
-	getTestTrajectoryProjection,
-	dispatchUIHostInput,
-	isHeartbeatActive,
-	renderWidget,
-	mockModelGroups,
-} from "./ui/ui-harness.js";
-export type { TestTUIOptions } from "./ui/ui-harness.js";
+export { createScenario, mockModel, Scenario } from "./provider/scenario.js";
+export { StreamBuilder, stream } from "./provider/stream-builder.js";
+export { rewindTo, seedSession } from "./session/session-helpers.js";
 export { record, toolDoneNode, toolStartNode, turnNode } from "./ui/nodes.js";
-
-export { ExtensionHarness, createExtensionHarness } from "./extensions/extension-harness.js";
-export type { ExtensionHarnessOptions } from "./extensions/extension-harness.js";
-
-export { seedSession, rewindTo } from "./session/session-helpers.js";
+export type { TestTUIOptions } from "./ui/ui-harness.js";
+export {
+	createTestTUI,
+	dispatchUIHostInput,
+	getTestTrajectoryProjection,
+	getTestUIHost,
+	isHeartbeatActive,
+	mockModelGroups,
+	renderWidget,
+	UITestHarness,
+} from "./ui/ui-harness.js";

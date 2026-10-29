@@ -1,10 +1,11 @@
-import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
+import { createRequire } from "node:module";
 import { expect, test } from "vitest";
-import { protocolFor } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
-import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
-import { matchesItem } from "../../.uina/worlds/minecraft/contracts/items.js";
 import type { ItemValue } from "../../.uina/worlds/minecraft/contracts/body.js";
+import { matchesItem } from "../../.uina/worlds/minecraft/contracts/items.js";
+import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
+import { protocolFor } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
+
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
 function bot(version = "1.21.11") {

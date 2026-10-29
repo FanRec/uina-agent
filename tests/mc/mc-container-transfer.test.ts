@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
-import type { ItemValue, WindowSession, WindowSnapshot } from "../../.uina/worlds/minecraft/contracts/body.js";
-import { transferWindow } from "../../.uina/worlds/minecraft/capabilities/shared/window-transfer.js";
 import { containerCallable, transferCallable } from "../../.uina/worlds/minecraft/capabilities/actions/containers.js";
-import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { CapabilityDeps } from "../../.uina/worlds/minecraft/capabilities/deps.js";
+import { transferWindow } from "../../.uina/worlds/minecraft/capabilities/shared/window-transfer.js";
+import type { ItemValue, WindowSession, WindowSnapshot } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import { fact, self } from "./mc-capability-harness.js";
 
 function stack(name: string, count: number, stackSize = 64): ItemValue {

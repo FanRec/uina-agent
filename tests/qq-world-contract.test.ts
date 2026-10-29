@@ -2,12 +2,12 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
-import type { WorldDef } from "../src/extensions/world-framework/types.js";
-import { QQ_ACTION_SCHEMAS, QQ_TOOL_DESCRIPTION, QQ_TOOL_NAME } from "../.uina/worlds/qq/src/tool-schema.js";
+import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 import { parseDeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
 import { requiredGrants } from "../.uina/worlds/qq/src/grants-vocabulary.js";
-import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
+import { QQ_ACTION_SCHEMAS, QQ_TOOL_DESCRIPTION, QQ_TOOL_NAME } from "../.uina/worlds/qq/src/tool-schema.js";
+import type { WorldDef } from "../src/extensions/world-framework/types.js";
+import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "qq-world-interaction-examples.json");
 const TOOLDEF_PATH = join(import.meta.dirname, "..", ".uina", "worlds", "qq", "tool.json");

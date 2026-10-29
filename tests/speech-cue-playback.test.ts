@@ -1,11 +1,11 @@
-import activateTts from "../.uina/extensions/tts/index.js";
-import type { ExtensionAPI } from "../src/extensions/runner.js";
-import { createCueOutputOwnership } from "../.uina/extensions/embodiment/playback-cues.js";
 import { describe, expect, it, vi } from "vitest";
-import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
+import { createCueOutputOwnership } from "../.uina/extensions/embodiment/playback-cues.js";
+import { TtsBridgeClient } from "../.uina/extensions/tts/client.js";
 import { PlaybackCueDelivery } from "../.uina/extensions/tts/cue-delivery.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
-import { TtsBridgeClient } from "../.uina/extensions/tts/client.js";
+import activateTts from "../.uina/extensions/tts/index.js";
+import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
+import type { ExtensionAPI } from "../src/extensions/runner.js";
 
 describe("speech cue positioning and playback delivery", () => {
 	it("keeps output ownership consistent across extension handler ordering and changes in voice health", () => {

@@ -8,7 +8,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { homedir, platform, arch } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";

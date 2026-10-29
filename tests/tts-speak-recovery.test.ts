@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TtsBridgeClient } from "../.uina/extensions/tts/client.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
-import { createTtsTool } from "../.uina/extensions/tts/tool.js";
-import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
-import { VoiceSession } from "../.uina/extensions/voice/session.js";
 import activate from "../.uina/extensions/tts/index.js";
+import { createTtsTool } from "../.uina/extensions/tts/tool.js";
+import { VoiceSession } from "../.uina/extensions/voice/session.js";
+import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
 
 afterEach(() => vi.unstubAllGlobals());

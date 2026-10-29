@@ -7,8 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { HostEventRecord, HostSnapshot } from "../src/host/events.js";
+import { type PresentationChange, PresentationController } from "../src/presentation/controller.js";
 import type { SessionEntry } from "../src/session/types.js";
-import { PresentationController, type PresentationChange } from "../src/presentation/controller.js";
 
 function record(at: number, event: HostEventRecord["event"]): HostEventRecord {
 	return { at, event };

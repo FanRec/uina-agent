@@ -1,11 +1,11 @@
-import { Subject, type AgentInput } from "../../../src/agent/loop.js";
-import { ToolBroker, type Tool } from "../../../src/tools/broker.js";
-import { MemorySessionStore } from "../../../src/session/jsonl-store.js";
-import type { RewindRequest, RewindResult, SessionRecord, SessionStore } from "../../../src/session/types.js";
-import { Scenario } from "../provider/scenario.js";
+import { type AgentInput, Subject } from "../../../src/agent/loop.js";
+import type { ProjectionPolicy } from "../../../src/agent/projection.js";
 import type { AgentMessage, ChatMsg, Model, ModelStreamFn, ThinkingLevel, ToolDef } from "../../../src/core/types.js";
 import type { RuntimeHooks } from "../../../src/runtime/hooks.js";
-import type { ProjectionPolicy } from "../../../src/agent/projection.js";
+import { MemorySessionStore } from "../../../src/session/jsonl-store.js";
+import type { RewindRequest, RewindResult, SessionRecord, SessionStore } from "../../../src/session/types.js";
+import { type Tool, ToolBroker } from "../../../src/tools/broker.js";
+import { Scenario } from "../provider/scenario.js";
 
 /** 快速构造轻量测试 Tool 的统一辅助函数，避免在各测试中内联手写 8 行 Schema 样板 */
 export function mockTool(

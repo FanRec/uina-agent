@@ -3,8 +3,8 @@
  * 支持扩展或外部模块向 aboveEditor 和 belowEditor 挂载/卸载自定义视觉部件。
  */
 
-import type { Component, WidgetItem, WidgetPlacement } from "./types.js";
 import type { ComponentBoundary } from "./component-boundary.js";
+import type { Component, WidgetItem, WidgetPlacement } from "./types.js";
 
 export class WidgetSlots {
 	private widgets = new Map<string, WidgetItem>();

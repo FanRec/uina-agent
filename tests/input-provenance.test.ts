@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { SubjectHarness } from "./harness/core/subject-harness.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
+import { SubjectHarness } from "./harness/core/subject-harness.js";
 
 describe("input provenance", () => {
 	it("preserves external runtime input through live history and replay", async () => {

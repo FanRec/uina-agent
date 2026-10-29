@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
-import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { IsolatedEnv, mockTool, SubjectHarness, Scenario } from "./harness/index.js";
-import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { ToolBroker, type Tool } from "../src/tools/broker.js";
+import { open } from "node:fs/promises";
+import { describe, expect, it, vi } from "vitest";
 import { createPrintUI, ExtensionRunner } from "../src/extensions/runner.js";
+import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
+import { type Tool, ToolBroker } from "../src/tools/broker.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { MainScreenRenderer } from "../src/ui/core/renderer.js";
 import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
+import { IsolatedEnv, mockTool, Scenario, SubjectHarness } from "./harness/index.js";
 
 const tool = (name: string): Tool => mockTool(name, async () => ({ result: "ok", status: "succeeded" }));
 

@@ -1,7 +1,7 @@
 import { fork } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { selfProcessIdentity, acquireOwnership } from "../../../.uina/worlds/minecraft/executor/platform/index.ts";
+import { acquireOwnership, selfProcessIdentity } from "../../../.uina/worlds/minecraft/executor/platform/index.ts";
 
 const mode = process.argv[2];
 const children = [];

@@ -1,7 +1,7 @@
 // CRAP C4：world-loader 入口发现与 WorldDef 提取覆盖。
 // resolveDirectoryEntry 是模块私有函数，经公共面 discoverExternalWorldEntries
 // 用临时目录夹具覆盖其全部分支（package.json main/uina.entry/坏 JSON/index 回退/无入口）。
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";

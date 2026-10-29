@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { encodeFrame, validateRig, type ModelRig, type RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
-import { compileAction, motion, withSpeech, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import { encodeFrame, type ModelRig, type RigControlDef, validateRig } from "../.uina/worlds/live2d/adapter/rig.js";
+import { absolute, compileAction, keys, motion, withSpeech } from "../.uina/worlds/live2d/authoring/index.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
 import { gazeCompensation, SpeechEnvelope, SpringFilter } from "../.uina/worlds/live2d/director/pipelines.js";
 

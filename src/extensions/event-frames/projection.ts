@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { convertToLlm } from "../../agent/context.js";
+import type { ImageContent } from "../../core/content.js";
 import type {
 	AgentMessage,
 	ChatMsg,
@@ -6,9 +9,6 @@ import type {
 	ModelContextMeta,
 	ThinkingReplay,
 } from "../../core/types.js";
-import type { ImageContent } from "../../core/content.js";
-import { createHash } from "node:crypto";
-import { convertToLlm } from "../../agent/context.js";
 import { EVENT_FRAME_KIND, EVENT_FRAME_TOOL_NAME, frameCallId } from "./protocol.js";
 
 function provenance(m: AgentMessage | ChatMsg): InputProvenance | undefined {

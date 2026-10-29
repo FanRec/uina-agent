@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
 import type { ServiceCompanionContext, WorldDef } from "../src/extensions/world-framework/types.js";
 import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
-import { UinaTestHarness, IsolatedEnv, Scenario } from "./harness/index.js";
+import { IsolatedEnv, Scenario, UinaTestHarness } from "./harness/index.js";
 
 describe("Host delivery binding", () => {
 	it("binds world input and tool to one namespace and restores receipts after a real Host restart", async () => {

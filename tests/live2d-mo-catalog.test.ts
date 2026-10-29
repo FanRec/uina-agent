@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileMOCatalog, MO_CATALOG_SOURCE, loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
+import { compileMOCatalog, loadCatalog, MO_CATALOG_SOURCE } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO catalog authoring entries", () => {

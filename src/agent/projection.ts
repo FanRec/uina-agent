@@ -1,7 +1,7 @@
 import type { AgentMessage, ChatMsg, ToolDef } from "../core/types.js";
-import { convertToLlm } from "./context.js";
-import { projectAgentHistory, protectRewindContext, type CanonicalState } from "../session/recovery.js";
+import { type CanonicalState, projectAgentHistory, protectRewindContext } from "../session/recovery.js";
 import type { SessionEntry } from "../session/types.js";
+import { convertToLlm } from "./context.js";
 
 /** Projects the ordered journal into the effective provider history. A
  * compaction replaces only model-visible history; the journal itself remains

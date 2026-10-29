@@ -2,10 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
 import type { ProgramHostApi, ProgramPort } from "../../.uina/worlds/minecraft/contracts/program.js";
 import { createDecisionError, getDecisionRequest } from "../../.uina/worlds/minecraft/contracts/program.js";
 import type { DecisionRequest, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
 
 const opened: { p: ProgramPort; root: string }[] = [];
 afterEach(async () => {

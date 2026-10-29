@@ -1,7 +1,8 @@
-import { readdir, readFile, stat, realpath } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createJiti } from "jiti";
 import type { ExtensionModule } from "./runner.js";
+
 const sourceFile = /\.(?:[cm]?js|[cm]?ts)$/;
 async function exists(file: string): Promise<boolean> {
 	try {

@@ -4,13 +4,13 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
-import { ToolBroker } from "../src/tools/broker.js";
-import { IsolatedEnv, mockModel } from "./harness/index.js";
-import { SubjectHarness } from "./harness/core/subject-harness.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import type { RequestProjection } from "../src/core/types.js";
+import { type ExtensionAPI, ExtensionRunner } from "../src/extensions/runner.js";
+import type { RuntimeHooks } from "../src/runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import { ToolBroker } from "../src/tools/broker.js";
+import { SubjectHarness } from "./harness/core/subject-harness.js";
+import { IsolatedEnv, mockModel } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 const runners: ExtensionRunner[] = [];

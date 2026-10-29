@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
+import { TtsSpeakError } from "../.uina/extensions/tts/client.js";
 import { summarizeProgress } from "../.uina/extensions/tts/delivery.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
-import { TtsSpeakError } from "../.uina/extensions/tts/client.js";
+import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
 
 describe("TTS delivery hardening", () => {
 	it("reassembles a split closing think tag at every boundary", () => {

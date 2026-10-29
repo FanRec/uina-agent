@@ -1,10 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { ExtensionHost } from "../src/extensions/host.js";
-import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
-import { guardRuntimeHooks } from "../src/runtime/guard.js";
-import type { RuntimeHooks } from "../src/runtime/hooks.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { ToolBroker } from "../src/tools/broker.js";
+import { createServer } from "node:http";
+import { describe, expect, it, vi } from "vitest";
+import { createOpenAIProvider } from "../src/ai/gateway.js";
 import type {
 	ChatMsg,
 	Model,
@@ -14,9 +10,13 @@ import type {
 	StreamDelta,
 	ThinkingLevel,
 } from "../src/core/types.js";
-import { mockModel, SubjectHarness, createExtensionHarness, mockTool } from "./harness/index.js";
-import { createOpenAIProvider } from "../src/ai/gateway.js";
-import { createServer } from "node:http";
+import { ExtensionHost } from "../src/extensions/host.js";
+import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
+import { guardRuntimeHooks } from "../src/runtime/guard.js";
+import type { RuntimeHooks } from "../src/runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import { ToolBroker } from "../src/tools/broker.js";
+import { createExtensionHarness, mockModel, mockTool, SubjectHarness } from "./harness/index.js";
 
 function mockPair(
 	deltas: StreamDelta[] = [

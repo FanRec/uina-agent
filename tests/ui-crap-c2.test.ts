@@ -2,8 +2,8 @@
  * CRAP 存量债务 C2：projectWaveBand 波形投影的覆盖补齐（此前 comp≥8 且 0% 覆盖）。
  */
 import { describe, expect, it } from "vitest";
-import { projectWaveBand } from "../src/ui/features/overlays/trajectory-scene.js";
 import type { TrajectoryNode } from "../src/presentation/trajectory.js";
+import { projectWaveBand } from "../src/ui/features/overlays/trajectory-scene.js";
 
 function node(overrides: Partial<TrajectoryNode> = {}): TrajectoryNode {
 	return {

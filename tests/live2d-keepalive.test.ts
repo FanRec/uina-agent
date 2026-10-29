@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { neutralFrame, encodeFrame, validateRig, type ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
-import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
+import { encodeFrame, type ModelRig, neutralFrame, validateRig } from "../.uina/worlds/live2d/adapter/rig.js";
+import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
 /** 双轴汇入单输入的 rig：验证 max 聚合与端点裁剪在保活帧上生效。 */
 const rig: ModelRig = {

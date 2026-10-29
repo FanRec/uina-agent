@@ -1,10 +1,10 @@
-import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 import { buildContext } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
-import { isRecord } from "../src/session/recovery.js";
-import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { isRecord } from "../src/session/recovery.js";
+import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
 	it("emits a single head system message and never a trailing one", () => {

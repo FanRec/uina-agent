@@ -1,3 +1,4 @@
+import type { ImageContent } from "../core/content.js";
 import type {
 	ChatMsg,
 	FinishReason,
@@ -8,7 +9,6 @@ import type {
 	ToolResultStatus,
 } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
-import type { ImageContent } from "../core/content.js";
 
 export interface ProviderHooks {
 	transformHeaders(provider: string, headers: Readonly<Record<string, string>>): Promise<Record<string, string>>;

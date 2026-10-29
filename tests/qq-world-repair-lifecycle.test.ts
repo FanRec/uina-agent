@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
 import type { QqWorldConfig } from "../.uina/worlds/qq/src/config.js";
+import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
 import type { QqTransport, TransportEventHandler } from "../.uina/worlds/qq/src/transport.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 

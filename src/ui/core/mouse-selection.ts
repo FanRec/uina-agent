@@ -8,7 +8,7 @@
  * 5. 交互热区引擎：精确区分原地 Click 与拖拽 Drag，支持 Hover 悬停探测。
  */
 
-import { stripAnsi, visibleWidth, charWidth, extractAnsiCode } from "./utils.js";
+import { charWidth, extractAnsiCode, stripAnsi, visibleWidth } from "./utils.js";
 
 export interface Point {
 	col: number; // 0-indexed 列坐标

@@ -1,14 +1,20 @@
-import { deliveryKey } from "../core/delivery.js";
-import type { HostDeliveryPort, InputDeliveryOwner } from "../core/types.js";
 /** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
 import { randomUUID } from "node:crypto";
 import { relative } from "node:path";
 import type { AgentInput } from "../agent/loop.js";
+import { deliveryKey } from "../core/delivery.js";
 import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
-import type { ContextSnapshot, Provider, RequestInspection, RequestUsage } from "../core/types.js";
+import type {
+	ContextSnapshot,
+	HostDeliveryPort,
+	InputDeliveryOwner,
+	Provider,
+	RequestInspection,
+	RequestUsage,
+} from "../core/types.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
 import type { HookName, RuntimeHooks } from "../runtime/hooks.js";
 import type { Tool, ToolBroker, ToolExecutionResult } from "../tools/broker.js";

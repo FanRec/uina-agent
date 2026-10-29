@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { RhythmEngine, type ClockSource } from "../.uina/worlds/rhythm/src/engine.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { type ClockSource, RhythmEngine } from "../.uina/worlds/rhythm/src/engine.js";
 import type { RhythmDurableState, RhythmHostPort } from "../.uina/worlds/rhythm/src/types.js";
 
 /**

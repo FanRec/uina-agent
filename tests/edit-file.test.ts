@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
+import { type ExtensionAPI, ExtensionRunner } from "../src/extensions/runner.js";
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { IsolatedEnv } from "./harness/index.js";

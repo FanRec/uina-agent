@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import {
 	buildEventPage,
 	decodeCursor,

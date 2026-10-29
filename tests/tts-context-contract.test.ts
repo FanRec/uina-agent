@@ -1,23 +1,23 @@
-import { createRequire } from "node:module";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
-import type { ChatMsg, RequestProjection } from "../src/core/types.js";
 import { describe, expect, it } from "vitest";
-import { VoicePerception } from "../.uina/extensions/voice/perception.js";
-import { filterCompactionMessages } from "../src/extensions/compaction/index.js";
-import { assertEventFrameContext } from "../src/extensions/event-frames/protocol.js";
-import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { createTtsTool } from "../.uina/extensions/tts/tool.js";
-import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
+import { VoicePerception } from "../.uina/extensions/voice/perception.js";
 import { VoiceSession } from "../.uina/extensions/voice/session.js";
+import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
 import { estimateRequestTokens } from "../src/agent/context.js";
+import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
+import type { ChatMsg, RequestProjection } from "../src/core/types.js";
+import { filterCompactionMessages } from "../src/extensions/compaction/index.js";
 import {
 	appendTailFrame,
 	buildEventFrameGroup,
 	contentAddressedEventId,
 	snapshotNotice,
 } from "../src/extensions/event-frames/index.js";
+import { assertEventFrameContext } from "../src/extensions/event-frames/protocol.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 
 const request: RequestProjection = {
 	projectionId: "p",

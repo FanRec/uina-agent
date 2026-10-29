@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { expect, test } from "vitest";
-import { makeBodyHarness, ownerT, openSignal, placeT } from "./mc-fake-driver.js";
 import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { makeBodyHarness, openSignal, ownerT, placeT } from "./mc-fake-driver.js";
 
 function fixture(failAttack = false, waitForLook = false) {
 	const events = new EventEmitter();

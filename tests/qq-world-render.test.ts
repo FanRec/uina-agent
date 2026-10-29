@@ -1,20 +1,20 @@
-import { describe, expect, it } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	oneBotSenderLabel,
-	renderMessageFacts,
-	messageRow,
-	quote,
-	renderReadWindow,
-	type BatchRenderDeps,
-	renderForwardNodes,
-	TimeView,
-} from "../.uina/worlds/qq/src/render.js";
-import { decodeOneBotSegments } from "../.uina/worlds/qq/src/message-codec.js";
+import { describe, expect, it } from "vitest";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { decodeOneBotSegments } from "../.uina/worlds/qq/src/message-codec.js";
+import {
+	type BatchRenderDeps,
+	messageRow,
+	oneBotSenderLabel,
+	quote,
+	renderForwardNodes,
+	renderMessageFacts,
+	renderReadWindow,
+	TimeView,
+} from "../.uina/worlds/qq/src/render.js";
 import type { PendingCandidate } from "../.uina/worlds/qq/src/scheduler.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
 

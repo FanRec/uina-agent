@@ -10,11 +10,12 @@
  * 匹配数上限、输出字节上限、单行长度上限——任一触发即在输出尾部
  * 附带可操作的提示（如何翻页/如何收窄）。
  */
-import { errorMessage } from "../../core/errors.js";
+
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
+import { errorMessage } from "../../core/errors.js";
 import { ensureRg } from "./rg-installer.js";
 
 /** root 或其任一祖先是否含 .git（rg 的 VCS ignore 仅在 git 仓库内生效）。 */

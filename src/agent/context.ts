@@ -3,8 +3,8 @@ import type {
 	ChatMsg,
 	ContextSegments,
 	RequestProjection,
-	TokenMeasurement,
 	ThinkingReplay,
+	TokenMeasurement,
 	ToolDef,
 	Usage,
 } from "../core/types.js";

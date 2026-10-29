@@ -1,16 +1,16 @@
-import { fork, spawnSync, type ChildProcess } from "node:child_process";
+import { type ChildProcess, fork, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { copyFile, mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
 	acquireOwnership,
-	selfProcessIdentity,
 	type ManagedProcess,
+	selfProcessIdentity,
 	type WindowsOwnership,
 } from "../../.uina/worlds/minecraft/executor/platform/index.js";
 

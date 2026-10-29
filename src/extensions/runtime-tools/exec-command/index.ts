@@ -1,7 +1,7 @@
-import type { Tool } from "../../../tools/broker.js";
 import type { ToolResultStatus } from "../../../core/types.js";
-import { executeShellProcess, type ProcessResult } from "./process.js";
+import type { Tool } from "../../../tools/broker.js";
 import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, OutputCollector, type OutputSnapshot } from "./output.js";
+import { executeShellProcess, type ProcessResult } from "./process.js";
 
 export interface ShellResult {
 	stdout: string;

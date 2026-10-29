@@ -1,14 +1,14 @@
-import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test, vi } from "vitest";
 import { Worker } from "node:worker_threads";
-import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
-import { createProgramHost } from "../../.uina/worlds/minecraft/runtime/program-host.js";
+import { afterEach, expect, test, vi } from "vitest";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
 import type { ProgramHostApi, ProgramPort } from "../../.uina/worlds/minecraft/contracts/program.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { createProgramHost } from "../../.uina/worlds/minecraft/runtime/program-host.js";
 
 const opened: ProgramPort[] = [];
 afterEach(async () => {

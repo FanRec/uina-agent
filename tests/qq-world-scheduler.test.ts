@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QqScheduler, RING_BUDGET_CHARS, type PendingCandidate } from "../.uina/worlds/qq/src/scheduler.js";
-import { renderCandidate as renderTapCandidate, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
-import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
+import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { renderReadWindow, renderCandidate as renderTapCandidate } from "../.uina/worlds/qq/src/render.js";
+import { type PendingCandidate, QqScheduler, RING_BUDGET_CHARS } from "../.uina/worlds/qq/src/scheduler.js";
 import type { EventFact, MessageFact } from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001";

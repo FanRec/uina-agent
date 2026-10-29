@@ -2,8 +2,8 @@
  * 终端底层输入输出封装（支持 RawMode、DEC CSI 2026 同步写入、光标定位）。
  */
 
-import { initConsoleMode } from "./native-modifiers.js";
 import { frameLogEnabled, logFrame, logNote } from "./frame-log.js";
+import { initConsoleMode } from "./native-modifiers.js";
 
 /** 终端真实尺寸回执（CSI 18t → CSI 8 ; rows ; cols t） */
 export function parseSizeReport(data: string): { cols: number; rows: number } | null {

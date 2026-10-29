@@ -1,5 +1,5 @@
-import type { ExtensionRegistry } from "./renderer-registry.js";
 import { errorMessage } from "../core/errors.js";
+import type { ExtensionRegistry } from "./renderer-registry.js";
 
 /** One command path for terminal UI, pipe/stdin and one-shot execution. */
 export class CommandRouter {

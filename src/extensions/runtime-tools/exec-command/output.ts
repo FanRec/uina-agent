@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
-import { finished } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finished } from "node:stream/promises";
 
 export const MAX_OUTPUT_BYTES = 50 * 1024;
 export const MAX_OUTPUT_LINES = 2000;

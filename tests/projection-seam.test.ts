@@ -8,12 +8,13 @@
  *
  * 基于 Uina Test Kit 进行重构，消灭手工 mkdtemp/rm 样板代码与空转轮询。
  */
-import { describe, expect, test, SubjectHarness } from "./harness/index.js";
-import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { projectAgentHistory } from "../src/session/recovery.js";
+
 import { convertToLlm } from "../src/agent/context.js";
 import { projectModelHistory, resolveProjectionPolicy } from "../src/agent/projection.js";
+import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
+import { projectAgentHistory } from "../src/session/recovery.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
+import { describe, expect, SubjectHarness, test } from "./harness/index.js";
 
 describe("projection Replacement seam (P3c)", () => {
 	test("keeps the default pipeline equivalent when no policy is given", async () => {

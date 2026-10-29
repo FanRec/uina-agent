@@ -1,7 +1,8 @@
 // 批次 3（ui-crap-debt-plan）：ripgrep 资产名解析矩阵与解压候选路径（纯函数）。
 // 这是下载链路中最易藏平台 bug 的决策点，此前随 downloadRgInner 整体 0% 覆盖。
-import { describe, expect, it } from "vitest";
+
 import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 import { binaryCandidates, resolveRgAsset } from "../src/extensions/workspace-tools/rg-installer.js";
 
 describe("resolveRgAsset", () => {

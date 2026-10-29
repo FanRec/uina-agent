@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { estimateRequestTokens } from "../src/agent/context.js";
-import { DEFAULT_OUTPUT_RESERVE_TOKENS, inputTokenBudget } from "../src/core/model.js";
 import { requestToolDefs } from "../src/agent/projection.js";
-import { EVENT_FRAME_TOOL } from "../src/extensions/event-frames/protocol.js";
-import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
+import { DEFAULT_OUTPUT_RESERVE_TOKENS, inputTokenBudget } from "../src/core/model.js";
 import activateCompaction, { estimateStreamTokens } from "../src/extensions/compaction/index.js";
+import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
+import { EVENT_FRAME_TOOL } from "../src/extensions/event-frames/protocol.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
-import { ToolBroker } from "../src/tools/broker.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { ToolBroker } from "../src/tools/broker.js";
 import { Scenario } from "./harness/provider/scenario.js";
 
 const p = createEventFrameProfile().projection;

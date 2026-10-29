@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readFile, unlink } from "node:fs/promises";
+import { promisify } from "node:util";
+import { describe, expect, it } from "vitest";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
 import { IsolatedEnv } from "./harness/index.js";
 

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { compileAction, sampleAction } from "../.uina/worlds/live2d/authoring/action.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { closeUp } from "../.uina/worlds/live2d/models/mo/motions/close_up.js";
 import { edgePeek } from "../.uina/worlds/live2d/models/mo/motions/edge_peek.js";
 import { joyHop } from "../.uina/worlds/live2d/models/mo/motions/joy_hop.js";
 import { petrify } from "../.uina/worlds/live2d/models/mo/motions/petrify.js";
 import { spin } from "../.uina/worlds/live2d/models/mo/motions/spin.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO 空间动作的表演衔接", () => {
 	it.each([

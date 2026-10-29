@@ -1,10 +1,10 @@
 import { test as baseTest, expect } from "vitest";
 import "./matchers/custom-matchers.js";
 import { IsolatedEnv } from "./environment/isolated-env.js";
-import { VirtualClock } from "./environment/virtual-clock.js";
 import { createSilentTerminal, type SilentTerminalResult } from "./environment/silent-terminal.js";
-import { Scenario } from "./provider/scenario.js";
+import { VirtualClock } from "./environment/virtual-clock.js";
 import { UinaTestHarness } from "./host/harness.js";
+import { Scenario } from "./provider/scenario.js";
 
 export interface UinaTestFixtures {
 	/** 隔离的临时文件沙箱环境（自动清理） */
@@ -53,5 +53,5 @@ export const test = baseTest.extend<UinaTestFixtures>({
 	},
 });
 
-export { expect };
 export { mockTool } from "./core/subject-harness.js";
+export { expect };

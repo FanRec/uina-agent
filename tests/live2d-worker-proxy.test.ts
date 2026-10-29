@@ -1,15 +1,15 @@
 import { MessageChannel } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
-import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
-import type { BodyEndpoint, VoiceLevelSink } from "../src/extensions/world-framework/seams.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import { type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { absolute, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { attachEngine } from "../.uina/worlds/live2d/worker/engine.js";
 import { Live2DRuntimeProxy } from "../.uina/worlds/live2d/worker/proxy.js";
+import type { BodyEndpoint, VoiceLevelSink } from "../src/extensions/world-framework/seams.js";
+import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 
 /**

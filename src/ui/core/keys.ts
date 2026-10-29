@@ -33,7 +33,7 @@ export const Key = {
 	shift: (c: string) => `shift+${c.toLowerCase()}`,
 };
 
-import { isShiftPressed, isCtrlPressed } from "./native-modifiers.js";
+import { isCtrlPressed, isShiftPressed } from "./native-modifiers.js";
 
 /**
  * 检查输入的 raw 数据是否匹配目标键位定义

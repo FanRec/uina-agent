@@ -5,7 +5,7 @@
 import { stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { ExtensionAPI } from "../index.js";
-import { globToRegExp, GitignoreMatcher, MAX_MATCHES, MAX_OUTPUT_BYTES, walkTree } from "./search-core.js";
+import { GitignoreMatcher, globToRegExp, MAX_MATCHES, MAX_OUTPUT_BYTES, walkTree } from "./search-core.js";
 
 export function activateFindFile(api: ExtensionAPI): void {
 	api.registerTool({

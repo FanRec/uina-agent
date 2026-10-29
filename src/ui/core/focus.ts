@@ -4,7 +4,7 @@
  * 并处理 CURSOR_MARKER 定位以保障 IME 输入法候选框位置。
  */
 
-import { isFocusable, type Component } from "./types.js";
+import { type Component, isFocusable } from "./types.js";
 
 export class FocusManager {
 	private currentFocused: Component | null = null;

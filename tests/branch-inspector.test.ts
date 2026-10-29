@@ -7,10 +7,10 @@ import {
 	readSessionBranch,
 	readSessionNode,
 } from "../src/session/navigation.js";
-import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/cards.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
+import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 
 // matchesKey only matches keys with an explicit branch; anything else degrades to a literal
 // string compare against the escape sequence, so a missing branch silently disables the key.

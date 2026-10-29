@@ -1,4 +1,5 @@
 import type { AgentMessage, ChatMsg, ToolAgentMessage, ToolEffect } from "./types.js";
+
 /**
  * 工具结果 details.effects 约定的唯一读取点：工具（Extension 层）在自己的
  * 结果 details 里声明通用效果事实，Core/Session/默认压缩器都经由这里读取，

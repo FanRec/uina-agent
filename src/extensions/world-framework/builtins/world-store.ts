@@ -1,6 +1,6 @@
-import type { WorldRegistry } from "../world-registry.js";
-import type { WorldDef } from "../types.js";
 import { worldFailed, worldSucceeded } from "../result.js";
+import type { WorldDef } from "../types.js";
+import type { WorldRegistry } from "../world-registry.js";
 
 export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 	return {

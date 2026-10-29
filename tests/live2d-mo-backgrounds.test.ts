@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { compileAction, sampleAction } from "../.uina/worlds/live2d/authoring/action.js";
 import { createSeededRandom } from "../.uina/worlds/live2d/authoring/random.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import {
+	swayChaoticBouncyVariant,
 	swayClassic,
 	swayCornerPeekVariant,
-	swayChaoticBouncyVariant,
 	swayVShapeVariant,
 } from "../.uina/worlds/live2d/models/mo/motions/sway.js";
 import { cuteThinking } from "../.uina/worlds/live2d/models/mo/motions/thinking.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
 describe("MO background gesture continuity", () => {
 	it("makes the corner glance lead the head and body, with smooth breathing joins", async () => {

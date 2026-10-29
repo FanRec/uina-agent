@@ -7,6 +7,7 @@ vi.mock("../../.uina/worlds/minecraft/driver/mineflayer/adapter.js", () => ({
 	fromMineflayerVec3: (v: unknown) => v,
 }));
 vi.mock("../../.uina/worlds/minecraft/driver/mineflayer/protocol.js", () => ({ protocolFor: () => ({}) }));
+
 import { ClientHost } from "../../.uina/worlds/minecraft/driver/client-host.js";
 
 test("ready retains lifecycle listeners; death invalidates immediately and respawn replaces incarnation", async () => {

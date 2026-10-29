@@ -12,14 +12,14 @@
 import { errorMessage } from "../core/errors.js";
 import type { ChatMsg, RequestProjection } from "../core/types.js";
 import type { DeepReadonly, InjectionProvenance, OutputEvent, RuntimeEvent } from "../runtime/events.js";
+import { immutableProjection } from "../runtime/guard.js";
 import {
-	warnIgnoredToolStatus,
 	type HookContributions,
 	type HookHandler,
 	type HookInputs,
 	type HookName,
+	warnIgnoredToolStatus,
 } from "../runtime/hooks.js";
-import { immutableProjection } from "../runtime/guard.js";
 
 export type {
 	AgentEndEvent,
@@ -33,9 +33,9 @@ export type {
 	OutputUpdateEvent,
 	QueueEvent,
 	RuntimeEvent,
-	SessionCompactStartEvent,
-	SessionCompactProgressEvent,
 	SessionCompactEvent,
+	SessionCompactProgressEvent,
+	SessionCompactStartEvent,
 	ThinkingLevelSelectEvent,
 	ToolCallEvent,
 	ToolResultEvent,

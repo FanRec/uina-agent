@@ -14,8 +14,8 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "../index.js";
-import { summarizeEdit } from "./edit-diff.js";
 import { atomicWriteFile } from "./atomic-write.js";
+import { summarizeEdit } from "./edit-diff.js";
 
 interface Edit {
 	oldText: string;

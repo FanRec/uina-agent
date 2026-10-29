@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LiveEventBuffer } from "../.uina/worlds/bilibili-live/src/buffer.js";
 import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
+import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 import type { LiveClientAdapter, LiveClientEvent } from "../.uina/worlds/bilibili-live/src/live-client-adapter.js";
 import { LiveEventIngestion } from "../.uina/worlds/bilibili-live/src/live-event-ingestion.js";
-import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 
 class FakeClient extends EventEmitter implements LiveClientAdapter {
 	async connect(): Promise<void> {

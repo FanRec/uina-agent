@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chooseRecent } from "../.uina/worlds/live2d/authoring/selection.js";
-import { SpeechBehavior } from "../.uina/worlds/live2d/speech-behavior.js";
-import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { compileAction } from "../.uina/worlds/live2d/authoring/action.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import { type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { absolute, motion, offset } from "../.uina/worlds/live2d/authoring/index.js";
+import { chooseRecent } from "../.uina/worlds/live2d/authoring/selection.js";
+import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
 import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime, type Live2DRuntimeOptions } from "../.uina/worlds/live2d/runtime.js";
-import { refactorClient, refactorRig, fixtureMotion } from "./live2d-refactor-fixture.js";
-import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { absolute, offset, motion } from "../.uina/worlds/live2d/authoring/index.js";
+import { SpeechBehavior } from "../.uina/worlds/live2d/speech-behavior.js";
+import { fixtureMotion, refactorClient, refactorRig } from "./live2d-refactor-fixture.js";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());

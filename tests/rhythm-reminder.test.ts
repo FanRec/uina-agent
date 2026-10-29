@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RhythmEngine, type ClockSource } from "../.uina/worlds/rhythm/src/engine.js";
+import { type ClockSource, RhythmEngine } from "../.uina/worlds/rhythm/src/engine.js";
 import type { RhythmDurableState } from "../.uina/worlds/rhythm/src/types.js";
 
 interface Reminder {

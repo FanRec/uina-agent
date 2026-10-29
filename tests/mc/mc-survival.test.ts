@@ -1,14 +1,14 @@
 import { expect, test } from "vitest";
 import {
-	survivalTrigger,
-	nextEscapeWaypoint,
 	escapeInput,
+	nextEscapeWaypoint,
+	survivalTrigger,
 } from "../../.uina/worlds/minecraft/capabilities/survival.js";
 import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import {
-	escapeWaypoints,
 	escapeGoalBias,
 	escapeThreatClearance,
+	escapeWaypoints,
 } from "../../.uina/worlds/minecraft/driver/mineflayer/pathfinder.js";
 
 test("only observed hazards trigger preservation; low health alone and unknown immunity do not", () => {

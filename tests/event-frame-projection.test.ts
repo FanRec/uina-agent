@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { AgentMessage } from "../src/core/types.js";
-import { SubjectHarness } from "./harness/core/subject-harness.js";
-import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { defaultSystemPrompt } from "../src/agent/context.js";
 import { requestToolDefs } from "../src/agent/projection.js";
+import type { AgentMessage } from "../src/core/types.js";
 import { createEventFrameProfile, EVENT_FRAME_PROMPT } from "../src/extensions/event-frames/index.js";
 import { EVENT_FRAME_TOOL } from "../src/extensions/event-frames/protocol.js";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { projectInputMessage } from "../src/session/recovery.js";
+import { SubjectHarness } from "./harness/core/subject-harness.js";
 
 const external = (id = "e1"): AgentMessage => ({
 	role: "user",

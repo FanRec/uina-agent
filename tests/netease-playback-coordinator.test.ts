@@ -1,7 +1,7 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import { PlaybackCoordinator } from "../.uina/worlds/netease-jukebox/playback-coordinator.js";
-import { EventEmitter } from "node:events";
-import { SimulatedMusicPlayer, type MusicPlayer } from "../.uina/worlds/netease-jukebox/player.js";
+import { type MusicPlayer, SimulatedMusicPlayer } from "../.uina/worlds/netease-jukebox/player.js";
 
 const song = (id: string) => ({ id, name: `Song ${id}`, artists: ["Artist"], durationMs: null });
 

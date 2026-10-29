@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileCatalog, type CatalogSnapshot } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { compileMOCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
+import { type CatalogSnapshot, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { absolute, compileAction, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
-import { perfCatalogSource } from "./live2d-action-fixture.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
+import { compileMOCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { perfCatalogSource } from "./live2d-action-fixture.js";
 
 function advance(director: MotionDirector, ms: number): void {
 	for (let elapsed = 0; elapsed < ms; elapsed += 10) director.step(Math.min(10, ms - elapsed));

@@ -1,16 +1,16 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
-import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
-import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
+import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 import { readCallSource } from "../../.uina/worlds/minecraft/library/origin.js";
-import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
-import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
 
 test("formal Runtime executes code and named children, preserves snapshots across SQLite reopen", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-program-runtime-"));

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { encodeFrame, type ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
 import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
-import { SpeechInput, type SpeechConfig } from "../.uina/worlds/live2d/speech-level.js";
-import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
+import { type SpeechConfig, SpeechInput } from "../.uina/worlds/live2d/speech-level.js";
 
 const SPEECH: SpeechConfig = {
 	points: [

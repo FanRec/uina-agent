@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { bodyInputName } from "../.uina/worlds/live2d/adapter/body-inputs.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
-import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileAction, motion, keys, offset, absolute } from "../.uina/worlds/live2d/authoring/index.js";
-import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
-import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { VTSInputSetupError } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { VTSInputSetupError } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { absolute, compileAction, keys, motion, offset } from "../.uina/worlds/live2d/authoring/index.js";
+import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
+import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ActionContext, ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 
 const BODY_AXES = ["torso.yaw", "torso.pitch", "torso.roll"] as const;

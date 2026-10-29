@@ -1,6 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";

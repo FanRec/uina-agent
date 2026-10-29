@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { SubjectHarness, Scenario, mockTool } from "./harness/index.js";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { mockTool, Scenario, SubjectHarness } from "./harness/index.js";
 
 const gate = () => {
 	let resolve!: () => void;

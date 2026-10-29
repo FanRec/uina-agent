@@ -1,10 +1,10 @@
 // 覆盖层按键决策的纯内核钉住：isMouseReport / isToggleKey / confirmChoice。
 import { describe, expect, it } from "vitest";
-import { confirmChoice, isMouseReport, isToggleKey } from "../src/ui/extension-ui-context.js";
 import { FocusManager } from "../src/ui/core/focus.js";
-import { OverlayStack } from "../src/ui/core/overlay.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
+import { OverlayStack } from "../src/ui/core/overlay.js";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
+import { confirmChoice, isMouseReport, isToggleKey } from "../src/ui/extension-ui-context.js";
 
 const ARROW_LEFT = "\x1b[D";
 const ARROW_RIGHT = "\x1b[C";

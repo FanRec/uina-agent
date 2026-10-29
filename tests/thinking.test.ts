@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it, SubjectHarness } from "./harness/index.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { convertToLlm } from "../src/agent/context.js";
 import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
 import { createModel } from "../src/ai/providers.js";
-import { convertToLlm } from "../src/agent/context.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import type { ChatMsg, Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import { afterEach, describe, expect, it, SubjectHarness } from "./harness/index.js";
 
 const servers: Server[] = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));

@@ -11,8 +11,8 @@
  * 全部行为与 profile 机制引入前逐字节一致。
  */
 
-import { existsSync, mkdirSync, openSync, readFileSync, closeSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 export interface SubjectProfileIdentity {

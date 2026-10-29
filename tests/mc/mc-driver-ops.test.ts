@@ -1,8 +1,8 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, test } from "vitest";
-import { captureFailure, makeBodyHarness, openSignal, ownerT } from "./mc-fake-driver.js";
 import type { BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/session.js";
 import { scopedBody } from "../../.uina/worlds/minecraft/runtime/scoped-body.js";
-import { EventEmitter } from "node:events";
+import { captureFailure, makeBodyHarness, openSignal, ownerT } from "./mc-fake-driver.js";
 
 /**
  * 身体写操作的语义回归（driver.md §7）。

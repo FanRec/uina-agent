@@ -1,13 +1,13 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
-import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { expect, test } from "vitest";
 import type { BodySession, PlayerPort, SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
+import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
 
 test("safety retires an uncooperative guest body; outer program handles interruption; record survives reopen", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-safety-runtime-"));

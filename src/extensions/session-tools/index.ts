@@ -1,5 +1,5 @@
-import type { ExtensionActivation } from "../runner.js";
 import type { SessionAccess } from "../../session/types.js";
+import type { ExtensionActivation } from "../runner.js";
 
 /** Tool implementations resolve the executing subject; inherited tools never rewind their parent. */
 export function activateSessionTools(resolve: (ownerId: string) => SessionAccess): ExtensionActivation {

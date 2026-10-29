@@ -1,14 +1,14 @@
 import { join } from "node:path";
-import type { ExtensionAPI } from "../runner.js";
 import { ResourceScope } from "../lifecycle-scope.js";
-import { createWorldTool } from "./world-tool.js";
+import type { ExtensionAPI } from "../runner.js";
 import {
+	type ServiceCompanionContext,
 	WORLD_HOST_EVENT_TYPES,
 	type WorldDef,
-	type WorldRuntime,
-	type ServiceCompanionContext,
 	type WorldEvent,
+	type WorldRuntime,
 } from "./types.js";
+import { createWorldTool } from "./world-tool.js";
 
 export interface WorldActivationHost {
 	readonly pi: ExtensionAPI;

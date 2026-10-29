@@ -3,7 +3,7 @@
  * 偏大就会把帧写进可视区之外，终端每帧滚动、整屏行映射错位。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProcessTerminal, isPlausibleSize, parseSizeReport } from "../src/ui/core/terminal.js";
+import { isPlausibleSize, ProcessTerminal, parseSizeReport } from "../src/ui/core/terminal.js";
 
 describe("终端尺寸回执（CSI 18t）", () => {
 	it("解析 CSI 8 ; rows ; cols t", () => {

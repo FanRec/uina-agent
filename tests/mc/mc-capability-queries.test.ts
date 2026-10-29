@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import type { ClientFactView } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { CallFailure, Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { ClientFactView } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
+import type { CallFailure, Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 
 /**

@@ -5,9 +5,10 @@
  * 一个回合可以有几十次调用，期间底栏的"已用/总量"一直停在上一轮的值——用户看到的就是
  * "完成一次任务之后才更新"。服务端 usage 在每次调用收尾就到手，所以让它在那一刻上报。
  */
-import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
+
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
+import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 

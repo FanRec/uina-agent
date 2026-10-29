@@ -1,9 +1,8 @@
-import { it, expect } from "./harness/index.js";
 import { readFile } from "node:fs/promises";
-import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectModelHistory } from "../src/agent/projection.js";
+import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
-import { IsolatedEnv, Scenario, SubjectHarness, mockTool } from "./harness/index.js";
+import { expect, IsolatedEnv, it, mockTool, Scenario, SubjectHarness } from "./harness/index.js";
 
 // 减法测试（七问 #6）：不激活任何 capability/extension，仅内核五目录。
 // 验收：内核可启动、可跑回合、工具可用、journal 持久。

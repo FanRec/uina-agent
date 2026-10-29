@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "../runner.js";
-import { WorldRegistry } from "./world-registry.js";
 import type { WorldDef } from "./types.js";
+import { WorldRegistry } from "./world-registry.js";
 
+export * from "./result.js";
 export * from "./types.js";
-export * from "./world-tool.js";
 export * from "./world-activation.js";
 export * from "./world-registry.js";
-export * from "./result.js";
+export * from "./world-tool.js";
 
 // 单例/共享注册表映射（按 ExtensionAPI 隔离）
 const REGISTRIES = new WeakMap<ExtensionAPI, WorldRegistry>();
@@ -36,8 +36,8 @@ export async function defineWorld(pi: ExtensionAPI, world: WorldDef): Promise<()
 }
 
 import { createWorldStoreWorld } from "./builtins/world-store.js";
-import { loadExternalWorlds } from "./world-loader.js";
 import { WORLD_EXPOSED_SHARED_NAME } from "./types.js";
+import { loadExternalWorlds } from "./world-loader.js";
 
 export * from "./builtins/world-store.js";
 export * from "./world-loader.js";

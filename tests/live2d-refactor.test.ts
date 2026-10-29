@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { fixtureEffectMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
-import { perfCatalogSource } from "./live2d-action-fixture.js";
-import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import {
+	absolute,
 	compileAction,
 	keys,
 	motion,
-	absolute,
 	sampleAction,
 	withSpeech,
 } from "../.uina/worlds/live2d/authoring/index.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { perfCatalogSource } from "./live2d-action-fixture.js";
+import { fixtureEffectMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
 
 describe("Live2D 架构缺口正式回归", () => {
 	it("state 最后一项等待后换代也不能报告旧意图成功", async () => {

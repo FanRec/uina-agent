@@ -1,8 +1,8 @@
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
-import { buildRegistryKnowledge } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
-import { chooseTool, canHarvest } from "../../.uina/worlds/minecraft/capabilities/shared/tools.js";
 import { matchesItem } from "../../.uina/worlds/minecraft/capabilities/shared/targets.js";
+import { canHarvest, chooseTool } from "../../.uina/worlds/minecraft/capabilities/shared/tools.js";
+import { buildRegistryKnowledge } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));

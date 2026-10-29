@@ -1,8 +1,8 @@
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, rename } from "node:fs/promises";
+import { mkdtemp, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
 import { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";

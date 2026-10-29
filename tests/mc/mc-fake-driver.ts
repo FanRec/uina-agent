@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import type { BodySession, ControlOwner, EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import type { CallFailure, Place } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { PlayerPortImpl, type PlayerPortDeps } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
+import { type PlayerPortDeps, PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
 import type { BodySessionImpl, HostView } from "../../.uina/worlds/minecraft/driver/body/session.js";
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";

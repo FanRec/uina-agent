@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
 	killTrackedChildProcesses,

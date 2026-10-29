@@ -1,17 +1,25 @@
 import { createServer, type Server } from "node:http";
-import { describe, expect, test, afterEach } from "./harness/index.js";
-import { canEditQueuedDraft } from "../src/cli/draft.js";
-import { UinaHost } from "../src/host/host.js";
-import { createProviderAndModel, anthropicMessages, geminiRequest } from "../src/ai/providers.js";
+import { convertToLlm } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
+import { anthropicMessages, createProviderAndModel, geminiRequest } from "../src/ai/providers.js";
+import { canEditQueuedDraft } from "../src/cli/draft.js";
 import { assertImageInput, type ImageContent } from "../src/core/content.js";
 import type { ChatMsg, ModelRequest } from "../src/core/types.js";
+import { UinaHost } from "../src/host/host.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
-import { convertToLlm } from "../src/agent/context.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { IsolatedEnv, mockModel, UinaTestHarness, SubjectHarness } from "./harness/index.js";
+import {
+	afterEach,
+	describe,
+	expect,
+	IsolatedEnv,
+	mockModel,
+	SubjectHarness,
+	test,
+	UinaTestHarness,
+} from "./harness/index.js";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=";
 const image: ImageContent = { type: "image", mimeType: "image/png", data: png, alt: "one pixel" };

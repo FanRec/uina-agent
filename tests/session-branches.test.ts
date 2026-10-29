@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import {
-	SessionNavigationError,
 	listBranchNodes,
 	listSessionBranches,
 	readSessionBranch,
+	SessionNavigationError,
 } from "../src/session/navigation.js";
-import { seedSession, rewindTo } from "./harness/index.js";
+import { rewindTo, seedSession } from "./harness/index.js";
 
 /**
  * 分支查询（P1.3 / P1.4 的回归网）。

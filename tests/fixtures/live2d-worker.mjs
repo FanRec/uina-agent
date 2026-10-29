@@ -1,5 +1,5 @@
-import { createJiti } from "jiti";
 import { parentPort, workerData } from "node:worker_threads";
+import { createJiti } from "jiti";
 
 // 与生产自举相同的 loader 参数；测试依赖在本线程创建，不通过 structuredClone 传函数。
 const jiti = createJiti(import.meta.url, { moduleCache: false, tryNative: false });

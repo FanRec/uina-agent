@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { routePresentationIntent } from "../src/cli/presentation-intents.js";
-import { createInteractiveUI } from "../src/ui/tui.js";
 import type { HostSnapshot } from "../src/host/events.js";
+import { createInteractiveUI } from "../src/ui/tui.js";
 import { createSilentTerminal, getTestUIHost } from "./harness/index.js";
 
 describe("PresentationIntent application routing", () => {

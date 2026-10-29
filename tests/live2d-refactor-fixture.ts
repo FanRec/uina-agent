@@ -1,7 +1,7 @@
-import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { absolute, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import type { SpatialEffects } from "../.uina/worlds/live2d/authoring/spatial.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";

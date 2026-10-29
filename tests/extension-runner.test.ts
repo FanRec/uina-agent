@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentInput } from "../src/agent/loop.js";
+import { DefaultAgentFactory } from "../src/agent/runtime.js";
+import type { InputSource, Model, ModelStreamFn } from "../src/core/types.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import { DefaultAgentFactory } from "../src/agent/runtime.js";
-import type { AgentInput } from "../src/agent/loop.js";
-import type { InputSource } from "../src/core/types.js";
-import type { Model, ModelStreamFn } from "../src/core/types.js";
-import { IsolatedEnv, Scenario, mockTool } from "./harness/index.js";
+import { IsolatedEnv, mockTool, Scenario } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 afterEach(async () => {

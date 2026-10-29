@@ -1,11 +1,11 @@
-import { describe, expect, mockModel, SubjectHarness, test } from "./harness/index.js";
-import { UinaTestHarness } from "./harness/host/harness.js";
-import { Scenario } from "./harness/provider/scenario.js";
+import { vi } from "vitest";
 import type { Provider } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
-import { vi } from "vitest";
+import { UinaTestHarness } from "./harness/host/harness.js";
+import { describe, expect, mockModel, SubjectHarness, test } from "./harness/index.js";
+import { Scenario } from "./harness/provider/scenario.js";
 
 describe("ContextSnapshot", () => {
 	test("启动完成后在首条输入前测量完整扩展投影，且不调用 Provider", async ({ env }) => {

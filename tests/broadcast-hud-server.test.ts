@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { type ChildProcess, spawn } from "node:child_process";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const directory = "E:\\Uina\\ThirdParty\\broadcast-hud";
 const entry = `${directory}\\server.mjs`;

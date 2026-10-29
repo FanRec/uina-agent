@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import {
 	DEFAULT_TIMING,
 	resolveTiming,
-	timingFromEnvironment,
 	type TimingProfile,
+	timingFromEnvironment,
 } from "../.uina/worlds/live2d/timing.js";
 
 describe("Live2D timing profile", () => {

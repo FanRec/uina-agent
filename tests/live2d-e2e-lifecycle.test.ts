@@ -1,13 +1,13 @@
-import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
-import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
-import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
-import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
-import type { SpeechConfig } from "../.uina/worlds/live2d/speech-level.js";
+import { absolute, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
+import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import type { SpeechConfig } from "../.uina/worlds/live2d/speech-level.js";
+import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 
 /**
  * P4-7 假体端到端（边界 #3/#7/#8 全链路）：

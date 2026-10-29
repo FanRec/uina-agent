@@ -1,5 +1,5 @@
 import type { Model, ModelRequest, Provider, StreamDelta } from "../../../src/core/types.js";
-import { stream, StreamBuilder } from "./stream-builder.js";
+import { StreamBuilder, stream } from "./stream-builder.js";
 
 export type ScenarioMatcher = (req: ModelRequest) => boolean;
 

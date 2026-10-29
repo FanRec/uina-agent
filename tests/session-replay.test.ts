@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { applyRecord, canonicalReplay, planRecovery, projectAgentHistory } from "../src/session/recovery.js";
 import type { SessionRecord } from "../src/session/types.js";
-import { IsolatedEnv, Scenario, SubjectHarness, mockTool } from "./harness/index.js";
+import { IsolatedEnv, mockTool, Scenario, SubjectHarness } from "./harness/index.js";
 
 /** 每个提交点后的机器守卫：常驻状态 ≡ 全量 fold。 */
 function assertReplayEqualsMemory(store: MemorySessionStore): void {

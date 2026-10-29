@@ -1,7 +1,7 @@
 import { ExtensionHost } from "../../../src/extensions/host.js";
-import { ToolBroker, type Tool, type ToolExecutionResult } from "../../../src/tools/broker.js";
-import type { HookHandler, HookName } from "../../../src/runtime/hooks.js";
 import type { RuntimeEvent } from "../../../src/runtime/events.js";
+import type { HookHandler, HookName } from "../../../src/runtime/hooks.js";
+import { type Tool, ToolBroker, type ToolExecutionResult } from "../../../src/tools/broker.js";
 import { mockTool } from "../core/subject-harness.js";
 
 export interface ExtensionHarnessOptions {

@@ -2,8 +2,9 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { afterEach, expect, test, vi } from "vitest";
 import { BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/session.js";
-import { protocolFor } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
+import { protocolFor } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
+
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
 function harness(version = "1.21.11") {

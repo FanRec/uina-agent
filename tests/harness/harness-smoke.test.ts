@@ -1,5 +1,5 @@
-import { test, expect, SubjectHarness, mockTool } from "./index.js";
 import { MemorySessionStore } from "../../src/session/jsonl-store.js";
+import { expect, mockTool, SubjectHarness, test } from "./index.js";
 
 // 1. 验证 Core 门面 SubjectHarness 与 mockTool
 test("Uina Test Kit: SubjectHarness 裸回路与 mockTool", async () => {

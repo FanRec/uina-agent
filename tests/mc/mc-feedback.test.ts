@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { expect, test } from "vitest";
-import { FeedbackController } from "../../.uina/worlds/minecraft/driver/body/feedback.js";
-import type { SelfState, ControlInput } from "../../.uina/worlds/minecraft/contracts/body.js";
+import type { ControlInput, SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { FeedbackController } from "../../.uina/worlds/minecraft/driver/body/feedback.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 
 function fixture() {

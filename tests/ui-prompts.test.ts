@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createExtensionUIContext, type UIHostContextPort } from "../src/ui/extension-ui-context.js";
 import type { ExtensionUIContext } from "../src/extensions/ui-contract.js";
-import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import type { Component, OverlayHandle } from "../src/ui/core/types.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
+import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
+import { createExtensionUIContext, type UIHostContextPort } from "../src/ui/extension-ui-context.js";
 
 function capturePrompt<T>(open: (ui: ExtensionUIContext) => Promise<T>): {
 	component: Component;

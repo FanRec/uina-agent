@@ -1,14 +1,14 @@
-import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it, vi } from "vitest";
-import type { ActionContext, ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
-import type { ToolExecutionResult } from "../src/tools/broker.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileCatalog, type CatalogSnapshot, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import { type CatalogSnapshot, type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { absolute, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import type { ActionContext, ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
+import type { ToolExecutionResult } from "../src/tools/broker.js";
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 
 /**
  * ambient 环境循环：目录词表编译（含全局命名空间 claim）+ 运行时静止态槽位生命周期

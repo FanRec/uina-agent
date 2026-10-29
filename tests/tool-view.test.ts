@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from "vitest";
-import { ToolBroker, type Tool, type ToolExecutionContext } from "../src/tools/broker.js";
+import { type Tool, ToolBroker, type ToolExecutionContext } from "../src/tools/broker.js";
 import { formatToolCardLines } from "../src/ui/components/transcript/tool-view.js";
 
 function makeTool(

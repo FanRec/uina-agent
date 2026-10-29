@@ -1,13 +1,6 @@
-import { deliveryKey, validDeliveryTag } from "../core/delivery.js";
-import type {
-	HostDeliveryPort,
-	HostDeliveryState,
-	HostRetireReply,
-	HostDeliveryTag,
-	InputDeliveryOwner,
-} from "../core/types.js";
 import { randomUUID } from "node:crypto";
 import { validImages } from "../core/content.js";
+import { deliveryKey, validDeliveryTag } from "../core/delivery.js";
 import { errorMessage } from "../core/errors.js";
 import { inputTokenBudget, modelKey } from "../core/model.js";
 import type {
@@ -17,6 +10,11 @@ import type {
 	ContextSnapshot,
 	DeliveryMode,
 	GenerationTiming,
+	HostDeliveryPort,
+	HostDeliveryState,
+	HostDeliveryTag,
+	HostRetireReply,
+	InputDeliveryOwner,
 	Model,
 	ModelStreamFn,
 	RequestInspection,

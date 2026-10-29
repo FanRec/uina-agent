@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NeteaseApiClient } from "../.uina/worlds/netease-jukebox/api-client.js";
-import { formatLyrics, parseLrc } from "../.uina/worlds/netease-jukebox/lyrics.js";
 import { createJukeboxWorld } from "../.uina/worlds/netease-jukebox/index.js";
+import { formatLyrics, parseLrc } from "../.uina/worlds/netease-jukebox/lyrics.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
 describe("netease lyrics", () => {

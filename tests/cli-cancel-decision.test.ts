@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executeCancelActions, resolveCancelActions, type CancelState } from "../src/cli/cancel-decision.js";
+import { type CancelState, executeCancelActions, resolveCancelActions } from "../src/cli/cancel-decision.js";
 
 const state = (overrides: Partial<CancelState> = {}): CancelState => ({
 	busy: false,

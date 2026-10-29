@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ExtensionAPI, Tool } from "../src/extensions/index.js";
 import { McpCatalog } from "../.uina/extensions/mcp/catalog.js";
 import { createMcpProxyTool } from "../.uina/extensions/mcp/proxy-tool.js";
 import { McpServerManager } from "../.uina/extensions/mcp/server-manager.js";
+import type { ExtensionAPI, Tool } from "../src/extensions/index.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/mcp-stdio-server.mjs", import.meta.url));
 

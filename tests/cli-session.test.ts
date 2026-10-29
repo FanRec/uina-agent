@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
-import { describe, expect, test, afterEach } from "./harness/index.js";
 import { IsolatedEnv } from "./harness/environment/isolated-env.js";
+import { afterEach, describe, expect, test } from "./harness/index.js";
 
 describe("CLI session recovery", () => {
 	const servers: Server[] = [];

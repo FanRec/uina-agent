@@ -2,19 +2,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
-import { decodeOneBotMessage, decodeOneBotSegments } from "../.uina/worlds/qq/src/message-codec.js";
 import { expandImages, imageSourcesFromFacts, imageSourcesFromOneBot } from "../.uina/worlds/qq/src/media-fetch.js";
+import { decodeOneBotMessage, decodeOneBotSegments } from "../.uina/worlds/qq/src/message-codec.js";
 import {
+	type BatchRenderDeps,
 	followUpRow,
 	operationRecordLines,
 	receipt,
-	renderReadWindow,
-	type BatchRenderDeps,
 	renderForwardNodes,
 	renderMessageFacts,
+	renderReadWindow,
 	requestRow,
 	segmentText,
 	TimeView,

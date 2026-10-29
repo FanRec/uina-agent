@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTtsTool } from "../.uina/extensions/tts/tool.js";
-import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
-import { VoiceSession } from "../.uina/extensions/voice/session.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
+import { createTtsTool } from "../.uina/extensions/tts/tool.js";
+import { VoiceSession } from "../.uina/extensions/voice/session.js";
+import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
 
 describe("TTS maintenance contract", () => {
 	it("reports inspect evidence without claiming health", async () => {

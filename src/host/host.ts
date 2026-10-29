@@ -1,29 +1,29 @@
 import { randomUUID } from "node:crypto";
+import { type AgentInput, Subject } from "../agent/loop.js";
+import type { ProjectionPolicy } from "../agent/projection.js";
+import type { QueuedMessage } from "../agent/queue.js";
+import { activeProvider, loadConfig } from "../ai/config.js";
+import { ModelRegistry, modelKey } from "../ai/providers.js";
+import { loadSettings, saveSettings } from "../ai/settings.js";
 import { errorMessage } from "../core/errors.js";
 import type { Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
-import { activeProvider, loadConfig } from "../ai/config.js";
-import { loadSettings, saveSettings } from "../ai/settings.js";
-import { modelKey, ModelRegistry } from "../ai/providers.js";
-import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
-import { Subject, type AgentInput } from "../agent/loop.js";
-import type { QueuedMessage } from "../agent/queue.js";
-import { ExtensionRunner } from "../extensions/runner.js";
-import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
+import { CommandRouter } from "../extensions/commands.js";
 import activateCompaction from "../extensions/compaction/index.js";
-import { activateWorldFramework } from "../extensions/world-framework/index.js";
+import { createEventFrameProfile } from "../extensions/event-frames/index.js";
+import { ExtensionRunner } from "../extensions/runner.js";
 import { activateRuntimeTools } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
-import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
-import { createEventFrameProfile } from "../extensions/event-frames/index.js";
-import type { SubjectProfile } from "./profile.js";
-import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
-import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
-import { createSessionAccess } from "../session/access.js";
-import type { ProjectionPolicy } from "../agent/projection.js";
-import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
+import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
+import { activateWorldFramework } from "../extensions/world-framework/index.js";
+import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
+import { createSessionAccess } from "../session/access.js";
+import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
+import type { SessionEntry, SessionStore } from "../session/types.js";
+import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import type { HostEvent, HostEventListener, HostEventRecordListener, HostSnapshot } from "./events.js";
+import type { SubjectProfile } from "./profile.js";
 
 /**
  * 宿主：主体生命期的所有者。

@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import type { ChatMsg, ModelRequest } from "../src/core/types.js";
-import { anthropicSystem } from "../src/ai/providers.js";
+import { describe, expect, it } from "vitest";
 import { VoicePerception } from "../.uina/extensions/voice/perception.js";
+import { anthropicSystem } from "../src/ai/providers.js";
+import type { ChatMsg, ModelRequest } from "../src/core/types.js";
 import { assertEventFrameContext } from "../src/extensions/event-frames/protocol.js";
 
 function sha256(text: string): string {

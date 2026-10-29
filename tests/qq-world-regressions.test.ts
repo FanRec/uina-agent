@@ -7,10 +7,10 @@ import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
-import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { QqScheduler, type SchedulerDeps } from "../.uina/worlds/qq/src/scheduler.js";
-import { renderCandidate as renderTapCandidate, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
 import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
+import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
+import { renderReadWindow, renderCandidate as renderTapCandidate } from "../.uina/worlds/qq/src/render.js";
+import { QqScheduler, type SchedulerDeps } from "../.uina/worlds/qq/src/scheduler.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
 const NOW = "2026-10-11T04:00:00Z";

@@ -11,8 +11,8 @@
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 export interface SessionSettings {
 	/** 上次会话使用的模型身份键 `providerId/id`（models.resolve 的入参形态；跨 provider 同名模型靠它区分）。 */

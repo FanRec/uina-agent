@@ -8,16 +8,17 @@
  *
  * 基于 Uina Test Kit 迁移，消灭重复的 mkdtemp/rm 样板代码。
  */
-import { describe, expect, test } from "./harness/index.js";
+
 import { readFile } from "node:fs/promises";
-import type { ModelRequest, StreamDelta } from "../src/core/types.js";
-import { estimateStreamTokens } from "../src/extensions/compaction/index.js";
 import { estimateRequestTokens } from "../src/agent/context.js";
 import { inputTokenBudget } from "../src/core/model.js";
+import type { ModelRequest, StreamDelta } from "../src/core/types.js";
+import { estimateStreamTokens } from "../src/extensions/compaction/index.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
-import { UinaTestHarness } from "./harness/host/harness.js";
-import { Scenario } from "./harness/provider/scenario.js";
 import { IsolatedEnv } from "./harness/environment/isolated-env.js";
+import { UinaTestHarness } from "./harness/host/harness.js";
+import { describe, expect, test } from "./harness/index.js";
+import { Scenario } from "./harness/provider/scenario.js";
 
 // 帧回执（external_event_frame 合成 tool 消息）不算真实工具结果：默认装配下
 // 外部输入也会投影为 tool 角色回执，这里只关心模型真实工具调用的结果。

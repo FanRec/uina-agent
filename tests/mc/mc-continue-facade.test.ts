@@ -1,16 +1,16 @@
-import { expect, test } from "vitest";
-import { MinecraftFacade } from "../../.uina/worlds/minecraft/executor/facade.js";
-import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
-import type { RequestCredential } from "../../.uina/worlds/minecraft/executor/ledger-worker.js";
-import type { Acceptance, ContinueRequest, RunRequest } from "../../.uina/worlds/minecraft/contracts/runtime.js";
-import { methods } from "../../.uina/worlds/minecraft/executor/protocol.js";
-import { actionSchemas } from "../../.uina/worlds/minecraft/worlddef/schema.js";
-import { createRequire } from "node:module";
-import { ExecutorLedger } from "../../.uina/worlds/minecraft/executor/ledger.js";
+import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { expect, test } from "vitest";
+import type { Acceptance, ContinueRequest, RunRequest } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import { MinecraftFacade } from "../../.uina/worlds/minecraft/executor/facade.js";
+import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
+import { ExecutorLedger } from "../../.uina/worlds/minecraft/executor/ledger.js";
+import type { RequestCredential } from "../../.uina/worlds/minecraft/executor/ledger-worker.js";
+import { methods } from "../../.uina/worlds/minecraft/executor/protocol.js";
+import { actionSchemas } from "../../.uina/worlds/minecraft/worlddef/schema.js";
 
 function fixture() {
 	const credentials = new Map<string, RequestCredential>();

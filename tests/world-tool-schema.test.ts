@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 import { worldSucceeded } from "../src/extensions/world-framework/result.js";
+import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
 const Ajv = createRequire(import.meta.url)("ajv") as new () => {
 	compile: (schema: object) => (value: unknown) => boolean;

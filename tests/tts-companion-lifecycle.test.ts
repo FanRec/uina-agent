@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "../src/extensions/runner.js";
-import { ToolBroker } from "../src/tools/broker.js";
-import { ExtensionRunner } from "../src/extensions/runner.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionAPI } from "../src/extensions/runner.js";
+import { ExtensionRunner } from "../src/extensions/runner.js";
+import { ToolBroker } from "../src/tools/broker.js";
 import { pcmWav } from "./fixtures/pcm-wav.js";
+
 const mocks = vi.hoisted(() => ({ bridge: vi.fn(), subtitle: vi.fn() }));
 vi.mock("../.uina/extensions/tts/companion.js", () => ({ ensureCompanion: mocks.bridge }));
 vi.mock("../.uina/extensions/tts/subtitle-companion.js", () => ({ ensureSubtitleService: mocks.subtitle }));
@@ -20,6 +21,7 @@ vi.mock("../.uina/extensions/tts/config.js", async (importOriginal) => ({
 		maxSentenceChars: 20,
 	}),
 }));
+
 import activate from "../.uina/extensions/tts/index.js";
 
 function api(controller = new AbortController()): ExtensionAPI {

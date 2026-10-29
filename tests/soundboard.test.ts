@@ -2,8 +2,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveMpvPath } from "../src/extensions/world-framework/mpv-path.js";
-import type { WorldDef } from "../src/extensions/world-framework/types.js";
 import { filterSounds, matchSounds, scanSounds } from "../.uina/worlds/soundboard/catalog.js";
 import { createSoundboardWorld } from "../.uina/worlds/soundboard/index.js";
 import {
@@ -13,6 +11,8 @@ import {
 	type StopOutcome,
 } from "../.uina/worlds/soundboard/player.js";
 import type { SoundOverride } from "../.uina/worlds/soundboard/types.js";
+import { resolveMpvPath } from "../src/extensions/world-framework/mpv-path.js";
+import type { WorldDef } from "../src/extensions/world-framework/types.js";
 
 /** 存在的可执行文件即可，假播放器不会真跑它。 */
 const FAKE_BINARY = process.execPath;

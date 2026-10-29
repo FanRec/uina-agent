@@ -1,21 +1,21 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import * as fs from "node:fs";
-import { createServer } from "node:http";
 import { once } from "node:events";
+import * as fs from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { fileReference } from "../.uina/worlds/qq/src/discovery.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
 import type { QqTransport } from "../.uina/worlds/qq/src/transport.js";
+import type { ExtensionAPI } from "../src/extensions/index.js";
+import activateWorkspace from "../src/extensions/workspace-tools/index.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import activateWorkspace from "../src/extensions/workspace-tools/index.js";
-import type { ExtensionAPI } from "../src/extensions/index.js";
 
 const SELF = "10001";
 const closers: (() => Promise<void>)[] = [];

@@ -1,12 +1,12 @@
-import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+import type { ModelRequest, ModelStreamFn } from "../src/core/types.js";
+import { ExtensionRunner } from "../src/extensions/runner.js";
+import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import type { ModelRequest, ModelStreamFn } from "../src/core/types.js";
-import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
-import { ExtensionRunner } from "../src/extensions/runner.js";
+import { mockModel, Scenario, SubjectHarness } from "./harness/index.js";
 import activateMemory, { MEMORY_ENTRY_TYPE } from "./helpers/memory-capability.js";
-import { Scenario, mockModel, SubjectHarness } from "./harness/index.js";
 
 /**
  * Memory 派生实验（P0 冻结概念 allowlist 的第五关实证）：

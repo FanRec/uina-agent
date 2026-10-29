@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
-import type { AgentMessage, ThinkingLevel } from "../core/types.js";
+import type {
+	AgentMessage,
+	Model,
+	ModelStreamFn,
+	RequestProjection,
+	ThinkingLevel,
+	TokenMeasurement,
+} from "../core/types.js";
+import type { RuntimeHooks } from "../runtime/hooks.js";
+import { createSessionAccess } from "../session/access.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionAccess, SessionStore } from "../session/types.js";
-import { createSessionAccess } from "../session/access.js";
-import { Subject, type AgentInput } from "./loop.js";
 import type { ToolView } from "../tools/broker.js";
-import type { Model, ModelStreamFn, RequestProjection, TokenMeasurement } from "../core/types.js";
-import type { RuntimeHooks } from "../runtime/hooks.js";
+import { type AgentInput, Subject } from "./loop.js";
 
 export type AgentStatus = "running" | "idle" | "disposed";
 

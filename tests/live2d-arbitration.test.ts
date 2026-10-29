@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 import {
-	compileAction,
-	motion,
-	type CompiledAction,
-	keys,
 	absolute,
+	type CompiledAction,
+	compileAction,
+	keys,
+	motion,
 	offset as offsetChannel,
 } from "../.uina/worlds/live2d/authoring/index.js";
 import { MotionDirector, SupersededError } from "../.uina/worlds/live2d/director/director.js";
-import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 
 const controls: Readonly<Record<string, RigControlDef>> = {
 	"head.pitch": { min: -30, max: 30, neutral: 0 },

@@ -9,7 +9,7 @@ import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { renderCandidate as renderTapCandidate, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
+import { renderReadWindow, renderCandidate as renderTapCandidate } from "../.uina/worlds/qq/src/render.js";
 import { QqScheduler } from "../.uina/worlds/qq/src/scheduler.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";

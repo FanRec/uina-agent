@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { globalConfigPath } from "../.uina/extensions/mcp/config.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import { globalConfigPath } from "../.uina/extensions/mcp/config.js";
 
 const tempRoots: string[] = [];
 

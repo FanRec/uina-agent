@@ -2,11 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { worldSucceeded } from "../src/extensions/world-framework/result.js";
-import { WorldRegistry } from "../src/extensions/world-framework/world-registry.js";
-import { defineWorld } from "../src/extensions/world-framework/index.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
+import { defineWorld } from "../src/extensions/world-framework/index.js";
+import { worldSucceeded } from "../src/extensions/world-framework/result.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
+import { WorldRegistry } from "../src/extensions/world-framework/world-registry.js";
 import type { Tool } from "../src/tools/broker.js";
 
 describe("World Framework: Lifecycle & Registry", () => {

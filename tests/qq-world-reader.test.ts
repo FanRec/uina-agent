@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
 import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
+import { consumptionThrough, pendingCountOf } from "../.uina/worlds/qq/src/consumption.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { qqStatusLines } from "../.uina/worlds/qq/src/reader.js";
-import { consumptionThrough, pendingCountOf } from "../.uina/worlds/qq/src/consumption.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
-import { conversationRef, messageRef, userRef, type MessageFact } from "../.uina/worlds/qq/src/types.js";
+import { conversationRef, type MessageFact, messageRef, userRef } from "../.uina/worlds/qq/src/types.js";
 
 /**
  * 查询与消费积木（设计 §4.1~§4.5 / T03/T04A/B/T05/T06/T07A/T15）：

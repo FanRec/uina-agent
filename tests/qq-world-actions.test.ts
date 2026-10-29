@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleObserve, handleQqCall as runQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
-import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
-import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
+import { handleObserve, type QqAppDeps, handleQqCall as runQqCall } from "../.uina/worlds/qq/src/app.js";
 import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
+import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import type { DeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
+import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import type {
 	QqTransport,
 	TransportCallOutcome,

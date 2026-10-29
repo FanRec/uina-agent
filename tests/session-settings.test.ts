@@ -6,12 +6,13 @@
  *
  * 基于 Uina Test Kit 治理，统一 RAII 临时沙箱管理。
  */
-import { describe, expect, test, afterEach } from "./harness/index.js";
+
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadSettings } from "../src/ai/settings.js";
 import { IsolatedEnv } from "./harness/environment/isolated-env.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
+import { afterEach, describe, expect, test } from "./harness/index.js";
 
 const AUTH = {
 	default: "alpha",

@@ -1,5 +1,5 @@
 import { Registrations } from "../core/registrations.js";
-import type { LocalCommand, MessageRenderer, ToolRenderer, MarkdownTransformer } from "./ui-contract.js";
+import type { LocalCommand, MarkdownTransformer, MessageRenderer, ToolRenderer } from "./ui-contract.js";
 /** Shared presentation registry. Changes invalidate cached transcript projections. */
 export class ExtensionRegistry {
 	private readonly messageRenderers = new Registrations<MessageRenderer>();

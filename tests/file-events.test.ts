@@ -1,12 +1,12 @@
-import { expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
-import { ToolBroker } from "../src/tools/broker.js";
-import { ExtensionRunner } from "../src/extensions/runner.js";
-import { openJsonlSession } from "../src/session/jsonl-store.js";
+import { expect, it, vi } from "vitest";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
-import { IsolatedEnv, mockModel, SubjectHarness } from "./harness/index.js";
 import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
 import { EVENT_FRAME_KIND } from "../src/extensions/event-frames/protocol.js";
+import { ExtensionRunner } from "../src/extensions/runner.js";
+import { openJsonlSession } from "../src/session/jsonl-store.js";
+import { ToolBroker } from "../src/tools/broker.js";
+import { IsolatedEnv, mockModel, SubjectHarness } from "./harness/index.js";
 
 // The shell tool uses the platform shell, so the fixture commands must too.
 const IS_WINDOWS = process.platform === "win32";

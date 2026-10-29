@@ -1,6 +1,6 @@
 // A5：sendDanmaku 外部取消信号透传——中止后弹幕是否送达未知，结果如实报告 unknown。
 import { describe, expect, it, vi } from "vitest";
-import { sendDanmaku, type SendDanmakuOptions } from "../.uina/worlds/bilibili-live/src/send.js";
+import { type SendDanmakuOptions, sendDanmaku } from "../.uina/worlds/bilibili-live/src/send.js";
 
 function newAbortError(): Error {
 	const error = new Error("This operation was aborted");

@@ -10,18 +10,18 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
 import type { HostEventRecord } from "../src/host/events.js";
-import { FactStore, type FactDraft } from "../src/presentation/facts.js";
+import { type FactDraft, FactStore } from "../src/presentation/facts.js";
 import { ingestLive } from "../src/presentation/ingest-live.js";
 import { ingestReplay } from "../src/presentation/ingest-replay.js";
 import {
 	PresentationProjection,
+	type ProjectionInput,
 	toolNodeId,
 	turnNodeId,
-	type ProjectionInput,
 } from "../src/presentation/projection.js";
 import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
-import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
 import { TrajectoryProjection } from "../src/presentation/trajectory.js";
+import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
 
 const T0 = 1_700_000_000_000;
 

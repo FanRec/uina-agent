@@ -1,10 +1,10 @@
 import { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
-import { Live2DRuntimeProxy } from "../.uina/worlds/live2d/worker/proxy.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
-import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
-import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
+import { Live2DRuntimeProxy } from "../.uina/worlds/live2d/worker/proxy.js";
 import type { BodyEndpoint } from "../src/extensions/world-framework/seams.js";
+import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
+import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 import type { Tool } from "../src/tools/broker.js";
 
 function fixtureEvent(worker: Worker, event: string): Promise<void> {

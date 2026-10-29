@@ -1,9 +1,9 @@
-import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import { MpvPlayer, type MpvTransport } from "../.uina/worlds/netease-jukebox/player.js";
 import { PlaybackSession } from "../.uina/worlds/netease-jukebox/playback-session.js";
+import { MpvPlayer, type MpvTransport } from "../.uina/worlds/netease-jukebox/player.js";
 
 class FakeProcess extends EventEmitter {
 	killed = false;

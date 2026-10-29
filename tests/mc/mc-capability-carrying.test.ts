@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { failureOf, makeHarness, type EntityFixture, type HarnessState } from "./mc-capability-harness.js";
+import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { type EntityFixture, failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /**
  * collect@1 / pickup@1 / drop@1 的行为（capabilities §4）。

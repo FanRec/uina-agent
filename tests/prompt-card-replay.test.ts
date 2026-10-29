@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "../src/ui/core/utils.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import type { PromptSnapshotRecord } from "../src/session/prompt-snapshots.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import { stripAnsi } from "../src/ui/core/utils.js";
 
 describe("提示词与外部注入卡片回放", () => {
 	it("回放时外部运行时输入显示为卡片而不是人类气泡，并保留提示词快照顺序", () => {

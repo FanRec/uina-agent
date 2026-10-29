@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { failureOf, makeHarness, type HarnessState } from "./mc-capability-harness.js";
+import { failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /**
  * 动作层行为（capabilities §4）：先查证再动手、拿身体前失败、完成按观察结算。

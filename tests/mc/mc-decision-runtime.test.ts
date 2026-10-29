@@ -2,15 +2,15 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, test, vi } from "vitest";
 import { Worker } from "node:worker_threads";
-import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
-import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
-import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import { afterEach, expect, test, vi } from "vitest";
 import type { PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
+import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {

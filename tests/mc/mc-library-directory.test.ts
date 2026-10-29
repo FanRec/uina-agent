@@ -1,10 +1,10 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import type { BuiltCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
-import type { BuiltCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 
 test("one discovery view ranks all kinds, pages stably, and keeps exact descriptions small", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-library-directory-"));
