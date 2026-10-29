@@ -1993,7 +1993,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(lines).toContain("开始推理");
 			expect(lines).toContain("第一段文本回复");
 			expect(lines).toContain("Bash");
-			expect(lines).toContain("Running…");
+			expect(lines).toContain("执行中…");
 
 			transcript.addToolDone(toolDoneNode("bash", "file1.txt\nfile2.txt", 120, "succeeded", "call-1"));
 			transcript.appendToken("工具完成后的后续回复");
@@ -3392,7 +3392,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(renderedEven).toContain(BLACK_CIRCLE);
 				expect(stripAnsi(renderedEven)).toContain("Bash(ls)");
 				expect(renderedEven).toContain("· 1.2s");
-				expect(renderedEven).toContain("Running… (1.2s)");
+				expect(renderedEven).toContain("执行中… (1.2s)");
 
 				// now=1800 为奇数周期 (1800/600=3)，闪烁隐藏
 				const linesOdd = formatToolCardLines(
@@ -3470,7 +3470,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					"succeeded",
 				);
 				expect(fourLines.join("\n")).toContain("d");
-				expect(fourLines.join("\n")).not.toContain("lines (ctrl+o to expand)");
+				expect(fourLines.join("\n")).not.toContain("行 (Ctrl+O 展开)");
 
 				// 5 行：折叠保留 3 行 + 折叠提示
 				const fiveLines = formatToolCardLines(
@@ -3487,10 +3487,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(strippedLines.some((l) => l.trimEnd().endsWith("a"))).toBe(true);
 				expect(strippedLines.some((l) => l.trimEnd().endsWith("b"))).toBe(true);
 				expect(strippedLines.some((l) => l.trimEnd().endsWith("c"))).toBe(true);
-				// d 和 e 应该被折叠进 +2 lines
+				// d 和 e 应该被折叠进 +2 行
 				expect(strippedLines.some((l) => l.endsWith("   d"))).toBe(false);
 				expect(strippedLines.some((l) => l.endsWith("   e"))).toBe(false);
-				expect(strippedLines.some((l) => l.includes("… +2 lines (ctrl+o to expand)"))).toBe(true);
+				expect(strippedLines.some((l) => l.includes("… 还有 2 行 (Ctrl+O 展开)"))).toBe(true);
 
 				// isExpanded: true：展开全部
 				const expanded = formatToolCardLines(
@@ -3823,10 +3823,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(toolItem.result).toBe("");
 
 				const interruptItem = turn.items.find((it) => it.kind === "interrupt") as any;
-				expect(interruptItem.text).toBe("已打断 · 接下来想让 DeepSeek 做什么？");
+				expect(interruptItem.text).toBe("已打断 · 接下来想做什么？");
 
 				const joined = transcript.render(80).join("\n");
-				expect(joined).toContain("已打断 · 接下来想让 DeepSeek 做什么？");
+				expect(joined).toContain("已打断 · 接下来想做什么？");
 				expect(joined).toContain("\x1b[2m");
 
 				// 幂等：重复的 turn_aborted 不产生重复打断行
@@ -4526,8 +4526,9 @@ describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价"
 		expect(fullText).toContain("vanyo-gpt: 模型目录请求失败 HTTP 403");
 		// 3. 增强友好注解
 		expect(fullText).toContain("访问受限");
-		// 4. 部分成功识别为警告黄色
-		expect(lines[0]).toContain("⚠");
+		// G9：文本启发式降级已删——“5/6 家已更新”不再凭文本猜成警告；
+		// 显式 severity 应由事件源声明，文本一律按 error 呈现。
+		expect(lines[0]).toContain("✗");
 		// 5. 末行留白
 		expect(lines[lines.length - 1]).toBe("");
 	});

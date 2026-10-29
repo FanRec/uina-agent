@@ -16,7 +16,7 @@ const STYLE_LABEL: Record<GutterThumbStyle, string> = {
 };
 const MODE_LABEL: Record<GutterMode, string> = {
 	scrollbar: "视口比例滚动条 (Scrollbar)",
-	timeline: "时间线轮次轨 (Timeline)",
+	timeline: "时间线轮次轨",
 };
 
 function isThumbStyle(value: string | undefined): value is GutterThumbStyle {

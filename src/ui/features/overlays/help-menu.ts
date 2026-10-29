@@ -145,7 +145,7 @@ export class HelpMenu implements Component, Focusable {
 		const maxRows = Math.max(SHORTCUTS.length, rightCommands.length);
 
 		const output: string[] = [
-			panelTopBorder(boxWidth, { title: "快捷键与指令总览 (Help Menu)", leftPad, borderColor: C.subtle }),
+			panelTopBorder(boxWidth, { title: "快捷键与指令总览", leftPad, borderColor: C.subtle }),
 			panelSplitRow(
 				boxWidth,
 				`${C.bold}${C.suggestion}▸ 常用快捷键${C.reset}`,

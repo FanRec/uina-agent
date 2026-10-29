@@ -40,7 +40,7 @@ describe("resolveGutterAction", () => {
 		expect(resolveGutterAction("timeline slim", "scrollbar")).toEqual({
 			mode: "timeline",
 			style: undefined,
-			message: "已切换右侧导航轨为: 时间线轮次轨 (Timeline) [slim]",
+			message: "已切换右侧导航轨为: 时间线轮次轨 [slim]",
 		});
 	});
 
@@ -64,7 +64,7 @@ describe("resolveGutterAction", () => {
 		expect(resolveGutterAction(undefined, "scrollbar")).toEqual({
 			mode: "timeline",
 			style: undefined,
-			message: "已切换右侧导航轨为: 时间线轮次轨 (Timeline)",
+			message: "已切换右侧导航轨为: 时间线轮次轨",
 		});
 		expect(resolveGutterAction(undefined, "timeline")).toEqual({
 			mode: "scrollbar",

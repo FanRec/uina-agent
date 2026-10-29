@@ -401,15 +401,12 @@ export function parseDiagnosticMessage(rawText: string): DiagnosticModel {
 		}
 	}
 
-	// 4. 判定严重级别（奥卡姆剃刀与真实事实：全盘失败 0/N 是致命错误，只有真实部分成功才判定为降级告警）
-	const hasPartialSuccess =
-		/\b[1-9]\d*\/\d+\b/.test(summary) ||
-		(summary.includes("已更新") && !summary.includes("0 家已更新") && !summary.includes("0/"));
-	const isDegradedWarning =
-		tag.includes("警告") || tag.toUpperCase().includes("WARN") || hasPartialSuccess || summary.includes("部分");
+	// 4. 判定严重级别（G9）：删除文本启发式降级——正则猜“部分成功”曾把全盘失败
+	// 0/N 降级成告警。只有显式声明（标签含 警告/WARN）才是 warning，否则一律 error。
 
+	const isExplicitWarning = tag.includes("警告") || tag.toUpperCase().includes("WARN");
 	return {
-		level: isDegradedWarning ? "warning" : "error",
+		level: isExplicitWarning ? "warning" : "error",
 		tag: displayTag,
 		summary,
 		details,

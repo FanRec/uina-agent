@@ -2,17 +2,13 @@
  * stdio/print 消费者的事件 → 文本格式化（纯函数：返回字符串，不直接写 stdout）。
  * 从 cli/app.ts 的 renderStdio 拆出：文案与样式决策可单测；app.ts 负责
  * 按 HostEventRecord.at 记账工具耗时与最终写盘。
+ *
+ * G6：工具卡与 TUI 同源——同一 ToolModel 经 renderToolBlock 输出一致快照。
  */
 import type { HostEvent } from "../host/events.js";
-import { TOOL_STATUS_SPEC } from "../presentation/tool-status.js";
-import { sanitizeTerminalText, type ToolResultStyle, toolResultLines, toolStartLine } from "../ui/format.js";
-
-const PLAIN_STYLE: ToolResultStyle = {
-	ok: (value) => value,
-	err: (value) => value,
-	warn: (value) => value,
-	dim: (value) => value,
-};
+import type { ToolModel } from "../presentation/projection/tools.js";
+import { sanitizeTerminalText } from "../ui/format.js";
+import { renderToolBlock } from "../ui/render-text.js";
 
 type LineFormatter = (message: HostEvent) => string | null;
 
@@ -40,22 +36,28 @@ export function formatStdioEventLine(message: HostEvent): string | null {
 }
 
 export function formatToolCallLine(message: Extract<HostEvent, { type: "tool_call" }>): string {
-	return `\n  ⏳ ${toolStartLine(message.toolName, message.args)}`;
+	const model: ToolModel = {
+		name: message.toolName,
+		args: message.args,
+		status: "running",
+	};
+	const block = renderToolBlock(model, 100, { startedAt: 0, now: 0 });
+	return `\n${block.join("\n")}`;
 }
 
-/** 工具结果块：可选图片行 + 状态行 + 折叠结果行（elapsed 由调用方按 record.at 两端计）。 */
+/** 工具结果块：与 TUI 共用 renderToolBlock（elapsed 由调用方按 record.at 两端计）。 */
 export function formatToolResultBlock(
 	message: Extract<HostEvent, { type: "tool_result" }>,
 	elapsedMs: number | undefined,
 ): string {
-	const spec = TOOL_STATUS_SPEC[message.status];
-	const parts: string[] = [];
-	if (message.images?.length) {
-		parts.push("\n  [图片: " + message.images.map((image) => image.alt ?? image.mimeType).join(", ") + "]");
-	}
-	parts.push(`\n  ${spec.icon} ${message.toolName} · ${spec.label}`);
-	for (const line of toolResultLines(message.result, elapsedMs, PLAIN_STYLE)) {
-		parts.push(`\n    ${line}`);
-	}
-	return parts.join("");
+	const model: ToolModel = {
+		name: message.toolName,
+		args: message.args,
+		status: message.status,
+		result: message.result,
+		...(message.images?.length ? { imageCount: message.images.length } : {}),
+		...(elapsedMs === undefined ? {} : { durationMs: elapsedMs }),
+	};
+	const block = renderToolBlock(model, 100);
+	return `\n${block.join("\n")}`;
 }

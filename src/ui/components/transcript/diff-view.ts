@@ -26,6 +26,8 @@ export interface DiffResult {
 	items: DiffItem[];
 	addCount: number;
 	delCount: number;
+	/** E5：任一侧超出 LCS 行数帽（比对被简化）时为 true。 */
+	simplified?: boolean;
 }
 
 export interface SplitDiffRow {
@@ -101,14 +103,17 @@ export function computeLineDiff(oldText: string, newText: string): DiffResult {
 		}
 	}
 
-	return { items, addCount, delCount };
+	// E5：超出比对窗口的行不参与逐行 LCS，只按整段增删补录——显示必须声明这一简化。
+	return { items, addCount, delCount, simplified: n > MAX_DIFF_LINES || m > MAX_DIFF_LINES };
 }
 
 /**
  * 单词级分词（保留空格和标点符号作为独立单元）
  */
 function tokenizeWords(str: string): string[] {
-	return str.match(/\w+|\s+|[^\w\s]+/g) ?? (str ? [str] : []);
+	// E6：CJK 逐字成词，拉丁/数字按词边界，空白成段——旧实现把整段 CJK 当一个 token，
+	// 行内词级高亮只能整段红/绿。
+	return str.match(/\w+|\s+|./gu) ?? (str ? [str] : []);
 }
 
 /**
@@ -200,7 +205,7 @@ export function computeWordDiff(oldLine: string, newLine: string): { oldFormatte
 export function alignSplitDiff(
 	oldText: string,
 	newText: string,
-): { rows: SplitDiffRow[]; addCount: number; delCount: number } {
+): { rows: SplitDiffRow[]; addCount: number; delCount: number; simplified: boolean } {
 	const lineDiff = computeLineDiff(oldText, newText);
 	const rows: SplitDiffRow[] = [];
 	let i = 0;
@@ -235,7 +240,7 @@ export function alignSplitDiff(
 		}
 	}
 
-	return { rows, addCount: lineDiff.addCount, delCount: lineDiff.delCount };
+	return { rows, addCount: lineDiff.addCount, delCount: lineDiff.delCount, simplified: lineDiff.simplified === true };
 }
 
 /**
@@ -256,7 +261,10 @@ export function formatUnifiedDiffCardLines(
 	const DIFF_BODY_MAX_LINES = 8;
 	const isFolded = collapsed && totalItems > DIFF_BODY_MAX_LINES;
 	const visibleSlice = isFolded ? diff.items.slice(0, DIFF_BODY_MAX_LINES) : diff.items;
-	const hiddenCount = totalItems - visibleSlice.length;
+	// E3：提示里的“变更”只数 add/del 行，未变更行单独计——不再把上下文伪装成变更。
+	const hiddenChange =
+		visibleSlice === diff.items ? 0 : diff.items.slice(DIFF_BODY_MAX_LINES).filter((it) => it.type !== "same").length;
+	const hiddenSame = totalItems - visibleSlice.length - hiddenChange;
 
 	// 1. 顶边框：┌─ 📄 ${filename} (diff) ───────────────────────┐
 	const headerTag = `┌─ 📄 ${filename} (diff) `;
@@ -288,9 +296,12 @@ export function formatUnifiedDiffCardLines(
 		output.push(`  ${C.gray}│${C.reset} ${lineBody}${" ".repeat(pad)} ${C.gray}│${C.reset}`);
 	}
 
-	// 3. 超出折叠提示行
-	if (isFolded && hiddenCount > 0) {
-		const hintText = `${C.gray}... (还有 ${hiddenCount} 行变更 · 按 Ctrl+O 展开)${C.reset}`;
+	// 3. 超出折叠提示行（E3：变更/上下文分开计数；E5：简化显示声明）
+	if (isFolded && hiddenChange + hiddenSame > 0) {
+		const hiddenText =
+			hiddenSame > 0 ? `还有 ${hiddenChange} 行变更、${hiddenSame} 行未变更` : `还有 ${hiddenChange} 行变更`;
+		const simplifiedNote = diff.simplified ? " · 大文件已简化显示" : "";
+		const hintText = `${C.gray}... (${hiddenText}${simplifiedNote} · 按 Ctrl+O 展开)${C.reset}`;
 		const hintW = visibleWidth(hintText);
 		const pad = Math.max(0, innerW - hintW);
 		output.push(`  ${C.gray}│${C.reset} ${hintText}${" ".repeat(pad)} ${C.gray}│${C.reset}`);
@@ -327,12 +338,15 @@ export function formatSplitDiffCardLines(
 	const paneW = Math.max(15, Math.floor((innerW - dividerW) / 2));
 	const rightPaneW = innerW - dividerW - paneW;
 
-	const { rows, addCount, delCount } = alignSplitDiff(oldText, newText);
+	const { rows, addCount, delCount, simplified } = alignSplitDiff(oldText, newText);
 	const totalItems = rows.length;
 	const DIFF_BODY_MAX_LINES = 8;
 	const isFolded = collapsed && totalItems > DIFF_BODY_MAX_LINES;
 	const visibleSlice = isFolded ? rows.slice(0, DIFF_BODY_MAX_LINES) : rows;
-	const hiddenCount = totalItems - visibleSlice.length;
+	// E3：同上——折叠提示区分变更行与上下文行
+	const hiddenChange =
+		visibleSlice === rows ? 0 : rows.slice(DIFF_BODY_MAX_LINES).filter((row) => row.kind !== "same").length;
+	const hiddenSame = totalItems - visibleSlice.length - hiddenChange;
 
 	// 1. 顶边框：┌─ 📄 ${filename} (split diff) ───────────────────┐
 	const headerTag = `┌─ 📄 ${filename} (split diff) `;
@@ -381,9 +395,12 @@ export function formatSplitDiffCardLines(
 		output.push(`  ${C.gray}│${C.reset} ${leftStr}${C.subtle}│${C.reset}${rightStr} ${C.gray}│${C.reset}`);
 	}
 
-	// 3. 超出折叠提示行
-	if (isFolded && hiddenCount > 0) {
-		const hintText = `${C.gray}... (还有 ${hiddenCount} 行变更 · 按 Ctrl+O 展开)${C.reset}`;
+	// 3. 超出折叠提示行（E3：变更/上下文分开计数；E5：简化显示声明）
+	if (isFolded && hiddenChange + hiddenSame > 0) {
+		const hiddenText =
+			hiddenSame > 0 ? `还有 ${hiddenChange} 行变更、${hiddenSame} 行未变更` : `还有 ${hiddenChange} 行变更`;
+		const simplifiedNote = simplified ? " · 大文件已简化显示" : "";
+		const hintText = `${C.gray}... (${hiddenText}${simplifiedNote} · 按 Ctrl+O 展开)${C.reset}`;
 		const hintW = visibleWidth(hintText);
 		const pad = Math.max(0, innerW - hintW);
 		output.push(`  ${C.gray}│${C.reset} ${hintText}${" ".repeat(pad)} ${C.gray}│${C.reset}`);

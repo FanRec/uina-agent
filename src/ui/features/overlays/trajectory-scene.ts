@@ -207,10 +207,8 @@ export class TrajectoryScene implements Component, Focusable {
 		}
 
 		// 1. Tab 栏
-		const tab1 =
-			this.viewMode === "timeline" ? `\x1b[7m 时间线 (Timeline) \x1b[0m` : `${C.dim} 时间线 (Timeline) ${C.reset}`;
-		const tab2 =
-			this.viewMode === "hotspot" ? `\x1b[7m 性能热点 (Hotspots) \x1b[0m` : `${C.dim} 性能热点 (Hotspots) ${C.reset}`;
+		const tab1 = this.viewMode === "timeline" ? `\x1b[7m 时间线 \x1b[0m` : `${C.dim} 时间线 ${C.reset}`;
+		const tab2 = this.viewMode === "hotspot" ? `\x1b[7m 性能热点 \x1b[0m` : `${C.dim} 性能热点 ${C.reset}`;
 		const output: string[] = [
 			panelTopBorder(boxWidth, { title: `全屏事件时序与审计轨迹 (${nodes.length} 节点)`, ...border }),
 			panelRow(`${C.dim}[Tab]${C.reset} ${tab1}  ${tab2}`, boxWidth, border),

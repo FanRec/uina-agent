@@ -85,10 +85,12 @@ export class StreamMarkdownFormatter {
 			return `${C.suggestion}▎${C.reset} ${C.inactive}${C.italic}${formatInlineMarkdown(text)}${C.reset}`;
 		}
 
-		// 5. 无序列表 (- / * )：零边距左对齐，• 采用 suggestion 冰蓝
-		if (/^[-*]\s/.test(trimmed)) {
-			const text = trimmed.slice(2);
-			return `${C.suggestion}•${C.reset} ${formatInlineMarkdown(text)}`;
+		// 5. 无序列表 (- / * )：保留嵌套缩进（E8），• 采用 suggestion 冰蓝
+		const listMatch = /^(\s*)([-*])\s(.*)$/.exec(cleanRaw);
+		if (listMatch) {
+			const indent = Math.floor((listMatch[1] ?? "").replace(/\t/g, "  ").length / 2);
+			const text = listMatch[3] ?? "";
+			return `${" ".repeat(indent * 2)}${C.suggestion}•${C.reset} ${formatInlineMarkdown(text)}`;
 		}
 
 		// 6. 有序列表 (1. / 2. )
@@ -146,7 +148,9 @@ export class StreamMarkdownFormatter {
 		const line = rawLine.replace(/\r$/, "");
 		const ready: string[] = [];
 
-		if (isMarkdownTableLine(line)) {
+		// E2：围栏优先——代码块内部的一行即便长得像表格也按代码处理，
+		// 不再被表格状态机吸走（审计 E2 的数据损坏项）。
+		if (!this.inCodeBlock && isMarkdownTableLine(line)) {
 			this.tableBuffer.push(line);
 			return ready;
 		}
@@ -190,7 +194,7 @@ export class StreamMarkdownFormatter {
 			res.push(...this.flushTableBuffer());
 		}
 		if (this.lineBuffer) {
-			if (isMarkdownTableLine(this.lineBuffer)) {
+			if (!this.inCodeBlock && isMarkdownTableLine(this.lineBuffer)) {
 				this.tableBuffer.push(this.lineBuffer);
 				res.push(...this.flushTableBuffer());
 			} else {

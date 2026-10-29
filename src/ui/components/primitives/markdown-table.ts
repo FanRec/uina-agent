@@ -8,7 +8,7 @@
  * 4. 表现层高内聚：单元格自动应用行内 Markdown 语法高亮（代码、粗体、链接），边框 100% 全封闭永不残缺。
  */
 
-import { C, visibleWidth } from "../../core/utils.js";
+import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
 import { fitLine, wrapLine } from "../../layout/fit.js";
 import { formatInlineMarkdown } from "./inline-markdown.js";
 
@@ -51,19 +51,15 @@ export function splitMarkdownCells(row: string): string[] {
 	const cells: string[] = [];
 	let current = "";
 	let inBacktick = false;
-	let escape = false;
 
 	for (let i = 0; i < body.length; i++) {
 		const char = body[i]!;
 
-		if (escape) {
-			current += char;
-			escape = false;
-			continue;
-		}
-
-		if (char === "\\") {
-			escape = true;
+		// E1：只有「反斜杠+竖线」是转义（还原为字面 |）；Windows 路径里的反斜杠
+		// 原样保留，不再被当作转义前缀吃掉。
+		if (char === "\\" && body[i + 1] === "|") {
+			current += "|";
+			i++;
 			continue;
 		}
 
@@ -171,15 +167,17 @@ export function solveColumnWidths(
 	const colCount = headers.length;
 	if (colCount === 0 || budget <= 0) return new Array(colCount).fill(0);
 
-	// 1. 统计每列自然最大可见宽（表头与单元格文本的单行最大可视宽度，下限 1）
+	// 1. 统计每列自然最大可见宽（E10：按渲染后宽度测量，**bold** 等行内标记
+	// 不再虚占列宽；SGR 零宽，剥掉后即渲染宽度）
+	const renderedWidth = (text: string): number => visibleWidth(stripAnsi(formatInlineMarkdown(text)));
 	const naturalWidths = headers.map((_h, c) => {
-		let maxW = Math.max(1, visibleWidth(headers[c] ?? ""));
+		let maxW = Math.max(1, renderedWidth(headers[c] ?? ""));
 		for (const row of rows) {
 			const cell = row[c] ?? "";
 			// 若单元格含显式 <br>，自然宽度取折行后的单行最大宽
 			const lines = cell.split(/<br\s*\/?>/i);
 			for (const l of lines) {
-				maxW = Math.max(maxW, visibleWidth(l));
+				maxW = Math.max(maxW, renderedWidth(l));
 			}
 		}
 		return maxW;

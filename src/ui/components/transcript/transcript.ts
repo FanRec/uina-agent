@@ -751,10 +751,10 @@ export class TranscriptContainer implements Component {
 		this.commitCurrentTurn();
 	}
 
-	interruptTurn(modelName?: string): void {
+	interruptTurn(_modelName?: string): void {
 		this.smoothReveal.snapToLatest();
-		const name = modelName || "Uina";
-		const notice = `已打断 · 接下来想让 ${name} 做什么？`;
+		// G8：中断提示的主体是用户自己的下一步，不拿模型名冒充。
+		const notice = "已打断 · 接下来想做什么？";
 		if (this.currentTurn) {
 			if (this.currentTurn.items.some((it) => it.kind === "interrupt")) {
 				return;

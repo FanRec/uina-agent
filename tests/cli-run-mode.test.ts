@@ -119,19 +119,29 @@ describe("formatStdioEventLine", () => {
 	});
 });
 
-describe("formatToolCallLine / formatToolResultBlock", () => {
-	it("调用行带工具名与参数摘要", () => {
-		expect(formatToolCallLine({ type: "tool_call", toolName: "exec", args: {}, callId: "c1" })).toBe(
-			"\n  ⏳ [工具] exec",
-		);
+describe("formatToolCallLine / formatToolResultBlock（G6 与 TUI 同源）", () => {
+	const strip = (value: string): string => value.replace(/\x1b\[[0-9;]*m/g, "");
+	it("调用行来自共享 renderToolBlock：状态点 + 工具名 + 运行占位", () => {
+		const line = strip(formatToolCallLine({ type: "tool_call", toolName: "exec", args: {}, callId: "c1" }));
+		expect(line).toContain("Exec");
+		expect(line).toContain("执行中");
 	});
 
-	it("结果块：成功 ✓、失败 ✗、图片行、折叠结果与耗时", () => {
+	it("结果块：成功 ✓、失败 ✗、图片行、stdout 与耗时——与 TUI 卡片同构", () => {
 		const base = { type: "tool_result" as const, toolName: "exec", args: {}, callId: "c1" };
-		expect(formatToolResultBlock({ ...base, result: '{"stdout":"out"}', status: "succeeded" }, 100)).toBe(
-			"\n  ✓ exec · 完成\n    out\n    （100ms）",
+		const ok = strip(
+			formatToolResultBlock({ ...base, result: JSON.stringify({ stdout: "out" }), status: "succeeded" }, 100),
 		);
-		expect(formatToolResultBlock({ ...base, result: "boom", status: "failed" }, 0)).toBe("\n  ✗ exec · 失败\n    boom");
+		expect(ok).toContain("✓");
+		expect(ok).toContain("Exec");
+		expect(ok).toContain("完成");
+		expect(ok).toContain("out");
+		expect(ok).toContain("100ms");
+
+		const fail = strip(formatToolResultBlock({ ...base, result: "boom", status: "failed" }, 0));
+		expect(fail).toContain("✗");
+		expect(fail).toContain("boom");
+
 		const withImage = formatToolResultBlock(
 			{
 				...base,
@@ -141,7 +151,7 @@ describe("formatToolCallLine / formatToolResultBlock", () => {
 			},
 			0,
 		);
-		expect(withImage).toContain("[图片: shot]");
+		expect(strip(withImage)).toContain("[图片: 1 张]");
 	});
 });
 

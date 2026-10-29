@@ -49,12 +49,12 @@ export function highlightCode(code: string, language?: string): string {
 		return code;
 	}
 
+	// E7：语言未知/伪语言（如围栏省略语言时的 "code"）一律按纯文本输出，
+	// 不再交给无参数的自动推断——伪代码被误判成别的语言只会产出噪音配色。
 	try {
-		if (lang && supportsLangFn && supportsLangFn(lang)) {
-			return hlFn(code, { language: lang, ignoreIllegals: true });
-		}
-		// 未指定语言或语言不在库中时，尝试无参数安全推断或返回原文本
-		return hlFn(code, { ignoreIllegals: true });
+		if (lang && supportsLangFn && !supportsLangFn(lang)) return code;
+		if (lang) return hlFn(code, { language: lang, ignoreIllegals: true });
+		return code;
 	} catch {
 		return code;
 	}

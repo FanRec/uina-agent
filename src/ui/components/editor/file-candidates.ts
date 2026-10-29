@@ -36,8 +36,8 @@ const SKIP = new Set([
 	"tmp",
 	".turbo",
 	// 本地过程/工具目录：不入候选（gitignored 或纯缓存），避免耗尽深扫描预算
-	// 挤掉真实源码候选（2026-10-16 集成发现：.artifacts/.uina 增量使根 package.json
-	// 落出 300+100 预算，@ 联想丢失根级文件）。
+	// 挤掉真实源码候选（2026-10-16 集成发现：.artifacts/.workbuddy 增量使根
+	// package.json 落出 300+100 预算，@ 联想丢失根级文件）。
 	".agents",
 	".artifacts",
 	".workbuddy",
