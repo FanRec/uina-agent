@@ -13,8 +13,9 @@
  * 4. 全封闭细线卡片，8 行折叠保护与展开提示。
  */
 
-import { C, visibleWidth, truncateToWidth, getContentBoxWidth } from "../../core/utils.js";
+import { C, getContentBoxWidth, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
+import { fitLine } from "../../layout/fit.js";
 
 export interface DiffItem {
 	type: "add" | "del" | "same";
@@ -279,7 +280,7 @@ export function formatUnifiedDiffCardLines(
 
 		const cleanText = item.line.replace(/\r$/, "");
 		const budget = Math.max(0, innerW - 2);
-		const truncated = truncateToWidth(cleanText, budget, "…");
+		const truncated = fitLine(cleanText, budget);
 		const contentW = 2 + visibleWidth(truncated);
 		const pad = Math.max(0, innerW - contentW);
 
@@ -346,21 +347,21 @@ export function formatSplitDiffCardLines(
 		let rightStr = "";
 
 		if (row.kind === "same") {
-			const text = truncateToWidth((row.oldLine ?? "").replace(/\r$/, ""), paneW - 2, "…");
+			const text = fitLine((row.oldLine ?? "").replace(/\r$/, ""), paneW - 2);
 			const padL = Math.max(0, paneW - 2 - visibleWidth(text));
 			leftStr = `  ${C.dim}${text}${C.reset}${" ".repeat(padL)}`;
 
-			const rightText = truncateToWidth((row.newLine ?? "").replace(/\r$/, ""), rightPaneW - 2, "…");
+			const rightText = fitLine((row.newLine ?? "").replace(/\r$/, ""), rightPaneW - 2);
 			const padR = Math.max(0, rightPaneW - 2 - visibleWidth(rightText));
 			rightStr = `  ${C.dim}${rightText}${C.reset}${" ".repeat(padR)}`;
 		} else if (row.kind === "del") {
-			const text = truncateToWidth((row.oldLine ?? "").replace(/\r$/, ""), paneW - 2, "…");
+			const text = fitLine((row.oldLine ?? "").replace(/\r$/, ""), paneW - 2);
 			const padL = Math.max(0, paneW - 2 - visibleWidth(text));
 			leftStr = `${C.red}− ${text}${C.reset}${" ".repeat(padL)}`;
 			rightStr = " ".repeat(rightPaneW);
 		} else if (row.kind === "add") {
 			leftStr = " ".repeat(paneW);
-			const text = truncateToWidth((row.newLine ?? "").replace(/\r$/, ""), rightPaneW - 2, "…");
+			const text = fitLine((row.newLine ?? "").replace(/\r$/, ""), rightPaneW - 2);
 			const padR = Math.max(0, rightPaneW - 2 - visibleWidth(text));
 			rightStr = `${C.green}+ ${text}${C.reset}${" ".repeat(padR)}`;
 		} else if (row.kind === "change") {
@@ -368,11 +369,11 @@ export function formatSplitDiffCardLines(
 				(row.oldLine ?? "").replace(/\r$/, ""),
 				(row.newLine ?? "").replace(/\r$/, ""),
 			);
-			const leftTrunc = truncateToWidth(oldFormatted, paneW - 2, "…");
+			const leftTrunc = fitLine(oldFormatted, paneW - 2);
 			const padL = Math.max(0, paneW - 2 - visibleWidth(leftTrunc));
 			leftStr = `${C.red}− ${leftTrunc}${C.reset}${" ".repeat(padL)}`;
 
-			const rightTrunc = truncateToWidth(newFormatted, rightPaneW - 2, "…");
+			const rightTrunc = fitLine(newFormatted, rightPaneW - 2);
 			const padR = Math.max(0, rightPaneW - 2 - visibleWidth(rightTrunc));
 			rightStr = `${C.green}+ ${rightTrunc}${C.reset}${" ".repeat(padR)}`;
 		}

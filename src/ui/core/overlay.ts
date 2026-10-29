@@ -4,13 +4,17 @@
  * 同时支持 ANSI 字符级复合渲染 compositeTuiLine。
  */
 
-import type { Component, OverlayHandle, OverlayOptions } from "./types.js";
-import type { FocusManager } from "./focus.js";
+import { fitLine } from "../layout/fit.js";
+import { isFrameDevMode } from "../layout/panel.js";
 import type { ComponentBoundary } from "./component-boundary.js";
-import { visibleWidth, truncateToWidth } from "./utils.js";
+import type { FocusManager } from "./focus.js";
+import type { Component, OverlayHandle, OverlayOptions } from "./types.js";
+import { visibleWidth } from "./utils.js";
 
 /**
- * 将浮层行合并到底层背景行指定的列位置
+ * 将浮层行合并到底层背景行指定的列位置。
+ * 超宽行：开发态输出诊断（来源 id、行号、超出列数），运行态按 ellipsis 裁剪。
+ * renderPanel 产出的面板行保证精确宽度，不该走到诊断分支。
  */
 export function compositeTuiLine(
 	baseLine: string,
@@ -18,11 +22,19 @@ export function compositeTuiLine(
 	startCol: number,
 	overlayWidth: number,
 	_totalWidth = 80,
+	source?: { id: string; line: number },
 ): string {
-	const before = truncateToWidth(baseLine, startCol);
+	const overflow = visibleWidth(overlayLine) - overlayWidth;
+	if (overflow > 0 && isFrameDevMode()) {
+		const id = source?.id ?? "overlay";
+		console.error(
+			`[frame] 浮层 "${id}" 第 ${(source?.line ?? 0) + 1} 行超出 ${overflow} 列（应走 renderPanel 或先 fit）`,
+		);
+	}
+	const before = fitLine(baseLine, startCol, "clip");
 	const beforeW = visibleWidth(before);
 	const padBefore = Math.max(0, startCol - beforeW);
-	const middle = truncateToWidth(overlayLine, overlayWidth);
+	const middle = fitLine(overlayLine, overlayWidth, "ellipsis");
 	const midW = visibleWidth(middle);
 	const padMid = Math.max(0, overlayWidth - midW);
 	return before + " ".repeat(padBefore) + middle + " ".repeat(padMid);
@@ -222,7 +234,12 @@ export class OverlayStack {
 
 			const block: string[] = [];
 			for (let i = 0; i < margin.top; i++) block.push("");
-			for (const line of rendered) block.push(compositeTuiLine("", line, Math.max(0, start), overlayWidth, width));
+			const overlayId = entry.component.constructor?.name || "overlay";
+			for (const line of rendered) {
+				block.push(
+					compositeTuiLine("", line, Math.max(0, start), overlayWidth, width, { id: overlayId, line: block.length }),
+				);
+			}
 			for (let i = 0; i < margin.bottom; i++) block.push("");
 			// offsetY moves the block away from the editor (positive) or trims its
 			// bottom (negative), matching the documented contract.

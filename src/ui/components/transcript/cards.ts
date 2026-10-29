@@ -4,12 +4,13 @@
  */
 
 import { imageNotice } from "../../../core/content.js";
-import { Container } from "../../core/container.js";
-import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
-import { sanitizeRenderText } from "../../format.js";
-import { applyCardBackground } from "./tool-view.js";
-import type { Component } from "../../core/types.js";
 import type { CustomMessage, MessageRenderer } from "../../../extensions/ui-contract.js";
+import { Container } from "../../core/container.js";
+import type { Component } from "../../core/types.js";
+import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
+import { fitLine, wrapLine } from "../../layout/fit.js";
+import { applyCardBackground } from "./tool-view.js";
 
 /* ------------------------------------------------------------------ */
 /* 1. 思考链展示卡片                                                    */
@@ -32,16 +33,16 @@ export function formatThinkingLines(thinkingText: string, collapsed = true, widt
 			? `${C.suggestion}(点击 / ctrl+o 展开)${C.reset}`
 			: `${C.subtle}(ctrl+o 展开 · alt+o 全量)${C.reset}`;
 		const line = `${icon} ${titleText} ${C.inactive}${snippet}${C.reset} ${hint}`;
-		return [truncateToWidth(line, width, ""), ""];
+		return [fitLine(line, width, "clip"), ""];
 	}
 
 	const hint = isHovered
 		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
 		: `${C.subtle}(ctrl+o 收起 · alt+o 全量)${C.reset}`;
 	const title = `${icon} ${titleText} ${hint}:`;
-	const lines = [truncateToWidth(title, width, "")];
+	const lines = [fitLine(title, width, "clip")];
 
-	const wrapped = wrapTextWithAnsi(thinkingText.trim(), Math.max(20, width - 4));
+	const wrapped = wrapLine(thinkingText.trim(), Math.max(20, width - 4));
 	for (const line of wrapped) {
 		lines.push(`${C.subtle}│${C.reset} ${C.inactive}${C.italic}${line}${C.reset}`);
 	}
@@ -72,7 +73,7 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 		const title =
 			record.status === "failed" ? "压缩失败" : record.status === "cancelled" ? "压缩已取消" : "当前无需压缩";
 		const header = `${C.subtle}───${C.inactive} ${title} ${C.subtle}${"─".repeat(Math.max(3, boxW - visibleWidth(title) - 5))}${C.reset}`;
-		const detail = truncateToWidth(`  ${record.summary.replace(/\s+/g, " ").trim()}`, boxW, "…");
+		const detail = fitLine(`  ${record.summary.replace(/\s+/g, " ").trim()}`, boxW);
 		return [header, `${C.inactive}${detail}${C.reset}`, `${C.subtle}${"─".repeat(boxW)}${C.reset}`];
 	}
 	const tokensBeforeStr =
@@ -98,7 +99,7 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 
 		const flat = record.summary.replace(/\s+/g, " ").trim();
 		const budget = Math.max(8, boxW - (4 + visibleWidth("摘要已折叠 · ")) - (visibleWidth(hint) + 1));
-		const preview = truncateToWidth(flat, budget, "…");
+		const preview = fitLine(flat, budget);
 		const previewCol = isHovered ? C.text : C.inactiveShimmer;
 		const rawLine = `  ${symbol} ${label}${previewCol}${preview}${C.reset} ${hint}`;
 
@@ -125,9 +126,9 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 
 	// 正文自动折行与缩进
 	const innerW = Math.max(10, boxW - 4);
-	for (const line of wrapTextWithAnsi(record.summary.trim(), innerW)) {
+	for (const line of wrapLine(record.summary.trim(), innerW)) {
 		const lineContent = `  ${line}`;
-		const effContent = visibleWidth(lineContent) > boxW ? truncateToWidth(lineContent, boxW, "…") : lineContent;
+		const effContent = visibleWidth(lineContent) > boxW ? fitLine(lineContent, boxW) : lineContent;
 		output.push(`${C.text}${effContent}${" ".repeat(Math.max(0, boxW - visibleWidth(effContent)))}${C.reset}`);
 	}
 
@@ -143,7 +144,7 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
 		: `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
 	const footerRaw = `  ${arrow} ${stats} · ${hint}`;
-	const effFooter = visibleWidth(footerRaw) > boxW ? truncateToWidth(footerRaw, boxW, "…") : footerRaw;
+	const effFooter = visibleWidth(footerRaw) > boxW ? fitLine(footerRaw, boxW) : footerRaw;
 	output.push(`${effFooter}${" ".repeat(Math.max(0, boxW - visibleWidth(effFooter)))}`);
 	output.push(`${C.subtle}${"─".repeat(boxW)}${C.reset}`);
 
@@ -259,7 +260,7 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		rows.push(`${C.gray}退出路径已转为只读历史，可用 /history 检视${C.reset}`);
 
 		const body = rows.map((row) => {
-			const text = truncateToWidth(stripAnsi(row), innerW, "");
+			const text = fitLine(stripAnsi(row), innerW, "clip");
 			return `  ${borderCol}│${C.reset} ${text}${" ".repeat(Math.max(0, innerW - visibleWidth(text)))} ${borderCol}│${C.reset}`;
 		});
 
@@ -280,7 +281,7 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 			.replace(/\r\n/g, "\n")
 			.split("\n");
 		const bodyLines = rawLines.map((line) => {
-			const text = truncateToWidth(stripAnsi(line), innerW, "");
+			const text = fitLine(stripAnsi(line), innerW, "clip");
 			return `  ${borderCol}│${C.reset} ${text}${" ".repeat(Math.max(0, innerW - visibleWidth(text)))} ${borderCol}│${C.reset}`;
 		});
 		const footer = `  ${borderCol}╰${"─".repeat(boxW - 4)}╯${C.reset}`;
@@ -442,7 +443,7 @@ export function formatErrorCardLines(rawText: string, width = 80): string[] {
 
 	if (shouldSplitHeader) {
 		const maxTagW = Math.max(2, width - leadPrefixW - 2);
-		const displayTag = visibleWidth(model.tag) > maxTagW ? truncateToWidth(model.tag, maxTagW, "…") : model.tag;
+		const displayTag = visibleWidth(model.tag) > maxTagW ? fitLine(model.tag, maxTagW) : model.tag;
 		const safeBadge = `${C.bold}${C.claude}[${displayTag}]${C.reset}`;
 		lines.push(`${leadPrefix}${safeBadge}`);
 
@@ -450,14 +451,14 @@ export function formatErrorCardLines(rawText: string, width = 80): string[] {
 		const contentLeadW = visibleWidth(contentLead);
 		const avail = Math.max(1, width - contentLeadW);
 		const enriched = model.details.length === 0 ? enrichDiagnosticHint(model.summary) : model.summary;
-		const wrapped = wrapTextWithAnsi(`${C.text}${enriched}${C.reset}`, avail);
+		const wrapped = wrapLine(`${C.text}${enriched}${C.reset}`, avail);
 		for (const w of wrapped) {
 			lines.push(`${contentLead}${w}`);
 		}
 	} else {
 		const firstAvail = Math.max(1, width - inlineLeadW);
 		const enriched = model.details.length === 0 ? enrichDiagnosticHint(model.summary) : model.summary;
-		const wrapped = wrapTextWithAnsi(`${C.text}${enriched}${C.reset}`, firstAvail);
+		const wrapped = wrapLine(`${C.text}${enriched}${C.reset}`, firstAvail);
 
 		if (wrapped.length > 0) {
 			lines.push(`${inlineLead}${wrapped[0]!}`);
@@ -467,7 +468,7 @@ export function formatErrorCardLines(rawText: string, width = 80): string[] {
 			const subLeadW = visibleWidth(subsequentLead);
 			const subAvail = Math.max(1, width - subLeadW);
 			for (let i = 1; i < wrapped.length; i++) {
-				const rewrapped = wrapTextWithAnsi(wrapped[i]!, subAvail);
+				const rewrapped = wrapLine(wrapped[i]!, subAvail);
 				for (const rw of rewrapped) {
 					lines.push(`${subsequentLead}${rw}`);
 				}
@@ -489,11 +490,11 @@ export function formatErrorCardLines(rawText: string, width = 80): string[] {
 		const subAvail = Math.max(1, width - subPrefixW);
 
 		const textToWrap = isStackLine ? `${C.subtle}${enriched}${C.reset}` : enriched;
-		const wrapped = wrapTextWithAnsi(textToWrap, avail);
+		const wrapped = wrapLine(textToWrap, avail);
 		if (wrapped.length > 0) {
 			lines.push(`${prefix}${wrapped[0]!}`);
 			for (let i = 1; i < wrapped.length; i++) {
-				const rewrapped = wrapTextWithAnsi(wrapped[i]!, subAvail);
+				const rewrapped = wrapLine(wrapped[i]!, subAvail);
 				for (const rw of rewrapped) {
 					lines.push(`${subsequentPrefix}${rw}`);
 				}
@@ -503,5 +504,5 @@ export function formatErrorCardLines(rawText: string, width = 80): string[] {
 
 	// 垂直节奏空行与全行物理宽度硬保证
 	lines.push("");
-	return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "") : l));
+	return lines.map((l) => (visibleWidth(l) > width ? fitLine(l, width, "clip") : l));
 }

@@ -7,8 +7,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { UIHost } from "../src/ui/ui-host.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
+import { UIHost } from "../src/ui/ui-host.js";
 import { createSilentTerminal, toolDoneNode, toolStartNode } from "./harness/index.js";
 
 const SGR = /\x1b\[[0-9;]*m/g;

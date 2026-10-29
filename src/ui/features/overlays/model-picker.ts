@@ -2,10 +2,12 @@
  * 模型快速选择器组件（对齐 Pi Component 规范，保留两级下钻选择视觉）。
  */
 
-import type { Component, Focusable } from "../../core/types.js";
-import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { ModelPickerGroup } from "../../../extensions/ui-contract.js";
+import { Key, matchesKey } from "../../core/keys.js";
+import type { Component, Focusable } from "../../core/types.js";
+import { C } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
+import { panelRow, panelTopBorder, renderPanel } from "../../layout/panel.js";
 
 export type ModelGroup = ModelPickerGroup;
 type ModelItem = ModelPickerGroup["models"][number];
@@ -119,22 +121,12 @@ export class ModelPicker implements Component, Focusable {
 
 	formatLines(terminalWidth = 80, availableHeight = Number.MAX_SAFE_INTEGER): string[] {
 		if (terminalWidth <= 0 || availableHeight <= 0) return [];
-		if (terminalWidth < 5) return [truncateToWidth("模型", terminalWidth, "")];
+		if (terminalWidth < 5) return [fitLine("模型", terminalWidth, "clip")];
 		const leftPad = terminalWidth >= 48 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 78));
 		const innerW = Math.max(1, boxWidth - 4);
-		const borderCol = C.gray;
 		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0];
 		const title = this.level === "groups" ? "切换模型服务商 (Providers)" : `选择模型 (${currentGroup?.name ?? "未知"})`;
-		const safeTitle = truncateToWidth(title, Math.max(1, boxWidth - 6), "…");
-		const topTag = `─ ${safeTitle} `;
-		const topFill = Math.max(0, boxWidth - 2 - visibleWidth(topTag));
-		const pad = " ".repeat(leftPad);
-		const topLine = `${pad}${borderCol}╭${topTag}${borderCol}${"─".repeat(topFill)}╮${C.reset}`;
-		const frameLine = (content: string): string => {
-			const safe = truncateToWidth(content, innerW, "…");
-			return `${pad}${borderCol}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${borderCol}│${C.reset}`;
-		};
 		const items = this.level === "groups" ? this.groups : (currentGroup?.models ?? []);
 		const selectedIndex =
 			items.length === 0
@@ -146,13 +138,19 @@ export class ModelPicker implements Component, Focusable {
 		const height = Number.isFinite(availableHeight)
 			? Math.max(1, Math.floor(availableHeight))
 			: Number.MAX_SAFE_INTEGER;
-		if (height === 1) return [topLine];
+		if (height === 1) return [panelTopBorder(boxWidth, { title, borderColor: C.gray, leftPad })];
 		if (height === 2) {
 			const selectedItem = items[selectedIndex];
 			const label =
 				this.level === "groups" ? this.groups[selectedIndex]?.name : (selectedItem as ModelItem | undefined)?.name;
 			const remaining = Math.max(0, items.length - selectedIndex - 1);
-			return [topLine, frameLine(`❯ ${label ?? "暂无可用模型"} · ↑${selectedIndex} ↓${remaining}`)];
+			return [
+				panelTopBorder(boxWidth, { title, borderColor: C.gray, leftPad }),
+				panelRow(`❯ ${label ?? "暂无可用模型"} · ↑${selectedIndex} ↓${remaining}`, boxWidth, {
+					borderColor: C.gray,
+					leftPad,
+				}),
+			];
 		}
 		const rowBudget = Number.isFinite(availableHeight)
 			? Math.max(1, Math.floor(availableHeight) - 2)
@@ -160,10 +158,10 @@ export class ModelPicker implements Component, Focusable {
 		const visibleCount = Math.min(Math.max(1, items.length), rowBudget);
 		const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(visibleCount / 2), items.length - visibleCount));
 		const endIndex = startIndex + visibleCount;
-		const output = [topLine];
+		const body: string[] = [];
 
 		if (items.length === 0) {
-			output.push(frameLine("没有来自配置、Provider 或可信目录的可选模型"));
+			body.push(`${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`);
 		} else if (this.level === "groups") {
 			for (let i = startIndex; i < endIndex; i++) {
 				const group = this.groups[i]!;
@@ -173,7 +171,7 @@ export class ModelPicker implements Component, Focusable {
 				const name = selected ? `${C.bold}${C.white}[${group.name}]${C.reset}` : `${C.gray}[${group.name}]${C.reset}`;
 				const check = hasCurrent ? ` ${C.green}✓${C.reset}` : "";
 				const description = `${C.dim}${group.description} (${group.models.length} 个模型)${C.reset}`;
-				output.push(frameLine(`${pointer} ${name}${check}  ${description}`));
+				body.push(`${pointer} ${name}${check}  ${description}`);
 			}
 		} else {
 			for (let i = startIndex; i < endIndex; i++) {
@@ -182,7 +180,7 @@ export class ModelPicker implements Component, Focusable {
 				const pointer = selected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
 				const name = selected ? `${C.bold}${C.white}${model.name}${C.reset}` : `${C.gray}${model.name}${C.reset}`;
 				const check = this.isCurrent(model) ? ` ${C.green}✓${C.reset}` : "";
-				output.push(frameLine(`${pointer} ${name}${check}  ${C.dim}${model.description}${C.reset}`));
+				body.push(`${pointer} ${name}${check}  ${C.dim}${model.description}${C.reset}`);
 			}
 		}
 
@@ -195,10 +193,13 @@ export class ModelPicker implements Component, Focusable {
 				: this.level === "groups"
 					? "↑↓ 移动 · Enter 展开 · Esc 关闭"
 					: "↑↓ 移动 · Enter 确认切换 · Esc 返回";
-		const bottomHint = truncateToWidth(`${scrollHint}${actionHint}`, Math.max(1, innerW), "…");
-		const bottomTag = `─ ${bottomHint} `;
-		const bottomFill = Math.max(0, boxWidth - 2 - visibleWidth(bottomTag));
-		output.push(`${pad}${borderCol}╰${bottomTag}${borderCol}${"─".repeat(bottomFill)}╯${C.reset}`);
-		return output;
+		return renderPanel({
+			title,
+			body,
+			bottomTag: `${scrollHint}${actionHint}`,
+			boxWidth,
+			leftPad,
+			borderColor: C.gray,
+		});
 	}
 }

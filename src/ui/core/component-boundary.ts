@@ -1,5 +1,6 @@
+import { fitLine } from "../layout/fit.js";
 import type { Component } from "./types.js";
-import { C, truncateToWidth } from "./utils.js";
+import { C } from "./utils.js";
 
 type Operation = "render" | "input";
 
@@ -15,7 +16,7 @@ export class ComponentBoundary {
 		} catch (error) {
 			this.reportOnce(component, "render", error);
 			const label = componentName(component);
-			return [truncateToWidth(`${C.error}[${label}] 渲染失败${C.reset}`, Math.max(0, width), "")];
+			return [fitLine(`${C.error}[${label}] 渲染失败${C.reset}`, Math.max(0, width), "clip")];
 		}
 	}
 

@@ -5,7 +5,6 @@
  */
 
 import type { ContextSnapshot, GenerationTiming, RequestUsage, ThinkingLevel } from "../core/types.js";
-import type { PresentationNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import type {
 	BuiltinUIActionRequest,
@@ -13,6 +12,7 @@ import type {
 	ExtensionUIContext,
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
+import type { PresentationNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import type { SessionEntry } from "../session/types.js";
 import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
@@ -22,7 +22,6 @@ import {
 	type CompactionCardData,
 	type CompactionReplayDecoration,
 	type ExternalContextCardData,
-	type LineModel,
 	type PromptContextCardData,
 	TranscriptContainer,
 } from "./components/transcript/index.js";
@@ -49,18 +48,13 @@ import { ScrollController } from "./core/scroll-controller.js";
 import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import {
-	C,
-	copyToClipboardUnified,
-	normalizeFrameLine,
-	stripAnsi,
-	truncateToWidth,
-	visibleWidth,
-} from "./core/utils.js";
+import { C, copyToClipboardUnified, normalizeFrameLine, stripAnsi, visibleWidth } from "./core/utils.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
+import { fitLine } from "./layout/fit.js";
+import { computeFrame, type FrameLayout } from "./layout/frame.js";
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
-	const leftPart = truncateToWidth(baseLine, startCol, " ");
+	const leftPart = fitLine(baseLine, startCol, "clip");
 	const leftW = visibleWidth(leftPart);
 	const padL = Math.max(0, startCol - leftW);
 	const rightPart = `${leftPart}${" ".repeat(padL)}${cardLine}`;
@@ -100,39 +94,6 @@ export interface UIHostOptions {
 	thinkingLevels?: readonly ThinkingLevel[];
 	thinkingLevel?: ThinkingLevel;
 	registry?: ExtensionRegistry;
-}
-
-/** Immutable frame geometry shared by rendering, scrolling and hit zones. */
-interface FrameLayout {
-	width: number;
-	height: number;
-	hasGutter: boolean;
-	innerW: number;
-	inputWidth: number;
-	inputLines: string[];
-	inputH: number;
-	belowLines: string[];
-	belowH: number;
-	maxAboveH: number;
-	overlayLines: string[];
-	suggestionLines: string[];
-	pendingLines: string[];
-	aboveLines: string[];
-	aboveH: number;
-	bannerLines: string[];
-	bannerCount: number;
-	transcriptLines: string[];
-	/** 帧内单一行模型（转录区原始引用，仅当帧有效）。 */
-	frameModel: LineModel;
-	permanentLines: string[];
-	totalPerm: number;
-	safeW: number;
-	transcriptContentW: number;
-	transcriptH: number;
-	maxScroll: number;
-	effScroll: number;
-	scrollStart: number;
-	visibleTranscript: string[];
 }
 
 /** 可挂进 overlayStack 的居中面板组件契约：可选的关闭回调与重绘请求。 */
@@ -1188,7 +1149,21 @@ export class UIHost implements UIHostContextPort {
 	private syncInputMetrics(): void {
 		const innerW = this.terminal.columns;
 		const scrolled = this.scroll.getMaxScroll() > 0 && this.scroll.getOffset() > 0;
-		const reservedRight = scrolled ? 36 : 10;
+		// Show the viewport percentage using the previous frame's geometry; the
+		// current frame's input height is required to compute it, so a one-frame
+		// lag is unavoidable (and previously the header never rendered at all).
+		const percent = scrolled
+			? Math.round(
+					((this.scroll.getMaxScroll() - Math.min(this.scroll.getOffset(), this.scroll.getMaxScroll())) /
+						this.scroll.getMaxScroll()) *
+						100,
+				)
+			: 100;
+		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
+		const viewportStatusText = scrolled ? `[视口 ${percent}% · 点击回到最新]` : "";
+		this.viewportStatusText = viewportStatusText;
+		// reservedRight 不再写死 36/10：右侧保留量由视口指示器的实测宽度得出（审计 D15）。
+		const reservedRight = viewportStatusText ? visibleWidth(viewportStatusText) + 1 : 0;
 		const statusWidth = Math.max(24, innerW - reservedRight);
 		const statusHeader = this.providerRetryMessage
 			? formatWorkingHeader(
@@ -1203,19 +1178,6 @@ export class UIHost implements UIHostContextPort {
 						const working = [...this.workingContributions.values()].sort((a, b) => b.sequence - a.sequence)[0]!;
 						return formatWorkingHeader(working.message, Date.now() - working.startedAt, statusWidth);
 					})();
-		// Show the viewport percentage using the previous frame's geometry; the
-		// current frame's input height is required to compute it, so a one-frame
-		// lag is unavoidable (and previously the header never rendered at all).
-		const percent = scrolled
-			? Math.round(
-					((this.scroll.getMaxScroll() - Math.min(this.scroll.getOffset(), this.scroll.getMaxScroll())) /
-						this.scroll.getMaxScroll()) *
-						100,
-				)
-			: 100;
-		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
-		const viewportStatusText = scrolled ? `[视口 ${percent}% · 点击回到最新]` : "";
-		this.viewportStatusText = viewportStatusText;
 		const viewportLabel = scrolled
 			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}${viewportStatusText}${C.reset}`
 			: "";
@@ -1226,107 +1188,60 @@ export class UIHost implements UIHostContextPort {
 	 * Single source of truth for frame geometry. Pure with respect to
 	 * `scrollOffset`: it reports the clamped value instead of writing it, so
 	 * rendering, scrollToTurn, preserveScrollAnchor and hit zones cannot drift.
+	 * 布局算术在 layout/frame.ts 的 computeFrame；这里只装配各区输入。
 	 */
 	private computeLayout(reserveGutter: boolean): FrameLayout {
-		const width = this.terminal.columns;
+		const innerW = this.terminal.columns;
 		const height = this.terminal.rows;
-		const innerW = width;
 
 		// The input line keeps one safety column so the terminal never wraps it.
 		const inputWidth = Math.max(2, innerW - 1);
 		const inputLines = this.inputLine.render(innerW);
-		const inputH = inputLines.length;
 
 		const contextBarLines = this.contextBar.render(inputWidth);
 		// The footer slot is a real frame region: extensions that call setFooter()
 		// must see it, otherwise the API silently does nothing.
 		const footerLines = this.footerComponent ? this.componentBoundary.render(this.footerComponent, inputWidth) : [];
-		const belowLines = [...contextBarLines, ...this.widgetSlots.render("belowEditor", innerW), ...footerLines];
-		const belowH = belowLines.length;
 
-		const aboveEditorWidgets = this.widgetSlots.render("aboveEditor", innerW);
-		const maxAboveH = Math.max(0, height - inputH - belowH - 1);
-		const overlayLines = this.overlayStack.renderAbove(innerW, maxAboveH);
-
-		let suggestionLines: string[] = [];
-		if (
-			this.activeSuggestions &&
-			(this.activeSuggestions.items.length > 0 || this.activeSuggestions.loading) &&
-			!this.overlayStack.hasVisible
-		) {
-			suggestionLines = formatSuggestionCardLines({
-				type: this.activeSuggestions.type,
-				title: this.activeSuggestions.type === "command" ? "命令" : "文件",
-				query: this.activeSuggestions.query,
-				columns: inputWidth,
-				selectedIndex: this.activeSuggestions.selectedIndex,
-				items: this.activeSuggestions.items,
-				loading: this.activeSuggestions.loading,
-				maxVisible: 5,
-			});
-		}
-
+		const suggestionLines =
+			this.activeSuggestions && (this.activeSuggestions.items.length > 0 || this.activeSuggestions.loading)
+				? formatSuggestionCardLines({
+						type: this.activeSuggestions.type,
+						title: this.activeSuggestions.type === "command" ? "命令" : "文件",
+						query: this.activeSuggestions.query,
+						columns: inputWidth,
+						selectedIndex: this.activeSuggestions.selectedIndex,
+						items: this.activeSuggestions.items,
+						loading: this.activeSuggestions.loading,
+						maxVisible: 5,
+					})
+				: [];
 		const pendingLines =
-			(!this.activeSuggestions || (this.activeSuggestions.items.length === 0 && !this.activeSuggestions.loading)) &&
-			!this.overlayStack.hasVisible
+			!this.activeSuggestions || (this.activeSuggestions.items.length === 0 && !this.activeSuggestions.loading)
 				? this.pendingQueue.render(innerW)
 				: [];
 
-		// The stack is ordered top → editor-adjacent; when the budget is exceeded
-		// keep the lines closest to the input box instead of the far ones.
-		const aboveRaw = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines, ...pendingLines];
-		const aboveLines = aboveRaw.length > maxAboveH ? aboveRaw.slice(aboveRaw.length - maxAboveH) : aboveRaw;
-		const aboveH = aboveLines.length;
-
-		const breathingGap = 1;
-		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
-		const safeW = reserveGutter ? Math.max(20, innerW - 1) : innerW;
-		const transcriptContentW = Math.max(18, reserveGutter ? safeW - 2 : innerW - 1);
-		const bannerLines = this.componentBoundary.render(this.headerComponent ?? this.banner, transcriptContentW);
-		// 帧内单一行模型：一次 ensureModel，行序列与四个热区索引全部同源（旧写法各取各的，assemble 重复 5 次）
+		const transcriptContentW = Math.max(18, reserveGutter ? Math.max(20, innerW - 1) - 2 : innerW - 1);
 		const frameModel = this.transcript.getFrameModel(transcriptContentW);
-		const transcriptLines = frameModel.lines;
-		const permanentLines = [...bannerLines, ...transcriptLines];
-		const totalPerm = permanentLines.length;
-		const maxScroll = Math.max(0, totalPerm - transcriptH);
 
-		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scroll.getOffset(), maxScroll));
-		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
-		const visibleTranscript =
-			totalPerm <= transcriptH
-				? [...permanentLines, ...new Array(transcriptH - totalPerm).fill("")]
-				: permanentLines.slice(scrollStart, scrollStart + transcriptH);
-
-		return {
-			width,
+		return computeFrame({
+			width: innerW,
 			height,
-			hasGutter: reserveGutter && maxScroll > 0,
-			innerW,
-			inputWidth,
 			inputLines,
-			inputH,
-			belowLines,
-			belowH,
-			maxAboveH,
-			overlayLines,
+			contextBarLines,
+			footerLines,
+			belowWidgetLines: this.widgetSlots.render("belowEditor", innerW),
+			aboveWidgetLines: this.widgetSlots.render("aboveEditor", innerW),
+			renderOverlays: (w, maxAboveH) => this.overlayStack.renderAbove(w, maxAboveH),
+			hasVisibleOverlay: this.overlayStack.hasVisible,
 			suggestionLines,
 			pendingLines,
-			aboveLines,
-			aboveH,
-			bannerLines,
-			bannerCount: bannerLines.length,
-			transcriptLines,
-			permanentLines,
-			totalPerm,
-			safeW,
-			transcriptContentW,
-			transcriptH,
-			maxScroll,
-			effScroll,
-			scrollStart,
-			visibleTranscript,
+			bannerLines: this.componentBoundary.render(this.headerComponent ?? this.banner, transcriptContentW),
+			transcriptLines: frameModel.lines,
 			frameModel,
-		};
+			scrollOffset: this.scroll.getOffset(),
+			reserveGutter,
+		});
 	}
 
 	private layoutFrame(): FrameLayout {
@@ -1479,7 +1394,7 @@ export class UIHost implements UIHostContextPort {
 
 		for (let r = 0; r < chatAreaH; r++) {
 			const rawLine = allChatRows[r] ?? "";
-			const baseLine = truncateToWidth(rawLine, transcriptContentW, " ");
+			const baseLine = fitLine(rawLine, transcriptContentW, "clip");
 			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
 			const rail = layout.hasGutter ? (railGlyphs[r] ?? "  ") : "";
 			// hover 中的工具卡行：底色延伸覆盖 rail 交界 2 列，否则卡片底色到
@@ -1503,7 +1418,7 @@ export class UIHost implements UIHostContextPort {
 					const cardW = visibleWidth(cardLine);
 					const cardStartCol = Math.max(0, transcriptContentW - cardW - 1);
 					const baseLine = allChatRows[targetRow]!;
-					const contentWithoutRail = truncateToWidth(baseLine, transcriptContentW, " ");
+					const contentWithoutRail = fitLine(baseLine, transcriptContentW, "clip");
 					const overlaid = overlayCard(contentWithoutRail, cardLine, cardStartCol, transcriptContentW);
 					allChatRows[targetRow] = `${overlaid}${railGlyphs[targetRow] ?? "  "}`;
 				}

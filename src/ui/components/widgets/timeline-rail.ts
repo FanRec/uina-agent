@@ -10,7 +10,8 @@
  */
 
 import type { Component } from "../../core/types.js";
-import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
 
 export interface TimelineRailTurn {
 	/** 身份：刻度的活跃/悬停判定一律用它，n 会撞号。 */
@@ -197,7 +198,7 @@ export class TimelineRailComponent implements Component {
 			const rawSnippet = hoveredTurn.userText.replace(/[\r\n]+/g, " ").trim();
 			// Preview width scales with the content area instead of a fixed 24 columns.
 			const previewMax = this.options.previewMaxWidth ?? Math.max(12, Math.min(48, Math.floor(contentWidth * 0.4)));
-			const snippet = truncateToWidth(rawSnippet || `轮次 ${hoveredTurn.n}`, previewMax, "…");
+			const snippet = fitLine(rawSnippet || `轮次 ${hoveredTurn.n}`, previewMax);
 			const snippetW = visibleWidth(snippet);
 			const boxInnerW = Math.max(4, snippetW);
 			const padL = Math.floor((boxInnerW - snippetW) / 2);

@@ -1564,6 +1564,41 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2收口提交前。
 遗留未知：无。
 
+[W3] 2026-10-29
+决策：截断/折行收口为 `src/ui/layout/fit.ts`（fitLine 三策略 + wrapLine + measure）；`truncateToWidth`/`wrapTextWithAnsi` 从 core/utils 删除，全部 26 个调用文件迁到 fitLine，allowlist 测试锁死唯一入口。D12 的"省略号前 reset"按成立修复：省略号继承截断点活跃 SGR，后接 reset。wrapLine 以 SGR 栈重放全部活跃样式（旧实现只留最后一个 SGR）。
+证据：tests/ui-overlay-frame.test.ts「布局原语 allowlist」；tests/ui-format.test.ts 截断字节序更新为新契约。
+影响文件：src/ui/layout/fit.ts（新增）、src/ui/core/utils.ts、src/ui/**（26 文件调用点）。
+回滚点：W3 提交前。
+遗留未知：无。
+
+[W3] 2026-10-29
+决策：宽度表按 Unicode 15 EAW 精确区间重写：补齐 ⌚☔☕⚽ 等漏判符号，撤掉 0x1F300–0x1FAFF 整段宽字符（改为带 exception 的精确 emoji 区段）；charWidth 与 graphemeWidth 统一 tab 口径（真实列宽只由 scanCells 的制表位展开决定）。实测帧基准与 W0 在噪声带内（80×24 p50 0.081→0.088ms，1000 节点 0.249ms 低于基线 0.260ms）。
+证据：scripts/ui-frame-bench.ts 两轮复跑；tests/ui-frame-invariants.test.ts 20–200 列全绿。
+影响文件：src/ui/core/utils.ts。
+回滚点：W3 提交前。
+遗留未知：EAW 子集未覆盖到每个 Unicode 版本增量；新 emoji 出现时按区间表增补。
+
+[W3] 2026-10-29
+决策：UIHost 的私有 FrameLayout/computeLayout 抽成 `src/ui/layout/frame.ts` 的 `computeFrame(FrameInput)` 纯函数；UIHost 只装配。reservedRight 36/10 写死删除，由视口离底指示器实测宽度得出（D15）。OverlayStack.compositeTuiLine 超宽行开发态输出诊断（overlay id、行号、超出列数）、运行态 ellipsis 裁剪；renderPanel 产物保证精确宽度，正常不进诊断分支。
+证据：tests/ui-overlay-frame.test.ts（面板行宽守卫 + 六浮层整框一致 + 分支检视器 CHA 几何）；pnpm typecheck 全绿。
+影响文件：src/ui/layout/frame.ts、src/ui/layout/panel.ts（新增）、src/ui/ui-host.ts、src/ui/core/overlay.ts、src/ui/components/widgets/{activity-line,context-bar}.ts。
+回滚点：W3 提交前。
+遗留未知：无。
+
+[W3] 2026-10-29
+决策：六个浮层（help/effort/prompt/model-picker/trajectory + 建议卡）边框改走 renderPanel/panel 部件；实测修复三类行宽算术错误——help/effort/picker/trajectory 内容行比边框宽 2 列、建议卡 40 列溢出 6 列且窄终端 cardWidth=min30 超终端、prompt 无框。branch-inspector 的 CHA 几何经测量本就精确，不改，测试锁死。
+证据：tests/ui-overlay-frame.test.ts 全绿；修复前 dbg 测量记录（help 78/76、effort 78/76、picker 80/78、suggestion 46/40）。
+影响文件：src/ui/features/overlays/{help-menu,effort-slider,model-picker,prompt-overlay,trajectory-scene}.ts、src/ui/components/editor/suggestions.ts。
+回滚点：W3 提交前。
+遗留未知：CJK 歧义宽字符（▸ ● ◆）在特定宿主字体下的视觉对齐依赖 CHA/终端策略，visibleWidth 口径不变。
+
+[W2收口补记] 2026-10-29
+决策：W2c 改文案（`~` 只标估算、完成态 `tok`）时漏改了 tests/tps-metric.test.ts 与 tests/tps-wiring.test.ts 的断言（18 例在 b81bf3b 即红）。本次按现行输出格式修正断言，不改组件行为。
+证据：干净 worktree（b81bf3b）复跑 18 例同红；修复后两文件全绿。
+影响文件：tests/tps-metric.test.ts、tests/tps-wiring.test.ts。
+回滚点：W3 提交前。
+遗留未知：tts-bridge-protocol 仍为已知环境失败（沙箱缺 Python httpx），与本重构无关。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

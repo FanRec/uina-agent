@@ -9,7 +9,8 @@
 
 import type { GenerationTiming } from "../../../core/types.js";
 import type { Component } from "../../core/types.js";
-import { C, charWidth, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { C, charWidth, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -135,11 +136,11 @@ function animatedHeader(message: string, elapsedMs: number, now: number, maxWidt
 	}
 
 	const safeAvail = Math.max(1, availForMessage);
-	const safeMsg = visibleWidth(message) > safeAvail ? truncateToWidth(message, safeAvail, "…") : message;
+	const safeMsg = visibleWidth(message) > safeAvail ? fitLine(message, safeAvail) : message;
 	const shimmerText = safeMsg ? sweep(safeMsg, now, ICE_RGB, FLASH_RGB, 60) : "";
 
 	const line = shimmerText ? `${spinner}${shimmerText} ${secStr}${activeSuffix}` : `${spinner}${secStr}${activeSuffix}`;
-	return visibleWidth(line) > maxWidth ? truncateToWidth(line, maxWidth, "") : line;
+	return visibleWidth(line) > maxWidth ? fitLine(line, maxWidth, "clip") : line;
 }
 
 /** 扩展工作是独立的可见操作，不借用回合的 ActivityLine 状态和计时。 */
@@ -265,7 +266,7 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 					: ` · ${tokenMark}${tokens} tok`
 				: "";
 		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${ttft}${tokenStr}${sparkStr}${C.reset}`;
-		return truncateToWidth(`${prefix} ${text}`, maxWidth);
+		return fitLine(`${prefix} ${text}`, maxWidth);
 	}
 
 	// 1. 组装 Token 实时体量或首包等待提示
@@ -553,7 +554,7 @@ export class ActivityLineComponent implements Component {
 	render(width: number): string[] {
 		const str = this.getHeaderString(width);
 		if (!str) return [];
-		return [truncateToWidth(`  ${str}`, width)];
+		return [fitLine(`  ${str}`, width)];
 	}
 
 	invalidate(): void {}
@@ -605,7 +606,7 @@ export class PendingQueueComponent {
 			for (const item of steerItems) {
 				if (renderedCount >= this.maxVisible) break;
 				const cleanText = item.text.replace(/[\r\n]+/g, " ").trim();
-				const truncated = truncateToWidth(cleanText, maxContentW);
+				const truncated = fitLine(cleanText, maxContentW);
 				lines.push(`    ${C.subtle}↳${C.reset} ${C.text}${truncated}${C.reset}`);
 				renderedCount++;
 			}
@@ -618,7 +619,7 @@ export class PendingQueueComponent {
 			for (const item of followUpItems) {
 				if (renderedCount >= this.maxVisible) break;
 				const cleanText = item.text.replace(/[\r\n]+/g, " ").trim();
-				const truncated = truncateToWidth(cleanText, maxContentW);
+				const truncated = fitLine(cleanText, maxContentW);
 				lines.push(`    ${C.subtle}↳${C.reset} ${C.text}${truncated}${C.reset}`);
 				renderedCount++;
 			}
@@ -633,6 +634,6 @@ export class PendingQueueComponent {
 		// 4. 操作指引行
 		lines.push(`  ${C.subtle}↳ Alt+↑ 撤回 · Esc 打断并发送 · Ctrl+Enter 插队${C.reset}`);
 
-		return lines.map((l) => truncateToWidth(l, width));
+		return lines.map((l) => fitLine(l, width));
 	}
 }

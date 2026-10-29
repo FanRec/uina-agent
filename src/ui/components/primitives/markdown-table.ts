@@ -8,7 +8,8 @@
  * 4. 表现层高内聚：单元格自动应用行内 Markdown 语法高亮（代码、粗体、链接），边框 100% 全封闭永不残缺。
  */
 
-import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../../core/utils.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { fitLine, wrapLine } from "../../layout/fit.js";
 import { formatInlineMarkdown } from "./inline-markdown.js";
 
 export type ColumnAlign = "left" | "center" | "right";
@@ -126,7 +127,7 @@ export function parseMarkdownTable(lines: string[]): ParsedTable | null {
 function alignCellText(text: string, width: number, align: ColumnAlign): string {
 	const textW = visibleWidth(text);
 	if (textW >= width) {
-		return textW > width ? truncateToWidth(text, width, "") : text;
+		return textW > width ? fitLine(text, width, "clip") : text;
 	}
 	const padTotal = width - textW;
 	if (align === "right") {
@@ -148,10 +149,10 @@ function alignCellText(text: string, width: number, align: ColumnAlign): string 
 function renderCellFragments(text: string, w: number, align: ColumnAlign): string[] {
 	if (w < 4) {
 		const single = text.replace(/<br\s*\/?>/gi, " ");
-		return [alignCellText(truncateToWidth(single, w, "…"), w, align)];
+		return [alignCellText(fitLine(single, w), w, align)];
 	}
 	const normalized = text.replace(/<br\s*\/?>/gi, "\n");
-	const wrapped = wrapTextWithAnsi(normalized, w);
+	const wrapped = wrapLine(normalized, w);
 	return wrapped.map((frag) => alignCellText(frag, w, align));
 }
 
@@ -268,27 +269,27 @@ function renderStreamlinedEntries(table: ParsedTable, terminalWidth: number): st
 			if (shouldSplit) {
 				const headerLead = `  ${bar}   ${C.cyan}`;
 				const headerAvail = Math.max(1, safeW - visibleWidth(headerLead));
-				const wrappedHeader = wrapTextWithAnsi(`${header}:`, headerAvail);
+				const wrappedHeader = wrapLine(`${header}:`, headerAvail);
 				for (const wh of wrappedHeader) {
 					output.push(`${headerLead}${wh}${C.reset}`);
 				}
 
 				const valLead = `  ${bar}     `;
 				const valAvail = Math.max(1, safeW - visibleWidth(valLead));
-				const wrappedVal = wrapTextWithAnsi(val, valAvail);
+				const wrappedVal = wrapLine(val, valAvail);
 				for (const wv of wrappedVal) {
 					output.push(`${valLead}${wv}${C.reset}`);
 				}
 			} else {
 				const lead = `${inlinePrefix}${header}${inlineSuffix}`;
 				const valAvail = Math.max(1, safeW - inlineLeadW);
-				const wrapped = wrapTextWithAnsi(val, valAvail);
+				const wrapped = wrapLine(val, valAvail);
 				if (wrapped.length > 0) {
 					output.push(`${lead}${wrapped[0]}${C.reset}`);
 					const subLead = `  ${bar}${" ".repeat(Math.max(3, inlineLeadW - 3))}`;
 					const subAvail = Math.max(1, safeW - visibleWidth(subLead));
 					for (let i = 1; i < wrapped.length; i++) {
-						const rewrapped = wrapTextWithAnsi(wrapped[i]!, subAvail);
+						const rewrapped = wrapLine(wrapped[i]!, subAvail);
 						for (const rw of rewrapped) output.push(`${subLead}${rw}${C.reset}`);
 					}
 				} else {

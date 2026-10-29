@@ -41,12 +41,12 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 
 		const rendered = headerTokens(tui);
 		// 有真实值就用真实值，且只计一次
-		expect(rendered).toContain("~120 tokens");
+		expect(rendered).toContain("120 tok");
 		// 不能是"同一调用按推送次数累加"（240），也不能是"真值 + 估算"
-		expect(rendered).not.toContain("~240 tokens");
-		expect(rendered).not.toContain("~" + (120 + placeholder) + " tokens");
+		expect(rendered).not.toContain("240 tok");
+		expect(rendered).not.toContain(String(120 + placeholder) + " tok");
 		// 若接线被删，会退回估算
-		expect(rendered).not.toContain("~" + placeholder + " tokens");
+		expect(rendered).not.toContain("~" + placeholder + " tok");
 	});
 
 	it("跨 step 的真实输出累加（多轮 stream→tool→stream）", () => {
@@ -60,7 +60,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		tui.consume(record({ type: "turn_end", turnNumber: 1 }));
 
 		const rendered = headerTokens(tui);
-		expect(rendered).toContain("~75 tokens");
+		expect(rendered).toContain("75 tok");
 	});
 
 	it("思考增量也进解码区间：左端从「首个生成的 token」起算，而非正文首字", () => {
@@ -90,8 +90,8 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			// 三段合计 900 字都要计入，不能只剩正文那一段（300 字）。
 			const allSegments = foldStreamChars({ cjk: 900, other: 0 });
 			const textOnly = foldStreamChars({ cjk: 300, other: 0 });
-			expect(rendered).toContain("~" + allSegments + " tokens");
-			expect(rendered).not.toContain("~" + textOnly + " tokens");
+			expect(rendered).toContain("~" + allSegments + " tok");
+			expect(rendered).not.toContain("~" + textOnly + " tok");
 			// 分母 = 首个思考 token 到最后一个 token = 7.0s；若思考增量不进解码区间，
 			// 这一步根本没有可度量的生成时间。
 			expect(rendered).toContain("~" + Math.round(allSegments / 7) + " tps");
@@ -161,14 +161,14 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			// 会读到 ~50000；分子丢掉真值、只算那句前言的折算会读到个位数。
 			const preambleOnly = Math.round(foldStreamChars({ cjk: 8, other: 0 }) / 3);
 			const duringTool = headerTokens(tui);
-			expect(duringTool).toContain("~167 tps");
+			expect(duringTool).toContain("167 tps");
 			expect(duringTool).not.toContain("50000");
-			expect(duringTool).not.toContain("~" + preambleOnly + " tps");
+			expect(duringTool).not.toContain("~" + preambleOnly + " tps"); // 估算路径仍带 ~
 
 			// 工具跑 30 秒也不该稀释读数。
 			vi.setSystemTime(T0 + 33_020);
 			const afterTool = headerTokens(tui);
-			expect(afterTool).toContain("~167 tps");
+			expect(afterTool).toContain("167 tps");
 		} finally {
 			vi.useRealTimers();
 		}

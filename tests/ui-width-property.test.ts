@@ -10,8 +10,10 @@
  * 1. visibleWidth 与「Segmenter 逐簇累加」在任何随机串上等宽（快路径误判会在这里现形）；
  * 2. truncateToWidth / wrapTextWithAnsi 绝不切开簇，且折行重组后内容无损。
  */
+
 import { describe, expect, it } from "vitest";
-import { scanCells, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
+import { scanCells, stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
+import { fitLine, wrapLine } from "../src/ui/layout/fit.js";
 
 // ── 独立预言机（不 import 源码的宽度实现） ─────────────────────────────────
 
@@ -207,7 +209,7 @@ describe("scanCells 系宽度实现 vs Segmenter 预言机", () => {
 	it("truncateToWidth 不超宽且不切开簇（截断点落在簇边界）", () => {
 		for (const text of NO_ESC_SAMPLES) {
 			for (const maxWidth of [1, 2, 3, 5, 8, 13, 21]) {
-				const result = truncateToWidth(text, maxWidth);
+				const result = fitLine(text, maxWidth);
 				expect(visibleWidth(result)).toBeLessThanOrEqual(maxWidth);
 				if (result.endsWith("…")) {
 					const kept = result.slice(0, -1);
@@ -230,7 +232,7 @@ describe("scanCells 系宽度实现 vs Segmenter 预言机", () => {
 	it("wrapTextWithAnsi 折行重组后内容无损", () => {
 		for (const text of NO_ESC_SAMPLES) {
 			for (const maxWidth of [2, 4, 8, 16, 32]) {
-				const lines = wrapTextWithAnsi(text, maxWidth);
+				const lines = wrapLine(text, maxWidth);
 				// 折行按 \n 切行，重组时 \n 不会回填（与旧实现一致），故对拍时剥掉
 				expect(stripAnsi(lines.join(""))).toBe(stripAnsi(text).replace(/\n/g, ""));
 				if (text.includes("\t")) continue; // 制表位展开可越过 maxWidth（既有语义，见 ui-frame expandTabs）

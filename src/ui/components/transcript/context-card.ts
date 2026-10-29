@@ -1,9 +1,10 @@
 import type { ImageContent } from "../../../core/content.js";
+import { imageNotice } from "../../../core/content.js";
 import type { InputSource } from "../../../core/types.js";
 import type { InjectionProvenance } from "../../../runtime/events.js";
-import { imageNotice } from "../../../core/content.js";
-import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
+import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
+import { fitLine, wrapLine } from "../../layout/fit.js";
 
 export interface PromptContextCardData {
 	kind: "prompt";
@@ -48,7 +49,7 @@ export class ContextCardComponent {
 		const top = `  ${border}╭─${C.bold}${tag}${C.reset}${border}${"─".repeat(Math.max(2, boxWidth - visibleWidth(tag) - 5))}╮${C.reset}`;
 		const rows = this.data.kind === "external" ? this.externalRows(innerWidth) : this.promptRows(innerWidth);
 		const body = rows.map((row) => {
-			const clipped = truncateToWidth(stripAnsi(row), innerWidth, "…");
+			const clipped = fitLine(stripAnsi(row), innerWidth);
 			return `  ${border}│${C.reset} ${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))} ${border}│${C.reset}`;
 		});
 		const bottom = `  ${border}╰${"─".repeat(Math.max(2, boxWidth - 4))}╯${C.reset}`;
@@ -75,7 +76,7 @@ export class ContextCardComponent {
 		}
 		if (this.expanded) {
 			rows.push(`${C.dim}最终 system prompt${C.reset}`);
-			for (const line of wrapTextWithAnsi(sanitizeRenderText(data.systemPrompt), Math.max(1, width - 2)))
+			for (const line of wrapLine(sanitizeRenderText(data.systemPrompt), Math.max(1, width - 2)))
 				rows.push(`  ${C.dim}${line}${C.reset}`);
 		}
 		return rows;
@@ -88,7 +89,7 @@ export class ContextCardComponent {
 			`${C.dim}${data.receivedAt}${C.reset}${this.expanded ? ` · ${C.dim}收起${C.reset}` : ""}`,
 		];
 		const text = sanitizeRenderText(data.text + imageNotice(data.images));
-		const lines = wrapTextWithAnsi(text, Math.max(1, width - 2));
+		const lines = wrapLine(text, Math.max(1, width - 2));
 		if (this.expanded || lines.length <= 3) rows.push(...lines.map((line) => `  ${C.text}${line}${C.reset}`));
 		else rows.push(`  ${C.text}${lines.slice(0, 3).join(" ")}…${C.reset}`);
 		return rows;

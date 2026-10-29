@@ -3,7 +3,8 @@
  */
 
 import type { Component } from "../../core/types.js";
-import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
 
 type Rgb = readonly [number, number, number];
 
@@ -123,13 +124,13 @@ export function getStartupBanner(options?: BannerOptions, terminalWidth = 80): s
 		const whaleLines = renderWhaleLines();
 		const availRight = Math.max(10, width - 43); // 40鲸鱼 + 3空格间距
 
-		const info1 = truncateToWidth(
+		const info1 = fitLine(
 			`${C.bold}${C.white}Uina${C.reset} · ${C.suggestion}Extensible Agent Runtime${C.reset}`,
 			availRight,
-			"",
+			"clip",
 		);
 		const cwd = options?.cwd ?? process.cwd();
-		const infoCwd = truncateToWidth(`${C.gray}目录: ${C.cyan}${cwd}${C.reset}`, availRight, "");
+		const infoCwd = fitLine(`${C.gray}目录: ${C.cyan}${cwd}${C.reset}`, availRight, "clip");
 
 		let rawInfo3 = "";
 		if (availRight >= 56) {
@@ -139,16 +140,16 @@ export function getStartupBanner(options?: BannerOptions, terminalWidth = 80): s
 		} else if (availRight >= 20) {
 			rawInfo3 = `${C.dim}? 帮助 | /quit 退出${C.reset}`;
 		}
-		const info3 = truncateToWidth(rawInfo3, availRight, "");
+		const info3 = fitLine(rawInfo3, availRight, "clip");
 
 		for (let i = 0; i < whaleLines.length; i++) {
 			const whalePart = whaleLines[i]!;
 			let rightPart = "";
-			if (i === 1) rightPart = `   ${truncateToWidth(uinaLines[0]!, availRight, "")}`;
-			else if (i === 2) rightPart = `   ${truncateToWidth(uinaLines[1]!, availRight, "")}`;
-			else if (i === 3) rightPart = `   ${truncateToWidth(uinaLines[2]!, availRight, "")}`;
-			else if (i === 4) rightPart = `   ${truncateToWidth(uinaLines[3]!, availRight, "")}`;
-			else if (i === 5) rightPart = `   ${truncateToWidth(uinaLines[4]!, availRight, "")}`;
+			if (i === 1) rightPart = `   ${fitLine(uinaLines[0]!, availRight, "clip")}`;
+			else if (i === 2) rightPart = `   ${fitLine(uinaLines[1]!, availRight, "clip")}`;
+			else if (i === 3) rightPart = `   ${fitLine(uinaLines[2]!, availRight, "clip")}`;
+			else if (i === 4) rightPart = `   ${fitLine(uinaLines[3]!, availRight, "clip")}`;
+			else if (i === 5) rightPart = `   ${fitLine(uinaLines[4]!, availRight, "clip")}`;
 			else if (i === 7 && info1) rightPart = `   ${info1}`;
 			else if (i === 8 && infoCwd) rightPart = `   ${infoCwd}`;
 			else if (i === 9 && info3) rightPart = `   ${info3}`;
@@ -181,18 +182,18 @@ export function getStartupBanner(options?: BannerOptions, terminalWidth = 80): s
 				? `${C.bold}${C.white}Uina${C.reset} · ${C.suggestion}Extensible Agent Runtime${C.reset}`
 				: `${C.bold}${C.white}Uina Agent Core${C.reset}`;
 		const pad1 = Math.max(0, Math.floor((width - visibleWidth(info1)) / 2));
-		banner.push(`${" ".repeat(pad1)}${truncateToWidth(info1, width, "")}`);
+		banner.push(`${" ".repeat(pad1)}${fitLine(info1, width, "clip")}`);
 
 		const cwd = options?.cwd ?? process.cwd();
 		const normPath = cwd.replace(/\\/g, "/");
 		const baseCwd = normPath.split("/").filter(Boolean).pop() || cwd;
 		const infoCwd = width >= 40 ? `${C.gray}目录: ${C.cyan}${cwd}${C.reset}` : `${C.gray}📁 ${baseCwd}${C.reset}`;
 		const padCwd = Math.max(0, Math.floor((width - visibleWidth(infoCwd)) / 2));
-		banner.push(`${" ".repeat(padCwd)}${truncateToWidth(infoCwd, width, "")}`);
+		banner.push(`${" ".repeat(padCwd)}${fitLine(infoCwd, width, "clip")}`);
 
 		const tagline = `${C.suggestion}${C.dim}✦ Local · Open · Extensible ✦${C.reset}`;
 		const padTag = Math.max(0, Math.floor((width - visibleWidth(tagline)) / 2));
-		banner.push(`${" ".repeat(padTag)}${truncateToWidth(tagline, width, "")}`);
+		banner.push(`${" ".repeat(padTag)}${fitLine(tagline, width, "clip")}`);
 	}
 
 	banner.push(""); // 底部留白一行

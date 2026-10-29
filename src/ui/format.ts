@@ -4,7 +4,7 @@
  */
 
 import { TOOL_STATUS_SPEC } from "../presentation/tool-status.js";
-import { truncateToWidth } from "./core/utils.js";
+import { fitLine } from "./layout/fit.js";
 
 export type Style = (s: string) => string;
 
@@ -255,7 +255,7 @@ function indentLines(text: string, style: Style): string[] {
 	const all = text.split("\n");
 	const raw = all.slice(0, 6);
 	const out = raw.map((l) => {
-		const safeLine = truncateToWidth(l, 200);
+		const safeLine = fitLine(l, 200);
 		return style(safeLine);
 	});
 	if (all.length > 6) out.push(style(`… 还有 ${all.length - 6} 行未显示`));

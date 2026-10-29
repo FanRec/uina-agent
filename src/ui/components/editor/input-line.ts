@@ -13,11 +13,12 @@
  * 5. 全列宽绝对几何锁定，顶边框、内容行、底边框像素级垂直。
  */
 
-import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth, truncateToWidth, copyToClipboardUnified } from "../../core/utils.js";
-import { formatTokensCompact, renderSegmentedBar, type ContextSegments } from "../widgets/context-bar.js";
 import { TextBuffer } from "../../core/text-buffer.js";
+import { type Component, CURSOR_MARKER, type Focusable } from "../../core/types.js";
+import { C, copyToClipboardUnified, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
+import { type ContextSegments, formatTokensCompact, renderSegmentedBar } from "../widgets/context-bar.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
 const MAX_VISIBLE_LINES = 5;
@@ -49,8 +50,9 @@ export function findMarkers(text: string): MarkerSpan[] {
 	return list;
 }
 
-import { getPrevGraphemeIndex, getNextGraphemeIndex, graphemeSegmenter, graphemeWidth } from "../../core/utils.js";
-export { getPrevGraphemeIndex, getNextGraphemeIndex };
+import { getNextGraphemeIndex, getPrevGraphemeIndex, graphemeSegmenter, graphemeWidth } from "../../core/utils.js";
+
+export { getNextGraphemeIndex, getPrevGraphemeIndex };
 
 export interface TextSegment {
 	segment: string;
@@ -1093,7 +1095,7 @@ export class InputLine implements Component, Focusable {
 		let topLine = "";
 		if (topLabel) {
 			const maxHeaderW = Math.max(8, boxWidth - 8);
-			const safeHeader = truncateToWidth(topLabel, maxHeaderW);
+			const safeHeader = fitLine(topLabel, maxHeaderW);
 			const baseW = 3 + visibleWidth(safeHeader) + 1 + 1;
 			const rightLen = Math.max(1, boxWidth - baseW);
 			topLine = `${borderCol}╭─ ${C.text}${safeHeader} ${borderCol}${"─".repeat(rightLen)}╮${C.reset}`;
@@ -1118,7 +1120,7 @@ export class InputLine implements Component, Focusable {
 
 			// 严格截断保证绝对不撑爆右边框
 			if (visibleWidth(contentStr) > contentColLimit) {
-				contentStr = truncateToWidth(contentStr, contentColLimit, "");
+				contentStr = fitLine(contentStr, contentColLimit, "clip");
 			}
 			const finalW = visibleWidth(contentStr);
 			const padLen = Math.max(0, innerWidth - promptPrefixWidth - finalW);

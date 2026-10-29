@@ -12,8 +12,9 @@ import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/i
 import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
-import { stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
+import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { installUIFeatures } from "../src/ui/features.js";
+import { fitLine, wrapLine } from "../src/ui/layout/fit.js";
 import { UIHost } from "../src/ui/ui-host.js";
 
 import {
@@ -492,7 +493,7 @@ describe("B2: grapheme-aware width", () => {
 
 	it("never splits a grapheme cluster when truncating", () => {
 		const emoji = "👍🏽👍🏽👍🏽";
-		const truncated = truncateToWidth(emoji, 5);
+		const truncated = fitLine(emoji, 5);
 		expect(visibleWidth(truncated)).toBeLessThanOrEqual(5);
 		const content = stripAnsi(truncated).replace(/…$/, "");
 		expect(emoji.startsWith(content)).toBe(true);
@@ -500,7 +501,7 @@ describe("B2: grapheme-aware width", () => {
 
 	it("never splits a grapheme cluster when wrapping", () => {
 		const emoji = "👍🏽👍🏽👍🏽";
-		const lines = wrapTextWithAnsi(emoji, 4);
+		const lines = wrapLine(emoji, 4);
 		expect(lines.every((line) => visibleWidth(line) <= 4)).toBe(true);
 		expect(lines.map(stripAnsi).join("")).toBe(emoji);
 	});

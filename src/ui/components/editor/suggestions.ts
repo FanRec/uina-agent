@@ -7,7 +7,8 @@
  * 4. 左右与顶底细线圆角闭合，像素级列宽对齐。
  */
 
-import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
 import type { FileItem } from "./file-candidates.js";
 
 export interface CommandItem {
@@ -80,7 +81,8 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 	if (items.length === 0 && !loading) return [];
 
-	const cardWidth = Math.max(30, columns);
+	// 卡片不超终端宽（审计 D2）：窄终端下收缩内容列而不是溢出
+	const cardWidth = Math.max(1, columns);
 	const usable = cardContentWidth(cardWidth);
 	const borderCol = C.gray;
 
@@ -93,7 +95,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 	const output: string[] = [topLine];
 	if (loading) {
-		const label = truncateToWidth("  正在扫描文件…", usable, "…");
+		const label = fitLine("  正在扫描文件…", usable);
 		const rowBody = `${C.dim}${label}${C.reset}`;
 		output.push(
 			`${borderCol}│${C.reset} ${rowBody}${" ".repeat(Math.max(0, usable - visibleWidth(rowBody)))} ${borderCol}│${C.reset}`,
@@ -117,20 +119,22 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 		commands.forEach((cmd, idx) => {
 			const isSelected = startIndex + idx === clampedIndex;
 			const pointer = isSelected ? `${C.suggestion}${C.bold}❯${C.reset} ` : "  ";
-			const parts = splitQueryMatch(cmd.name, query);
+			// 名称也必须受列宽约束（D1）：超长命令名不再把卡片撑破
+			const shownName = fitLine(cmd.name, nameColWidth);
+			const parts = splitQueryMatch(shownName, query);
 
-			const padAfter = Math.max(0, nameColWidth - visibleWidth(cmd.name));
+			const padAfter = Math.max(0, nameColWidth - visibleWidth(shownName));
 			let namePart = "";
 			if (isSelected) {
-				namePart = `${C.suggestion}${C.bold}${cmd.name}${C.reset}${" ".repeat(padAfter)}`;
+				namePart = `${C.suggestion}${C.bold}${shownName}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
 				namePart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
-				namePart = `${C.dim}${cmd.name}${" ".repeat(padAfter)}${C.reset}`;
+				namePart = `${C.dim}${shownName}${" ".repeat(padAfter)}${C.reset}`;
 			}
 
 			const descBudget = Math.max(0, usable - 2 - nameColWidth - 2);
-			const truncatedDesc = truncateToWidth(cmd.description, descBudget, "…");
+			const truncatedDesc = fitLine(cmd.description, descBudget);
 			const descPart = isSelected ? `${C.suggestion}${truncatedDesc}${C.reset}` : `${C.dim}${truncatedDesc}${C.reset}`;
 
 			const rowBody = `${pointer}${namePart}  ${descPart}`;
@@ -147,20 +151,22 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 			const isSelected = startIndex + idx === clampedIndex;
 			const pointer = isSelected ? `${C.suggestion}${C.bold}❯${C.reset} ` : "  ";
 			const icon = file.kind === "directory" ? `${C.cyan}▸${C.reset} ` : `${C.gray}+${C.reset} `;
-			const parts = splitQueryMatch(file.path, query);
+			// 路径同样受列宽约束（D1）：超长路径截断，不再撑破边框
+			const shownPath = fitLine(file.path, pathColWidth);
+			const parts = splitQueryMatch(shownPath, query);
 
-			const padAfter = Math.max(0, pathColWidth - visibleWidth(file.path));
+			const padAfter = Math.max(0, pathColWidth - visibleWidth(shownPath));
 			let pathPart = "";
 			if (isSelected) {
-				pathPart = `${C.suggestion}${C.bold}${file.path}${C.reset}${" ".repeat(padAfter)}`;
+				pathPart = `${C.suggestion}${C.bold}${shownPath}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
 				pathPart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
-				pathPart = `${C.dim}${file.path}${" ".repeat(padAfter)}${C.reset}`;
+				pathPart = `${C.dim}${shownPath}${" ".repeat(padAfter)}${C.reset}`;
 			}
 
 			const kindBudget = Math.max(0, usable - 2 - 2 - pathColWidth - 2);
-			const kindStr = truncateToWidth(file.kind, kindBudget, "");
+			const kindStr = fitLine(file.kind, kindBudget, "clip");
 			const kindPart = isSelected ? `${C.suggestion}${kindStr}${C.reset}` : `${C.dim}${kindStr}${C.reset}`;
 
 			const rowBody = `${pointer}${icon}${pathPart}  ${kindPart}`;

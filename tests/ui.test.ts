@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { TrajectoryProjection, type TrajectoryNode } from "../src/presentation/trajectory.js";
+import { ingestReplay } from "../src/presentation/ingest-replay.js";
+import { PresentationProjection, type ThinkingNode } from "../src/presentation/projection.js";
+import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
+import { type TrajectoryNode, TrajectoryProjection } from "../src/presentation/trajectory.js";
+import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import {
@@ -26,10 +30,6 @@ import {
 	TranscriptContainer,
 	type TurnItem,
 } from "../src/ui/components/transcript/index.js";
-import { PresentationProjection, type ThinkingNode } from "../src/presentation/projection.js";
-import { ingestReplay } from "../src/presentation/ingest-replay.js";
-import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
-import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import { revealStep, SmoothRevealController, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
 import { formatFullMarkdown, StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
 import {
@@ -51,10 +51,11 @@ import { FocusManager } from "../src/ui/core/focus.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
 import { WidgetSlots } from "../src/ui/core/slots.js";
-import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
+import { C, stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
 import { EffortSlider, HelpMenu, ModelPicker, TrajectoryScene } from "../src/ui/features/overlays/index.js";
 import { installUIFeatures } from "../src/ui/features.js";
+import { fitLine, wrapLine } from "../src/ui/layout/fit.js";
 import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
 import {
@@ -65,8 +66,8 @@ import {
 	getTestUIHost,
 	isHeartbeatActive,
 	mockModelGroups,
-	renderWidget,
 	record,
+	renderWidget,
 	toolDoneNode,
 	toolStartNode,
 	turnNode,
@@ -81,14 +82,14 @@ describe("UI Core: Utils", () => {
 
 	it("ANSI 安全截断：不截断转义码且正确补齐闭合", () => {
 		const text = "\x1b[36m这是一个很长的句子需要截断\x1b[0m";
-		const truncated = truncateToWidth(text, 10);
+		const truncated = fitLine(text, 10);
 		expect(visibleWidth(truncated)).toBeLessThanOrEqual(10);
 		expect(truncated).toContain("\x1b[0m");
 	});
 
 	it("带 ANSI 样式的文本折行", () => {
 		const text = "第一行测试很长需要折行的一句话\n第二行短";
-		const lines = wrapTextWithAnsi(text, 12);
+		const lines = wrapLine(text, 12);
 		expect(lines.length).toBeGreaterThan(1);
 	});
 });
@@ -1821,9 +1822,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 	describe("UI Architecture & Component Integrity Fixes", () => {
 		it("truncateToWidth 当 maxWidth 小于省略号长度时安全降级不超宽", () => {
-			expect(visibleWidth(truncateToWidth("hello", 1, "..."))).toBeLessThanOrEqual(1);
-			expect(visibleWidth(truncateToWidth("hello", 0, "..."))).toBe(0);
-			expect(visibleWidth(truncateToWidth("hello", 2, "..."))).toBeLessThanOrEqual(2);
+			expect(visibleWidth(fitLine("hello", 1, "clip"))).toBeLessThanOrEqual(1);
+			expect(visibleWidth(fitLine("hello", 0, "clip"))).toBe(0);
+			expect(visibleWidth(fitLine("hello", 2, "clip"))).toBeLessThanOrEqual(2);
 		});
 
 		it("EffortSlider 在只有少量或单个档位时安全初始化不发生越界崩溃", () => {
@@ -4327,7 +4328,7 @@ describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价"
 				formatted.push(rawLine.trimStart());
 				continue;
 			}
-			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
+			const wrapped = wrapLine(rawLine.trim(), contentBudget);
 			for (let i = 0; i < wrapped.length; i++) {
 				const piece = wrapped[i]!;
 				if (isFirst && i === 0) {

@@ -98,7 +98,7 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		// 实时行不展示 token 总数，速度本身已经说明了分子：500 / 3.0s = 167 tps。
 		// 右端取最后一个可见 token（0.0s）会读到 ~1667；分子丢掉真值只算那句前言会读到 ~2。
 		const header = plain(act.getHeaderString(200));
-		expect(header).toContain("~167 tps");
+		expect(header).toContain("167 tps");
 		expect(header).not.toContain("1667");
 		expect(header).not.toContain(`~${Math.round(foldStreamChars({ cjk: 8, other: 0 }) / 3)} tps`);
 	});
@@ -116,8 +116,8 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		act.finish("完成");
 
 		const header = plain(act.getHeaderString(200));
-		expect(header).toContain("~500 tokens");
-		expect(header).toContain("~167 tps");
+		expect(header).toContain("500 tok");
+		expect(header).toContain("167 tps");
 		expect(header).not.toContain("~15 tps"); // 把工具时间算进分母会掉到这附近
 	});
 
@@ -135,9 +135,9 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~120 tokens"); // 只有占过解码区间的 120
-		expect(rendered).not.toContain("~295 tokens"); // 不是 120 + 175
-		expect(rendered).toContain("~120 tps"); // 120 / 1.0s
+		expect(rendered).toContain("120 tok"); // 只有占过解码区间的 120
+		expect(rendered).not.toContain("295 tok"); // 不是 120 + 175
+		expect(rendered).toContain("120 tps"); // 120 / 1.0s
 	});
 
 	it("同一 step 里的真实值取代估算，不相加", () => {
@@ -152,8 +152,8 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~120 tokens");
-		expect(rendered).toContain("~150 tps"); // 120 / 0.8s
+		expect(rendered).toContain("120 tok");
+		expect(rendered).toContain("150 tps"); // 120 / 0.8s
 		expect(rendered).not.toContain(`~${Math.round((estimate + 120) / 0.8)} tps`); // 相加
 	});
 
@@ -171,9 +171,9 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~45 tokens");
-		expect(rendered).not.toContain(`~${45 + 30} tokens`); // 逐条累加
-		expect(rendered).toContain("~50 tps"); // 45 / 0.9s
+		expect(rendered).toContain("45 tok");
+		expect(rendered).not.toContain(`${45 + 30} tok`); // 逐条累加
+		expect(rendered).toContain("50 tps"); // 45 / 0.9s
 		expect(rendered).not.toContain(`~${Math.round((estimate + 45) / 0.9)} tps`); // 真值 + 估算
 	});
 
@@ -189,7 +189,7 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 
 		const rendered = plain(act.getHeaderString(200));
 		const total = foldStreamChars({ cjk: 461, other: 0 });
-		expect(rendered).toContain(`~${total} tokens`);
+		expect(rendered).toContain(`~${total} tok`);
 		expect(rendered).toContain(`~${Math.round(total / 2)} tps`); // 分母 = 2.0s
 	});
 
@@ -202,7 +202,7 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 		const rendered = plain(act.getHeaderString(200));
 		expect(rendered).toContain("耗时 3.0s");
 		expect(rendered).not.toContain("tps");
-		expect(rendered).not.toContain("tokens");
+		expect(rendered).not.toContain(" tok");
 	});
 });
 
@@ -223,7 +223,7 @@ describe("ActivityLineComponent：累计字符，切分无关", () => {
 		};
 
 		const whole = run([text]);
-		expect(whole).toContain(`~${estimateStreamTokens(text)} tokens`);
+		expect(whole).toContain(`~${estimateStreamTokens(text)} tok`);
 		expect(run([...text])).toBe(whole); // 每字符一段
 		expect(run([text.slice(0, 7), text.slice(7, 8), text.slice(8)])).toBe(whole);
 	});
@@ -236,7 +236,7 @@ describe("ActivityLineComponent：累计字符，切分无关", () => {
 		act.finish("完成", 3000);
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).not.toContain("tokens");
+		expect(rendered).not.toContain(" tok");
 		expect(rendered).not.toContain("tps");
 	});
 });
@@ -266,9 +266,9 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.finish("完成");
 
 		const header = plain(act.getHeaderString(200));
-		expect(header).toContain("~100 tokens");
+		expect(header).toContain("100 tok");
 		// 100 token / 2 秒解码 = 50 tps。若把工具那 30 秒算进分母，会掉到 ~3。
-		expect(header).toContain("~50 tps");
+		expect(header).toContain("50 tps");
 	});
 
 	it("两次 token 之间的停顿不让速度下滑（右端是 token 到达时刻）", () => {
@@ -313,10 +313,10 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.finish("完成");
 
 		const header = plain(act.getHeaderString(200));
-		expect(header).toContain("~100 tokens");
+		expect(header).toContain("100 tok");
 		// 100 token / 1 秒解码 = 100 tps。守卫若失效，第二次结算会把工具空档并进去，
 		// 分母涨到 ~8 秒，读数掉到 ~12 tps。
-		expect(header).toContain("~100 tps");
+		expect(header).toContain("100 tps");
 	});
 
 	it("解码跨度太短时不显示速度，避免抖出离谱数字", () => {
@@ -350,7 +350,7 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.addStreamText("新".repeat(5));
 		const mixed = Math.round((200 + foldStreamChars({ cjk: 10, other: 0 })) / 0.4);
 		const header = plain(act.getHeaderString(200));
-		expect(header).toContain("~667 tps"); // 200 / 0.3s
+		expect(header).toContain("667 tps"); // 200 / 0.3s
 		expect(header).not.toContain(`~${mixed} tps`);
 
 		// 越过 500ms 后重新起算：已结算累计 + 当前 step 一起进分子分母。
@@ -387,8 +387,8 @@ describe("ActivityLineComponent：Provider 真实时序优先于 UI 事件时刻
 
 		const rendered = plain(act.getHeaderString(200));
 		// 真实解码 0.4s：23 / 0.4 = 58 tps。退回 UI 事件时刻会读到 23 / 2.8 ≈ 8。
-		expect(rendered).toContain("~58 tps");
-		expect(rendered).not.toContain("~8 tps");
+		expect(rendered).toContain("58 tps");
+		expect(rendered).not.toMatch(/s8 tps/); // 58 的个位不应单独成读数
 		expect(rendered).toContain("首包 2.4s");
 	});
 
@@ -403,7 +403,7 @@ describe("ActivityLineComponent：Provider 真实时序优先于 UI 事件时刻
 
 		const rendered = plain(act.getHeaderString(200));
 		expect(rendered).toContain("23 tok (思考 16 · 正文 7)");
-		expect(rendered).not.toContain("~23 tokens");
+		expect(rendered).not.toContain("~23 tok");
 	});
 
 	it("无真实时序时保持既有口径：UI 事件时刻结算，不凭空显示首包", () => {
@@ -417,7 +417,7 @@ describe("ActivityLineComponent：Provider 真实时序优先于 UI 事件时刻
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~120 tps");
+		expect(rendered).toContain("120 tps");
 		expect(rendered).not.toContain("首包");
 	});
 });
@@ -436,7 +436,7 @@ describe("ActivityLineComponent：成批到达的 step 不可度量", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~92 tokens"); // 输出是事实，用户看得见
+		expect(rendered).toContain("92 tok"); // 输出是事实，用户看得见
 		expect(rendered).not.toContain("tps"); // 速度测不到就不报，绝不 92/0.03 = 3067
 	});
 
@@ -453,7 +453,7 @@ describe("ActivityLineComponent：成批到达的 step 不可度量", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~92 tokens");
+		expect(rendered).toContain("92 tok");
 		expect(rendered).not.toContain("tps");
 	});
 
@@ -482,8 +482,8 @@ describe("ActivityLineComponent：成批到达的 step 不可度量", () => {
 		act.finish("完成");
 
 		const rendered = plain(act.getHeaderString(200));
-		expect(rendered).toContain("~30 tokens");
-		expect(rendered).toContain("~100 tps"); // 30 / 0.3s
+		expect(rendered).toContain("30 tok");
+		expect(rendered).toContain("100 tps"); // 30 / 0.3s
 	});
 });
 

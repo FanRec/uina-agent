@@ -8,10 +8,11 @@
  * 5. 表格状态机连续缓冲与响应式网格渲染。
  */
 
-import { C, visibleWidth, getContentBoxWidth, wrapTextWithAnsi } from "../../core/utils.js";
-import { highlightCode } from "../primitives/syntax-text.js";
+import { C, getContentBoxWidth, visibleWidth } from "../../core/utils.js";
+import { wrapLine } from "../../layout/fit.js";
 import { formatInlineMarkdown } from "../primitives/inline-markdown.js";
-import { isMarkdownTableLine, parseMarkdownTable, formatMarkdownTableLines } from "../primitives/markdown-table.js";
+import { formatMarkdownTableLines, isMarkdownTableLine, parseMarkdownTable } from "../primitives/markdown-table.js";
+import { highlightCode } from "../primitives/syntax-text.js";
 
 export class StreamMarkdownFormatter {
 	private inCodeBlock = false;
@@ -55,7 +56,7 @@ export class StreamMarkdownFormatter {
 		if (this.inCodeBlock) {
 			const innerWidth = boxWidth - 4; // 减去两端 "│ " (2) 与 " │" (2)
 			const highlighted = highlightCode(cleanRaw, this.codeBlockLang);
-			const codeLines = wrapTextWithAnsi(highlighted, innerWidth);
+			const codeLines = wrapLine(highlighted, innerWidth);
 			return codeLines
 				.map(
 					(line) =>

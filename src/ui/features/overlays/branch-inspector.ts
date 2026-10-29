@@ -4,12 +4,13 @@
  * 本组件只管理视图光标与滚动位置，完全只读拉取，杜绝状态污染。
  */
 
-import type { Component, Focusable } from "../../core/types.js";
-import { Key, matchesKey } from "../../core/keys.js";
-import { C, stripAnsi, visibleWidth, truncateToWidth } from "../../core/utils.js";
-import { sanitizeRenderText } from "../../format.js";
 import { listAllSessionNodes, listBranchNodes } from "../../../session/navigation.js";
-import type { SessionAccess, SessionNodeInfo, HydratedSessionEntry } from "../../../session/types.js";
+import type { HydratedSessionEntry, SessionAccess, SessionNodeInfo } from "../../../session/types.js";
+import { Key, matchesKey } from "../../core/keys.js";
+import type { Component, Focusable } from "../../core/types.js";
+import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
+import { fitLine } from "../../layout/fit.js";
 
 /**
  * 视图状态。三种视图共用同一套列表渲染，但"分支历史"必须同时知道是哪条分支 ——
@@ -165,7 +166,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		// under either policy, and content that overruns is overwritten rather than shifted.
 		const cha = (col: number): string => `\x1b[${col}G`;
 
-		const cell = (text: string, width: number): string => padTo(truncateToWidth(stripAnsi(text), width, ""), width);
+		const cell = (text: string, width: number): string => padTo(fitLine(stripAnsi(text), width, "clip"), width);
 		// Every separator carries its own colour. Emitting a bare "│" after a reset let it
 		// inherit the terminal default instead of the frame colour, so the middle line and the
 		// right border rendered in different colours than the left one — a visibly broken frame
@@ -194,7 +195,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		// would strip the pane colours along with everything else, and passing it as a plain
 		// string would leave the middle rule uncoloured.
 		const paneLabel = (label: string, width: number): string => {
-			const text = truncateToWidth(label, width, "");
+			const text = fitLine(label, width, "clip");
 			return `${C.bold}${C.claude}${text}${C.reset}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 		};
 		output.push(
@@ -230,7 +231,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 				? `←→ 翻页详情 ${this.detailScrollOffset + 1}/${maxOffset + 1} · Esc 关闭`
 				: `↑/↓ 移动 · Esc 关闭`;
 		// Reserve at least one dash, one space and the corner either side of the junction.
-		const hintText = truncateToWidth(hint, Math.max(1, colMid - 8), "");
+		const hintText = fitLine(hint, Math.max(1, colMid - 8), "clip");
 		const leadFill = Math.max(1, colMid - 7 - visibleWidth(hintText));
 		const tailFill = Math.max(1, boxWidth - 1 - colMid);
 		output.push(
@@ -247,10 +248,10 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const innerW = Math.max(1, boxWidth - 4);
 		const border = C.gray;
 		const pad = " ".repeat(leftPad);
-		const title = truncateToWidth("会话历史 · 分支检视", Math.max(1, boxWidth - 6), "…");
+		const title = fitLine("会话历史 · 分支检视", Math.max(1, boxWidth - 6));
 		const tag = `─ ${title} `;
 		const frame = (content: string): string => {
-			const safe = truncateToWidth(content, innerW, "…");
+			const safe = fitLine(content, innerW);
 			return `${pad}${border}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${border}│${C.reset}`;
 		};
 		const rowsBudget = Math.max(0, Math.floor(availableHeight) - 4);
@@ -295,7 +296,7 @@ function formatNodeList(nodes: SessionNodeInfo[], selectedIndex: number, width: 
 		const preview = sanitizeRenderText(node.preview).replace(/[\r\n\t]+/g, " ");
 		const body = `${dot} ${kind} ${C.dim}#${node.seq}${C.reset} ${C.inactive}${node.id.slice(0, 6)}${C.reset} ${preview}`;
 		const prefix = `${pointer} `;
-		rows.push(`${prefix}${truncateToWidth(stripAnsi(body), width - visibleWidth(prefix), "")}`);
+		rows.push(`${prefix}${fitLine(stripAnsi(body), width - visibleWidth(prefix), "clip")}`);
 	}
 	return rows;
 }
@@ -371,7 +372,7 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 
 function plainLines(text: string): string[] {
 	// Windows 工具结果带物理 CRLF：只按 \n 切分会让行尾 CR 残留在 detail 行上。
-	// CR 是零宽的 —— visibleWidth/truncateToWidth/padTo 都看不见它，一路活到
+	// CR 是零宽的 —— visibleWidth/fitLine/padTo 都看不见它，一路活到
 	// 渲染器写入端（renderer 也不剥 CR），终端收到 CR 就从行首重写当前行，整帧
 	// 从那行起被顶得错位（左列表前缀被覆盖、游离边框、标题消失）。
 	return stripAnsi(String(text)).replace(/\r/g, "").split("\n");

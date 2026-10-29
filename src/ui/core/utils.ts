@@ -62,30 +62,149 @@ export function stripAnsi(str: string): string {
 }
 
 /**
- * 判断 Unicode 码点是否为 East Asian Wide (全角/占2列) 或 Emoji
- * 覆盖 CJK 汉字、日文假名、韩文字母、全角标点及常见 Emoji。
+ * Unicode EastAsianWidth Wide/Fullwidth 区间表（Unicode 15 实用子集，按区间升序）。
+ * 旧实现对 0x1F300–0x1FAFF 整段按宽字符处理、又漏掉 ⌚☔⚽ 等 BMP 符号；
+ * 这里改为精确区间，emoji 区段之外的符号不再虚占 2 列。
+ */
+const WIDE_RANGES: readonly (readonly [number, number])[] = [
+	[0x1100, 0x115f], // Hangul Jamo
+	[0x231a, 0x231b], // ⌚⌛
+	[0x2329, 0x232a], // 〈〉斜角括号（宽形）
+	[0x23e9, 0x23ec], // ⏩⏪⏫⏬
+	[0x23f0, 0x23f0], // ⏰
+	[0x23f3, 0x23f3], // ⏳
+	[0x25fd, 0x25fe], // ◽◾
+	[0x2614, 0x2615], // ☔☕
+	[0x2648, 0x2653], // 黄道十二宫
+	[0x267f, 0x267f], // ♿
+	[0x2693, 0x2693], // ⚓
+	[0x26a1, 0x26a1], // ⚡
+	[0x26aa, 0x26ab], // ⚪⚫
+	[0x26bd, 0x26be], // ⚽⚾
+	[0x26c4, 0x26c5], // ⛄⛅
+	[0x26ce, 0x26ce], // ♊
+	[0x26d4, 0x26d4], // ⛔
+	[0x26ea, 0x26ea], // ⛪
+	[0x26f2, 0x26f3], // ⛲⛳
+	[0x26f5, 0x26f5], // ⛵
+	[0x26fa, 0x26fa], // ⛺
+	[0x26fd, 0x26fd], // ⛽
+	[0x2705, 0x2705], // ✅
+	[0x270a, 0x270b], // ✊✋
+	[0x2728, 0x2728], // ✨
+	[0x274c, 0x274c], // ❌
+	[0x274e, 0x274e], // ❎
+	[0x2753, 0x2755], // ❓❔❕
+	[0x2757, 0x2757], // ❗
+	[0x2795, 0x2797], // ➕➖➗
+	[0x27b0, 0x27b0], // ➰
+	[0x27bf, 0x27bf], // ➿
+	[0x2b1b, 0x2b1c], // ⬛⬜
+	[0x2b50, 0x2b50], // ⭐
+	[0x2b55, 0x2b55], // ⭕
+	[0x2e80, 0x2e99], // CJK 部首
+	[0x2e9b, 0x2ef3],
+	[0x2f00, 0x2fd5], // 康熙部首
+	[0x3000, 0x303e], // CJK 标点（含全角空格）
+	[0x3041, 0x3096], // 平假名
+	[0x3099, 0x30ff], // 浊点/片假名
+	[0x3105, 0x312f], // 注音
+	[0x3131, 0x318e], // 谚文兼容字母
+	[0x3190, 0x31e3], // CJK 附录
+	[0x31f0, 0x321e], // 假名兼容/带圈 CJK
+	[0x3220, 0x3247],
+	[0x3250, 0x4dbf], // 带圈表意 → 汉字扩展 A
+	[0x4e00, 0xa48c], // 汉字基本区 → 彝文
+	[0xa490, 0xa4c6], // 彝文兼容
+	[0xa960, 0xa97c], // 谚文扩展 A
+	[0xac00, 0xd7a3], // 谚文音节
+	[0xf900, 0xfaff], // CJK 兼容表意
+	[0xfe10, 0xfe19], // 竖排形式
+	[0xfe30, 0xfe52], // CJK 兼容形式
+	[0xfe54, 0xfe66],
+	[0xfe68, 0xfe6b],
+	[0xff01, 0xff60], // 全角形式
+	[0xffe0, 0xffe6], // 全角符号
+	[0x16fe0, 0x16fe4], // 川续/女书（宽段）
+	[0x16ff0, 0x16ff1],
+	[0x17000, 0x187f7], // 西夏文
+	[0x18800, 0x18cd5],
+	[0x18d00, 0x18d08],
+	[0x1aff0, 0x1aff3], // 假名扩展
+	[0x1aff5, 0x1affb],
+	[0x1affd, 0x1affe],
+	[0x1b000, 0x1b122], // 假名补充/注音扩展
+	[0x1b150, 0x1b152],
+	[0x1b164, 0x1b167],
+	[0x1b170, 0x1b2fb],
+	[0x1f004, 0x1f004], // 🀄
+	[0x1f0cf, 0x1f0cf], // 🂡
+	[0x1f18e, 0x1f18e], // 🆎
+	[0x1f191, 0x1f19a],
+	[0x1f200, 0x1f202],
+	[0x1f210, 0x1f23b],
+	[0x1f240, 0x1f248],
+	[0x1f250, 0x1f251],
+	[0x1f260, 0x1f265],
+	[0x1f300, 0x1f320],
+	[0x1f32d, 0x1f335],
+	[0x1f337, 0x1f37c],
+	[0x1f37e, 0x1f393],
+	[0x1f3a0, 0x1f3ca],
+	[0x1f3cf, 0x1f3d3],
+	[0x1f3e0, 0x1f3f0],
+	[0x1f3f4, 0x1f3f4],
+	[0x1f3f8, 0x1f43e],
+	[0x1f440, 0x1f440], // 👀
+	[0x1f442, 0x1f4fc],
+	[0x1f4ff, 0x1f53d],
+	[0x1f54b, 0x1f54e],
+	[0x1f550, 0x1f567],
+	[0x1f57a, 0x1f57a],
+	[0x1f595, 0x1f596],
+	[0x1f5a4, 0x1f5a4],
+	[0x1f5fb, 0x1f64f],
+	[0x1f680, 0x1f6c5],
+	[0x1f6cc, 0x1f6cc],
+	[0x1f6d0, 0x1f6d2],
+	[0x1f6d5, 0x1f6d7],
+	[0x1f6dc, 0x1f6df],
+	[0x1f6eb, 0x1f6ec],
+	[0x1f6f4, 0x1f6fc],
+	[0x1f7e0, 0x1f7eb],
+	[0x1f7f0, 0x1f7f0],
+	[0x1f90c, 0x1f945],
+	[0x1f947, 0x1f9ff],
+	[0x1fa70, 0x1fa7c],
+	[0x1fa80, 0x1fa88],
+	[0x1fa90, 0x1fabd],
+	[0x1fabf, 0x1fac5],
+	[0x1face, 0x1fadb],
+	[0x1fae0, 0x1fae8],
+	[0x1faf0, 0x1faf8],
+	[0x20000, 0x2fffd], // CJK 扩展 B–F
+	[0x30000, 0x3fffd], // CJK 扩展 G+
+];
+
+function isWideCodePoint(cp: number): boolean {
+	let low = 0;
+	let high = WIDE_RANGES.length - 1;
+	while (low <= high) {
+		const mid = (low + high) >> 1;
+		const [start, end] = WIDE_RANGES[mid]!;
+		if (cp < start) high = mid - 1;
+		else if (cp > end) low = mid + 1;
+		else return true;
+	}
+	return false;
+}
+
+/**
+ * 判断 Unicode 码点是否为 East Asian Wide/Fullwidth（占 2 列）。
+ * 判据是上面的 EAW 区间表；emoji 的 ZWJ/变体选择符组合由 graphemeWidth 按簇处理。
  */
 export function isFullWidth(cp: number): boolean {
-	return (
-		(cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
-		(cp >= 0x2e80 && cp <= 0xa4cf) || // CJK Radicals, Kangxi, CJK Ideographs, Yi
-		(cp >= 0xac00 && cp <= 0xd7a3) || // Hangul Syllables
-		(cp >= 0xf900 && cp <= 0xfaff) || // CJK Compatibility Ideographs
-		(cp >= 0xfe10 && cp <= 0xfe19) || // Vertical forms
-		(cp >= 0xfe30 && cp <= 0xfe6f) || // CJK Compatibility Forms
-		(cp >= 0xff00 && cp <= 0xff60) || // Fullwidth Forms
-		(cp >= 0xffe0 && cp <= 0xffe6) ||
-		(cp >= 0x20000 && cp <= 0x2fa1f) || // CJK Extension
-		(cp >= 0x1f300 && cp <= 0x1faff) || // Emojis & Pictographs
-		cp === 0x26a1 || // ⚡ (高压闪电符号，现代终端与系统字体占用 2 物理列宽)
-		cp === 0x2728 || // ✨
-		cp === 0x2705 || // ✅
-		cp === 0x274c || // ❌
-		cp === 0x2b50 || // ⭐
-		cp === 0x2b55 || // ⭕
-		cp === 0x23f3 || // ⏳
-		cp === 0x231b // ⌛
-	);
+	return isWideCodePoint(cp);
 }
 
 /** 组合记号 / 变体选择符 / ZWJ：簇内零宽修饰符。 */
@@ -102,9 +221,12 @@ function isZeroWidthMark(cp: number): boolean {
 	);
 }
 
-/** 单个 code point 的可视列宽（供逐 code point 的调用方使用）。 */
+/**
+ * 单个 code point 的可视列宽（供逐 code point 的调用方使用）。
+ * 与 graphemeWidth 同一口径：tab 的真实列宽由 scanCells/visibleWidth 按 8 列制表位
+ * 展开（CELL_TAB），逐字符调用方不应遇到未展开的 tab。
+ */
 export function charWidth(char: string): number {
-	if (char === "\t") return 2;
 	const cp = char.codePointAt(0);
 	if (!cp || cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
 	return isFullWidth(cp) ? 2 : 1;
@@ -383,7 +505,7 @@ function tabAdvance(currentColumn: number): number {
 
 /**
  * visibleWidth 的有界记忆化：行字符串不可变 ⇒ 同串必同宽。流式期间视口行被逐帧
- * 重复测量（renderCurrentFrame 每帧对同一批行做 truncateToWidth + 补位两次测量），
+ * 重复测量（renderCurrentFrame 每帧对同一批行做 fitLine + 补位两次测量），
  * 以串引用为键命中缓存即可跳过整行扫描。
  *
  * 淘汰是最旧的先出（Map 插入序），命中不搬移：scanCells 之后单次重测只要几微秒，
@@ -450,36 +572,6 @@ export function extractAnsiCode(text: string, index: number): { code: string; le
 }
 
 /**
- * ANSI 安全的字符截断：
- * 绝不在 ANSI 序列中间截断，超出宽度时在末尾附加 ellipsis 并补充 reset 样式。
- */
-export function truncateToWidth(text: string, maxWidth: number, ellipsis = "…"): string {
-	if (maxWidth <= 0) return "";
-	if (visibleWidth(text) <= maxWidth) return text;
-
-	const ellipsisW = visibleWidth(ellipsis);
-	if (maxWidth < ellipsisW) {
-		return maxWidth >= 1 ? ".".repeat(maxWidth) : "";
-	}
-	const targetWidth = maxWidth - ellipsisW;
-
-	let curWidth = 0;
-	let cut = 0;
-	scanCells(text, (_start, end, width) => {
-		if (width === CELL_ANSI) {
-			cut = end;
-			return;
-		}
-		const w = width === CELL_TAB ? tabAdvance(curWidth) : width;
-		if (curWidth + w > targetWidth) return false;
-		curWidth += w;
-		cut = end;
-	});
-
-	return `${text.slice(0, cut)}${C.reset}${ellipsis}`;
-}
-
-/**
  * 统一跨平台剪贴板复制服务：
  * 1. 首选终端原生 OSC 52 转义协议（零子进程、跨 SSH 宿主直达）；
  * 2. 本地系统原生工具轻量兜底（Windows clip.exe 确保 UTF-8，macOS pbcopy）。
@@ -511,64 +603,6 @@ export function copyToClipboardUnified(text: string): void {
 			child.unref();
 		} catch {}
 	}
-}
-
-/**
- * 带 ANSI 样式继承的文本折行：
- * 将 text 按 maxWidth 折成多行，上一行的 ANSI 样式自动延续到下一行。
- */
-export function wrapTextWithAnsi(text: string, maxWidth: number): string[] {
-	if (maxWidth <= 0) return [text];
-	const lines = text.split("\n");
-	const output: string[] = [];
-
-	let currentStyle = "";
-
-	for (const rawLine of lines) {
-		if (visibleWidth(rawLine) <= maxWidth) {
-			const lineToPush = currentStyle ? `${currentStyle}${rawLine}` : rawLine;
-			output.push(currentStyle && !lineToPush.endsWith(C.reset) ? `${lineToPush}${C.reset}` : lineToPush);
-			// 扫描这行有没有产生新的 style
-			const matches = rawLine.match(/\x1b\[[0-9;]*m/g);
-			if (matches) {
-				for (const m of matches) {
-					if (m === "\x1b[0m") currentStyle = "";
-					else currentStyle = m;
-				}
-			}
-			continue;
-		}
-
-		// 超宽行：先用 scanCells 扫出断点，再在每个断点处切片一次。
-		// 旧实现逐簇拼接字符串（45 KB 段落 = 2.9 万次分配），换行结果逐字节不变。
-		let lineStyle = currentStyle;
-		let lineStart = 0;
-		let curWidth = 0;
-		scanCells(rawLine, (start, end, width) => {
-			if (width === CELL_ANSI) {
-				const code = rawLine.slice(start, end);
-				if (code === C.reset) currentStyle = "";
-				else if (code.endsWith("m")) currentStyle = code;
-				return;
-			}
-			const w = width === CELL_TAB ? tabAdvance(curWidth) : width;
-			if (curWidth + w > maxWidth) {
-				output.push(`${lineStyle}${rawLine.slice(lineStart, start)}${C.reset}`);
-				lineStart = start;
-				lineStyle = currentStyle;
-				curWidth = 0;
-			}
-			curWidth += w;
-		});
-
-		if (lineStart < rawLine.length) {
-			const tail = rawLine.slice(lineStart);
-			const lineToPush = lineStyle ? `${lineStyle}${tail}` : tail;
-			output.push(currentStyle && !lineToPush.endsWith(C.reset) ? `${lineToPush}${C.reset}` : lineToPush);
-		}
-	}
-
-	return output;
 }
 
 /**

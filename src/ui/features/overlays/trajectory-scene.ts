@@ -4,13 +4,22 @@
  * 彻底消除模拟假数据，无事件时如实呈现空状态。
  */
 
-import type { Component, Focusable } from "../../core/types.js";
-import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
-import { highlightCode } from "../../components/primitives/syntax-text.js";
-import { TOOL_TONE_COLORS } from "../../components/transcript/tool-view.js";
 import { TOOL_STATUS_SPEC } from "../../../presentation/tool-status.js";
 import type { TrajectoryEventSource, TrajectoryNode, TrajectoryNodeStatus } from "../../../presentation/trajectory.js";
+import { highlightCode } from "../../components/primitives/syntax-text.js";
+import { TOOL_TONE_COLORS } from "../../components/transcript/tool-view.js";
+import { Key, matchesKey } from "../../core/keys.js";
+import type { Component, Focusable } from "../../core/types.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
+import {
+	panelBottomBorder,
+	panelDivider,
+	panelInnerWidth,
+	panelRow,
+	panelTopBorder,
+	renderPanel,
+} from "../../layout/panel.js";
 
 function formatDuration(ms: number): string {
 	if (ms < 1000) return `${ms}ms`;
@@ -162,74 +171,62 @@ export class TrajectoryScene implements Component, Focusable {
 	formatLines(terminalWidth = 80, terminalHeight = 24): string[] {
 		if (terminalWidth <= 0 || terminalHeight <= 0) return [];
 		if (terminalWidth < 64 || terminalHeight < 12) return this.formatCompactLines(terminalWidth, terminalHeight);
-		const boxWidth = Math.max(56, Math.min(terminalWidth - 6, 96));
-		const innerW = boxWidth - 4;
-		const borderCol = C.gray;
+		const leftPad = 2;
+		const boxWidth = Math.max(56, Math.min(terminalWidth - leftPad, 96));
+		const innerW = panelInnerWidth(boxWidth);
+		const border = { leftPad, borderColor: C.gray };
 		const nodes = this.source.list();
 
-		const titleTag = `─ 全屏事件时序与审计轨迹 (${nodes.length} 节点) `;
-		const topFill = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFill)}╮${C.reset}`;
-		const output: string[] = [topLine];
-
 		if (nodes.length === 0) {
-			const emptyText = `${C.dim}当前会话暂无运行生命周期事件记录 (按 Esc 关闭)${C.reset}`;
-			const padLen = Math.max(0, innerW - visibleWidth(emptyText));
-			output.push(`  ${borderCol}│${C.reset} ${emptyText}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
-			output.push(`  ${borderCol}╰${"─".repeat(boxWidth - 2)}╯${C.reset}`);
-			return output;
+			return renderPanel({
+				title: `全屏事件时序与审计轨迹 (0 节点)`,
+				body: [`${C.dim}当前会话暂无运行生命周期事件记录 (按 Esc 关闭)${C.reset}`],
+				boxWidth,
+				...border,
+			});
 		}
 
 		if (this.cursorIndex >= nodes.length) {
 			this.cursorIndex = Math.max(0, nodes.length - 1);
 		}
 
-		// 2. Tab 栏
+		// 1. Tab 栏
 		const tab1 =
 			this.viewMode === "timeline" ? `\x1b[7m 时间线 (Timeline) \x1b[0m` : `${C.dim} 时间线 (Timeline) ${C.reset}`;
 		const tab2 =
 			this.viewMode === "hotspot" ? `\x1b[7m 性能热点 (Hotspots) \x1b[0m` : `${C.dim} 性能热点 (Hotspots) ${C.reset}`;
-		const tabRow = `  ${borderCol}│${C.reset} [Tab] ${tab1}  ${tab2}${" ".repeat(Math.max(0, innerW - visibleWidth(tab1) - visibleWidth(tab2) - 8))} ${borderCol}│${C.reset}`;
-		output.push(tabRow);
-		output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
+		const output: string[] = [
+			panelTopBorder(boxWidth, { title: `全屏事件时序与审计轨迹 (${nodes.length} 节点)`, ...border }),
+			panelRow(`${C.dim}[Tab]${C.reset} ${tab1}  ${tab2}`, boxWidth, border),
+			panelDivider(boxWidth, border),
+		];
 
 		if (this.viewMode === "timeline") {
-			// 3. 波形带
+			// 2. 波形带
 			const waveWidth = Math.max(10, innerW - 2);
 			const [wave1, wave2] = projectWaveBand(nodes as TrajectoryNode[], waveWidth, this.cursorIndex);
-			const pad1 = Math.max(0, innerW - 2 - visibleWidth(wave1));
-			const pad2 = Math.max(0, innerW - 2 - visibleWidth(wave2));
-			output.push(`  ${borderCol}│${C.reset} ${wave1}${" ".repeat(pad1)} ${borderCol}│${C.reset}`);
-			output.push(`  ${borderCol}│${C.reset} ${wave2}${" ".repeat(pad2)} ${borderCol}│${C.reset}`);
-			output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
+			output.push(panelRow(wave1, boxWidth, border), panelRow(wave2, boxWidth, border), panelDivider(boxWidth, border));
 
-			// 4. 当前选中节点的检查器
+			// 3. 当前选中节点的检查器
 			const current = nodes[this.cursorIndex]!;
 			const glyph = statusGlyph(current.status);
 			const timeStr = current.startedAt === undefined ? "时间未知" : formatTime(current.startedAt);
 			const durStr = current.durationMs === undefined ? "耗时未知" : formatDuration(current.durationMs);
 
-			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${C.dim}[${glyph.label}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
 			output.push(
-				`  ${borderCol}│${C.reset} ${truncateToWidth(detailHeader, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailHeader)))} ${borderCol}│${C.reset}`,
+				panelRow(
+					`节点 [${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${C.dim}[${glyph.label}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`,
+					boxWidth,
+					border,
+				),
 			);
 
 			// 详情顺序统一为 参数 → 结果 → 错误，宽屏与紧凑共用。
-			const detailLines: string[] = [];
-			if (current.argsJson) {
-				detailLines.push(`${C.dim}参数:${C.reset} ${highlightCode(current.argsJson, "json")}`);
-			}
-			if (current.resultPreview) {
-				detailLines.push(`${C.dim}结果:${C.reset} ${current.resultPreview}`);
-			}
-			if (current.error) {
-				detailLines.push(`${C.red}错误: ${current.error}${C.reset}`);
-			}
-			for (const detailLine of detailLines) {
-				output.push(
-					`  ${borderCol}│${C.reset} ${truncateToWidth(detailLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailLine)))} ${borderCol}│${C.reset}`,
-				);
-			}
+			if (current.argsJson)
+				output.push(panelRow(`${C.dim}参数:${C.reset} ${highlightCode(current.argsJson, "json")}`, boxWidth, border));
+			if (current.resultPreview)
+				output.push(panelRow(`${C.dim}结果:${C.reset} ${current.resultPreview}`, boxWidth, border));
+			if (current.error) output.push(panelRow(`${C.red}错误: ${current.error}${C.reset}`, boxWidth, border));
 		} else {
 			// 热点视图
 			const hotspots = this.source.aggregate("duration");
@@ -237,14 +234,18 @@ export class TrajectoryScene implements Component, Focusable {
 			const NUM_COLS = 39;
 			const nameWidth = Math.max(6, innerW - NUM_COLS);
 			output.push(
-				`  ${borderCol}│${C.reset} ${C.bold}类别/操作${" ".repeat(Math.max(1, nameWidth - 9))}次数  总耗时  平均耗时  错误    Token${C.reset} ${borderCol}│${C.reset}`,
+				panelRow(
+					`${C.bold}类别/操作${" ".repeat(Math.max(1, nameWidth - 9))}次数  总耗时  平均耗时  错误    Token${C.reset}`,
+					boxWidth,
+					border,
+				),
+				panelDivider(boxWidth, border),
 			);
-			output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
 
 			const maxRows = Math.min(6, hotspots.length);
 			for (let i = 0; i < maxRows; i++) {
 				const h = hotspots[i]!;
-				const name = truncateToWidth(h.name, nameWidth, "…");
+				const name = fitLine(h.name, nameWidth);
 				const cells = [
 					String(h.count).padStart(4),
 					formatDuration(h.totalDurationMs).padStart(8),
@@ -252,18 +253,17 @@ export class TrajectoryScene implements Component, Focusable {
 					String(h.errors).padStart(4),
 					String(h.totalTokens).padStart(7),
 				].join("  ");
-				const row = `${C.cyan}${name}${C.reset}${" ".repeat(Math.max(1, nameWidth - visibleWidth(name)))}${cells}`;
 				output.push(
-					`  ${borderCol}│${C.reset} ${row}${" ".repeat(Math.max(0, innerW - visibleWidth(row)))} ${borderCol}│${C.reset}`,
+					panelRow(
+						`${C.cyan}${name}${C.reset}${" ".repeat(Math.max(1, nameWidth - visibleWidth(name)))}${cells}`,
+						boxWidth,
+						border,
+					),
 				);
 			}
 		}
 
-		// 底边框
-		const hint = `←→ 移动时序 · Tab 切换热点 · Enter 展开 · Esc 关闭`;
-		const botFill = Math.max(1, boxWidth - 2 - visibleWidth(hint) - 2);
-		output.push(`  ${borderCol}╰─ ${C.dim}${hint}${C.reset} ${borderCol}${"─".repeat(botFill)}╯${C.reset}`);
-
+		output.push(panelBottomBorder(boxWidth, { tag: `←→ 移动时序 · Tab 切换热点 · Enter 展开 · Esc 关闭`, ...border }));
 		return output;
 	}
 
@@ -272,30 +272,24 @@ export class TrajectoryScene implements Component, Focusable {
 		if (this.cursorIndex >= nodes.length) this.cursorIndex = Math.max(0, nodes.length - 1);
 		const leftPad = terminalWidth >= 64 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 96));
-		const innerW = Math.max(1, boxWidth - 4);
-		const border = C.gray;
-		const pad = " ".repeat(leftPad);
-		const title = truncateToWidth(`事件轨迹 · ${nodes.length} 节点`, Math.max(1, boxWidth - 6), "…");
-		const tag = `─ ${title} `;
-		const frame = (content: string): string => {
-			const safe = truncateToWidth(content, innerW, "…");
-			return `${pad}${border}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${border}│${C.reset}`;
-		};
-		const output = [
-			`${pad}${border}╭${tag}${border}${"─".repeat(Math.max(0, boxWidth - 2 - visibleWidth(tag)))}╮${C.reset}`,
-		];
+		const body: string[] = [];
 		if (nodes.length === 0) {
-			output.push(frame("当前会话暂无运行生命周期事件记录"));
+			body.push(`${C.dim}当前会话暂无运行生命周期事件记录${C.reset}`);
 		} else {
 			const node = nodes[this.cursorIndex]!;
 			const glyph = statusGlyph(node.status);
-			output.push(frame(`[${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${node.label} · ${glyph.label}`));
-			if (node.argsJson) output.push(frame(`参数: ${node.argsJson}`));
-			if (node.resultPreview) output.push(frame(`结果: ${node.resultPreview}`));
-			if (node.error) output.push(frame(`错误: ${node.error}`));
+			body.push(`[${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${node.label} · ${glyph.label}`);
+			if (node.argsJson) body.push(`参数: ${node.argsJson}`);
+			if (node.resultPreview) body.push(`结果: ${node.resultPreview}`);
+			if (node.error) body.push(`错误: ${node.error}`);
 		}
-		if (terminalHeight >= 3) output.push(frame("←/→ 移动 · Tab 热点 · Esc 关闭"));
-		output.push(`${pad}${border}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`);
-		return output.slice(0, Math.max(1, Math.floor(terminalHeight)));
+		return renderPanel({
+			title: `事件轨迹 · ${nodes.length} 节点`,
+			body,
+			...(terminalHeight >= 3 ? { footer: `${C.dim}←/→ 移动 · Tab 热点 · Esc 关闭${C.reset}` } : {}),
+			boxWidth,
+			leftPad,
+			borderColor: C.gray,
+		}).slice(0, Math.max(1, Math.floor(terminalHeight)));
 	}
 }

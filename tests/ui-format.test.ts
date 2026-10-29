@@ -3,7 +3,7 @@
 // toolResultLines 保持旧签名的端到端行为由最后一段覆盖。
 import { describe, expect, it } from "vitest";
 import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
-import { parseToolResult, renderToolResult, toolResultLines, type ToolResultStyle } from "../src/ui/format.js";
+import { parseToolResult, renderToolResult, type ToolResultStyle, toolResultLines } from "../src/ui/format.js";
 
 const tag = (prefix: string) => (s: string) => `<${prefix}>${s}</${prefix}>`;
 const style: ToolResultStyle = {
@@ -92,8 +92,8 @@ describe("renderToolResult / toolResultLines", () => {
 		expect(many[6]).toBe("<dim>… 还有 2 行未显示</dim>");
 
 		const long = toolResultLines("x".repeat(250), 100, style);
-		// truncateToWidth 截断时在省略号前插入 0 宽的 ANSI 复位（\x1b[0m）
-		expect(long[0]).toBe(`<dim>${"x".repeat(199)}\u001b[0m…</dim>`);
+		// fitLine 截断：省略号继承被截断处的活跃样式，其后补 ANSI 复位（\x1b[0m）
+		expect(long[0]).toBe(`<dim>${"x".repeat(199)}…\u001b[0m</dim>`);
 	});
 
 	it("error 单独存在：err 样式一行，超 120 字符截断", () => {

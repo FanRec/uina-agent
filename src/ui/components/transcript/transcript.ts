@@ -1,41 +1,43 @@
 import { imageNotice } from "../../../core/content.js";
+import { wrapLine } from "../../layout/fit.js";
+
 /**
  * 会话转录区容器（TranscriptContainer）。
  * 集中管理用户轮次、思考流、助手 Markdown 回复、工具调用、差异比对、压缩卡片与扩展自定义消息。
  * 自身实现 Component 契约，支持动态根据可用列宽完整重流。
  */
 
-import type { Component } from "../../core/types.js";
-import { projectInputMessage } from "../../../session/recovery.js";
 import type { ToolResultStatus } from "../../../core/types.js";
-import type { SessionEntry } from "../../../session/types.js";
-import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
+import type {
+	CustomMessage,
+	MarkdownTransformer,
+	MessageRenderer,
+	ToolRenderer,
+} from "../../../extensions/ui-contract.js";
 import type { PresentationNode, ToolNode, TurnNode } from "../../../presentation/projection.js";
-import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
+import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
+import { projectInputMessage } from "../../../session/recovery.js";
+import type { SessionEntry } from "../../../session/types.js";
+import type { Component } from "../../core/types.js";
+import { C, stripAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
-import { formatToolCardLines } from "./tool-view.js";
-import { formatFullMarkdown } from "./stream-markdown.js";
-import { formatDiffCardLines } from "./diff-view.js";
 import {
-	formatThinkingLines,
-	formatCompactionCardLines,
-	formatErrorCardLines,
 	type CompactionCardData,
 	CustomMessageComponent,
+	formatCompactionCardLines,
+	formatErrorCardLines,
+	formatThinkingLines,
 } from "./cards.js";
-import { SmoothRevealController } from "./smooth-reveal.js";
 import {
 	ContextCardComponent,
 	type ContextCardData,
 	type ExternalContextCardData,
 	type PromptContextCardData,
 } from "./context-card.js";
-import type {
-	CustomMessage,
-	MessageRenderer,
-	ToolRenderer,
-	MarkdownTransformer,
-} from "../../../extensions/ui-contract.js";
+import { formatDiffCardLines } from "./diff-view.js";
+import { SmoothRevealController } from "./smooth-reveal.js";
+import { formatFullMarkdown } from "./stream-markdown.js";
+import { formatToolCardLines } from "./tool-view.js";
 
 export interface ToolRecord {
 	name: string;
@@ -1060,7 +1062,7 @@ export class TranscriptContainer implements Component {
 		const prefix = `${C.bold}${C.briefLabelYou}❯ ${C.reset}`;
 		const leadW = 2; // "❯ " 占 2 列
 		const contentBudget = Math.max(10, width - leadW - 2);
-		const wrapped = wrapTextWithAnsi(text, contentBudget);
+		const wrapped = wrapLine(text, contentBudget);
 		if (wrapped.length === 0) {
 			lines.push(`${prefix}`);
 		} else {
@@ -1179,7 +1181,7 @@ export class TranscriptContainer implements Component {
 				formatted.push(rawLine.trimStart());
 				continue;
 			}
-			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
+			const wrapped = wrapLine(rawLine.trim(), contentBudget);
 			formatted.push(...wrapped);
 		}
 		return formatted;
@@ -1212,7 +1214,7 @@ export class TranscriptContainer implements Component {
 	private buildTimelineBlock(item: TimelineItem, width: number, compactionIndex: number): SettledBlock {
 		switch (item.kind) {
 			case "notice":
-				return { kind: "static", lines: wrapTextWithAnsi(item.text, Math.max(20, width - 2)) };
+				return { kind: "static", lines: wrapLine(item.text, Math.max(20, width - 2)) };
 			case "error":
 				return { kind: "static", lines: formatErrorCardLines(item.text, width) };
 			case "compaction":

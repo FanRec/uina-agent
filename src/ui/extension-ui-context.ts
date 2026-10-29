@@ -13,7 +13,8 @@ import { Key, matchesKey } from "./core/keys.js";
 import { TextBuffer } from "./core/text-buffer.js";
 import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import { CURSOR_MARKER } from "./core/types.js";
-import { C, graphemeSegmenter, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./core/utils.js";
+import { C, graphemeSegmenter, visibleWidth } from "./core/utils.js";
+import { fitLine, wrapLine } from "./layout/fit.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
@@ -114,22 +115,22 @@ function createPromptFrame(title: string, width: number): PromptFrame {
 	const innerWidth = Math.max(1, boxWidth - 4);
 	const left = " ".repeat(leftPad);
 	const border = C.gray;
-	const fit = (line: string): string => truncateToWidth(line, availableWidth, "");
-	const topTag = `─ ${truncateToWidth(title, Math.max(1, boxWidth - 6), "…")} `;
+	const fit = (line: string): string => fitLine(line, availableWidth, "clip");
+	const topTag = `─ ${fitLine(title, Math.max(1, boxWidth - 6))} `;
 	const topFill = Math.max(0, boxWidth - 2 - visibleWidth(topTag));
 
 	return {
 		innerWidth,
 		top: fit(`${left}${border}╭${topTag}${border}${"─".repeat(topFill)}╮${C.reset}`),
 		line(content) {
-			const safe = truncateToWidth(content, innerWidth, "…");
+			const safe = fitLine(content, innerWidth);
 			return fit(
 				`${left}${border}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerWidth - visibleWidth(safe)))} ${border}│${C.reset}`,
 			);
 		},
 		bottom(label) {
 			if (label === undefined) return fit(`${left}${border}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`);
-			const tag = `─ ${truncateToWidth(label, Math.max(1, boxWidth - 5), "…")} `;
+			const tag = `─ ${fitLine(label, Math.max(1, boxWidth - 5))} `;
 			const fill = Math.max(0, boxWidth - 2 - visibleWidth(tag));
 			return fit(`${left}${border}╰${tag}${"─".repeat(fill)}╯${C.reset}`);
 		},
@@ -208,7 +209,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 					focused: true,
 					render(w: number, height = 24): string[] {
 						if (w <= 0 || height <= 0) return [];
-						if (w < 5) return [truncateToWidth(title, w, "")];
+						if (w < 5) return [fitLine(title, w, "clip")];
 						const frame = createPromptFrame(title, w);
 						const { innerWidth } = frame;
 						const out = [frame.top];
@@ -226,7 +227,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 								const isSel = i === selected;
 								const pointer = isSel ? `${C.cyan}❯${C.reset}` : " ";
 								const maxTextW = Math.max(1, innerWidth - 3);
-								const safeOpt = truncateToWidth(opt, maxTextW, "…");
+								const safeOpt = fitLine(opt, maxTextW);
 								const text = isSel ? `${C.bold}${C.white}${safeOpt}${C.reset}` : `${C.dim}${safeOpt}${C.reset}`;
 								const line = `${pointer} ${text}`;
 								out.push(frame.line(line));
@@ -277,7 +278,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 							.replace(/\r\n/g, "\n")
 							.replace(/\r/g, "\n")
 							.split("\n")
-							.flatMap((line) => (line.length === 0 ? [""] : wrapTextWithAnsi(line, innerWidth)));
+							.flatMap((line) => (line.length === 0 ? [""] : wrapLine(line, innerWidth)));
 						const safeBody = bodyLines.length > 0 ? bodyLines : [""];
 						const horizontalButtonsFit = visibleWidth("[ 是 (Y) ]   [ 否 (N) ]") <= innerWidth;
 						const buttonLines = horizontalButtonsFit ? 1 : 2;
@@ -345,7 +346,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 					focused: true,
 					render(w: number, height = 24): string[] {
 						if (w <= 0 || height <= 0) return [];
-						if (w < 5) return [truncateToWidth(title, w, "")];
+						if (w < 5) return [fitLine(title, w, "clip")];
 						const frame = createPromptFrame(title, w);
 						const { innerWidth } = frame;
 						const out = [frame.top];
@@ -361,7 +362,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 							content = renderCursorWindow(before, atCursor, after, maxContentW);
 						}
 
-						const safeContent = buffer.text.length === 0 ? truncateToWidth(content, maxContentW, "") : content;
+						const safeContent = buffer.text.length === 0 ? fitLine(content, maxContentW, "clip") : content;
 						const line = `${C.cyan}❯${C.reset} ${safeContent}`;
 						out.push(frame.line(line));
 

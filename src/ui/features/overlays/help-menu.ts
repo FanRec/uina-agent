@@ -2,9 +2,18 @@
  * 快捷键与命令帮助抽屉组件（对齐 Pi Component 规范，保留双栏排版视觉）。
  */
 
-import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
+import type { Component, Focusable } from "../../core/types.js";
+import { C } from "../../core/utils.js";
+import {
+	panelBottomBorder,
+	panelCrossDivider,
+	panelDivider,
+	panelRow,
+	panelSplitRow,
+	panelTopBorder,
+	renderPanel,
+} from "../../layout/panel.js";
 
 export interface HelpCommandInfo {
 	name: string;
@@ -106,74 +115,49 @@ export class HelpMenu implements Component, Focusable {
 	formatLines(terminalWidth = 80, availableHeight = Number.MAX_SAFE_INTEGER): string[] {
 		if (terminalWidth <= 0 || availableHeight <= 0) return [];
 		if (terminalWidth < 64) return this.formatCompactLines(terminalWidth, availableHeight);
-		const boxWidth = Math.max(54, Math.min(terminalWidth - 4, 92));
-		const borderCol = C.subtle;
+		const leftPad = 2;
+		const boxWidth = Math.max(54, Math.min(terminalWidth - leftPad, 92));
+
+		// 双栏预算：leftW + rightW = boxWidth - 7（panelSplitRow 行模型）
+		const leftW = Math.floor((boxWidth - 7) * 0.46);
+		const rightW = boxWidth - 7 - leftW;
+		const midCol = leftW + 4;
 
 		// 1. 双栏数据
 		const rightCommands = commandRows(this.commands);
-
 		const maxRows = Math.max(SHORTCUTS.length, rightCommands.length);
-		const col1W = Math.floor((boxWidth - 7) * 0.46);
-		const col2W = boxWidth - 7 - col1W;
-		const innerContentW = col1W + col2W + 5; // 刚好等于 boxWidth - 2
 
-		// 1. 顶边框
-		const titleTag = `─ 快捷键与指令总览 (Help Menu) `;
-		const topFillLen = Math.max(1, innerContentW - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${C.inactive}${titleTag}${borderCol}${"─".repeat(topFillLen)}╮${C.reset}`;
+		const output: string[] = [
+			panelTopBorder(boxWidth, { title: "快捷键与指令总览 (Help Menu)", leftPad, borderColor: C.subtle }),
+			panelSplitRow(
+				boxWidth,
+				`${C.bold}${C.suggestion}▸ 常用快捷键${C.reset}`,
+				`${C.bold}${C.suggestion}▸ 常用斜杠指令${C.reset}`,
+				midCol,
+				{ leftPad, borderColor: C.subtle },
+			),
+			panelCrossDivider(boxWidth, [midCol], { leftPad, borderColor: C.subtle }),
+		];
 
-		const output: string[] = [topLine];
-
-		// 2. 分栏标题
-		const col1Title = `${C.bold}${C.suggestion}▸ 常用快捷键${C.reset}`;
-		const col2Title = `${C.bold}${C.suggestion}▸ 常用斜杠指令${C.reset}`;
-		const col1Pad = Math.max(0, col1W - visibleWidth(col1Title));
-		const col2Pad = Math.max(0, col2W - visibleWidth(col2Title));
-		const headerLine = `  ${borderCol}│${C.reset} ${col1Title}${" ".repeat(col1Pad)} ${borderCol}│${C.reset} ${col2Title}${" ".repeat(col2Pad)} ${borderCol}│${C.reset}`;
-		output.push(headerLine);
-
-		// 3. 分栏分割线 (col1W + 2 对应左栏内部宽度，中线 ┼ 精确对齐中间竖线 │)
-		output.push(`  ${borderCol}├${"─".repeat(col1W + 2)}┼${"─".repeat(col2W + 2)}┤${C.reset}`);
-
-		// 4. 数据行循环（全防御截断，防止超长文本撑破边框）
+		// 2. 数据行（左右两栏各自按栏宽截断，行宽由 panelSplitRow 保证精确）
 		for (let r = 0; r < maxRows; r++) {
 			const left = SHORTCUTS[r];
 			const right = rightCommands[r];
-
-			let leftFormatted = "";
-			if (left) {
-				const key = `${C.suggestion}${left[0]}${C.reset}`;
-				const desc = `${C.text}${left[1]}${C.reset}`;
-				const raw = `${key} ${desc}`;
-				leftFormatted = visibleWidth(raw) > col1W ? truncateToWidth(raw, col1W, "…") : raw;
-			}
-			const leftPad = Math.max(0, col1W - visibleWidth(leftFormatted));
-
-			let rightFormatted = "";
-			if (right) {
-				const cmd = `${C.suggestion}${right[0]}${C.reset}`;
-				const desc = `${C.text}${right[1]}${C.reset}`;
-				const raw = `${cmd} ${desc}`;
-				rightFormatted = visibleWidth(raw) > col2W ? truncateToWidth(raw, col2W, "…") : raw;
-			}
-			const rightPad = Math.max(0, col2W - visibleWidth(rightFormatted));
-
-			const rowLine = `  ${borderCol}│${C.reset} ${leftFormatted}${" ".repeat(leftPad)} ${borderCol}│${C.reset} ${rightFormatted}${" ".repeat(rightPad)} ${borderCol}│${C.reset}`;
-			output.push(rowLine);
+			const leftCell = left ? `${C.suggestion}${left[0]}${C.reset} ${C.text}${left[1]}${C.reset}` : "";
+			const rightCell = right ? `${C.suggestion}${right[0]}${C.reset} ${C.text}${right[1]}${C.reset}` : "";
+			output.push(panelSplitRow(boxWidth, leftCell, rightCell, midCol, { leftPad, borderColor: C.subtle }));
 		}
 
-		// 5. 底部提示区分割线
-		output.push(`  ${borderCol}├${"─".repeat(innerContentW)}┤${C.reset}`);
-
-		// 6. 底部操作指引行
-		const hint = `${C.inactive}按 ${C.suggestion}Esc${C.inactive}、${C.suggestion}q${C.inactive} 收起 · 再按 ${C.suggestion}?${C.inactive} 转为普通输入${C.reset}`;
-		const hintEffective = visibleWidth(hint) > innerContentW - 2 ? truncateToWidth(hint, innerContentW - 2, "…") : hint;
-		const hintPad = Math.max(0, innerContentW - 2 - visibleWidth(hintEffective));
-		output.push(`  ${borderCol}│${C.reset} ${hintEffective}${" ".repeat(hintPad)} ${borderCol}│${C.reset}`);
-
-		// 7. 底边框
-		const botLine = `  ${borderCol}╰${"─".repeat(innerContentW)}╯${C.reset}`;
-		output.push(botLine);
+		// 3. 底部提示区
+		output.push(panelDivider(boxWidth, { leftPad, borderColor: C.subtle }));
+		output.push(
+			panelRow(
+				`${C.inactive}按 ${C.suggestion}Esc${C.inactive}、${C.suggestion}q${C.inactive} 收起 · 再按 ${C.suggestion}?${C.inactive} 转为普通输入${C.reset}`,
+				boxWidth,
+				{ leftPad, borderColor: C.subtle },
+			),
+		);
+		output.push(panelBottomBorder(boxWidth, { leftPad, borderColor: C.subtle }));
 
 		return output.length > availableHeight ? this.formatCompactLines(terminalWidth, availableHeight) : output;
 	}
@@ -181,26 +165,19 @@ export class HelpMenu implements Component, Focusable {
 	private formatCompactLines(terminalWidth: number, availableHeight: number): string[] {
 		const leftPad = terminalWidth >= 64 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 92));
-		const innerW = Math.max(1, boxWidth - 4);
 		const commands = commandRows(this.commands);
 		const rows = [...SHORTCUTS, ...commands].map(([key, description]) => `${key}  ${description}`);
 		const bodyRows = Math.max(1, Math.floor(availableHeight) - 3);
 		const maxOffset = Math.max(0, rows.length - bodyRows);
 		this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
 		const visible = rows.slice(this.scrollOffset, this.scrollOffset + bodyRows);
-		const tag = `─ ${truncateToWidth("帮助 · 快捷键与指令", Math.max(1, boxWidth - 7), "…")} `;
-		const fill = Math.max(0, boxWidth - 2 - visibleWidth(tag));
-		const pad = " ".repeat(leftPad);
-		const frame = (text: string): string => {
-			const safe = truncateToWidth(text, innerW, "…");
-			return `${pad}${C.subtle}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${C.subtle}│${C.reset}`;
-		};
-		const output = [
-			`${pad}${C.subtle}╭${C.inactive}${tag}${C.subtle}${"─".repeat(fill)}╮${C.reset}`,
-			...visible.map(frame),
-			frame(`↑↓/j/k 滚动 · ↑${this.scrollOffset} ↓${maxOffset - this.scrollOffset} · Esc 关闭`),
-			`${pad}${C.subtle}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`,
-		];
-		return output.slice(0, Math.max(1, Math.floor(availableHeight)));
+		return renderPanel({
+			title: "帮助 · 快捷键与指令",
+			body: visible,
+			footer: `↑↓/j/k 滚动 · ↑${this.scrollOffset} ↓${maxOffset - this.scrollOffset} · Esc 关闭`,
+			boxWidth,
+			leftPad,
+			borderColor: C.subtle,
+		}).slice(0, Math.max(1, Math.floor(availableHeight)));
 	}
 }

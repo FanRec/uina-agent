@@ -2,10 +2,11 @@
  * 思考强度滑块组件（对齐 Pi Component 契约，保留 5 档拟态滑动变阻器视觉）。
  */
 
-import type { Component, Focusable } from "../../core/types.js";
-import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { ThinkingLevel } from "../../../core/types.js";
+import { Key, matchesKey } from "../../core/keys.js";
+import type { Component, Focusable } from "../../core/types.js";
+import { C, visibleWidth } from "../../core/utils.js";
+import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
 
 export interface EffortTier {
 	id: ThinkingLevel;
@@ -114,33 +115,23 @@ export class EffortSlider implements Component, Focusable {
 		if (terminalWidth <= 0 || availableHeight <= 0) return [];
 		const leftPad = terminalWidth >= 64 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 76));
-		const innerW = Math.max(1, boxWidth - 4);
-		const borderCol = C.subtle;
-
-		const title = truncateToWidth("推理强度 (Reasoning effort)", Math.max(1, boxWidth - 6), "…");
-		const titleTag = `─ ${title} `;
-		const topFillLen = Math.max(0, boxWidth - 2 - visibleWidth(titleTag));
-		const pad = " ".repeat(leftPad);
-		const topLine = `${pad}${borderCol}╭${C.inactive}${titleTag}${borderCol}${"─".repeat(topFillLen)}╮${C.reset}`;
-		const frameLine = (content: string): string => {
-			const safe = truncateToWidth(content, innerW, "…");
-			return `${pad}${borderCol}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${borderCol}│${C.reset}`;
-		};
+		const innerW = panelInnerWidth(boxWidth);
 
 		const renderSliderWindow = (visibleTiers: readonly EffortTier[]): string => {
 			const segments = visibleTiers.map((tier) => {
-				const index = this.tiers.indexOf(tier);
 				const current = this.activeTierId === tier.id ? `${C.suggestion}✓${C.reset}` : "";
 				const label = `${tier.name}${current}`;
-				return index === this.focusIndex ? `\x1b[7m\x1b[1m${label}\x1b[0m` : `${C.inactive}${label}${C.reset}`;
+				return tier === this.tiers[this.focusIndex]
+					? `\x1b[7m\x1b[1m${label}\x1b[0m`
+					: `${C.inactive}${label}${C.reset}`;
 			});
 			const leftHint = this.focusIndex > 0 ? `${C.inactive}←${this.focusIndex} ${C.reset}` : "";
 			const shownThrough = this.focusIndex + visibleTiers.length;
 			const remaining = Math.max(0, this.tiers.length - shownThrough);
 			const rightHint = remaining > 0 ? ` ${C.inactive}→${remaining}${C.reset}` : "";
-			return `${leftHint}${segments.join(` ${borderCol}·${C.reset} `)}${rightHint}`;
+			return `${leftHint}${segments.join(` ${C.subtle}·${C.reset} `)}${rightHint}`;
 		};
-		const availableTiers = [this.tiers[this.focusIndex]!];
+		const availableTiers = this.tiers[this.focusIndex] ? [this.tiers[this.focusIndex]!] : [];
 		for (let index = this.focusIndex + 1; index < this.tiers.length; index++) {
 			const candidate = [...availableTiers, this.tiers[index]!];
 			if (visibleWidth(renderSliderWindow(candidate)) > innerW) break;
@@ -155,13 +146,15 @@ export class EffortSlider implements Component, Focusable {
 		const descRaw = current.description
 			? `${C.text}${current.description}${C.reset}`
 			: `${C.inactive}当前档位: ${current.name}${C.reset}`;
-		const descEffective = truncateToWidth(descRaw, innerW, "…");
 
-		const hintText = `${C.inactive}\x1b[3m${C.suggestion}←/→${C.inactive} 调整 · ${C.suggestion}Enter/Esc${C.inactive} 完成${C.reset}`;
-		const hintEffective = truncateToWidth(hintText, innerW, "…");
+		const hintText = `${C.inactive}←/→ 调整 · Enter/Esc 完成${C.reset}`;
 
-		const botLine = `${pad}${borderCol}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`;
-		const rows = [topLine, frameLine(sliderBar), frameLine(descEffective), frameLine(hintEffective), botLine];
-		return rows.slice(0, Math.max(1, Math.floor(availableHeight)));
+		return renderPanel({
+			title: "推理强度 (Reasoning effort)",
+			body: [sliderBar, descRaw, hintText],
+			boxWidth,
+			leftPad,
+			borderColor: C.subtle,
+		}).slice(0, Math.max(1, Math.floor(availableHeight)));
 	}
 }

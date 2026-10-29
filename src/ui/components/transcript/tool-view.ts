@@ -1,4 +1,6 @@
 import type { ToolResultStatus } from "../../../core/types.js";
+import { fitLine, wrapLine } from "../../layout/fit.js";
+
 /**
  * 工具调用状态与结果卡片组件（完美对齐 dsh-TUI / Claude Code 工具呈现规范）。
  *
@@ -25,9 +27,9 @@ import type { ToolResultStatus } from "../../../core/types.js";
  *    - 鼠标悬停感知：卡片底色微亮、折叠角标 ▾/▴ 浮现、折叠提示文字由暗淡升格为明亮。
  */
 
-import { C, resolveCarriageReturns, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
-import { keepSgrOnly, sanitizeRenderText } from "../../format.js";
 import { TOOL_STATUS_SPEC, type ToolTone } from "../../../presentation/tool-status.js";
+import { C, resolveCarriageReturns, visibleWidth } from "../../core/utils.js";
+import { keepSgrOnly, sanitizeRenderText } from "../../format.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
 export type ToolCategory = "write" | "exec" | "read" | "web" | "default";
@@ -298,7 +300,7 @@ function formatStructuredValue(value: unknown): string {
 export function applyCardBackground(line: string, bg: string, width: number, opts?: { endBadge?: string }): string {
 	if (!bg) return line;
 	const curW = visibleWidth(line);
-	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
+	const effLine = curW > width ? fitLine(line, width) : line;
 	const effW = curW > width ? visibleWidth(effLine) : curW;
 	let padLen = Math.max(0, width - effW);
 	// 端徽（hover 指示符）画在底色右端 padding 区：挤占填充空格而不占内容列，
@@ -338,7 +340,7 @@ function finishCard(lines: string[], isHovered: boolean, width: number, endBadge
 	for (let i = 0; i < flattenedLines.length; i++) {
 		// 软换行先于底色：hover 只改样式不改内容，两态行数恒等（反抖动）。
 		// 若先上色再截断，超宽行会被拍平成单行加 …，hover 前后状态不一致。
-		const wrapped = wrapTextWithAnsi(flattenedLines[i]!, width);
+		const wrapped = wrapLine(flattenedLines[i]!, width);
 		for (let j = 0; j < wrapped.length; j++) {
 			// 端徽只画在首行（标题行）、紧跟内容之后（padding 起始处），
 			// 复刻旧版「▾ 紧贴 elapsed」的视觉锚点；其余行裸底色。

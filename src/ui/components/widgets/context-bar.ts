@@ -8,7 +8,8 @@
  */
 
 import type { Component } from "../../core/types.js";
-import { C, truncateToWidth } from "../../core/utils.js";
+import { C } from "../../core/utils.js";
+import { fitLine } from "../../layout/fit.js";
 
 export interface ContextSegments {
 	system: number;
@@ -212,7 +213,7 @@ export class ContextBarComponent implements Component {
 		if (width <= 0 || !this.hasDetails()) return [];
 
 		if (!this.isHovered && !this.expanded) {
-			return [truncateToWidth(`${C.inactive}Ctrl+L 查看上下文详情${C.reset}`, width, "")];
+			return [fitLine(`${C.inactive}Ctrl+L 查看上下文详情${C.reset}`, width, "clip")];
 		}
 
 		// 鼠标悬停时：渲染隐藏明细（工作目录 + 剩余容量 + 分段分布 + 缓存与输入）
@@ -270,7 +271,7 @@ export class ContextBarComponent implements Component {
 			line = body;
 		}
 
-		return [truncateToWidth(line, width, "")];
+		return [fitLine(line, width, "clip")];
 	}
 
 	private hasDetails(): boolean {
