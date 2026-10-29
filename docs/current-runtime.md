@@ -40,6 +40,11 @@
 
 投递模式规则（忙时 direct 升级为 steer、空闲时一律 direct）归属于宿主，不再由 UI 决定。
 
+## 展示层（Presentation Core 与 Surface Adapter）
+
+`src/presentation/` 是平台中立展示核心：事实（facts/ingest-live/ingest-replay/sanitize，外部文本在事实入口经 sanitizeExternal 清洗一次）、控制器（controller，视图/订阅/意图的唯一协调者）、投影（projection、tool-status、trajectory、projection/tools 的 ToolModel）、组合（composition/slots 的 SlotRegistry 与 SlotAck 回执）、动作（actions）、文案（copy）与能力（surface）。它不 import `src/ui`、`src/cli`、`src/extensions`、`src/ai`，也不使用终端/进程/文件模块（check:boundaries 强制）。
+
+`src/ui/` 是第一个 Surface Adapter（TUI）：布局原语 `layout/fit.ts`（唯一截断/折行入口）、`layout/frame.ts`（computeFrame 帧几何纯函数）、`layout/panel.ts`（renderPanel 与面板部件，行宽精确守卫）；键位 `keys/keymap.ts`（浮层页脚提示由绑定生成）；工具文本渲染 `render-text.ts` 的 `renderToolBlock` 为 TUI 与 print/stdio 共用；槽位行渲染 `composition/render.ts`。第二个文本面是 `src/cli/stdio-render.ts`；无头面是 `createPrintUI`。扩展契约中 `terminal` 是可选 facet，`capabilities()` 声明能力，`notify`/`setWorking` 返回 SlotAck。NO_COLOR/TERM=dumb 下着色 SGR 退化（C 常量与 sgr 门）。
 ## TUI 消费者与扩展接缝
 
 交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/trajectory 的平台中立投影集中在 `PresentationController.ingest()`（`src/presentation/controller.ts`），TUI 只消费投影节点并翻译成宿主渲染调用；CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。

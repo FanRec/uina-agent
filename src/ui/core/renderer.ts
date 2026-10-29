@@ -8,11 +8,10 @@
  * 4. DEC CSI 2026 原子同步输出，彻底消除高频重绘闪烁。
  */
 
-import { C } from "./utils.js";
 import { fitLine } from "../layout/fit.js";
 import type { ProcessTerminal } from "./terminal.js";
 import { CURSOR_MARKER } from "./types.js";
-import { CELL_ANSI, normalizeFrameLine, scanCells, visibleWidth } from "./utils.js";
+import { C, CELL_ANSI, normalizeFrameLine, scanCells, visibleWidth } from "./utils.js";
 
 export interface CursorPosition {
 	row: number; // 相对活跃区域顶部的行号 (0-indexed)

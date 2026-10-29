@@ -1627,6 +1627,13 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W5 提交前。
 遗留未知：effort 预览语义改变肌肉记忆（旧版 ←/→ 立即生效）；help 文案已在键位表同步，无需额外迁移。
 
+[W8] 2026-10-29
+决策：收尾完成。文档三处对齐（AGENTS 代码地图加 presentation/ 并把 ui/ 行改为 TUI Surface Adapter；docs/current-runtime.md 新增展示层章节；proposals/INDEX.md 标注本规划已实现）。B.4 九项接缝逐条核对：presentation 结构 ✓（check:boundaries 10 规则含 presentation 平台中立）；presentation 无 ui/cli/extensions/ai import ✓；PresentationNode 判别联合 + 渲染穷尽 switch ✓；PresentationController 七方法被 TUI/stdio 共用 ✓；SlotContribution 无渲染函数、TUI 行渲染只在 composition/render.ts ✓；ActionId/Binding 无闭包 ✓；capabilities()/hasUI 派生/terminal optional/SlotAck ✓；sanitizeExternal 在 live/replay 入口 + tui 流式路径执行 ✓（各 surface 输出编码自理）；copy.ts 与 ToolModel 平台中立、renderToolBlock 属文本面 ✓。
+证据：pnpm typecheck（10 边界规则）、pnpm test 2888 绿（1 expected fail + tts-bridge-protocol 环境项）、pnpm build、pnpm verify:cli 全过。
+影响文件：AGENTS.md、docs/current-runtime.md、docs/proposals/INDEX.md、本附录。
+回滚点：W8 提交前。
+遗留未知：TTY 手测清单（I3/I5）需要真实终端，执行代理无法替代——清单保留在 §6，待用户手测签字；mc-program-runtime SQLite reopen 在并行池下偶发抖动（隔离复跑两次均绿，与本重构无关）；工作树另有用户并行 WIP（exec-command 超时、find-file/search-core 偷看、session-tools 参数描述），未纳入本重构提交。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。
