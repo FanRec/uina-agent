@@ -7,7 +7,7 @@
 
 import type { HostEventRecord } from "../host/events.js";
 import type { FactDraft, FactPayload } from "./facts.js";
-import { sanitizeExternal } from "./sanitize.js";
+import { sanitizeExternal, sanitizeExternalDeep } from "./sanitize.js";
 
 function live(payload: FactPayload, at: number): FactDraft {
 	return { ...payload, origin: "live", at };
@@ -55,7 +55,7 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 						kind: "tool.started",
 						callId: event.callId,
 						name: event.toolName,
-						args: event.args,
+						args: sanitizeExternalDeep(event.args),
 						invocationId: event.invocationId,
 					},
 					at,
@@ -69,7 +69,7 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 						kind: "tool.finished",
 						callId: event.callId,
 						name: event.toolName,
-						args: event.args,
+						args: sanitizeExternalDeep(event.args),
 						status: event.status,
 						result: sanitizeExternal(event.result),
 						details: event.details,

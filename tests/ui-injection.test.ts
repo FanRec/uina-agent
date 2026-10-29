@@ -4,10 +4,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { visibleWidth } from "../src/ui/core/utils.js";
-import { sanitizeExternal } from "../src/presentation/sanitize.js";
-import { ingestLive } from "../src/presentation/ingest-live.js";
 import type { HostEventRecord } from "../src/host/events.js";
+import { ingestLive } from "../src/presentation/ingest-live.js";
+import { sanitizeExternal } from "../src/presentation/sanitize.js";
+import { visibleWidth } from "../src/ui/core/utils.js";
 
 /** 审计 I2 的注入向量全集。 */
 const VECTORS: readonly [string, string][] = [
@@ -75,10 +75,16 @@ describe("帧级注入（审计 I2）：注入内容不改变帧结构", () => {
 		const tui = createTestTUI({ columns: 80, rows: 24 });
 		try {
 			tui.tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "用户输入" }));
-			tui.tui.consume(record({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: `正常内容 ${MIXED} 结尾` }));
 			tui.tui.consume(
-				record({ type: "tool_call", callId: "c1", toolName: "exec_command", args: { command: MIXED } }),
+				record({
+					type: "output_update",
+					streamId: "s1",
+					offset: 0,
+					channel: "content",
+					text: `正常内容 ${MIXED} 结尾`,
+				}),
 			);
+			tui.tui.consume(record({ type: "tool_call", callId: "c1", toolName: "exec_command", args: { command: MIXED } }));
 			tui.tui.consume(
 				record({
 					type: "tool_result",

@@ -54,3 +54,21 @@ export function sanitizeExternal(text: string): string {
 	}
 	return output;
 }
+
+/**
+ * 深清洗结构化载荷（工具 args、结果对象内的字符串字段）：
+ * 模型可控的字符串都可能携带控制序列，与裸文本同权对待；
+ * 非字符串键值按结构递归，数组/对象克隆后返回，原始值原样返回。
+ */
+export function sanitizeExternalDeep<T>(value: T): T {
+	if (typeof value === "string") return sanitizeExternal(value) as unknown as T;
+	if (Array.isArray(value)) return value.map((item) => sanitizeExternalDeep(item)) as unknown as T;
+	if (typeof value === "object" && value !== null) {
+		const out: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+			out[sanitizeExternal(key)] = sanitizeExternalDeep(item);
+		}
+		return out as unknown as T;
+	}
+	return value;
+}
