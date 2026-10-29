@@ -136,7 +136,7 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 		expect(bottomLine).toContain("缓存 90.0%");
 	});
 
-	it("新一轮对话开始（turn_start）时，旧缓存数据正确重置", () => {
+	it("turn_start 只把上下文读数标为估算，不抹掉上一轮真实缓存事实", () => {
 		const tui = createTestUI();
 		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "第一问" }));
 		tui.consume(
@@ -151,11 +151,12 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 		);
 		expect(plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "")).toContain("缓存 90.0%");
 
-		// 新回合开始，旧用量失效
+		// 新回合开始：上下文读数转为估算，但上一轮 usage 仍是最近一次真实事实。
 		tui.consume(record({ type: "turn_start", turnNumber: 2, userText: "第二问" }));
 		const bottomLine = plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "");
-		expect(bottomLine).not.toContain("缓存");
-		expect(plain(getTestUIHost(tui).contextBar.render(100).join(" "))).not.toContain("缓存读");
+		expect(bottomLine).toContain("缓存 90.0%");
+		getTestUIHost(tui).contextBar.setHovered(true);
+		expect(plain(getTestUIHost(tui).contextBar.render(100).join(" "))).toContain("缓存读 9.0k");
 	});
 
 	it("会话回溯（session_rewind）时，旧缓存数据正确重置", () => {

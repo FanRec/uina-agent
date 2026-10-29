@@ -1494,6 +1494,27 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2b 提交前。
 遗留未知：无。
 
+[W2c] 2026-10-29
+决策：token 与 TPS 的估算来源成为显式必填事实：`ActivityHeaderMetrics.tokensEstimated/tpsEstimated`，`~` 只在对应值为字符折算时出现；完成态与运行态统一用 `tok`。组件按 step 记录“结算总量中估算部分”与“速度账本中估算部分”，真实 usage 到达后同一 step 立即转为事实。TPS 的分母仍只含可度量解码窗口（成批到达的 step 不进账本），因此速度与 token 总数样本集合天然不同。
+证据：tests/ui.test.ts「完成时输出耗时、Token数与火花线」「运行态…TPS 仪表盘」；`addRealOutputTokens(80)` 后断言 `80 tok` 且无 `~80 tok`。
+影响文件：src/ui/components/widgets/activity-line.ts。
+回滚点：W2c 提交前。
+遗留未知：无。
+
+[W2c] 2026-10-29
+决策：缓存命中率区分“Provider 未报告”（`cacheRead === undefined` → 不显示）与“命中 0%”（报回 0 → `0.0%`）。上下文剩余容量在估算读数前加 `~`；`turn_start` 只把读数标为估算，不再清空 `lastUsage`，缓存徽章保留到下一次真实 usage 到达；会话回溯仍显式清空（旧请求属于被丢弃的未来）。retry 状态行显示本次重试耗时，起点取 `HostEventRecord.at`。
+证据：tests/ui-cache-wiring.test.ts「turn_start 只把上下文读数标为估算」「session_rewind…重置」；tests/ui.test.ts「formatCacheHitRate…」「Provider 重试状态…1.2s」与「ContextBar 对估算用量…~」。
+影响文件：src/ui/components/widgets/context-bar.ts、src/ui/ui-host.ts、src/ui/tui.ts。
+回滚点：W2c 提交前。
+遗留未知：无。
+
+[W2c] 2026-10-29
+决策：压缩终态失败/取消/noop 由 TUI 消费同一 `session_compact` 事件写转录卡片，正文取真实 `error`（缺省时明确写“未提供错误原因/压缩被中止”）；toast 只作即时提示。`cards.ts` 的非 completed 分支由此成为唯一活路径。
+证据：tests/ui.test.ts「InteractiveTUI 从 RuntimeEvent 驱动压缩进度显示，所有终态清除」断言卡片含“压缩失败”与真实错误文本；tests/ui.test.ts「失败的压缩记录不显示为已压缩摘要」。
+影响文件：src/ui/tui.ts、src/extensions/builtin.ts（仅注释）、src/ui/components/transcript/cards.ts（无改动，死分支转活）。
+回滚点：W2c 提交前。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

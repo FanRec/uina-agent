@@ -222,6 +222,10 @@ export interface ActivityHeaderMetrics {
 	ttftMs?: number;
 	/** 本回合已结算的思考 token；usage.output 含它，正文 = output - reasoning。 */
 	reasoningTokens?: number;
+	/** outputTokens 是否来自字符折算估算；服务端真实 usage 为 false。 */
+	tokensEstimated: boolean;
+	/** tps 分子是否含估算 token；全部来自真实 usage 时为 false。 */
+	tpsEstimated: boolean;
 }
 
 /**
@@ -234,13 +238,18 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 
 	if (metrics.phase === "done") {
 		const prefix = `${C.green}✓${C.reset}`;
+		// `~` 只用于字符折算的估算值；服务端报回的 usage 是事实，不带修饰。
+		const tokenMark = metrics.tokensEstimated ? "~" : "";
 		let sparkStr = "";
 		if (metrics.avgTps !== undefined && metrics.avgTps > 0) {
 			const avgTps = metrics.avgTps;
 			const samples = metrics.tpsSamples ?? [];
 			const spark = formatTpsSparkline(samples.slice(-12));
 			const sparkColor = tpsColor(avgTps);
-			sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
+			const speedMark = metrics.tpsEstimated ? "~" : "";
+			sparkStr = spark
+				? ` · ${sparkColor}${spark}${C.reset} ${speedMark}${avgTps} tps`
+				: ` · ${speedMark}${avgTps} tps`;
 		}
 		// 首包等待是真实体验的一部分，之前完全不可见：3.1s 耗时里有 2.4s 在等首包。
 		const ttft =
@@ -250,7 +259,11 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 		const content = Math.max(0, tokens - reasoning);
 		const showSplit = reasoning > 0 && maxWidth >= 90;
 		const tokenStr =
-			tokens > 0 ? (showSplit ? ` · ${tokens} tok (思考 ${reasoning} · 正文 ${content})` : ` · ~${tokens} tokens`) : "";
+			tokens > 0
+				? showSplit
+					? ` · ${tokenMark}${tokens} tok (思考 ${reasoning} · 正文 ${content})`
+					: ` · ${tokenMark}${tokens} tok`
+				: "";
 		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${ttft}${tokenStr}${sparkStr}${C.reset}`;
 		return truncateToWidth(`${prefix} ${text}`, maxWidth);
 	}
@@ -260,7 +273,9 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 	if (metrics.isWaitingFirstToken) {
 		tokenStr = ` · ${C.inactive}等待响应${C.reset}`;
 	} else if (tokens > 0 && maxWidth >= 48) {
-		tokenStr = ` · ${C.gray}~${tokens} tok${C.reset}`;
+		// 流式中 usage 到达前是字符折算，到达后同一 step 即切换为真实值。
+		const tokenMark = metrics.tokensEstimated ? "~" : "";
+		tokenStr = ` · ${C.gray}${tokenMark}${tokens} tok${C.reset}`;
 	}
 
 	// 2. 组装 TPS 实时流速仪表盘
@@ -273,7 +288,8 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 		const gaugeWidth = maxWidth >= 75 ? 8 : maxWidth >= 58 ? 4 : 0;
 		const gauge = gaugeWidth > 0 ? `${formatTpsGauge(tps, peak, gaugeWidth)} ` : "";
 		const speedColor = tpsColor(tps);
-		tpsStr = ` · ${gauge}${speedColor}~${tps} tps${C.reset}`;
+		const speedMark = metrics.tpsEstimated ? "~" : "";
+		tpsStr = ` · ${gauge}${speedColor}${speedMark}${tps} tps${C.reset}`;
 	}
 
 	const suffix = `${tokenStr}${tpsStr}`;
@@ -299,8 +315,12 @@ export class ActivityLineComponent implements Component {
 
 	private settledDecodeMs = 0;
 	private settledOutputTokens = 0;
+	/** settledOutputTokens 中由字符折算的部分；非 0 表示展示值含估算。 */
+	private settledEstimatedOutputTokens = 0;
 	/** 速度配对账本：只累计「窗口达到可度量下限」的 step，与 settledDecodeMs 成对使用。 */
 	private settledMeasuredTokens = 0;
+	/** settledMeasuredTokens 中由字符折算的部分；非 0 表示流速含估算。 */
+	private settledEstimatedMeasuredTokens = 0;
 	private settledReasoningTokens = 0;
 	/** 本回合首个请求的首包耗时（一次回合内恒定，不随 step 累加）。 */
 	private firstTtftMs = 0;
@@ -316,7 +336,9 @@ export class ActivityLineComponent implements Component {
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
+		this.settledEstimatedOutputTokens = 0;
 		this.settledMeasuredTokens = 0;
+		this.settledEstimatedMeasuredTokens = 0;
 		this.settledReasoningTokens = 0;
 		this.firstTtftMs = 0;
 	}
@@ -339,8 +361,13 @@ export class ActivityLineComponent implements Component {
 		this.stepOtherChars += counts.other;
 	}
 
-	private estimateTokens(): number {
-		return foldStreamChars({ cjk: this.stepCjkChars, other: this.stepOtherChars });
+	/** 本 step 的 token 值与来源：服务端 usage 是事实，字符折算是估算。 */
+	private stepTokenCount(): { tokens: number; estimated: boolean } {
+		if (this.stepUsageTokens > 0) return { tokens: this.stepUsageTokens, estimated: false };
+		return {
+			tokens: foldStreamChars({ cjk: this.stepCjkChars, other: this.stepOtherChars }),
+			estimated: true,
+		};
 	}
 
 	addRealOutputTokens(tokens: number, timing?: GenerationTiming, reasoningTokens?: number): void {
@@ -363,13 +390,15 @@ export class ActivityLineComponent implements Component {
 		// token 总数是事实（服务端报了、输出用户可见），有可见输出就记；
 		// 速度是测量：窗口低于可度量下限（成批到达）的 step 不进速度账本。
 		const visible = this.stepFirstTokenAt > 0;
-		const stepTokens = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
+		const { tokens: stepTokens, estimated } = this.stepTokenCount();
 		if (visible && stepTokens > 0) {
 			this.settledOutputTokens += stepTokens;
+			if (estimated) this.settledEstimatedOutputTokens += stepTokens;
 			this.settledReasoningTokens += this.stepReasoningTokens;
 		}
 		if (visible && this.observedWindowMs() >= MIN_MEASURABLE_DECODE_MS) {
 			this.settledMeasuredTokens += stepTokens;
+			if (estimated) this.settledEstimatedMeasuredTokens += stepTokens;
 			this.settledDecodeMs += this.observedWindowMs();
 		}
 		this.clearStep();
@@ -401,7 +430,9 @@ export class ActivityLineComponent implements Component {
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
+		this.settledEstimatedOutputTokens = 0;
 		this.settledMeasuredTokens = 0;
+		this.settledEstimatedMeasuredTokens = 0;
 		this.settledReasoningTokens = 0;
 		this.firstTtftMs = 0;
 	}
@@ -437,18 +468,30 @@ export class ActivityLineComponent implements Component {
 	}
 
 	private outputTokens(): number {
-		const inFlight = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
-		return this.settledOutputTokens + (this.stepFirstTokenAt > 0 ? inFlight : 0);
+		const step = this.stepTokenCount();
+		return this.settledOutputTokens + (this.stepFirstTokenAt > 0 ? step.tokens : 0);
+	}
+
+	/** 展示的 token 总数是否含字符折算；真实 usage 到达后同一 step 立即转为事实。 */
+	private outputTokensEstimated(): boolean {
+		if (this.stepFirstTokenAt > 0 && this.stepUsageTokens === 0) return true;
+		return this.settledEstimatedOutputTokens > 0;
 	}
 
 	/** 速度比值的两端：分子只累计可度量 step 的 token，与分母严格配对。 */
 	private speedPair(): { tokens: number; ms: number } {
 		if (!this.isStepMeasurable()) return { tokens: this.settledMeasuredTokens, ms: this.settledDecodeMs };
-		const inFlight = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
+		const step = this.stepTokenCount();
 		return {
-			tokens: this.settledMeasuredTokens + inFlight,
+			tokens: this.settledMeasuredTokens + step.tokens,
 			ms: this.settledDecodeMs + this.observedWindowMs(),
 		};
+	}
+
+	/** 流速账本是否混入了字符折算值。 */
+	private speedEstimated(): boolean {
+		if (this.isStepMeasurable() && this.stepUsageTokens === 0) return true;
+		return this.settledEstimatedMeasuredTokens > 0;
 	}
 
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
@@ -499,6 +542,8 @@ export class ActivityLineComponent implements Component {
 				tpsSamples: this.tpsSamples,
 				...(this.firstTtftMs > 0 ? { ttftMs: this.firstTtftMs } : {}),
 				...(this.settledReasoningTokens > 0 ? { reasoningTokens: this.settledReasoningTokens } : {}),
+				tokensEstimated: this.outputTokensEstimated(),
+				tpsEstimated: this.speedEstimated(),
 			},
 			maxWidth,
 			now,

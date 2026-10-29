@@ -507,10 +507,14 @@ describe("UI Components & Visual Rendering", () => {
 		try {
 			host.start();
 			host.setBusy(true);
-			host.setProviderRetryMessage("vanyo 连接失败（HTTP 503），16.0 秒后重试，第 8 次");
+			// 回合已跑了 3 秒；重试提示自己的耗时必须从提示起点算，而不是整轮。
+			await vi.advanceTimersByTimeAsync(3_000);
+			host.setProviderRetryMessage("vanyo 连接失败（HTTP 503），16.0 秒后重试，第 8 次", Date.now());
 			await vi.advanceTimersByTimeAsync(1_200);
 			expect(terminal.getVisibleText()).toContain("vanyo 连接失败");
 			expect(terminal.getVisibleText()).toContain("第 8 次");
+			expect(terminal.getVisibleText()).toContain("1.2s");
+			expect(terminal.getVisibleText()).not.toContain("4.2s");
 			host.setProviderRetryMessage();
 			await vi.advanceTimersByTimeAsync(50);
 			expect(terminal.getVisibleText()).not.toContain("vanyo 连接失败");
@@ -1686,7 +1690,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const rate = formatCacheHitRate(9000, 1000, 0);
 		expect(rate).toBe("90.0%");
 
-		expect(formatCacheHitRate(0, 1000, 0)).toBeUndefined();
+		// Provider 报回 0 是事实（命中 0.0%）；只有字段缺省才是“未报告”。
+		expect(formatCacheHitRate(0, 1000, 0)).toBe("0.0%");
+		expect(formatCacheHitRate(undefined, 1000, 0)).toBeUndefined();
 	});
 
 	it("Ctrl+C 在输入框有内容时清空内容而不触发退出流程", () => {
@@ -1862,10 +1868,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(tui.visibleText).toContain("测量压缩后上下文");
 
 				tui.tui.consume(
-					record({ type: "session_compact", operationId: "compact-1", status: "failed", error: "压缩失败" }),
+					record({ type: "session_compact", operationId: "compact-1", status: "failed", error: "摘要模型请求终止" }),
 				);
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).not.toContain("正在压缩上下文");
+				// toast 会消失；失败原因必须作为终态卡片留在转录里。
+				expect(tui.visibleText).toContain("压缩失败");
+				expect(tui.visibleText).toContain("摘要模型请求终止");
 				expect(isHeartbeatActive(tui.host)).toBe(false);
 			} finally {
 				tui.dispose();
@@ -2020,7 +2029,15 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(slowGauge).not.toContain(C.error);
 
 			const slowHeader = formatActivityHeader(
-				{ phase: "streaming", message: "生成中", elapsedMs: 1000, outputTokens: 10, tps: 10 },
+				{
+					phase: "streaming",
+					message: "生成中",
+					elapsedMs: 1000,
+					outputTokens: 10,
+					tps: 10,
+					tokensEstimated: true,
+					tpsEstimated: true,
+				},
 				80,
 			);
 			expect(slowHeader).toContain(C.inactive);
@@ -2049,7 +2066,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const header = act.getHeaderString(100);
 				expect(header).toContain("生成结束");
 				expect(header).toContain("耗时 1.0s");
-				expect(header).toContain("~80 tokens");
+				// 服务端报回的 80 是事实：不带估算标记。
+				expect(header).toContain("80 tok");
+				expect(header).not.toContain("~80 tok");
 				expect(header).toContain("tps");
 			} finally {
 				vi.useRealTimers();
@@ -2115,6 +2134,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						outputTokens: 140,
 						tps: 40,
 						tpsSamples: [30, 40],
+						tokensEstimated: true,
+						tpsEstimated: true,
 					},
 					100,
 				),
@@ -2134,6 +2155,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						elapsedMs: 3500,
 						outputTokens: 140,
 						tps: 40,
+						tokensEstimated: true,
+						tpsEstimated: true,
 					},
 					60,
 				),
@@ -2150,6 +2173,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						elapsedMs: 3500,
 						outputTokens: 140,
 						tps: 40,
+						tokensEstimated: true,
+						tpsEstimated: true,
 					},
 					45,
 				),
@@ -2166,6 +2191,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						elapsedMs: 3500,
 						outputTokens: 140,
 						tps: 40,
+						tokensEstimated: true,
+						tpsEstimated: true,
 					},
 					25,
 				),
@@ -2182,6 +2209,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						elapsedMs: 2400,
 						outputTokens: 140,
 						tps: 40,
+						tokensEstimated: true,
+						tpsEstimated: true,
 					},
 					80,
 				),
@@ -2198,6 +2227,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						message: "正在执行工具: bash",
 						elapsedMs: 2400,
 						outputTokens: 0,
+						tokensEstimated: false,
+						tpsEstimated: false,
 					},
 					80,
 				),
@@ -2258,6 +2289,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 彻底去除底边框已有的冗余重复数据
 			expect(line).not.toContain("7.7%");
 			expect(line).not.toContain("9.5k/124.0k");
+		});
+
+		it("ContextBar 对估算用量在剩余容量前加 ~", () => {
+			const bar = new ContextBarComponent();
+			bar.update({ usedTokens: 1000, contextWindow: 65536, estimated: true });
+			bar.setHovered(true);
+			expect(bar.render(80)[0]).toContain("剩余 ~64.5k");
 		});
 
 		it("InputLine 光标移动到前部输入字符、换行或删除时，光标精准跟随就地编辑，绝不跳到行尾", async () => {

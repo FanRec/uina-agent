@@ -156,8 +156,8 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 			e.status === "completed" || e.status === "noop" ? "info" : "warning",
 			e.status === "completed" || e.status === "noop" ? 2500 : 3000,
 		);
-		// 永久转录只记录已提交的压缩事实；失败/取消/noop 是瞬态结果，
-		// 只通知不堆卡片，避免重试把错误状态污染会话阅读流。
+		// toast 是即时提示；失败/取消/noop 的终态卡片由 UI 消费同一事件写进转录，
+		// 保证原因不会随 toast 消失。
 	});
 
 	pi.registerCommand({

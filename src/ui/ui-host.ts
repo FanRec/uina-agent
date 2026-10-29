@@ -199,6 +199,8 @@ export class UIHost implements UIHostContextPort {
 	private readonly workingContributions = new Map<string, { message: string; startedAt: number; sequence: number }>();
 	private contributionSequence = 0;
 	private providerRetryMessage?: string;
+	/** 本次重试提示的起点（HostEventRecord.at）；缺失时不显示耗时。 */
+	private providerRetryStartedAt?: number;
 
 	private activeSuggestions: {
 		type: "command" | "file";
@@ -620,6 +622,7 @@ export class UIHost implements UIHostContextPort {
 			inputTokens: this.lastUsage?.promptTokens,
 			cacheWrite: this.lastUsage?.cacheWrite,
 			segments: this.contextSegments,
+			estimated: !this.usageActual,
 		});
 	}
 
@@ -638,9 +641,17 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
+	/** 当前上下文读数转为估算；上一轮真实 usage/缓存仍是事实，不清空。 */
 	markUsageEstimated(): void {
 		this.usageActual = false;
+		this.syncContextComponents();
+		this.requestRender();
+	}
+
+	/** 会话回溯：旧请求的 usage 与缓存属于被丢弃的未来，显式清空。 */
+	clearRequestUsage(): void {
 		this.lastUsage = undefined;
+		this.usageActual = false;
 		this.syncContextComponents();
 		this.requestRender();
 	}
@@ -727,8 +738,7 @@ export class UIHost implements UIHostContextPort {
 		} else {
 			this.activityLine.reset();
 		}
-		this.markUsageEstimated();
-		this.requestRender();
+		this.clearRequestUsage();
 	}
 
 	// ── 回合生命周期门面 ──
@@ -1062,8 +1072,9 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	/** 当前 Provider 重试状态。独立于回合 ActivityLine，直到恢复或回合结束才清除。 */
-	setProviderRetryMessage(message?: string): void {
+	setProviderRetryMessage(message?: string, startedAt?: number): void {
 		this.providerRetryMessage = message;
+		this.providerRetryStartedAt = message === undefined ? undefined : startedAt;
 		this.updateHeartbeat();
 		this.requestRender();
 	}
@@ -1185,8 +1196,9 @@ export class UIHost implements UIHostContextPort {
 		const statusWidth = Math.max(24, innerW - reservedRight);
 		const statusHeader = this.providerRetryMessage
 			? formatWorkingHeader(
+					// 这次重试自己的耗时；回合总耗时会掩盖“重试等了多久”这个用户要看的事实。
 					this.providerRetryMessage,
-					this.busy && this.turnStartedAt !== undefined ? Math.max(0, Date.now() - this.turnStartedAt) : 0,
+					this.providerRetryStartedAt === undefined ? 0 : Math.max(0, Date.now() - this.providerRetryStartedAt),
 					statusWidth,
 				)
 			: this.workingContributions.size === 0

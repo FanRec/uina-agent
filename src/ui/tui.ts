@@ -39,6 +39,13 @@ const COMPACT_PHASE_LABEL: Record<"queued" | "planning" | "summarizing" | "apply
 	measuring: "测量压缩后上下文",
 };
 
+/** 非 completed 压缩终态的卡片正文：toast 只闪一下，原因必须留在转录里。 */
+function compactionTerminalText(event: Extract<HostEvent, { type: "session_compact" }>): string {
+	if (event.status === "failed") return event.error ?? "未提供错误原因";
+	if (event.status === "cancelled") return event.error ?? "压缩被中止";
+	return "当前上下文无需压缩";
+}
+
 export class InteractiveTUI {
 	private readonly host: UIHost;
 	private intentCallback?: (intent: TuiIntent) => void;
@@ -262,12 +269,20 @@ export class InteractiveTUI {
 						collapsed: true,
 					});
 					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore, record.at);
+				} else {
+					// toast 会消失；失败原因与取消/noop 的结论必须留在转录里供用户判断。
+					this.host.addCompaction({
+						status: m.status,
+						summary: compactionTerminalText(m),
+						collapsed: true,
+					});
 				}
 				break;
 
 			case "provider_retry":
 				this.host.setProviderRetryMessage(
 					`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`,
+					record.at,
 				);
 				this.host.notify(
 					`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`,

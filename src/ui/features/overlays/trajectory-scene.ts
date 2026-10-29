@@ -9,14 +9,7 @@ import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import { highlightCode } from "../../components/primitives/syntax-text.js";
 
-export type TrajectoryNodeKind =
-	| "turn_start"
-	| "thinking"
-	| "tool_call"
-	| "model_stream"
-	| "compaction"
-	| "error"
-	| "system";
+export type TrajectoryNodeKind = "turn_start" | "thinking" | "tool_call" | "model_stream" | "compaction" | "error";
 
 export type TrajectoryNodeStatus = "running" | "completed" | "failed" | "cancelled" | "unknown" | "not_started";
 

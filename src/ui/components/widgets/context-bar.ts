@@ -26,6 +26,8 @@ export interface ContextUsageData {
 	cacheWrite?: number;
 	inputTokens?: number;
 	segments?: ContextSegments;
+	/** usedTokens 是估算值（非 Provider 实测）；剩余容量同样只作估算展示。 */
+	estimated?: boolean;
 }
 
 export function formatTokensCompact(n: number): string {
@@ -35,14 +37,15 @@ export function formatTokensCompact(n: number): string {
 	return `${value}`;
 }
 
+/**
+ * `cacheRead` 缺省表示 Provider 未报告；报回的 0 是事实（命中 0.0%），
+ * 两者不可合并为 undefined。
+ */
 export function formatCacheHitRate(cacheRead?: number, input?: number, cacheWrite?: number): string | undefined {
-	if (input === undefined || cacheRead === undefined) return undefined;
-	const cr = cacheRead;
-	const inp = input ?? 0;
-	const cw = cacheWrite ?? 0;
-	const total = inp + cr + cw;
-	if (total <= 0 || cr <= 0) return undefined;
-	return `${((cr / total) * 100).toFixed(1)}%`;
+	if (cacheRead === undefined) return undefined;
+	const total = (input ?? 0) + cacheRead + (cacheWrite ?? 0);
+	if (total <= 0) return undefined;
+	return `${((cacheRead / total) * 100).toFixed(1)}%`;
 }
 
 /** Uina 雾蓝终端主题各分段色彩规范 */
@@ -167,6 +170,7 @@ export class ContextBarComponent implements Component {
 	private cacheWrite?: number;
 	private inputTokens?: number;
 	private segments?: ContextSegments;
+	private estimated = false;
 	private isHovered = false;
 	private expanded = false;
 
@@ -178,6 +182,7 @@ export class ContextBarComponent implements Component {
 		this.cacheWrite = data.cacheWrite;
 		this.inputTokens = data.inputTokens;
 		this.segments = data.segments;
+		this.estimated = data.estimated ?? false;
 	}
 
 	setHovered(hovered: boolean): boolean {
@@ -218,7 +223,7 @@ export class ContextBarComponent implements Component {
 		// 1. 剩余容量（底边框已展示“已用/总量 (百分比)”，此处仅透视剩余可用空间，消除重复）
 		if (this.contextWindow !== undefined && this.contextWindow > 0 && this.usedTokens !== undefined) {
 			const remaining = Math.max(0, this.contextWindow - this.usedTokens);
-			parts.push(`${C.suggestion}剩余 ${formatTokensCompact(remaining)}${C.reset}`);
+			parts.push(`${C.suggestion}剩余 ${this.estimated ? "~" : ""}${formatTokensCompact(remaining)}${C.reset}`);
 		} else {
 			parts.push(`${C.inactive}上下文上限未知${C.reset}`);
 		}
