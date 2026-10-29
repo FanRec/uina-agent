@@ -9,7 +9,7 @@
 
 import type { GenerationTiming } from "../../../core/types.js";
 import type { Component } from "../../core/types.js";
-import { C, charWidth, visibleWidth } from "../../core/utils.js";
+import { C, charWidth, sgr, visibleWidth } from "../../core/utils.js";
 import { fitLine } from "../../layout/fit.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -100,7 +100,7 @@ export function sweep(
 		const colorKey = `${rgb.r};${rgb.g};${rgb.b}`;
 
 		if (colorKey !== lastColor) {
-			out += `\x1b[38;2;${colorKey}m\x1b[1m`;
+			out += sgr(`\x1b[38;2;${colorKey}m\x1b[1m`);
 			lastColor = colorKey;
 		}
 		out += char;

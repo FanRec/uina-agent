@@ -13,7 +13,7 @@
  * 4. 全封闭细线卡片，8 行折叠保护与展开提示。
  */
 
-import { C, getContentBoxWidth, visibleWidth } from "../../core/utils.js";
+import { C, getContentBoxWidth, sgr, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { fitLine } from "../../layout/fit.js";
 
@@ -181,7 +181,7 @@ export function computeWordDiff(oldLine: string, newLine: string): { oldFormatte
 			oldOut += `${C.red}${token}${C.reset}`;
 		} else {
 			// 变更词：高亮加粗
-			oldOut += `${C.bold}\x1b[38;2;255;160;160m${token}${C.reset}${C.red}`;
+			oldOut += `${C.bold}${sgr("\x1b[38;2;255;160;160m")}${token}${C.reset}${C.red}`;
 		}
 	}
 
@@ -192,7 +192,7 @@ export function computeWordDiff(oldLine: string, newLine: string): { oldFormatte
 			newOut += `${C.green}${token}${C.reset}`;
 		} else {
 			// 变更词：高亮加粗
-			newOut += `${C.bold}\x1b[38;2;160;255;160m${token}${C.reset}${C.green}`;
+			newOut += `${C.bold}${sgr("\x1b[38;2;160;255;160m")}${token}${C.reset}${C.green}`;
 		}
 	}
 

@@ -3,7 +3,7 @@
  */
 
 import type { Component } from "../../core/types.js";
-import { C, visibleWidth } from "../../core/utils.js";
+import { C, sgr, visibleWidth } from "../../core/utils.js";
 import { fitLine } from "../../layout/fit.js";
 
 type Rgb = readonly [number, number, number];
@@ -17,7 +17,7 @@ const PALETTE: Record<string, Rgb | undefined> = {
 	Z: [110, 125, 145], // 雾灰
 };
 
-const fg = (rgb: Rgb): string => `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+const fg = (rgb: Rgb): string => sgr(`\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`);
 const bg = (rgb: Rgb): string => `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 
 /** dsh-TUI 经典像素鲸鱼标准静态帧（通过半块字 ▀/▄ 合成为 13 行，每行严格 40 字符宽） */
@@ -103,7 +103,7 @@ function renderBigfontUina(): string[] {
 		const red = Math.round(ice[0] + (brand[0] - ice[0]) * factor);
 		const green = Math.round(ice[1] + (brand[1] - ice[1]) * factor);
 		const blue = Math.round(ice[2] + (brand[2] - ice[2]) * factor);
-		const color = `\x1b[38;2;${red};${green};${blue}m\x1b[1m`;
+		const color = sgr(`\x1b[38;2;${red};${green};${blue}m\x1b[1m`);
 		return `${color}${rawLine.replace(/·/g, " ")}${C.reset}`;
 	});
 }

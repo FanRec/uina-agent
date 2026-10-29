@@ -1618,7 +1618,7 @@ export class UIHost implements UIHostContextPort {
 						this.focusManager.setFocus(this.inputLine);
 						if (typeof col === "number") {
 							// 减去 dsh-tui 风格的 `› ` 提示符（共 2 列）
-							const textIndex = this.inputLine.hitTest(r - 1, Math.max(0, col - 2));
+							const textIndex = this.inputLine.hitTest(r - 1, Math.max(0, col - this.inputLine.getPromptWidth()));
 							if (textIndex !== undefined) this.inputLine.setCursorIndex(textIndex);
 						}
 						this.requestRender();

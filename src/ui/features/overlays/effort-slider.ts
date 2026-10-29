@@ -9,7 +9,7 @@
 import type { ThinkingLevel } from "../../../core/types.js";
 import { Key } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
-import { C, visibleWidth } from "../../core/utils.js";
+import { C, sgr, visibleWidth } from "../../core/utils.js";
 import { type Binding, hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
 import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
 
@@ -142,7 +142,7 @@ export class EffortSlider implements Component, Focusable {
 				const committed = this.activeTierId === tier.id ? `${C.suggestion}✓${C.reset}` : "";
 				const label = `${tier.name}${committed}`;
 				return tier === this.tiers[this.focusIndex]
-					? `\x1b[7m\x1b[1m${label}\x1b[0m`
+					? `${sgr("\x1b[7m\x1b[1m")}${label}${C.reset}`
 					: `${C.inactive}${label}${C.reset}`;
 			});
 			const leftHint = this.focusIndex > 0 ? `${C.inactive}←${this.focusIndex} ${C.reset}` : "";

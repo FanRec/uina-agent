@@ -8,6 +8,7 @@ import type { HostEvent, HostEventRecord, HostSnapshot } from "../host/events.js
 import type { PresentationIntent } from "../presentation/actions.js";
 import { PresentationController } from "../presentation/controller.js";
 import type { ToolNode, TurnNode } from "../presentation/projection.js";
+import { sanitizeExternal } from "../presentation/sanitize.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
@@ -211,7 +212,7 @@ export class InteractiveTUI {
 					inputId: m.inputId,
 					source: m.source,
 					receivedAt: m.receivedAt,
-					text: m.text,
+					text: sanitizeExternal(m.text),
 					...(m.images ? { images: [...m.images] } : {}),
 				});
 				break;
@@ -262,11 +263,11 @@ export class InteractiveTUI {
 			case "output_update":
 				if (m.channel === "thinking") {
 					// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
-					this.host.appendThinkingStream(m.text);
+					this.host.appendThinkingStream(sanitizeExternal(m.text));
 					break;
 				}
 				if (m.channel !== "content") break;
-				this.host.appendAssistantStream(m.text);
+				this.host.appendAssistantStream(sanitizeExternal(m.text));
 				break;
 
 			case "tool_call": {
@@ -309,14 +310,14 @@ export class InteractiveTUI {
 
 			case "notice":
 				// 瞬态通知走 toast（对话框右侧上方，3s 消失），与模型切换提示同形态，不进 transcript
-				this.host.notify(m.text, "info", 3000);
+				this.host.notify(sanitizeExternal(m.text), "info", 3000);
 				break;
 
 			case "error":
 				this.host.setProviderRetryMessage();
 				this.notifyToolActivity();
 				this.host.setBusy(false, record.at);
-				this.host.addErrorCard(m.text);
+				this.host.addErrorCard(sanitizeExternal(m.text));
 				break;
 
 			case "queue":

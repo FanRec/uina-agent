@@ -16,7 +16,7 @@
 import { Key, matchesKey } from "../../core/keys.js";
 import { TextBuffer } from "../../core/text-buffer.js";
 import { type Component, CURSOR_MARKER, type Focusable } from "../../core/types.js";
-import { C, copyToClipboardUnified, visibleWidth } from "../../core/utils.js";
+import { C, copyToClipboardUnified, sgr, visibleWidth } from "../../core/utils.js";
 import { fitLine } from "../../layout/fit.js";
 import { type ContextSegments, formatTokensCompact, renderSegmentedBar } from "../widgets/context-bar.js";
 
@@ -26,7 +26,7 @@ const MIN_RIGHT_BORDER_RUN = 4;
 // dsh-tui/src/cc/figures.ts: POINTER = '\u276f' (❯).
 const DSH_PROMPT_POINTER = "❯";
 // dsh-tui/src/trajectory/effortIgnition.ts: HUES_DARK[0] (130,185,255).
-const DSH_PROMPT_POINTER_COLOR = "\x1b[38;2;130;185;255m";
+const DSH_PROMPT_POINTER_COLOR = sgr("\x1b[38;2;130;185;255m");
 
 export interface MarkerSpan {
 	id: number;
@@ -854,6 +854,11 @@ export class InputLine implements Component, Focusable {
 		this.cursorIndex = snapCursorToMarkerBoundary(index, this.text, this.pastes);
 	}
 
+	/** 命中测试的提示符宽度（D13）：`❯ ` 与续行空格同为 2 列，单点导出。 */
+	getPromptWidth(): number {
+		return 2;
+	}
+
 	hitTest(screenRow: number, screenCol: number): number | undefined {
 		const visualRows = this.getVisualLayout(this.lastRenderWidth || 80);
 		const row = visualRows[this.scrollOffset + Math.max(0, screenRow)];
@@ -982,7 +987,7 @@ export class InputLine implements Component, Focusable {
 						cursorHandled = true;
 						curRowHasCursor = true;
 						curRowCursorCol = curRowWidth;
-						curRowText += `${CURSOR_MARKER}\x1b[7m${atom.raw}\x1b[27m`;
+						curRowText += `${CURSOR_MARKER}${sgr("\x1b[7m")}${atom.raw}${sgr("\x1b[27m")}`;
 					} else {
 						curRowText += atom.display;
 					}
@@ -995,13 +1000,13 @@ export class InputLine implements Component, Focusable {
 						cursorHandled = true;
 						curRowHasCursor = true;
 						curRowCursorCol = curRowWidth + atom.width;
-						curRowText += `${atom.display}${CURSOR_MARKER}\x1b[7m \x1b[27m`;
+						curRowText += `${atom.display}${CURSOR_MARKER}${sgr("\x1b[7m")} ${sgr("\x1b[27m")}`;
 						curRowWidth += atom.width + 1;
 					} else if (!cursorHandled && this.cursorIndex === atom.startIdx) {
 						cursorHandled = true;
 						curRowHasCursor = true;
 						curRowCursorCol = curRowWidth;
-						curRowText += `${CURSOR_MARKER}\x1b[7m \x1b[27m${atom.display}`;
+						curRowText += `${CURSOR_MARKER}${sgr("\x1b[7m")} ${sgr("\x1b[27m")}${atom.display}`;
 						curRowWidth += atom.width + 1;
 					} else {
 						curRowText += atom.display;
@@ -1017,7 +1022,7 @@ export class InputLine implements Component, Focusable {
 				cursorHandled = true;
 				curRowHasCursor = true;
 				curRowCursorCol = curRowWidth;
-				curRowText += `${CURSOR_MARKER}\x1b[7m \x1b[27m`;
+				curRowText += `${CURSOR_MARKER}${sgr("\x1b[7m")} ${sgr("\x1b[27m")}`;
 				curRowWidth += 1;
 			}
 
@@ -1028,14 +1033,14 @@ export class InputLine implements Component, Focusable {
 		if (!cursorHandled) {
 			if (visualRows.length === 0) {
 				visualRows.push({
-					content: `${CURSOR_MARKER}\x1b[7m \x1b[27m`,
+					content: `${CURSOR_MARKER}${sgr("\x1b[7m")} ${sgr("\x1b[27m")}`,
 					hasCursor: true,
 					positions: [{ charIdx: 0, col: 0 }],
 					cursorCol: 0,
 				});
 			} else {
 				const lastRow = visualRows[visualRows.length - 1]!;
-				lastRow.content += `${CURSOR_MARKER}\x1b[7m \x1b[27m`;
+				lastRow.content += `${CURSOR_MARKER}${sgr("\x1b[7m")} ${sgr("\x1b[27m")}`;
 				lastRow.hasCursor = true;
 				lastRow.cursorCol = lastRow.positions.length > 0 ? lastRow.positions[lastRow.positions.length - 1]!.col : 0;
 			}
@@ -1115,7 +1120,7 @@ export class InputLine implements Component, Focusable {
 			const prefix = isFirstVisibleRow ? `${C.bold}${DSH_PROMPT_POINTER_COLOR}${DSH_PROMPT_POINTER} ${C.reset}` : "  ";
 			let contentStr = vRow.content;
 			if (this.isAllSelected) {
-				contentStr = `\x1b[7m${contentStr}\x1b[27m`;
+				contentStr = `${sgr("\x1b[7m")}${contentStr}${sgr("\x1b[27m")}`;
 			}
 
 			// 严格截断保证绝对不撑爆右边框

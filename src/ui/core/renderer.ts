@@ -8,6 +8,7 @@
  * 4. DEC CSI 2026 原子同步输出，彻底消除高频重绘闪烁。
  */
 
+import { C } from "./utils.js";
 import { fitLine } from "../layout/fit.js";
 import type { ProcessTerminal } from "./terminal.js";
 import { CURSOR_MARKER } from "./types.js";
@@ -109,13 +110,13 @@ export class MainScreenRenderer {
 		for (const index of changedRows) {
 			const fitted = physicalRows[index]!;
 			const fittedW = visibleWidth(fitted);
-			frame += `\x1b[${index + 1};1H\x1b[0m${fitted}`;
-			if (fittedW < width) frame += "\x1b[0m\x1b[K";
-			else frame += `\x1b[${index + 1};${width}H\x1b[0m\x1b[K`;
+			frame += `\x1b[${index + 1};1H${C.reset}${fitted}`;
+			if (fittedW < width) frame += `${C.reset}\x1b[K`;
+			else frame += `\x1b[${index + 1};${width}H${C.reset}\x1b[K`;
 		}
 		const clearedTail = Boolean(this.previousPhysicalRows && this.previousPhysicalRows.length > physicalRows.length);
 		if (clearedTail) {
-			frame += `\x1b[${physicalRows.length + 1};1H\x1b[0m\x1b[J`;
+			frame += `\x1b[${physicalRows.length + 1};1H${C.reset}\x1b[J`;
 		}
 
 		// 硬件光标精确定位至输入框焦点所在行列，唤起原生系统 IME 候选框
@@ -134,8 +135,8 @@ export class MainScreenRenderer {
 			let snapshot = "\x1b[H";
 			for (let index = 0; index < physicalRows.length; index++) {
 				const row = physicalRows[index]!;
-				snapshot += `\x1b[${index + 1};1H\x1b[0m${row}`;
-				snapshot += visibleWidth(row) < width ? "\x1b[0m\x1b[K" : `\x1b[${index + 1};${width}H\x1b[0m\x1b[K`;
+				snapshot += `\x1b[${index + 1};1H${C.reset}${row}`;
+				snapshot += visibleWidth(row) < width ? `\x1b[0m\x1b[K` : `\x1b[${index + 1};${width}H\x1b[0m\x1b[K`;
 			}
 			snapshot += cursorPos ? `\x1b[${cursorPos.row + 1};${cursorPos.col}H\x1b[?25h` : "\x1b[?25l";
 			snapshotTerminal.recordLogicalFrameSnapshot(snapshot);
