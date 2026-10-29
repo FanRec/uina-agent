@@ -4,13 +4,8 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import type {
-	ContextSnapshot,
-	GenerationTiming,
-	RequestUsage,
-	ThinkingLevel,
-	ToolResultStatus,
-} from "../core/types.js";
+import type { ContextSnapshot, GenerationTiming, RequestUsage, ThinkingLevel } from "../core/types.js";
+import type { ToolNode, TurnNode } from "../presentation/projection.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import type {
 	BuiltinUIActionRequest,
@@ -19,7 +14,7 @@ import type {
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
-import type { SessionEntry } from "../session/types.js";
+import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
 import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
 import { type CommandItem, formatSuggestionCardLines, InputLine } from "./components/editor/index.js";
 import { BannerComponent } from "./components/primitives/banner.js";
@@ -186,9 +181,10 @@ export class UIHost implements UIHostContextPort {
 	private running = false;
 	private stopRegistryUpdates?: () => void;
 	private busy = false;
-	private turnStartTime = 0;
+	/** 回合开始时刻，只能来自 Fact/HostEventRecord.at；未知时保持 undefined。 */
+	private turnStartedAt?: number;
 
-	private lastElapsedMs = 0;
+	private lastElapsedMs?: number;
 	private renderScheduled = false;
 	/**
 	 * 统一帧时钟：唯一的动画重绘定时器（50ms）。
@@ -581,22 +577,23 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	setBusy(busy: boolean): void {
+	/** @param at 回合起止的事实时刻；缺失保持未知，不以当前时钟补齐。 */
+	setBusy(busy: boolean, at?: number): void {
 		this.busy = busy;
 		this.inputLine.setBusy(busy);
 		if (busy) {
-			this.turnStartTime = Date.now();
+			this.turnStartedAt = at;
 			this.startAnimation();
 		} else {
-			if (this.turnStartTime > 0) {
-				this.lastElapsedMs = Math.max(1, Date.now() - this.turnStartTime);
-			}
+			this.lastElapsedMs =
+				this.turnStartedAt === undefined || at === undefined ? undefined : Math.max(1, at - this.turnStartedAt);
+			this.turnStartedAt = undefined;
 			this.stopAnimation();
 		}
 		this.requestRender();
 	}
 
-	getLastElapsedMs(): number {
+	getLastElapsedMs(): number | undefined {
 		return this.lastElapsedMs;
 	}
 
@@ -694,6 +691,7 @@ export class UIHost implements UIHostContextPort {
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		const latest = promptSnapshots.at(-1);
 		this.promptSnapshot = latest
@@ -705,7 +703,7 @@ export class UIHost implements UIHostContextPort {
 					injections: latest.injections,
 				}
 			: undefined;
-		this.transcript.loadSession(entries, decorations, promptSnapshots);
+		this.transcript.loadSession(entries, decorations, promptSnapshots, auxiliary);
 		this.scroll.resetTail();
 		this.requestRender();
 	}
@@ -720,8 +718,9 @@ export class UIHost implements UIHostContextPort {
 		decorations: readonly CompactionReplayDecoration[] = [],
 		turnNumber?: number,
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
-		this.loadSession(entries, decorations, promptSnapshots);
+		this.loadSession(entries, decorations, promptSnapshots, auxiliary);
 		if (turnNumber !== undefined) {
 			this.transcript.startTurn(turnNumber, "");
 			this.activityLine.start("thinking", "正在思考与生成回复...");
@@ -737,12 +736,8 @@ export class UIHost implements UIHostContextPort {
 	// transcript/activityLine 内部；每帧的状态变更与重绘请求在同一入口收口。
 
 	/** turn_start：开新轮，活动行进入 thinking。 */
-	startTurnCard(
-		turnNumber: number,
-		userText: string,
-		images?: readonly import("../core/content.js").ImageContent[],
-	): void {
-		this.transcript.startTurn(turnNumber, userText, images);
+	startTurnCard(node: TurnNode): void {
+		this.transcript.startTurn(node.turn, node.userText, node.images);
 		this.activityLine.start("thinking", "正在思考与生成回复...");
 		this.requestRender();
 	}
@@ -798,26 +793,18 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	/** tool_call：结算上一步解码区间，snap 后开运行中工具卡。 */
-	beginToolCard(toolName: string, args?: unknown, callId?: string): void {
+	beginToolCard(node: ToolNode): void {
 		this.activityLine.endStep();
 		this.transcript.smoothReveal.snapToLatest();
-		this.transcript.startTool(toolName, args, callId);
-		this.activityLine.update("tool", `正在执行工具: ${toolName}`);
+		this.transcript.startTool(node);
+		this.activityLine.update("tool", `正在执行工具: ${node.name}`);
 		this.requestRender();
 	}
 
 	/** tool_result：结算工具卡并提示继续生成。 */
-	settleToolCard(
-		toolName: string,
-		result: string,
-		elapsedMs: number,
-		status: ToolResultStatus,
-		callId?: string,
-		args?: unknown,
-		attachments?: { images?: import("../core/content.js").ImageContent[]; details?: unknown },
-	): void {
-		this.transcript.addToolDone(toolName, result, elapsedMs, status, callId, args, attachments);
-		this.activityLine.update("streaming", `工具 ${toolName} 执行完毕，继续生成...`);
+	settleToolCard(node: ToolNode): void {
+		this.transcript.addToolDone(node);
+		this.activityLine.update("streaming", `工具 ${node.name} 执行完毕，继续生成...`);
 		this.requestRender();
 	}
 
@@ -828,7 +815,10 @@ export class UIHost implements UIHostContextPort {
 		const lastTurn = history[history.length - 1];
 		const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
 		const elapsed = this.getLastElapsedMs();
-		this.activityLine.finish(isInterrupted ? "已打断当前轮次" : "本轮已完成", elapsed > 0 ? elapsed : undefined);
+		this.activityLine.finish(
+			isInterrupted ? "已打断当前轮次" : "本轮已完成",
+			elapsed !== undefined && elapsed > 0 ? elapsed : undefined,
+		);
 		this.requestRender();
 	}
 
@@ -1196,7 +1186,7 @@ export class UIHost implements UIHostContextPort {
 		const statusHeader = this.providerRetryMessage
 			? formatWorkingHeader(
 					this.providerRetryMessage,
-					this.busy ? Math.max(0, Date.now() - this.turnStartTime) : 0,
+					this.busy && this.turnStartedAt !== undefined ? Math.max(0, Date.now() - this.turnStartedAt) : 0,
 					statusWidth,
 				)
 			: this.workingContributions.size === 0

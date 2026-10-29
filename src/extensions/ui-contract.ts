@@ -164,7 +164,7 @@ export interface ToolRenderData {
 }
 export type ToolRenderer = (
 	tool: ToolRenderData,
-	options: { expanded: boolean; hovered: boolean; width: number; elapsedMs: number },
+	options: { expanded: boolean; hovered: boolean; width: number; elapsedMs?: number },
 ) => Component | undefined;
 export type MarkdownTransformer = (
 	markdown: string,

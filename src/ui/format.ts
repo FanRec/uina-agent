@@ -3,6 +3,7 @@
  * 对齐 pi 的工具展示形态：调用行 + 结果折叠区首屏（摘要几行 + 截断标记）。
  */
 
+import { TOOL_STATUS_SPEC } from "../presentation/tool-status.js";
 import { truncateToWidth } from "./core/utils.js";
 
 export type Style = (s: string) => string;
@@ -118,7 +119,7 @@ export function toolStartLine(name: string, args: unknown): string {
  * 工具结果的中立解析视图：与展示样式解耦（纯数据，可独立单测）。
  *
  * - `text`：非 JSON / 非对象 JSON（如裸数字）——按纯文本缩进展示；
- * - `cancelled/unknown/not_started`：终态标记行；
+ * - `cancelled/unknown/not_started`：结果正文里显式声明的终态标记行；
  * - `structured`：结构化返回。`error` 为空串表示无错；`stderr/stdout` 仅在
  *   字段为 string 时填充（字段存在但类型不对时保持 undefined，渲染层据此
  *   走键值摘要或耗时回退，与旧实现语义一致）。
@@ -147,9 +148,9 @@ function tryParseObject(text: string): Record<string, unknown> | null {
 	}
 }
 
-/** 结构化返回的终态分类：cancelled 优先（obj.cancelled 真值即命中，对齐旧语义）。 */
+/** 结构化返回里显式声明的终态：只认 status 字段，不再从 cancelled 布尔真值猜测。 */
 function classifyTerminalStatus(obj: Record<string, unknown>): "cancelled" | "unknown" | "not_started" | null {
-	if (obj.cancelled || obj.status === "cancelled") return "cancelled";
+	if (obj.status === "cancelled") return "cancelled";
 	if (obj.status === "unknown") return "unknown";
 	if (obj.status === "not_started") return "not_started";
 	return null;
@@ -171,20 +172,21 @@ export function parseToolResult(result: string): ToolResultView {
 	};
 }
 
-function formatElapsed(ms: number): string {
+function formatElapsed(ms: number | undefined): string {
+	if (ms === undefined) return "耗时未知";
 	return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
 /** 把中立视图渲染为展示行（样式决策集中于此，解析不参与）。 */
-export function renderToolResult(view: ToolResultView, elapsedMs: number, s: ToolResultStyle): string[] {
+export function renderToolResult(view: ToolResultView, elapsedMs: number | undefined, s: ToolResultStyle): string[] {
 	const t = formatElapsed(elapsedMs);
 	switch (view.kind) {
 		case "cancelled":
-			return [s.warn(`⚠ 已取消（${t}）`)];
 		case "unknown":
-			return [s.warn(`⚠ 结果未知（${t}）`)];
-		case "not_started":
-			return [s.warn(`⚠ 未执行（${t}）`)];
+		case "not_started": {
+			const spec = TOOL_STATUS_SPEC[view.kind];
+			return [s.warn(`${spec.icon} ${spec.label}（${t}）`)];
+		}
 		case "text":
 			return view.text ? indentLines(view.text, s.dim) : [s.dim(`↳ ${t}`)];
 		case "structured":
@@ -235,7 +237,7 @@ function otherKeysOrTime(view: StructuredToolResultView, t: string, s: ToolResul
  * stdout 摘要几行 + 截断标记；error 红字 / cancelled 黄字 / 普通结果灰字。
  * 解析（parseToolResult）与渲染（renderToolResult）已拆分，本函数保持旧签名。
  */
-export function toolResultLines(result: string, elapsedMs: number, s: ToolResultStyle): string[] {
+export function toolResultLines(result: string, elapsedMs: number | undefined, s: ToolResultStyle): string[] {
 	return renderToolResult(parseToolResult(result), elapsedMs, s);
 }
 

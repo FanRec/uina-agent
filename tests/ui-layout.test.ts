@@ -15,7 +15,14 @@ import { stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../s
 import { installUIFeatures } from "../src/ui/features.js";
 import { UIHost } from "../src/ui/ui-host.js";
 
-import { createSilentTerminal, dispatchUIHostInput, isHeartbeatActive } from "./harness/index.js";
+import {
+	createSilentTerminal,
+	dispatchUIHostInput,
+	isHeartbeatActive,
+	toolDoneNode,
+	toolStartNode,
+	turnNode,
+} from "./harness/index.js";
 
 const fakeTerminal = (columns = 80, rows = 24) => createSilentTerminal(columns, rows);
 
@@ -32,10 +39,12 @@ function scrollableHost(turns = 6): { host: UIHost; frames: string[] } {
 	const host = new UIHost({ terminal, modelName: "TestModel" });
 	host.start();
 	host.transcript.startTurn(1, "USER-TURN-1");
-	host.transcript.startTool("exec_command", { command: "ls -la" }, "call-1");
-	host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a\nb\nc" }), 100, "succeeded", "call-1", {
-		command: "ls -la",
-	});
+	host.transcript.startTool(toolStartNode("exec_command", { command: "ls -la" }, "call-1"));
+	host.transcript.addToolDone(
+		toolDoneNode("exec_command", JSON.stringify({ stdout: "a\nb\nc" }), 100, "succeeded", "call-1", {
+			command: "ls -la",
+		}),
+	);
 	host.transcript.appendToken("done one");
 	host.transcript.finishTurn();
 	for (let n = 2; n <= turns; n++) {
@@ -53,10 +62,12 @@ describe("B1: transcript line model", () => {
 		// The reveal animation lags far behind the delivered text; hit zones must
 		// still point at the rows that are actually drawn.
 		transcript.appendToken("x".repeat(4000));
-		transcript.startTool("exec_command", { command: "ls -la" }, "call-1");
-		transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a" }), 120, "succeeded", "call-1", {
-			command: "ls -la",
-		});
+		transcript.startTool(toolStartNode("exec_command", { command: "ls -la" }, "call-1"));
+		transcript.addToolDone(
+			toolDoneNode("exec_command", JSON.stringify({ stdout: "a" }), 120, "succeeded", "call-1", {
+				command: "ls -la",
+			}),
+		);
 		const lines = transcript.render(80);
 		const location = transcript.getToolLineIndices(80)[0];
 		expect(location).toBeDefined();
@@ -68,8 +79,8 @@ describe("B1: transcript line model", () => {
 		const transcript = new TranscriptContainer();
 		transcript.startTurn(1, "hello");
 		transcript.appendToken("body");
-		transcript.startTool("get_time", {}, "call-9");
-		transcript.addToolDone("get_time", "12:00", 5, "succeeded", "call-9", {});
+		transcript.startTool(toolStartNode("get_time", {}, "call-9"));
+		transcript.addToolDone(toolDoneNode("get_time", "12:00", 5, "succeeded", "call-9", {}));
 		const withoutRender = transcript.getToolLineIndices(80)[0]!.lineIndex;
 		const lines = transcript.render(80);
 		const withRender = transcript.getToolLineIndices(80)[0]!.lineIndex;
@@ -743,7 +754,7 @@ describe("UIHost: 流式增量的帧时钟归属", () => {
 			const terminal = fakeTerminal();
 			const host = new UIHost({ terminal: terminal.terminal, modelName: "TestModel" });
 			host.start();
-			host.startTurnCard(1, "问题");
+			host.startTurnCard(turnNode(1, "问题"));
 			host.setBusy(true);
 			await vi.advanceTimersByTimeAsync(0); // 冲掉 setup 阶段排队的 setImmediate 帧
 
@@ -772,12 +783,12 @@ describe("UIHost: 流式增量的帧时钟归属", () => {
 			const terminal = fakeTerminal();
 			const host = new UIHost({ terminal: terminal.terminal, modelName: "TestModel" });
 			host.start();
-			host.startTurnCard(1, "问题");
+			host.startTurnCard(turnNode(1, "问题"));
 			host.setBusy(true);
 			await vi.advanceTimersByTimeAsync(0);
 
 			const framesBefore = terminal.frames.length;
-			host.beginToolCard("exec_command", { command: "ls" }, "call-1");
+			host.beginToolCard(toolStartNode("exec_command", { command: "ls" }, "call-1"));
 			await vi.advanceTimersByTimeAsync(0);
 			expect(terminal.frames.length).toBe(framesBefore + 1);
 			host.stop();

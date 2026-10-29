@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import { toolDoneNode, toolStartNode } from "./harness/index.js";
 
 const W = 117;
 
@@ -16,18 +17,18 @@ type Step = (container: TranscriptContainer) => void;
 const STEPS: Step[] = [
 	(t) => t.startTurn(1, "第一轮：帮我看看这个函数为什么慢"),
 	(t) => t.appendToken("我先读一下文件，然后给你结论。\n\n"),
-	(t) => t.startTool("read_file", { path: "src/a.ts" }, "call-1"),
-	(t) => t.addToolDone("read_file", "文件内容\n".repeat(6), 12, "succeeded", "call-1"),
-	(t) => t.startTool("exec_command", { command: "pnpm test" }, "call-2"),
-	(t) => t.addToolDone("exec_command", "exit 1\nat least one failure", 300, "failed", "call-2"),
+	(t) => t.startTool(toolStartNode("read_file", { path: "src/a.ts" }, "call-1")),
+	(t) => t.addToolDone(toolDoneNode("read_file", "文件内容\n".repeat(6), 12, "succeeded", "call-1")),
+	(t) => t.startTool(toolStartNode("exec_command", { command: "pnpm test" }, "call-2")),
+	(t) => t.addToolDone(toolDoneNode("exec_command", "exit 1\nat least one failure", 300, "failed", "call-2")),
 	(t) => t.appendToken("结论如下：\n\n第二段结论。"),
 	(t) => t.finishTurn(),
 	(t) => t.addNotice("会话已压缩"),
 	(t) => t.startTurn(2, "第二轮：继续"),
 	(t) => t.appendToken("继续分析。"),
 	// history 分支：结果落在已结算轮的旧工具上
-	(t) => t.addToolDone("read_file", "补充内容", 20, "succeeded", "call-1"),
-	(t) => t.addToolDone("exec_command", "重试成功", 120, "succeeded", "call-2"),
+	(t) => t.addToolDone(toolDoneNode("read_file", "补充内容", 20, "succeeded", "call-1")),
+	(t) => t.addToolDone(toolDoneNode("exec_command", "重试成功", 120, "succeeded", "call-2")),
 	(t) => t.addPromptSnapshot({ kind: "prompt", id: "p1", turnNumber: 2, systemPrompt: "sys", injections: [] }),
 	(t) => t.addCustomMessage({ customType: "demo", content: "hello" }),
 	(t) =>

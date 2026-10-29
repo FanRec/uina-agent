@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { createInteractiveUI } from "../src/ui/tui.js";
-import { createSilentTerminal, getTestUIHost } from "./harness/index.js";
+import { createSilentTerminal, getTestUIHost, record } from "./harness/index.js";
 
 const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -16,20 +16,22 @@ const createTestUI = () =>
 describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 	it("usage_update 携带 cacheRead 时，InputLine 底栏成功渲染缓存命中率徽章，contextBar 包含明细", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "查资料" });
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "查资料" }));
 
 		// 收到服务端真实用量：cacheRead = 8500, promptTokens = 1500 (总输入 10000，命中率 85.0%)
-		tui.consume({
-			type: "usage_update",
-			usage: {
-				callId: "call-1",
-				promptTokens: 1500,
-				outputTokens: 100,
-				cacheRead: 8500,
-				cacheWrite: 0,
-				totalTokens: 10100,
-			},
-		});
+		tui.consume(
+			record({
+				type: "usage_update",
+				usage: {
+					callId: "call-1",
+					promptTokens: 1500,
+					outputTokens: 100,
+					cacheRead: 8500,
+					cacheWrite: 0,
+					totalTokens: 10100,
+				},
+			}),
+		);
 
 		// 1. 验证 InputLine 渲染行包含缓存命中率
 		const inputLines = getTestUIHost(tui).inputLine.render(100).map(plain);
@@ -46,33 +48,37 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 
 	it("context_update 派发新上下文快照时，不破坏已报回的缓存命中率（消除重构误伤）", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "查资料" });
-		tui.consume({
-			type: "usage_update",
-			usage: {
-				callId: "call-1",
-				promptTokens: 2000,
-				outputTokens: 50,
-				cacheRead: 8000,
-				totalTokens: 10050,
-			},
-		});
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "查资料" }));
+		tui.consume(
+			record({
+				type: "usage_update",
+				usage: {
+					callId: "call-1",
+					promptTokens: 2000,
+					outputTokens: 50,
+					cacheRead: 8000,
+					totalTokens: 10050,
+				},
+			}),
+		);
 
 		expect(plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "")).toContain("缓存 80.0%");
 
 		// 随后派发 context_update（如请求预估或基线更新）
-		tui.consume({
-			type: "context_update",
-			snapshot: {
-				projectionId: "p1",
-				modelKey: "deepseek-chat",
-				basis: "active_request",
-				source: "test",
-				inputTokens: 10050,
-				contextWindow: 65536,
-				measurementKind: "exact",
-			},
-		});
+		tui.consume(
+			record({
+				type: "context_update",
+				snapshot: {
+					projectionId: "p1",
+					modelKey: "deepseek-chat",
+					basis: "active_request",
+					source: "test",
+					inputTokens: 10050,
+					contextWindow: 65536,
+					measurementKind: "exact",
+				},
+			}),
+		);
 
 		// 关键断言：缓存命中率不被刷新为 undefined
 		const bottomLine = plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "");
@@ -83,42 +89,48 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 
 	it("回合结束后（turn_end）静止阅读状态，缓存命中率徽章继续稳定保留", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "做运算" });
-		tui.consume({
-			type: "usage_update",
-			usage: {
-				callId: "call-1",
-				promptTokens: 1000,
-				outputTokens: 20,
-				cacheRead: 9000,
-				totalTokens: 10020,
-			},
-		});
-		tui.consume({
-			type: "turn_end",
-			turnNumber: 1,
-			requestUsage: {
-				callId: "call-1",
-				promptTokens: 1000,
-				outputTokens: 20,
-				cacheRead: 9000,
-				totalTokens: 10020,
-			},
-		});
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "做运算" }));
+		tui.consume(
+			record({
+				type: "usage_update",
+				usage: {
+					callId: "call-1",
+					promptTokens: 1000,
+					outputTokens: 20,
+					cacheRead: 9000,
+					totalTokens: 10020,
+				},
+			}),
+		);
+		tui.consume(
+			record({
+				type: "turn_end",
+				turnNumber: 1,
+				requestUsage: {
+					callId: "call-1",
+					promptTokens: 1000,
+					outputTokens: 20,
+					cacheRead: 9000,
+					totalTokens: 10020,
+				},
+			}),
+		);
 
 		// 回合结束后的 idle baseline 更新
-		tui.consume({
-			type: "context_update",
-			snapshot: {
-				projectionId: "p1",
-				modelKey: "deepseek-chat",
-				basis: "idle_baseline",
-				source: "test",
-				inputTokens: 10020,
-				contextWindow: 65536,
-				measurementKind: "exact",
-			},
-		});
+		tui.consume(
+			record({
+				type: "context_update",
+				snapshot: {
+					projectionId: "p1",
+					modelKey: "deepseek-chat",
+					basis: "idle_baseline",
+					source: "test",
+					inputTokens: 10020,
+					contextWindow: 65536,
+					measurementKind: "exact",
+				},
+			}),
+		);
 
 		const bottomLine = plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "");
 		expect(bottomLine).toContain("缓存 90.0%");
@@ -126,19 +138,21 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 
 	it("新一轮对话开始（turn_start）时，旧缓存数据正确重置", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "第一问" });
-		tui.consume({
-			type: "usage_update",
-			usage: {
-				callId: "call-1",
-				promptTokens: 1000,
-				cacheRead: 9000,
-			},
-		});
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "第一问" }));
+		tui.consume(
+			record({
+				type: "usage_update",
+				usage: {
+					callId: "call-1",
+					promptTokens: 1000,
+					cacheRead: 9000,
+				},
+			}),
+		);
 		expect(plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "")).toContain("缓存 90.0%");
 
 		// 新回合开始，旧用量失效
-		tui.consume({ type: "turn_start", turnNumber: 2, userText: "第二问" });
+		tui.consume(record({ type: "turn_start", turnNumber: 2, userText: "第二问" }));
 		const bottomLine = plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "");
 		expect(bottomLine).not.toContain("缓存");
 		expect(plain(getTestUIHost(tui).contextBar.render(100).join(" "))).not.toContain("缓存读");
@@ -146,26 +160,30 @@ describe("InteractiveTUI：缓存命中率与真实用量接线", () => {
 
 	it("会话回溯（session_rewind）时，旧缓存数据正确重置", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "第一问" });
-		tui.consume({
-			type: "usage_update",
-			usage: {
-				callId: "call-1",
-				promptTokens: 1000,
-				cacheRead: 9000,
-			},
-		});
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "第一问" }));
+		tui.consume(
+			record({
+				type: "usage_update",
+				usage: {
+					callId: "call-1",
+					promptTokens: 1000,
+					cacheRead: 9000,
+				},
+			}),
+		);
 		expect(plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "")).toContain("缓存 90.0%");
 
 		// 会话回溯，当前用量失效重置
-		tui.consume({
-			type: "session_rewind",
-			requestId: "req-1",
-			rewindId: "rewind-1",
-			fromId: "entry-2",
-			targetId: "entry-1",
-			entries: [],
-		});
+		tui.consume(
+			record({
+				type: "session_rewind",
+				requestId: "req-1",
+				rewindId: "rewind-1",
+				fromId: "entry-2",
+				targetId: "entry-1",
+				entries: [],
+			}),
+		);
 		const bottomLine = plain(getTestUIHost(tui).inputLine.render(100).at(-1) ?? "");
 		expect(bottomLine).not.toContain("缓存");
 		expect(plain(getTestUIHost(tui).contextBar.render(100).join(" "))).not.toContain("缓存读");

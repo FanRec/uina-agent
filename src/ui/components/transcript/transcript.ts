@@ -8,8 +8,10 @@ import { imageNotice } from "../../../core/content.js";
 import type { Component } from "../../core/types.js";
 import { projectInputMessage } from "../../../session/recovery.js";
 import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
-import type { SessionEntry } from "../../../session/types.js";
+import type { SessionEntry, SessionCustomEntryRecord, SessionEventRecord } from "../../../session/types.js";
 import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
+import type { ToolNode } from "../../../presentation/projection.js";
+import { collectJournalTools, parseJournalTime } from "../../../presentation/ingest-replay.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
@@ -39,7 +41,8 @@ import type {
 export interface ToolRecord {
 	name: string;
 	result: string;
-	elapsedMs: number;
+	/** journal 两端时间都已知时才存在；未知保持 undefined，不补 0。 */
+	elapsedMs?: number;
 }
 
 export interface DiffRecord {
@@ -132,7 +135,11 @@ export function createTurnRecord(n: number, uid: number, userText = ""): TurnRec
 		get tools(): ToolRecord[] {
 			return items
 				.filter((it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool")
-				.map((t) => ({ name: t.name, result: t.result ?? "", elapsedMs: t.elapsedMs ?? 0 }));
+				.map((t) => ({
+					name: t.name,
+					result: t.result ?? "",
+					...(t.elapsedMs === undefined ? {} : { elapsedMs: t.elapsedMs }),
+				}));
 		},
 		get diffs(): DiffRecord[] {
 			return items
@@ -499,14 +506,21 @@ export class TranscriptContainer implements Component {
 				width,
 				expanded: options.isExpanded ?? false,
 				hovered: options.isHovered ?? false,
-				elapsedMs: item.elapsedMs ?? 0,
+				elapsedMs: item.elapsedMs,
 			});
-			if (component) return this.renderComponent(component, width);
+			if (component) {
+				const lines = this.renderComponent(component, width);
+				// 自定义渲染器不能丢掉附件元数据（A18）：图片提示与内置路径一致。
+				if (item.images?.length) {
+					lines.push("  [图片 " + item.images.map((image) => image.mimeType).join(", ") + "；终端显示元数据]");
+				}
+				return lines;
+			}
 		} catch (error) {
 			failure = "[tool renderer " + item.name + ": " + String(error) + "]";
 		}
 		const text = item.result ?? "";
-		const lines = formatToolCardLines(item.name, text, item.elapsedMs ?? 0, width, item.status, item.args, options);
+		const lines = formatToolCardLines(item.name, text, item.elapsedMs, width, item.status, item.args, options);
 		if (item.images?.length)
 			lines.push("  [图片 " + item.images.map((image) => image.mimeType).join(", ") + "；终端显示元数据]");
 		if (failure) lines.push(failure);
@@ -564,45 +578,33 @@ export class TranscriptContainer implements Component {
 		}
 	}
 
-	startTool(name: string, args?: unknown, callId?: string): void {
+	startTool(node: ToolNode): void {
 		if (!this.currentTurn) {
 			this.startTurn(this.historyTurns.length + 1, "");
 		}
 		this.currentTurn?.items.push({
 			kind: "tool",
-			name,
-			args,
+			name: node.name,
+			args: node.args,
 			status: "running",
-			startedAt: Date.now(),
-			callId,
+			startedAt: node.startedAt,
+			callId: node.callId,
 		});
 		// 当前轮由 ensureModel 每帧无条件重排，无需任何失效信号
 	}
 
-	addToolDone(
-		name: string,
-		result: string,
-		elapsedMs = 0,
-		status: ToolResultStatus = "unknown",
-		callId?: string,
-		args?: unknown,
-		attachments?: { images?: import("../../../core/content.js").ImageContent[]; details?: unknown },
-	): void {
-		result = sanitizeRenderText(result);
+	addToolDone(node: ToolNode): void {
+		const result = sanitizeRenderText(node.result ?? "");
 		const prevFailed = this.resolveLatestFailed();
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
 			if (lastTurn) {
 				const existingTool = lastTurn.items.find(
-					(it): it is Extract<TurnItem, { kind: "tool" }> =>
-						it.kind === "tool" && (callId ? it.callId === callId : it.name === name),
+					(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && it.callId === node.callId,
 				);
 				if (existingTool) {
 					// 该工具属于已结算/打断的上一轮，严禁开辟新轮次或生成重复工具卡
-					Object.assign(existingTool, attachments);
-					existingTool.status = status;
-					existingTool.result = result;
-					existingTool.elapsedMs = elapsedMs;
+					this.applyToolNode(existingTool, node, result);
 					this.invalidateTurn(lastTurn.uid);
 					this.syncLatestFailedInvalidation(prevFailed);
 					return;
@@ -612,43 +614,47 @@ export class TranscriptContainer implements Component {
 		}
 		if (!this.currentTurn) return;
 
-		let runningTool: Extract<TurnItem, { kind: "tool" }> | undefined;
-		if (callId) {
-			runningTool = this.currentTurn.items.find(
-				(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && it.callId === callId,
-			);
-		}
+		let runningTool = this.currentTurn.items.find(
+			(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && it.callId === node.callId,
+		);
 		if (!runningTool) {
 			runningTool = this.currentTurn.items
 				.slice()
 				.reverse()
 				.find(
 					(it): it is Extract<TurnItem, { kind: "tool" }> =>
-						it.kind === "tool" && it.status === "running" && it.name === name,
+						it.kind === "tool" && it.status === "running" && it.name === node.name,
 				);
 		}
 
 		if (runningTool) {
-			Object.assign(runningTool, attachments);
-			runningTool.status = status;
-			runningTool.result = result;
-			runningTool.elapsedMs = elapsedMs;
-			if (args !== undefined && runningTool.args === undefined) {
-				runningTool.args = args;
-			}
+			this.applyToolNode(runningTool, node, result);
 		} else {
-			this.currentTurn.items.push({
+			const item: Extract<TurnItem, { kind: "tool" }> = {
 				kind: "tool",
-				name,
-				args,
+				name: node.name,
+				args: node.args,
 				result,
-				...attachments,
-				elapsedMs,
-				status: status,
-				callId,
-			});
+				...(node.images ? { images: [...node.images] } : {}),
+				...(node.details === undefined ? {} : { details: node.details }),
+				startedAt: node.startedAt,
+				elapsedMs: node.durationMs,
+				status: node.status === "running" ? "unknown" : node.status,
+				callId: node.callId,
+			};
+			this.currentTurn.items.push(item);
 		}
 		this.syncLatestFailedInvalidation(prevFailed);
+	}
+
+	private applyToolNode(item: Extract<TurnItem, { kind: "tool" }>, node: ToolNode, result: string): void {
+		item.status = node.status === "running" ? "unknown" : node.status;
+		item.result = result;
+		if (node.images) item.images = [...node.images];
+		if (node.details !== undefined) item.details = node.details;
+		if (item.startedAt === undefined) item.startedAt = node.startedAt;
+		item.elapsedMs = node.durationMs;
+		if (node.args !== undefined && item.args === undefined) item.args = node.args;
 	}
 
 	addCompaction(record: CompactionCardData): void {
@@ -761,8 +767,10 @@ export class TranscriptContainer implements Component {
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		this.clear();
+		const journalTools = collectJournalTools(auxiliary);
 		let turnN = 0;
 		let current: TurnRecord | null = null;
 		let pendingToolCalls: Array<{ id: string; name: string; args?: unknown }> = [];
@@ -813,12 +821,11 @@ export class TranscriptContainer implements Component {
 					this.timeline.push({
 						kind: "compaction",
 						record: {
-							status: "completed",
 							summary: decoration.summary,
 							...(decoration.retainedTailEntries === undefined
 								? {}
 								: { retainedTailEntries: decoration.retainedTailEntries }),
-							tokensBefore: decoration.tokensBefore ?? 0,
+							...(decoration.tokensBefore === undefined ? {} : { tokensBefore: decoration.tokensBefore }),
 							collapsed: true,
 						},
 					});
@@ -863,7 +870,7 @@ export class TranscriptContainer implements Component {
 						kind: "external",
 						inputId: entry.input.id,
 						source: entry.input.source,
-						receivedAt: entry.input.receivedAt ?? entry.timestamp ?? new Date().toISOString(),
+						receivedAt: entry.input.receivedAt ?? entry.timestamp ?? "",
 						text: entry.input.text,
 						...(entry.input.images ? { images: entry.input.images } : {}),
 					},
@@ -890,11 +897,11 @@ export class TranscriptContainer implements Component {
 					current.items.push({ kind: "thinking", text: msg.thinking, uid: ++this.uidSeq });
 				}
 				if (msg.content) {
-					if (msg.status === "aborted" && msg.content.includes("已打断")) {
-						current.items.push({ kind: "interrupt", text: msg.content.trim() });
-					} else {
-						current.items.push({ kind: "text", text: msg.content });
-					}
+					current.items.push({ kind: "text", text: msg.content });
+				}
+				// 中止是结构化事实（status），不再靠正文包含“已打断”猜测。
+				if (msg.status === "aborted") {
+					current.items.push({ kind: "interrupt", text: "已打断 · 接下来想继续做什么？" });
 				}
 				if (msg.tool_calls) {
 					pendingToolCalls = msg.tool_calls.map((call) => ({
@@ -906,24 +913,23 @@ export class TranscriptContainer implements Component {
 			} else if (msg.role === "tool") {
 				current ??= createTurn();
 				const pending = pendingToolCalls.find((call) => call.id === msg.tool_call_id);
-				const toolName = pending?.name ?? "tool";
-				const toolArgs = pending?.args;
-				let elapsedMs = 0;
-				try {
-					const parsed = JSON.parse(msg.content) as { elapsedMs?: unknown };
-					if (typeof parsed?.elapsedMs === "number") elapsedMs = parsed.elapsedMs;
-				} catch {
-					// Plain-text tool results have no elapsed metadata.
-				}
+				const journal = journalTools.get(msg.tool_call_id);
+				const toolName = journal?.name ?? pending?.name ?? msg.name ?? "tool";
+				const toolArgs = journal?.args ?? pending?.args;
+				const startedAt = journal?.startedAt;
+				const finishedAt = journal?.finishedAt ?? parseJournalTime(entry.timestamp);
+				const durationMs =
+					startedAt === undefined || finishedAt === undefined ? undefined : Math.max(0, finishedAt - startedAt);
 				current.items.push({
 					kind: "tool",
 					name: toolName,
 					args: toolArgs,
 					result: msg.content,
-					images: msg.images,
-					details: msg.details,
-					elapsedMs,
-					status: msg.status ?? "unknown",
+					...(msg.images ? { images: msg.images } : {}),
+					...(msg.details === undefined ? {} : { details: msg.details }),
+					startedAt,
+					elapsedMs: durationMs,
+					status: journal?.status ?? msg.status ?? "unknown",
 					callId: msg.tool_call_id,
 				});
 			}

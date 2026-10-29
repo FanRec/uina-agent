@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { errorMessage } from "../core/errors.js";
 import { UinaHost } from "../host/host.js";
 import { compactionDecorations } from "../extensions/compaction/index.js";
-import type { HostEvent } from "../host/events.js";
+import type { HostEventRecord } from "../host/events.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
 import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
@@ -55,22 +55,22 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let execRunning = false;
 	let execAbort: AbortController | null = null;
 
+	/** 工具耗时的两端时刻都取自 HostEventRecord.at；缺任一端保持未知。 */
 	const toolStartedAt = new Map<string, number>();
-	/** tool_result 的耗时取值（顺带清账）；callId 缺失按 0 计。 */
-	const elapsedFor = (callId: string | undefined): number => {
-		if (callId === undefined) return 0;
+	const elapsedFor = (callId: string, endedAt: number): number | undefined => {
 		const startedAt = toolStartedAt.get(callId);
 		toolStartedAt.delete(callId);
-		return startedAt === undefined ? 0 : Date.now() - startedAt;
+		return startedAt === undefined ? undefined : Math.max(0, endedAt - startedAt);
 	};
-	const renderStdio = (message: HostEvent): void => {
+	const renderStdio = (record: HostEventRecord): void => {
+		const message = record.event;
 		switch (message.type) {
 			case "tool_call":
-				if (message.callId) toolStartedAt.set(message.callId, Date.now());
+				toolStartedAt.set(message.callId, record.at);
 				process.stdout.write(formatToolCallLine(message));
 				return;
 			case "tool_result":
-				process.stdout.write(formatToolResultBlock(message, elapsedFor(message.callId)));
+				process.stdout.write(formatToolResultBlock(message, elapsedFor(message.callId, record.at)));
 				return;
 			default: {
 				const line = formatStdioEventLine(message);
@@ -87,35 +87,39 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		process.stdout.write(`${text}\n`);
 	};
 
-	const earlyEvents: HostEvent[] = [];
+	const earlyEvents: HostEventRecord[] = [];
 
 	// session_rewind 的压缩装饰在此派生：事件按 1:1 透传纪律不带派生数据，
 	// 装饰取自宿主当前 auxiliary（restoredAuxiliary 是启动快照，覆盖不了恢复后新发生的压缩）。
-	const renderToTui = (message: HostEvent): void => {
+	const renderToTui = (record: HostEventRecord): void => {
+		const message = record.event;
 		if (message.type === "session_rewind") {
+			const auxiliary = host.auxiliaryEntries();
 			tui!.consume(
-				message,
-				compactionDecorations(host.auxiliaryEntries(), message.entries),
-				listPromptSnapshots(host.auxiliaryEntries()),
+				record,
+				compactionDecorations(auxiliary, message.entries),
+				listPromptSnapshots(auxiliary),
+				auxiliary,
 			);
 			return;
 		}
-		tui!.consume(message);
+		tui!.consume(record);
 	};
 
-	const render = (message: HostEvent): void => {
+	const render = (record: HostEventRecord): void => {
+		const message = record.event;
 		if (message.type === "error") hadError = true;
 		if (message.type === "turn_end" || message.type === "turn_aborted") cancellationPending = false;
 		if (tui) {
 			if (message.type === "model_select") {
 				tui.updateSnapshot(host.snapshot());
 			}
-			renderToTui(message);
+			renderToTui(record);
 		} else if (shouldRunTUI) {
 			// 在 TUI 实例化与会话加载前到达的事件（如早期模型目录刷新、启动告警）暂存，避免被 stdio 污染后又被 alternate screen 抹除
-			earlyEvents.push(message);
+			earlyEvents.push(record);
 		} else {
-			renderStdio(message);
+			renderStdio(record);
 		}
 	};
 
@@ -140,14 +144,15 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			profile,
 			modelName: args.model,
 			extensionPaths: args.extensions,
-			onError: (text) => render({ type: "error", text }),
+			// 组合根本地诊断（非主体事实）：没有宿主派发记录，时刻取本地观察时刻。
+			onError: (text) => render({ at: Date.now(), event: { type: "error", text } }),
 		});
 	} catch (error) {
 		process.stderr.write(`[启动失败] ${errorMessage(error)}\n`);
 		process.exitCode = 1;
 		return;
 	}
-	unsubscribe = host.subscribe(render);
+	unsubscribe = host.onEventRecord(render);
 
 	process.stdout.write(formatStartupBanner(host.snapshot().modelName, host.historyCount(), shouldRunTUI, isPrintMode));
 
@@ -430,7 +435,12 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			tui.initialize(snapshot);
 			if (host.restoredEntries.length > 0) {
 				const decorations = compactionDecorations(host.restoredAuxiliary, host.restoredEntries);
-				tui.restoreSession(host.restoredEntries, decorations, listPromptSnapshots(host.restoredAuxiliary));
+				tui.restoreSession(
+					host.restoredEntries,
+					decorations,
+					listPromptSnapshots(host.restoredAuxiliary),
+					host.restoredAuxiliary,
+				);
 			}
 			host.attachExtensionUI(tui.extensionUI);
 			tui.onIntent((intent) =>

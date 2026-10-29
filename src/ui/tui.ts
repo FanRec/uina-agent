@@ -4,10 +4,14 @@
  */
 
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
-import type { HostEvent, HostSnapshot } from "../host/events.js";
+import type { HostEvent, HostEventRecord, HostSnapshot } from "../host/events.js";
+import { FactStore } from "../presentation/facts.js";
+import { ingestLive } from "../presentation/ingest-live.js";
+import { ingestReplay } from "../presentation/ingest-replay.js";
+import { PresentationProjection, type PresentationNode } from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
-import type { SessionEntry } from "../session/types.js";
+import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
 import type { PromptContextCardData } from "./components/transcript/context-card.js";
 import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
@@ -36,8 +40,9 @@ export class InteractiveTUI {
 	private currentThinkingId?: string;
 	private readonly trajectoryProjection: TrajectoryProjection;
 	private readonly featureDisposer: () => void;
-	/** 工具事实只携带 callId：开始时刻由消费者自记，用于结算耗时。 */
-	private readonly toolStartedAt = new Map<string, number>();
+	/** 实时事实与展示投影的唯一副本；UI 只消费节点，不再自行记时。 */
+	private readonly facts = new FactStore();
+	private readonly projection = new PresentationProjection();
 	private lastPromptFingerprint?: string;
 	private previousSystemPrompt?: string;
 
@@ -49,6 +54,26 @@ export class InteractiveTUI {
 	 */
 	private notifyToolActivity(): void {
 		this.host.notifyToolActivity();
+	}
+
+	/** 摄取一条宿主事件记录并应用投影；返回本次产生/更新的展示节点。 */
+	private ingest(record: HostEventRecord): readonly PresentationNode[] {
+		const nodes: PresentationNode[] = [];
+		for (const draft of ingestLive(record)) {
+			const node = this.projection.apply(this.facts.append(draft));
+			if (node) nodes.push(node);
+		}
+		return nodes;
+	}
+
+	/** 恢复/回溯：用 journal 事实整段替换，投影随之重建。 */
+	private replaceFacts(
+		entries: readonly SessionEntry[],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[],
+	): void {
+		this.facts.replaceAll(ingestReplay({ entries, auxiliary }));
+		this.projection.reset();
+		this.projection.applyAll(this.facts.list());
 	}
 
 	/** 结束当前思考块（若打开）：思考块的开关在 output_update/tool_call/turn 终态等
@@ -142,11 +167,13 @@ export class InteractiveTUI {
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		const latest = promptSnapshots.at(-1);
 		this.lastPromptFingerprint = latest?.fingerprint;
 		this.previousSystemPrompt = latest?.systemPrompt;
-		this.host.loadSession(entries, decorations, promptSnapshots);
+		this.replaceFacts(entries, auxiliary);
+		this.host.loadSession(entries, decorations, promptSnapshots, auxiliary);
 	}
 
 	/**
@@ -154,10 +181,14 @@ export class InteractiveTUI {
 	 * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
 	 */
 	consume(
-		m: HostEvent,
+		record: HostEventRecord,
 		rewindDecorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
+		const m = record.event;
+		const nodes = this.ingest(record);
+		const node = nodes[0];
 		switch (m.type) {
 			case "model_select":
 				if (this.host.modelName !== m.model) this.host.setModel(m.model);
@@ -169,16 +200,21 @@ export class InteractiveTUI {
 
 			case "session_rewind":
 				this.currentThinkingId = undefined;
-				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, promptSnapshots);
+				this.replaceFacts(m.entries, auxiliary);
+				// 回溯后是否仍有活动回合由引擎给出；缺失时保持重放派生的归属，不猜回合。
+				if (m.turnNumber !== undefined) this.projection.continueTurn(m.turnNumber);
+				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, promptSnapshots, auxiliary);
 				break;
-			case "turn_start":
+			case "turn_start": {
+				if (node?.kind !== "turn") break;
 				this.currentThinkingId = undefined;
 				this.host.setProviderRetryMessage();
 				this.host.markUsageEstimated();
-				this.host.setBusy(true);
-				this.host.startTurnCard(m.turnNumber, m.userText, m.images);
-				this.trajectoryProjection.onTurnStart(m.turnNumber, m.userText);
+				this.host.setBusy(true, record.at);
+				this.host.startTurnCard(node);
+				this.trajectoryProjection.onTurnStart(node.turn, node.userText);
 				break;
+			}
 
 			case "usage_update":
 				// Provider usage 描述过去的一次调用，不覆盖当前 RequestProjection 的上下文快照。
@@ -230,8 +266,8 @@ export class InteractiveTUI {
 					this.host.addCompaction({
 						status: m.status,
 						summary: m.summary ?? "会话已压缩",
-						retainedTailEntries: m.retainedTailEntries ?? 0,
-						tokensBefore: m.tokensBefore ?? 0,
+						...(m.retainedTailEntries === undefined ? {} : { retainedTailEntries: m.retainedTailEntries }),
+						...(m.tokensBefore === undefined ? {} : { tokensBefore: m.tokensBefore }),
 						collapsed: true,
 					});
 					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore ?? 0);
@@ -270,25 +306,18 @@ export class InteractiveTUI {
 
 			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
+				if (node?.kind !== "tool") break;
 				this.closeThinking();
-				if (m.callId) this.toolStartedAt.set(m.callId, Date.now());
-				const callId = m.callId ?? `tool-${m.toolName}-${Date.now()}`;
-				this.host.beginToolCard(m.toolName, m.args, callId);
-				this.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
+				this.host.beginToolCard(node);
+				this.trajectoryProjection.onToolStart(node.name, node.args, node.callId);
 				this.notifyToolActivity();
 				break;
 			}
 
 			case "tool_result": {
-				// 工具事实携带 callId：耗时由消费者按开始时刻自算（事实流不携带宿主计时）。
-				const startedAt = m.callId !== undefined ? this.toolStartedAt.get(m.callId) : undefined;
-				if (m.callId !== undefined) this.toolStartedAt.delete(m.callId);
-				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
-				this.host.settleToolCard(m.toolName, m.result, elapsed, m.status, m.callId, m.args, {
-					images: m.images ? [...m.images] : undefined,
-					details: m.details,
-				});
-				this.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
+				if (node?.kind !== "tool" || node.status === "running") break;
+				this.host.settleToolCard(node);
+				this.trajectoryProjection.onToolDone(node.callId, node.name, node.result ?? "", node.durationMs, node.status);
 				this.notifyToolActivity();
 				break;
 			}
@@ -297,7 +326,7 @@ export class InteractiveTUI {
 				this.host.setProviderRetryMessage();
 				this.closeThinking();
 				this.notifyToolActivity();
-				this.host.setBusy(false);
+				this.host.setBusy(false, record.at);
 				this.host.finishTurnCard();
 				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
 				if (m.requestUsage) {
@@ -310,7 +339,7 @@ export class InteractiveTUI {
 				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.interruptTurnCard();
-				this.host.setBusy(false);
+				this.host.setBusy(false, record.at);
 				break;
 
 			case "notice":
@@ -322,7 +351,7 @@ export class InteractiveTUI {
 				this.host.setProviderRetryMessage();
 				this.closeThinking();
 				this.notifyToolActivity();
-				this.host.setBusy(false);
+				this.host.setBusy(false, record.at);
 				this.host.addErrorCard(m.text);
 				this.trajectoryProjection.onError(m.text);
 				break;

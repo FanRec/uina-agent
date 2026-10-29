@@ -126,12 +126,12 @@ describe("formatToolCallLine / formatToolResultBlock", () => {
 		);
 	});
 
-	it("结果块：成功 ✓、失败 !、图片行、折叠结果与耗时", () => {
+	it("结果块：成功 ✓、失败 ✗、图片行、折叠结果与耗时", () => {
 		const base = { type: "tool_result" as const, toolName: "exec", args: {}, callId: "c1" };
 		expect(formatToolResultBlock({ ...base, result: '{"stdout":"out"}', status: "succeeded" }, 100)).toBe(
-			"\n  ✓ exec\n    out\n    （100ms）",
+			"\n  ✓ exec · 完成\n    out\n    （100ms）",
 		);
-		expect(formatToolResultBlock({ ...base, result: "boom", status: "failed" }, 0)).toBe("\n  ! exec\n    boom");
+		expect(formatToolResultBlock({ ...base, result: "boom", status: "failed" }, 0)).toBe("\n  ✗ exec · 失败\n    boom");
 		const withImage = formatToolResultBlock(
 			{
 				...base,

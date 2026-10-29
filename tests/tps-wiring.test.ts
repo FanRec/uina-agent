@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { foldStreamChars } from "../src/ui/components/widgets/activity-line.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
-import { getTestUIHost } from "./harness/index.js";
+import { getTestUIHost, record } from "./harness/index.js";
 
 /** 假时钟基准：TTFT 与生成跨度靠它区分。 */
 const T0 = 1_700_000_000_000;
@@ -30,14 +30,14 @@ const headerTokens = (tui: ReturnType<typeof createInteractiveUI>): string =>
 describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 	it("同一调用的多条 usage_update 只按最后一次计，不叠加；该调用的字符估算被真值取代", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "做任务" });
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "做任务" }));
 		// 模拟一次 text delta 留下的字符估算占位（系数由模块标定，这里只钉"真值取代估算"）
 		const placeholder = foldStreamChars({ cjk: 1150, other: 0 });
 		getTestUIHost(tui).activityLine.addStreamText("思".repeat(1150));
 		// 同一次调用推两条累积快照（现实中值会一路增长，这里取终值）
-		tui.consume({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
-		tui.consume({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
-		tui.consume({ type: "turn_end", turnNumber: 1 });
+		tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } }));
+		tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } }));
+		tui.consume(record({ type: "turn_end", turnNumber: 1 }));
 
 		const rendered = headerTokens(tui);
 		// 有真实值就用真实值，且只计一次
@@ -51,13 +51,13 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 
 	it("跨 step 的真实输出累加（多轮 stream→tool→stream）", () => {
 		const tui = createTestUI();
-		tui.consume({ type: "turn_start", turnNumber: 1, userText: "跑两轮" });
-		tui.consume({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "第一轮的输出" }); // 调用 1 有增量 → 有解码区间
-		tui.consume({ type: "usage_update", usage: { callId: "call-1", outputTokens: 30 } });
-		tui.consume({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" }); // 调用 1 收尾
-		tui.consume({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "第二轮的输出" }); // 调用 2 的增量
-		tui.consume({ type: "usage_update", usage: { callId: "call-2", outputTokens: 45 } });
-		tui.consume({ type: "turn_end", turnNumber: 1 });
+		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "跑两轮" }));
+		tui.consume(record({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "第一轮的输出" })); // 调用 1 有增量 → 有解码区间
+		tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 30 } }));
+		tui.consume(record({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" })); // 调用 1 收尾
+		tui.consume(record({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "第二轮的输出" })); // 调用 2 的增量
+		tui.consume(record({ type: "usage_update", usage: { callId: "call-2", outputTokens: 45 } }));
+		tui.consume(record({ type: "turn_end", turnNumber: 1 }));
 
 		const rendered = headerTokens(tui);
 		expect(rendered).toContain("~75 tokens");
@@ -70,15 +70,21 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		try {
 			vi.setSystemTime(T0);
 			const tui = createTestUI();
-			tui.consume({ type: "turn_start", turnNumber: 1, userText: "想久一点" });
+			tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "想久一点" }));
 			vi.setSystemTime(T0 + 1000); // +1s：TTFT 等待，不是生成，不计入分母
-			tui.consume({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "思".repeat(300) });
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "思".repeat(300) }),
+			);
 			vi.setSystemTime(T0 + 6000); // +5s：思考生成中
-			tui.consume({ type: "output_update", streamId: "s1", offset: 1, channel: "thinking", text: "考".repeat(300) });
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 1, channel: "thinking", text: "考".repeat(300) }),
+			);
 			vi.setSystemTime(T0 + 8000); // +2s：正文生成
-			tui.consume({ type: "output_update", streamId: "s1", offset: 2, channel: "content", text: "答".repeat(300) });
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 2, channel: "content", text: "答".repeat(300) }),
+			);
 			vi.setSystemTime(T0 + 9000);
-			tui.consume({ type: "turn_end", turnNumber: 1 });
+			tui.consume(record({ type: "turn_end", turnNumber: 1 }));
 
 			const rendered = headerTokens(tui);
 			// 三段合计 900 字都要计入，不能只剩正文那一段（300 字）。
@@ -102,19 +108,25 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		try {
 			vi.setSystemTime(T0);
 			const tui = createTestUI();
-			tui.consume({ type: "turn_start", turnNumber: 1, userText: "两轮输出" });
+			tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "两轮输出" }));
 			vi.setSystemTime(T0 + 10);
-			tui.consume({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "甲".repeat(300) }); // 估算 300
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "甲".repeat(300) }),
+			); // 估算 300
 			vi.setSystemTime(T0 + 510);
 			// 调用 1 收尾，真值 120 到位
-			tui.consume({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
+			tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } }));
 			vi.setSystemTime(T0 + 1010);
 			// 调用 1 收尾（它的工具开始跑）：0.5s 解码、120 token 结算进本回合
-			tui.consume({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
+			tui.consume(record({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" }));
 			vi.setSystemTime(T0 + 1510);
-			tui.consume({ type: "output_update", streamId: "s1", offset: 1, channel: "thinking", text: "乙".repeat(300) }); // 调用 2 又吐 300
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 1, channel: "thinking", text: "乙".repeat(300) }),
+			); // 调用 2 又吐 300
 			vi.setSystemTime(T0 + 2510);
-			tui.consume({ type: "output_update", streamId: "s1", offset: 2, channel: "thinking", text: "丙".repeat(300) });
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 2, channel: "thinking", text: "丙".repeat(300) }),
+			);
 			// 分子 = 120（调用 1 的真值）+ 调用 2 的 600 字折算；分母 = 0.5s + 1.0s。
 			// 系数由模块标定，这里只钉跨 step 累加：分子冻在 120 的旧实现读到 ~80 tps。
 			const liveTokens = 120 + foldStreamChars({ cjk: 600, other: 0 });
@@ -134,13 +146,15 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		try {
 			vi.setSystemTime(T0);
 			const tui = createTestUI();
-			tui.consume({ type: "turn_start", turnNumber: 1, userText: "看下这个文件" });
+			tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "看下这个文件" }));
 			vi.setSystemTime(T0 + 10);
-			tui.consume({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来看看这个文件" });
+			tui.consume(
+				record({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来看看这个文件" }),
+			);
 			vi.setSystemTime(T0 + 3010); // 3 秒工具参数流式：UI 收不到任何增量
-			tui.consume({ type: "usage_update", usage: { callId: "call-1", outputTokens: 500 } });
+			tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 500 } }));
 			vi.setSystemTime(T0 + 3020);
-			tui.consume({ type: "tool_call", toolName: "read_file", args: {}, callId: "tool-1" });
+			tui.consume(record({ type: "tool_call", toolName: "read_file", args: {}, callId: "tool-1" }));
 
 			// 500 token / 3.0s 解码 = ~167 tps（分子是整步的 500，分母是整步的 3.0s）。
 			// 实时行不展示 token 总数，所以用速度同时钉住两侧：右端取最后一个可见 token

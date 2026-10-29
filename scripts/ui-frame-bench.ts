@@ -51,8 +51,26 @@ function seedNodes(host: UIHost, turns: number): void {
 		const callId = `call-${i}`;
 		host.transcript.startTurn(i + 1, USER_LINE.replace("%d", String(i + 1)));
 		host.transcript.appendToken(ANSWER.replace("%d", String(i + 1)).repeat(3));
-		host.transcript.startTool("exec_command", { command: `echo ${i}` }, callId);
-		host.transcript.addToolDone("exec_command", STDOUT, 25, "succeeded", callId, { command: `echo ${i}` });
+		host.transcript.startTool({
+			kind: "tool",
+			id: `turn:${i + 1}:tool:${callId}`,
+			turn: i + 1,
+			callId,
+			name: "exec_command",
+			args: { command: `echo ${i}` },
+			status: "running",
+		});
+		host.transcript.addToolDone({
+			kind: "tool",
+			id: `turn:${i + 1}:tool:${callId}`,
+			turn: i + 1,
+			callId,
+			name: "exec_command",
+			args: { command: `echo ${i}` },
+			status: "succeeded",
+			durationMs: 25,
+			result: STDOUT,
+		});
 		host.transcript.finishTurn();
 	}
 	host.transcript.smoothReveal.setEnabled(false);

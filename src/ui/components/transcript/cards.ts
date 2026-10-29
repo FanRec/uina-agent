@@ -58,7 +58,8 @@ export interface CompactionCardData {
 	summary: string;
 	/** canonical 主线中从压缩尾部起保留的条目数；旧 checkpoint 可未知。 */
 	retainedTailEntries?: number;
-	tokensBefore: number;
+	/** 压缩前 token 数；旧 checkpoint 未测量时保持未知，不补 0。 */
+	tokensBefore?: number;
 	collapsed: boolean;
 }
 
@@ -75,7 +76,11 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 		return [header, `${C.inactive}${detail}${C.reset}`, `${C.subtle}${"─".repeat(boxW)}${C.reset}`];
 	}
 	const tokensBeforeStr =
-		record.tokensBefore >= 1000 ? `${(record.tokensBefore / 1000).toFixed(1)}k` : `${record.tokensBefore}`;
+		record.tokensBefore === undefined
+			? undefined
+			: record.tokensBefore >= 1000
+				? `${(record.tokensBefore / 1000).toFixed(1)}k`
+				: `${record.tokensBefore}`;
 
 	const leftDashes = "───";
 	const leftW = visibleWidth(leftDashes);
@@ -130,7 +135,10 @@ export function formatCompactionCardLines(record: CompactionCardData, width = 80
 	const arrow = `${isHovered ? C.suggestion : C.claude}↳${C.reset}`;
 	const retained =
 		record.retainedTailEntries === undefined ? "保留条目未知" : `保留 ${record.retainedTailEntries} 条主线记录`;
-	const stats = `${C.success}压缩前 ~${tokensBeforeStr} tokens${C.reset} · ${C.inactive}${retained}${C.reset}`;
+	const stats =
+		tokensBeforeStr === undefined
+			? `${C.inactive}压缩前 token 数未知${C.reset} · ${C.inactive}${retained}${C.reset}`
+			: `${C.success}压缩前 ${tokensBeforeStr} tokens${C.reset} · ${C.inactive}${retained}${C.reset}`;
 	const hint = isHovered
 		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
 		: `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;

@@ -28,7 +28,7 @@ import {
 	resolveCarriageReturns,
 	visibleWidth,
 } from "../src/ui/core/utils.js";
-import { VtScreen, dispatchUIHostInput } from "./harness/index.js";
+import { VtScreen, dispatchUIHostInput, toolDoneNode, toolStartNode } from "./harness/index.js";
 
 const COLUMNS = 171;
 const ROWS = 30;
@@ -143,10 +143,12 @@ async function shots(): Promise<Shot[]> {
 	host.start();
 	host.transcript.startTurn(1, "Q-ONE");
 	host.transcript.appendThinking(THINKING);
-	host.transcript.startTool("exec_command", { command: "cd E:\\Uina\\Uina; echo hi" }, "call-1");
-	host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: STDOUT }), 50, "succeeded", "call-1", {
-		command: "cd E:\\Uina\\Uina; echo hi",
-	});
+	host.transcript.startTool(toolStartNode("exec_command", { command: "cd E:\\Uina\\Uina; echo hi" }, "call-1"));
+	host.transcript.addToolDone(
+		toolDoneNode("exec_command", JSON.stringify({ stdout: STDOUT }), 50, "succeeded", "call-1", {
+			command: "cd E:\\Uina\\Uina; echo hi",
+		}),
+	);
 
 	const out: Shot[] = [];
 	const snap = async (tag: string): Promise<void> => {
@@ -165,10 +167,12 @@ async function shots(): Promise<Shot[]> {
 	host.transcript.setHoveredToolId(null);
 
 	// 多行命令参数 + 多行输出：把内容推到超过视口（totalPerm > transcriptH）
-	host.transcript.startTool("exec_command", { command: LONG_COMMAND }, "call-2");
-	host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: STDOUT }), 30, "succeeded", "call-2", {
-		command: LONG_COMMAND,
-	});
+	host.transcript.startTool(toolStartNode("exec_command", { command: LONG_COMMAND }, "call-2"));
+	host.transcript.addToolDone(
+		toolDoneNode("exec_command", JSON.stringify({ stdout: STDOUT }), 30, "succeeded", "call-2", {
+			command: LONG_COMMAND,
+		}),
+	);
 	host.transcript.appendToken("收尾文本。");
 	await snap("长内容·折叠");
 	host.transcript.setHoveredToolId("call-2");
@@ -320,18 +324,22 @@ describe("边界态：内容刚好压在视口高度附近时展开", () => {
 			const { totalPerm, transcriptH } = layoutOf();
 			if (totalPerm >= transcriptH - 2) break;
 			const id = `pad-${i}`;
-			host.transcript.startTool("exec_command", { command: `echo ${i}` }, id);
-			host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: `pad-${i}` }), 5, "succeeded", id, {
-				command: `echo ${i}`,
-			});
+			host.transcript.startTool(toolStartNode("exec_command", { command: `echo ${i}` }, id));
+			host.transcript.addToolDone(
+				toolDoneNode("exec_command", JSON.stringify({ stdout: `pad-${i}` }), 5, "succeeded", id, {
+					command: `echo ${i}`,
+				}),
+			);
 		}
 
 		// 目标卡：多行命令参数 + 多行输出（折叠时只有几行，展开会多出十几行）
 		const stdout = Array.from({ length: 14 }, (_, i) => `line-${i}`).join("\n");
-		host.transcript.startTool("exec_command", { command: LONG_COMMAND }, "call-big");
-		host.transcript.addToolDone("exec_command", JSON.stringify({ stdout }), 20, "succeeded", "call-big", {
-			command: LONG_COMMAND,
-		});
+		host.transcript.startTool(toolStartNode("exec_command", { command: LONG_COMMAND }, "call-big"));
+		host.transcript.addToolDone(
+			toolDoneNode("exec_command", JSON.stringify({ stdout }), 20, "succeeded", "call-big", {
+				command: LONG_COMMAND,
+			}),
+		);
 
 		// 逐个快照各自持有自己的帧（不能靠下标去套 frames：心跳会额外推帧）
 		const taken: Shot[] = [];
@@ -405,10 +413,14 @@ describe("回车（CR）：CRLF 内容不得让终端替我们重写行", () => 
 		const host = new UIHost({ terminal, modelName: "TestModel" });
 		host.start();
 		host.transcript.startTurn(1, "Q-CR");
-		host.transcript.startTool("exec_command", { command: "rg -n row= tests/ui-frame.test.ts" }, "call-cr");
-		host.transcript.addToolDone("exec_command", JSON.stringify({ stdout }), 30, "succeeded", "call-cr", {
-			command: "rg -n row= tests/ui-frame.test.ts",
-		});
+		host.transcript.startTool(
+			toolStartNode("exec_command", { command: "rg -n row= tests/ui-frame.test.ts" }, "call-cr"),
+		);
+		host.transcript.addToolDone(
+			toolDoneNode("exec_command", JSON.stringify({ stdout }), 30, "succeeded", "call-cr", {
+				command: "rg -n row= tests/ui-frame.test.ts",
+			}),
+		);
 		host.transcript.finishTurn();
 		host.requestRender();
 		await settle();
@@ -441,10 +453,12 @@ describe("时钟高亮带：覆盖严格等于卡片行集合", () => {
 		const host = new UIHost({ terminal, modelName: "TestModel" });
 		host.start();
 		host.transcript.startTurn(1, "Q-ONE");
-		host.transcript.startTool("exec_command", { command: "echo hi" }, "call-1");
-		host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: "hi" }), 30, "succeeded", "call-1", {
-			command: "echo hi",
-		});
+		host.transcript.startTool(toolStartNode("exec_command", { command: "echo hi" }, "call-1"));
+		host.transcript.addToolDone(
+			toolDoneNode("exec_command", JSON.stringify({ stdout: "hi" }), 30, "succeeded", "call-1", {
+				command: "echo hi",
+			}),
+		);
 		host.transcript.finishTurn();
 
 		host.requestRender();
@@ -533,16 +547,13 @@ describe("真机工具输出：JSON 解码后才出现的裸 ESC 不得进帧", 
 		const host = new UIHost({ terminal, modelName: "TestModel" });
 		host.start();
 		host.transcript.startTurn(1, "Q-REAL");
-		host.transcript.startTool("exec_command", { command: "npx vitest run 2>&1 | Out-File dev\\all.log" }, "call-real");
+		host.transcript.startTool(
+			toolStartNode("exec_command", { command: "npx vitest run 2>&1 | Out-File dev\\all.log" }, "call-real"),
+		);
 		host.transcript.addToolDone(
-			"exec_command",
-			JSON.stringify({ code: 0, stdout: REAL_STDOUT }),
-			30,
-			"succeeded",
-			"call-real",
-			{
+			toolDoneNode("exec_command", JSON.stringify({ code: 0, stdout: REAL_STDOUT }), 30, "succeeded", "call-real", {
 				command: "npx vitest run 2>&1 | Out-File dev\\all.log",
-			},
+			}),
 		);
 		host.transcript.finishTurn();
 		host.requestRender();

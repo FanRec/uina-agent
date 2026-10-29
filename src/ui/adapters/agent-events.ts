@@ -91,7 +91,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		return id;
 	}
 
-	onToolDone(id: string, name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown"): void {
+	onToolDone(id: string, name: string, result: string, elapsedMs?: number, status: ToolResultStatus = "unknown"): void {
 		const node =
 			this.nodes.find((n) => n.id === id) ??
 			[...this.nodes].reverse().find((n) => n.kind === "tool_call" && n.label === name && n.status === "running");
@@ -99,7 +99,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		if (node) {
 			node.status = status === "succeeded" ? "completed" : status;
 			node.endedAt = Date.now();
-			node.durationMs = elapsedMs || Math.max(1, node.endedAt - node.startedAt);
+			node.durationMs = elapsedMs ?? Math.max(1, node.endedAt - node.startedAt);
 			node.resultPreview = result.slice(0, 100);
 			if (status === "failed") node.error = result;
 			this.notify();

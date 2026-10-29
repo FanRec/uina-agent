@@ -47,6 +47,7 @@ export {
 	mockModelGroups,
 } from "./ui/ui-harness.js";
 export type { TestTUIOptions } from "./ui/ui-harness.js";
+export { record, toolDoneNode, toolStartNode, turnNode } from "./ui/nodes.js";
 
 export { ExtensionHarness, createExtensionHarness } from "./extensions/extension-harness.js";
 export type { ExtensionHarnessOptions } from "./extensions/extension-harness.js";

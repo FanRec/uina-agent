@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
-import { createSilentTerminal } from "./harness/index.js";
+import { createSilentTerminal, toolDoneNode, toolStartNode } from "./harness/index.js";
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const CUP = /\x1b\[[0-9]+;1H/;
@@ -41,14 +41,11 @@ function populate(host: UIHost): void {
 	host.transcript.appendToken(`${MARKDOWN}\n${INJECTION}\n${CJK}${EMOJI}`);
 	STATUSES.forEach((status, index) => {
 		const callId = `call-${index}`;
-		host.transcript.startTool("exec_command", { command: `${CJK} ${EMOJI}` }, callId);
+		host.transcript.startTool(toolStartNode("exec_command", { command: `${CJK} ${EMOJI}` }, callId));
 		host.transcript.addToolDone(
-			"exec_command",
-			JSON.stringify({ stdout: `${CJK}\n${INJECTION}\n${EMOJI}` }),
-			1234,
-			status,
-			callId,
-			{ command: "echo 中文" },
+			toolDoneNode("exec_command", JSON.stringify({ stdout: `${CJK}\n${INJECTION}\n${EMOJI}` }), 1234, status, callId, {
+				command: "echo 中文",
+			}),
 		);
 	});
 	host.addCompaction({

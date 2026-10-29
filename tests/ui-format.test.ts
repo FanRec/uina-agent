@@ -2,6 +2,7 @@
 // parseToolResult（解析/分类）与 renderToolResult（样式渲染）分开验证，
 // toolResultLines 保持旧签名的端到端行为由最后一段覆盖。
 import { describe, expect, it } from "vitest";
+import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import { parseToolResult, renderToolResult, toolResultLines, type ToolResultStyle } from "../src/ui/format.js";
 
 const tag = (prefix: string) => (s: string) => `<${prefix}>${s}</${prefix}>`;
@@ -29,8 +30,14 @@ describe("parseToolResult", () => {
 		expect(parseToolResult(esc)).toEqual({ kind: "text", text: "CLEAN OUTPUT" });
 	});
 
-	it("obj.cancelled 真值即命中 cancelled（对齐旧语义）", () => {
-		expect(parseToolResult('{"cancelled":1}')).toEqual({ kind: "cancelled" });
+	it("取消只认结构化 status，不从结果对象字段猜", () => {
+		expect(parseToolResult('{"cancelled":1}')).toEqual({
+			kind: "structured",
+			obj: { cancelled: 1 },
+			error: "",
+			stderr: undefined,
+			stdout: undefined,
+		});
 		expect(parseToolResult('{"status":"cancelled"}')).toEqual({ kind: "cancelled" });
 	});
 
@@ -56,10 +63,19 @@ describe("parseToolResult", () => {
 });
 
 describe("renderToolResult / toolResultLines", () => {
-	it("终态行使用 warn 样式与耗时格式（250ms / 1.5s）", () => {
-		expect(renderToolResult({ kind: "cancelled" }, 250, style)).toEqual(["<warn>⚠ 已取消（250ms）</warn>"]);
-		expect(renderToolResult({ kind: "unknown" }, 1500, style)).toEqual(["<warn>⚠ 结果未知（1.5s）</warn>"]);
-		expect(renderToolResult({ kind: "not_started" }, 0, style)).toEqual(["<warn>⚠ 未执行（0ms）</warn>"]);
+	it("终态行图标与文案来自状态矩阵；耗时缺失保持未知", () => {
+		expect(renderToolResult({ kind: "cancelled" }, 250, style)).toEqual([
+			`<warn>${TOOL_STATUS_SPEC.cancelled.icon} ${TOOL_STATUS_SPEC.cancelled.label}（250ms）</warn>`,
+		]);
+		expect(renderToolResult({ kind: "unknown" }, 1500, style)).toEqual([
+			`<warn>${TOOL_STATUS_SPEC.unknown.icon} ${TOOL_STATUS_SPEC.unknown.label}（1.5s）</warn>`,
+		]);
+		expect(renderToolResult({ kind: "not_started" }, 0, style)).toEqual([
+			`<warn>${TOOL_STATUS_SPEC.not_started.icon} ${TOOL_STATUS_SPEC.not_started.label}（0ms）</warn>`,
+		]);
+		expect(renderToolResult({ kind: "unknown" }, undefined, style)).toEqual([
+			`<warn>${TOOL_STATUS_SPEC.unknown.icon} ${TOOL_STATUS_SPEC.unknown.label}（耗时未知）</warn>`,
+		]);
 	});
 
 	it("纯文本缩进展示，dim 样式", () => {

@@ -9,8 +9,7 @@ import type { ToolResultStatus } from "../../../core/types.js";
  *    - 终端多行脚本命令首行折叠 + (… +N lines) 保护；
  * 2. 状态机与几何突变：
  *    - 运行中：呼吸闪烁 ●；
- *    - 已结算（完成）：静止小圆点 •（BULLET），被赋予工具类别语义色；
- *    - 异常/失败：几何形状突变为红色乘号 ✗（MULTIPLICATION_X），高亮错误与 Exit code；
+ *    - 终态图标、文案与语气全部来自 `TOOL_STATUS_SPEC`（单一矩阵）；
  * 3. 悬挂层级与极简折叠：
  *    - 首行采用 ⎿ (GUTTER_FIRST: ' ⎿ ') 悬挂折角，后续行采用 3 空格延续 (GUTTER_REST: '   ')；
  *    - 正常退出隐去 exitCode: 0 噪点，非零或异常时显式标红；
@@ -28,6 +27,7 @@ import type { ToolResultStatus } from "../../../core/types.js";
 
 import { C, resolveCarriageReturns, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { keepSgrOnly, sanitizeRenderText } from "../../format.js";
+import { TOOL_STATUS_SPEC, type ToolTone } from "../../../presentation/tool-status.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
 export type ToolCategory = "write" | "exec" | "read" | "web" | "default";
@@ -103,6 +103,14 @@ export function getToolCategoryColor(category: ToolCategory): string {
 	}
 }
 
+/** 矩阵语气 -> TUI 颜色（颜色映射只属于 TUI Surface）。 */
+const TOOL_TONE_COLORS: Record<ToolTone, string> = {
+	success: C.success,
+	error: C.error,
+	warning: C.warning,
+	neutral: C.dim,
+};
+
 /** 格式化工具显示名称（对齐 Claude Code 大驼峰规范） */
 export function displayName(rawName: string): string {
 	const KNOWN: Record<string, string> = {
@@ -166,8 +174,6 @@ export const GUTTER_FIRST = " ⎿ ";
 export const GUTTER_REST = "   ";
 
 export const BLACK_CIRCLE = "●";
-export const BULLET = "•";
-export const MULTIPLICATION_X = "✗";
 
 export interface ToolCardRenderOptions {
 	isExpanded?: boolean;
@@ -353,7 +359,7 @@ function finishCard(lines: string[], isHovered: boolean, width: number, endBadge
 export function formatToolCardLines(
 	name: string,
 	result: string,
-	elapsedMs: number,
+	elapsedMs: number | undefined,
 	width = 80,
 	status: "running" | ToolResultStatus = "unknown",
 	args?: unknown,
@@ -370,23 +376,18 @@ export function formatToolCardLines(
 	const now = options.now ?? Date.now();
 	const isRunning = status === "running";
 	const isError = status === "failed";
-	// ToolResultStatus has five outcomes; only "succeeded" may look like success.
-	const isUnconfirmed = status === "unknown" || status === "cancelled" || status === "not_started";
+	// 终态语义全部来自单一矩阵；running 是进行态，由呼吸动画表达。
+	const spec = isRunning ? undefined : TOOL_STATUS_SPEC[status];
+	const toneColor = spec ? TOOL_TONE_COLORS[spec.tone] : C.dim;
 
 	// 1. 呼吸灯与指示图标 (ToolUseLoader)
 	let iconStr = "";
-	if (isError) {
-		iconStr = `${C.red}${MULTIPLICATION_X}${C.reset} `;
-	} else if (isUnconfirmed) {
-		// Never render an unconfirmed outcome with the success bullet.
-		iconStr = `${C.warning}?${C.reset} `;
-	} else if (isRunning) {
+	if (isRunning) {
 		const isBlinkVisible = Math.floor(now / 600) % 2 === 0;
 		const char = isBlinkVisible ? BLACK_CIRCLE : " ";
 		iconStr = `${C.dim}${char}${C.reset} `;
-	} else {
-		// Category colors style the operation name; the result marker communicates outcome.
-		iconStr = `${C.success}${BULLET}${C.reset} `;
+	} else if (spec) {
+		iconStr = `${toneColor}${spec.icon}${C.reset} `;
 	}
 
 	// 2. 标题行参数解析与多行折叠
@@ -411,21 +412,14 @@ export function formatToolCardLines(
 	// 3. 耗时字符串与秒表
 	let elapsedText = "";
 	if (isRunning) {
-		const runMs = options.startedAt ? Math.max(0, now - options.startedAt) : elapsedMs;
-		elapsedText = ` · ${formatDuration(runMs)}`;
-	} else if (elapsedMs > 0) {
+		const runMs = options.startedAt === undefined ? elapsedMs : Math.max(0, now - options.startedAt);
+		if (runMs !== undefined) elapsedText = ` · ${formatDuration(runMs)}`;
+	} else if (elapsedMs !== undefined && elapsedMs > 0) {
 		elapsedText = ` · ${formatDuration(elapsedMs)}`;
 	}
 
-	const statusSuffix =
-		status === "cancelled"
-			? " · 已取消"
-			: status === "unknown"
-				? " · 结果未知"
-				: status === "not_started"
-					? " · 未执行"
-					: "";
-	const statusColor = isError ? C.error : isUnconfirmed ? C.warning : C.dim;
+	const statusSuffix = spec ? ` · ${spec.label}` : "";
+	const statusColor = spec ? toneColor : C.dim;
 	const elapsedColor = isHovered ? C.text : C.dim;
 	// hover 指示符不拼进行内容：多出的可视列会让临界满宽标题行在 hover 态软换行
 	// 多出一行，打破「两态行数恒等」并误触发视口锚定。改画在底色右端 padding 区
@@ -461,8 +455,11 @@ export function formatToolCardLines(
 
 	// 5. 运行中且暂无输出时：显示呼吸占位
 	if (isRunning && (!result || result.trim() === "")) {
-		const runMs = options.startedAt ? Math.max(0, now - options.startedAt) : elapsedMs;
-		const runLine = `${C.dim}${GUTTER_FIRST}Running… (${formatDuration(runMs)})${C.reset}`;
+		const runMs = options.startedAt === undefined ? elapsedMs : Math.max(0, now - options.startedAt);
+		const runLine =
+			runMs === undefined
+				? `${C.dim}${GUTTER_FIRST}Running…${C.reset}`
+				: `${C.dim}${GUTTER_FIRST}Running… (${formatDuration(runMs)})${C.reset}`;
 		cardLines.push(runLine);
 		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
@@ -480,12 +477,7 @@ export function formatToolCardLines(
 		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
 
-	// 7. 处理执行失败或取消状态
-	if (obj && obj.cancelled) {
-		cardLines.push(`${C.yellow}${GUTTER_FIRST}⚠ 操作已取消${C.reset}`);
-		return finishCard(cardLines, isHovered, maxW, headerBadge);
-	}
-
+	// 7. 错误正文（终态只认 status，不再从结果对象猜取消）
 	const rawError = isError
 		? obj && typeof obj.error === "string"
 			? keepSgrOnly(obj.error)
@@ -514,10 +506,13 @@ export function formatToolCardLines(
 	const bodyLines: string[] = [];
 
 	if (obj && typeof obj === "object") {
-		// 非零退出码标红
-		const exitCode = typeof obj.code === "number" ? obj.code : typeof obj.exitCode === "number" ? obj.exitCode : 0;
-		if (exitCode !== 0) {
+		// 非零退出码标红；exec 类工具缺退出码时明示未知，不伪造成 0。
+		const exitCode =
+			typeof obj.code === "number" ? obj.code : typeof obj.exitCode === "number" ? obj.exitCode : undefined;
+		if (exitCode !== undefined && exitCode !== 0) {
 			bodyLines.push(`${C.red}Exit code ${exitCode}${C.reset}`);
+		} else if (exitCode === undefined && category === "exec") {
+			bodyLines.push(`${C.dim}退出码未知${C.reset}`);
 		}
 		if (obj.signal) {
 			bodyLines.push(`${C.red}Killed by signal ${String(obj.signal)}${C.reset}`);
@@ -549,8 +544,8 @@ export function formatToolCardLines(
 			}
 		}
 
-		if (!stdout && !output && !stderr && exitCode === 0) {
-			const skipKeys = new Set(["code", "exitCode", "elapsedMs", "status", "cancelled"]);
+		if (!stdout && !output && !stderr && (exitCode === undefined || exitCode === 0)) {
+			const skipKeys = new Set(["code", "exitCode", "elapsedMs", "status"]);
 			if (Array.isArray(obj)) {
 				// 结构化列表（session_list 这类 JSON 数组结果）每项独占一行，
 				// 交给折叠预算处理，而不是渲染成 "0: [object Object]"。
@@ -594,9 +589,10 @@ export function formatToolCardLines(
 		hiddenCount = bodyLines.length - budget;
 	}
 
-	// 10. 挂载 ⎿ 悬挂缩进输出
+	// 10. 挂载 ⎿ 悬挂缩进输出；空输出文案与语气来自状态矩阵
 	if (visibleLines.length === 0) {
-		cardLines.push(`${C.dim}${GUTTER_FIRST}(执行完成，无输出)${C.reset}`);
+		const emptyText = spec?.emptyText ?? "执行中，无输出";
+		cardLines.push(`${toneColor}${GUTTER_FIRST}${emptyText}${C.reset}`);
 	} else {
 		for (let i = 0; i < visibleLines.length; i++) {
 			const gutter = i === 0 ? GUTTER_FIRST : GUTTER_REST;

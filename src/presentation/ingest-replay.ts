@@ -20,7 +20,7 @@ export interface ReplayInput {
 	readonly auxiliary?: readonly (SessionEventRecord | SessionCustomEntryRecord)[];
 }
 
-interface ToolJournal {
+export interface JournalTool {
 	name?: string;
 	args?: unknown;
 	startedAt?: number;
@@ -34,7 +34,8 @@ function isToolStatus(value: unknown): value is ToolResultStatus {
 	return typeof value === "string" && (TOOL_STATUSES as readonly string[]).includes(value);
 }
 
-function parseTimestamp(value: unknown): number | undefined {
+/** journal 时间戳（ISO 字符串）-> Unix 毫秒；缺失或非法保持 undefined。 */
+export function parseJournalTime(value: unknown): number | undefined {
 	if (typeof value !== "string") return undefined;
 	const parsed = Date.parse(value);
 	return Number.isNaN(parsed) ? undefined : parsed;
@@ -44,54 +45,63 @@ function replay(payload: FactPayload, at: number | undefined): FactDraft {
 	return at === undefined ? { ...payload, origin: "replay" } : { ...payload, origin: "replay", at };
 }
 
-function collectTools(auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[]): {
-	tools: Map<string, ToolJournal>;
+/** 工具 journal（开始/结束/状态）的唯一读取入口：恢复投影与恢复渲染共用。 */
+export function collectJournalTools(
+	auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[],
+): Map<string, JournalTool> {
+	const tools = new Map<string, JournalTool>();
+	for (const record of auxiliary) {
+		if (record.kind !== "event") continue;
+		if (record.event !== "tool_started" && record.event !== "tool_finished") continue;
+		const at = parseJournalTime(record.timestamp);
+		const data = record.data;
+		const callId = typeof data.callId === "string" ? data.callId : undefined;
+		if (callId === undefined) continue;
+		const journal = tools.get(callId) ?? {};
+		if (record.event === "tool_started") {
+			journal.startedAt = at;
+			if (typeof data.name === "string") journal.name = data.name;
+			journal.args = data.args;
+		} else {
+			journal.finishedAt = at;
+			if (isToolStatus(data.status)) journal.status = data.status;
+			// 完成事件通常也带 name/args（loop 写入时就有）；以开始事件优先，缺失时补齐。
+			if (journal.name === undefined && typeof data.name === "string") journal.name = data.name;
+			if (journal.args === undefined) journal.args = data.args;
+		}
+		tools.set(callId, journal);
+	}
+	return tools;
+}
+
+function collectTurnOutcomes(auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[]): {
 	abortedTurns: Map<number, number | undefined>;
 	failedTurns: Map<number, { at?: number; text?: string }>;
 } {
-	const tools = new Map<string, ToolJournal>();
 	const abortedTurns = new Map<number, number | undefined>();
 	const failedTurns = new Map<number, { at?: number; text?: string }>();
 	for (const record of auxiliary) {
 		if (record.kind !== "event") continue;
-		const at = parseTimestamp(record.timestamp);
+		if (record.event !== "turn_aborted" && record.event !== "turn_failed") continue;
+		const at = parseJournalTime(record.timestamp);
 		const data = record.data;
-		if (record.event === "tool_started" || record.event === "tool_finished") {
-			const callId = typeof data.callId === "string" ? data.callId : undefined;
-			if (callId === undefined) continue;
-			const journal = tools.get(callId) ?? {};
-			if (record.event === "tool_started") {
-				journal.startedAt = at;
-				if (typeof data.name === "string") journal.name = data.name;
-				journal.args = data.args;
-			} else {
-				journal.finishedAt = at;
-				if (isToolStatus(data.status)) journal.status = data.status;
-				// 完成事件通常也带 name/args（loop 写入时就有）；以开始事件优先，缺失时补齐。
-				if (journal.name === undefined && typeof data.name === "string") journal.name = data.name;
-				if (journal.args === undefined) journal.args = data.args;
-			}
-			tools.set(callId, journal);
-			continue;
-		}
-		if (record.event === "turn_aborted" || record.event === "turn_failed") {
-			const turn = typeof data.turnId === "number" ? data.turnId : undefined;
-			if (turn === undefined) continue;
-			if (record.event === "turn_aborted") {
-				abortedTurns.set(turn, at);
-			} else {
-				failedTurns.set(turn, {
-					at,
-					text: typeof data.error === "string" ? sanitizeExternal(data.error) : undefined,
-				});
-			}
+		const turn = typeof data.turnId === "number" ? data.turnId : undefined;
+		if (turn === undefined) continue;
+		if (record.event === "turn_aborted") {
+			abortedTurns.set(turn, at);
+		} else {
+			failedTurns.set(turn, {
+				at,
+				text: typeof data.error === "string" ? sanitizeExternal(data.error) : undefined,
+			});
 		}
 	}
-	return { tools, abortedTurns, failedTurns };
+	return { abortedTurns, failedTurns };
 }
 
 export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
-	const { tools, abortedTurns, failedTurns } = collectTools(input.auxiliary ?? []);
+	const tools = collectJournalTools(input.auxiliary ?? []);
+	const { abortedTurns, failedTurns } = collectTurnOutcomes(input.auxiliary ?? []);
 	const facts: FactDraft[] = [];
 	let turn = 0;
 	let turnOpen = false;
@@ -112,7 +122,7 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 	};
 
 	for (const entry of input.entries) {
-		const at = parseTimestamp(entry.timestamp);
+		const at = parseJournalTime(entry.timestamp);
 		switch (entry.kind) {
 			case "message": {
 				const message = entry.message;

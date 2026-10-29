@@ -9,7 +9,14 @@ import { createPrintUI, type ExtensionAPI, ExtensionRunner } from "../src/extens
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { type Tool, ToolBroker } from "../src/tools/broker.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { createTestTUI, dispatchUIHostInput, IsolatedEnv, mockModel } from "./harness/index.js";
+import {
+	createTestTUI,
+	dispatchUIHostInput,
+	IsolatedEnv,
+	mockModel,
+	toolDoneNode,
+	toolStartNode,
+} from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 const runners: ExtensionRunner[] = [];
@@ -461,8 +468,8 @@ describe("extension composition", () => {
 			render: () => [options.expanded ? "expanded" : "custom:" + JSON.stringify(tool.details)],
 		}));
 		transcript.startTurn(1, "user");
-		transcript.startTool("echo", {}, "c");
-		transcript.addToolDone("echo", "result", 1, "succeeded", "c", {}, { details: { count: 3 } });
+		transcript.startTool(toolStartNode("echo", {}, "c"));
+		transcript.addToolDone(toolDoneNode("echo", "result", 1, "succeeded", "c", {}, { details: { count: 3 } }));
 		expect(transcript.render(80).join("")).toContain('custom:{"count":3}');
 		remove();
 		expect(transcript.render(80).join("")).not.toContain("custom:");

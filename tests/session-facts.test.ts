@@ -11,7 +11,7 @@ import type { QueuedInput } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
 import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
-import { IsolatedEnv, Scenario, getTestUIHost, mockModel, SubjectHarness, mockTool } from "./harness/index.js";
+import { IsolatedEnv, Scenario, getTestUIHost, mockModel, SubjectHarness, mockTool, record } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 afterEach(async () => {
@@ -283,7 +283,7 @@ describe("S1 tool outcome propagation", () => {
 				runtimeHooks: createRuntimeHooks(host),
 				tools: [toolWith(async () => ({ result: "opaque content", status }))],
 			});
-			harness.subscribe((e) => tui.consume(e));
+			harness.subscribe((e) => tui.consume(record(e)));
 			await harness.run("run");
 			getTestUIHost(tui).transcript.finishTurn();
 			await store.close();

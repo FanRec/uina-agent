@@ -1403,6 +1403,62 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2a 提交。
 遗留未知：若同一进程内 rewind 后 turn 编号重新从 1 开始且未 replaceAll，则需再评估；W2b 的 rewind 测试会覆盖。
 
+[W2a] 2026-10-29
+决策：工具终态词汇只有 `ToolResultStatus` 五态；图标/文案/语气集中在 `src/presentation/tool-status.ts`，TUI 只做语气→颜色映射（`TOOL_TONE_COLORS` 留在 tool-view.ts）。删除旧的“从结果对象猜取消”、`⚠` 终态文案与文本启发式中止判断。
+证据：tests/ui-projection.test.ts「覆盖且只覆盖 ToolResultStatus 五态」；tests/ui-format.test.ts 终态行直接引用矩阵；tests/ui.test.ts 失败首行改用 `C.error`。
+影响文件：src/presentation/tool-status.ts、src/ui/format.ts、src/ui/components/transcript/tool-view.ts、src/cli/stdio-render.ts。
+回滚点：W2a 提交前。
+遗留未知：无。
+
+[W2a] 2026-10-29
+决策：投影输入放宽为 `ProjectionInput = FactPayload & {at?}`，不要求 `seq/origin`；序号与来源属于事实流，不参与归并。投影因此与 FactStore 解耦，测试可构造最小事实。
+证据：tests/ui-projection.test.ts 的 `project()` 直接吃字面量事实；`applyLive` 仍接收 `PresentationFact`。
+影响文件：src/presentation/projection.ts。
+回滚点：W2a 提交前。
+遗留未知：无。
+
+[W2a] 2026-10-29
+决策：`durationMs = 两端都有 ? max(0, ended-started) : undefined`；只有完成事实的恢复缺口生成 endedAt-only 节点；replay 回合缺结束时间戳时 `endedAt` 保持 undefined。禁止以当前时钟补齐。
+证据：tests/ui-projection.test.ts「缺开始时间不产生耗时」「恢复缺口」「live 与 replay 工具节点等价」，并显式断言 replay 回合 `endedAt` 为 undefined。
+影响文件：src/presentation/projection.ts、src/presentation/ingest-replay.ts。
+回滚点：W2a 提交前。
+遗留未知：journal 不持久化正常 turn_end 时间；回合耗时显示需 W1 补 journal 记录。
+
+[W2a] 2026-10-29
+决策：`session_rewind` 后是否仍有活动回合由事件载荷 `turnNumber` 决定；缺失则不 `continueTurn`，保持重放派生的归属，不猜回合号。
+证据：src/ui/tui.ts 的 `if (m.turnNumber !== undefined)`。
+影响文件：src/ui/tui.ts。
+回滚点：W2a 提交前。
+遗留未知：无。
+
+[W2a] 2026-10-29
+决策：stdio 与 TUI 共用同一状态矩阵与同一事实时间；stdio 的 `toolStartedAt` Map 是按 `record.at` 的合法记账，不属于旧推导，保留。
+证据：tests/cli-run-mode.test.ts 断言 `✓ exec · 完成` / `✗ exec · 失败`。
+影响文件：src/cli/stdio-render.ts、src/cli/app.ts。
+回滚点：W2a 提交前。
+遗留未知：无。
+
+[W2a] 2026-10-29
+决策：exec 类工具缺退出码时显式显示“退出码未知”，不伪造成 0。
+证据：tests/ui.test.ts 行数预算 fixture 需补 `exitCode: 0` 才保持原行数。
+影响文件：src/ui/components/transcript/tool-view.ts。
+回滚点：W2a 提交前。
+遗留未知：无。
+
+[W2a 遗留→W2d] 2026-10-29
+决策：`TranscriptContainer.loadSession` 仍自行从 journal 推导工具状态与耗时，与 `ingestReplay → PresentationProjection` 并行。这是 W2d 的删除目标，不在 W2a 删除：删除会让恢复会话失去唯一渲染路径。W2a 提交时该双轨可见、可追踪；W2d 完成前不得再新增第三条恢复路径。
+证据：src/ui/components/transcript/transcript.ts 的 `collectJournalTools` 调用与 duration 计算（约 913–935 行）。
+影响文件：W2d 的 transcript.ts。
+回滚点：W2d 提交。
+遗留未知：无。
+
+[W2a 遗留→W2b] 2026-10-29
+决策：`TrajectoryProjection` 仍用 `Date.now()`、自增节点 ID 与 label 聚合键（含 `Turn #n`）。W2b 先删除这些，再改为消费 `PresentationNode` 的 `startedAt/endedAt/durationMs`。
+证据：src/ui/adapters/agent-events.ts 的 `turnStartTime`、`nextNodeId`、`aggregate`。
+影响文件：W2b 的 agent-events.ts。
+回滚点：W2b 提交。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

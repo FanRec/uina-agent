@@ -9,7 +9,6 @@ import {
 	alignSplitDiff,
 	applyCardBackground,
 	BLACK_CIRCLE,
-	BULLET,
 	CustomMessageComponent,
 	computeWordDiff,
 	displayName,
@@ -24,9 +23,9 @@ import {
 	GUTTER_REST,
 	getToolCategory,
 	getToolCategoryColor,
-	MULTIPLICATION_X,
 	TranscriptContainer,
 } from "../src/ui/components/transcript/index.js";
+import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import { revealStep, SmoothRevealController, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
 import { formatFullMarkdown, StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
 import {
@@ -63,6 +62,9 @@ import {
 	isHeartbeatActive,
 	mockModelGroups,
 	renderWidget,
+	record,
+	toolDoneNode,
+	toolStartNode,
 } from "./harness/index.js";
 
 describe("UI Core: Utils", () => {
@@ -1078,27 +1080,33 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 
 			expect(harness.host.isBusy()).toBe(false);
 
-			harness.tui.consume({ type: "turn_start", turnNumber: 1, userText: "测试提问" });
+			harness.tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "测试提问" }));
 			expect(harness.host.isBusy()).toBe(true);
 
-			harness.tui.consume({
-				type: "output_update",
-				streamId: "s1",
-				offset: 0,
-				channel: "content",
-				text: "模型正在分析...",
-			});
-			harness.tui.consume({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
-			harness.tui.consume({
-				type: "tool_result",
-				toolName: "list_dir",
-				args: {},
-				result: "dir output",
-				status: "succeeded",
-				callId: "tool-1",
-			});
+			harness.tui.consume(
+				record({
+					type: "output_update",
+					streamId: "s1",
+					offset: 0,
+					channel: "content",
+					text: "模型正在分析...",
+				}),
+			);
+			harness.tui.consume(record({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" }));
+			harness.tui.consume(
+				record({
+					type: "tool_result",
+					toolName: "list_dir",
+					args: {},
+					result: "dir output",
+					status: "succeeded",
+					callId: "tool-1",
+				}),
+			);
 
-			harness.tui.consume({ type: "turn_end", turnNumber: 1, requestUsage: { callId: "call-1", totalTokens: 2048 } });
+			harness.tui.consume(
+				record({ type: "turn_end", turnNumber: 1, requestUsage: { callId: "call-1", totalTokens: 2048 } }),
+			);
 			expect(harness.host.isBusy()).toBe(false);
 		} finally {
 			harness.dispose();
@@ -1797,16 +1805,18 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("InteractiveTUI 从 RuntimeEvent 投影模型、思考档位和压缩事实", () => {
 			const tui = new InteractiveTUI({ thinkingLevels: ["high"] });
-			tui.consume({ type: "model_select", model: "provider/new-model" });
-			tui.consume({ type: "thinking_level_select", level: "high" });
-			tui.consume({
-				type: "session_compact",
-				operationId: "compact-1",
-				status: "completed",
-				summary: "compacted summary",
-				retainedTailEntries: 2,
-				tokensBefore: 5000,
-			});
+			tui.consume(record({ type: "model_select", model: "provider/new-model" }));
+			tui.consume(record({ type: "thinking_level_select", level: "high" }));
+			tui.consume(
+				record({
+					type: "session_compact",
+					operationId: "compact-1",
+					status: "completed",
+					summary: "compacted summary",
+					retainedTailEntries: 2,
+					tokensBefore: 5000,
+				}),
+			);
 
 			expect(getTestUIHost(tui).modelName).toBe("provider/new-model");
 			expect(getTestUIHost(tui).getReasoningEffort()).toBe("high");
@@ -1824,21 +1834,25 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 			const tui = createTestTUI({ columns: 120, rows: 30 });
 			try {
-				tui.tui.consume({
-					type: "session_compact_progress",
-					operationId: "compact-1",
-					phase: "summarizing",
-					detail: "生成历史摘要（已接收 12000 字）",
-				});
+				tui.tui.consume(
+					record({
+						type: "session_compact_progress",
+						operationId: "compact-1",
+						phase: "summarizing",
+						detail: "生成历史摘要（已接收 12000 字）",
+					}),
+				);
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).toContain("正在压缩上下文：生成历史摘要（已接收 12000 字）");
 				expect(isHeartbeatActive(tui.host)).toBe(true);
 
-				tui.tui.consume({ type: "session_compact_progress", operationId: "compact-1", phase: "measuring" });
+				tui.tui.consume(record({ type: "session_compact_progress", operationId: "compact-1", phase: "measuring" }));
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).toContain("测量压缩后上下文");
 
-				tui.tui.consume({ type: "session_compact", operationId: "compact-1", status: "failed", error: "压缩失败" });
+				tui.tui.consume(
+					record({ type: "session_compact", operationId: "compact-1", status: "failed", error: "压缩失败" }),
+				);
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).not.toContain("正在压缩上下文");
 				expect(isHeartbeatActive(tui.host)).toBe(false);
@@ -1853,7 +1867,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			transcript.startTurn(1, "用户输入");
 			transcript.appendThinking("开始推理");
 			transcript.appendToken("第一段文本回复");
-			transcript.startTool("bash", { command: "ls" }, "call-1");
+			transcript.startTool(toolStartNode("bash", { command: "ls" }, "call-1"));
 
 			let lines = transcript.render(80).join("\n");
 			expect(lines).toContain("开始推理");
@@ -1861,7 +1875,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(lines).toContain("Bash");
 			expect(lines).toContain("Running…");
 
-			transcript.addToolDone("bash", "file1.txt\nfile2.txt", 120, "succeeded", "call-1");
+			transcript.addToolDone(toolDoneNode("bash", "file1.txt\nfile2.txt", 120, "succeeded", "call-1"));
 			transcript.appendToken("工具完成后的后续回复");
 
 			lines = transcript.render(80).join("\n");
@@ -2809,35 +2823,43 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("InteractiveTUI 真实事件联动：轨迹收集与 Token 逼真计算", () => {
 			const tui = new InteractiveTUI();
-			tui.consume({ type: "turn_start", turnNumber: 1, userText: "你好" });
-			tui.consume({
-				type: "output_update",
-				streamId: "s1",
-				offset: 0,
-				channel: "thinking",
-				text: "正在思考哲学问题...",
-			});
-			tui.consume({
-				type: "output_update",
-				streamId: "s1",
-				offset: 1,
-				channel: "content",
-				text: "这是一段长度为 30 个字符的回复文本用于测试",
-			});
-			tui.consume({ type: "tool_call", toolName: "bash", args: { cmd: "ls" }, callId: "tool-1" });
-			tui.consume({
-				type: "tool_result",
-				toolName: "bash",
-				args: { cmd: "ls" },
-				result: "file.txt",
-				status: "succeeded",
-				callId: "tool-1",
-			});
-			tui.consume({
-				type: "turn_end",
-				turnNumber: 1,
-				requestUsage: { callId: "call-1", totalTokens: 500 },
-			});
+			tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "你好" }));
+			tui.consume(
+				record({
+					type: "output_update",
+					streamId: "s1",
+					offset: 0,
+					channel: "thinking",
+					text: "正在思考哲学问题...",
+				}),
+			);
+			tui.consume(
+				record({
+					type: "output_update",
+					streamId: "s1",
+					offset: 1,
+					channel: "content",
+					text: "这是一段长度为 30 个字符的回复文本用于测试",
+				}),
+			);
+			tui.consume(record({ type: "tool_call", toolName: "bash", args: { cmd: "ls" }, callId: "tool-1" }));
+			tui.consume(
+				record({
+					type: "tool_result",
+					toolName: "bash",
+					args: { cmd: "ls" },
+					result: "file.txt",
+					status: "succeeded",
+					callId: "tool-1",
+				}),
+			);
+			tui.consume(
+				record({
+					type: "turn_end",
+					turnNumber: 1,
+					requestUsage: { callId: "call-1", totalTokens: 500 },
+				}),
+			);
 
 			const nodes = getTestTrajectoryProjection(tui).list();
 			expect(nodes.some((n) => n.kind === "turn_start")).toBe(true);
@@ -2846,14 +2868,16 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(nodes.some((n) => n.kind === "model_stream" && n.status === "completed")).toBe(true);
 
 			// 测试压缩时轨迹同步
-			tui.consume({
-				type: "session_compact",
-				operationId: "compact-test",
-				status: "completed",
-				summary: "历史压缩摘要",
-				retainedTailEntries: 1,
-				tokensBefore: 3000,
-			});
+			tui.consume(
+				record({
+					type: "session_compact",
+					operationId: "compact-test",
+					status: "completed",
+					summary: "历史压缩摘要",
+					retainedTailEntries: 1,
+					tokensBefore: 3000,
+				}),
+			);
 			const compNode = getTestTrajectoryProjection(tui)
 				.list()
 				.find((n) => n.kind === "compaction");
@@ -3043,9 +3067,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			it("工具类别颜色属于名称，状态颜色单独表达结果", () => {
 				const success = formatToolCardLines("bash", "ok", 1, 80, "succeeded")[0]!;
 				const failure = formatToolCardLines("bash", "failed", 1, 80, "failed")[0]!;
-				expect(success.startsWith(`${C.success}${BULLET}`)).toBe(true);
+				expect(success.startsWith(`${C.success}${TOOL_STATUS_SPEC.succeeded.icon}`)).toBe(true);
 				expect(success).toContain(C.toolDotExec);
-				expect(failure.startsWith(`${C.red}✗`)).toBe(true);
+				expect(failure.startsWith(`${C.error}${TOOL_STATUS_SPEC.failed.icon}`)).toBe(true);
 				expect(failure).toContain(C.toolDotExec);
 			});
 
@@ -3246,7 +3270,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					{ CommandLine: "pnpm test" },
 				);
 				const rendered = lines.join("\n");
-				expect(rendered).toContain(BULLET);
+				expect(rendered).toContain(TOOL_STATUS_SPEC.succeeded.icon);
 				expect(stripAnsi(rendered)).toContain("RunCommand(pnpm test)");
 				expect(rendered).toContain("· 240ms");
 				expect(rendered).toContain(GUTTER_FIRST);
@@ -3268,7 +3292,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					{ isNewestFailure: true },
 				);
 				const rendered = linesFailure.join("\n");
-				expect(rendered).toContain(MULTIPLICATION_X);
+				expect(rendered).toContain(TOOL_STATUS_SPEC.failed.icon);
 				expect(rendered).toContain("Command not found");
 				expect(rendered).toContain("Alt+T 查看轨迹");
 
@@ -3289,7 +3313,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 4 行（溢出 1 行）：容差直接完整显示
 				const fourLines = formatToolCardLines(
 					"run_command",
-					JSON.stringify({ stdout: "a\nb\nc\nd" }),
+					JSON.stringify({ exitCode: 0, stdout: "a\nb\nc\nd" }),
 					100,
 					80,
 					"succeeded",
@@ -3300,7 +3324,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 5 行：折叠保留 3 行 + 折叠提示
 				const fiveLines = formatToolCardLines(
 					"run_command",
-					JSON.stringify({ stdout: "a\nb\nc\nd\ne" }),
+					JSON.stringify({ exitCode: 0, stdout: "a\nb\nc\nd\ne" }),
 					100,
 					80,
 					"succeeded",
@@ -3389,10 +3413,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			it("TranscriptContainer 工具单卡与全局展开交互控制", () => {
 				const transcript = new TranscriptContainer();
 				transcript.startTurn(1, "执行批处理");
-				transcript.startTool("bash", { command: "test1" }, "call-1");
-				transcript.addToolDone("bash", JSON.stringify({ stdout: "1\n2\n3\n4\n5" }), 100, "succeeded", "call-1");
-				transcript.startTool("bash", { command: "test2" }, "call-2");
-				transcript.addToolDone("bash", JSON.stringify({ stdout: "a\nb\nc\nd\ne" }), 100, "succeeded", "call-2");
+				transcript.startTool(toolStartNode("bash", { command: "test1" }, "call-1"));
+				transcript.addToolDone(
+					toolDoneNode("bash", JSON.stringify({ stdout: "1\n2\n3\n4\n5" }), 100, "succeeded", "call-1"),
+				);
+				transcript.startTool(toolStartNode("bash", { command: "test2" }, "call-2"));
+				transcript.addToolDone(
+					toolDoneNode("bash", JSON.stringify({ stdout: "a\nb\nc\nd\ne" }), 100, "succeeded", "call-2"),
+				);
 
 				// 默认折叠
 				let locs = transcript.getToolLineIndices(80);
@@ -3430,13 +3458,15 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				try {
 					// 开启一轮对话并添加一个多行输出的工具调用
 					host.transcript.startTurn(1, "运行测试脚本");
-					host.transcript.startTool("bash", { command: "npm test" }, "call-test-123");
+					host.transcript.startTool(toolStartNode("bash", { command: "npm test" }, "call-test-123"));
 					host.transcript.addToolDone(
-						"bash",
-						JSON.stringify({ stdout: "line 1\nline 2\nline 3\nline 4" }),
-						150,
-						"succeeded",
-						"call-test-123",
+						toolDoneNode(
+							"bash",
+							JSON.stringify({ stdout: "line 1\nline 2\nline 3\nline 4" }),
+							150,
+							"succeeded",
+							"call-test-123",
+						),
 					);
 
 					// 触发首帧渲染以构建交互目标
@@ -3627,7 +3657,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const transcript = new TranscriptContainer();
 				transcript.startTurn(1, "用户任务");
 				transcript.appendThinking("正在推理中...");
-				transcript.startTool("bash", { command: "sleep 10" }, "call-1");
+				transcript.startTool(toolStartNode("bash", { command: "sleep 10" }, "call-1"));
 
 				// 触发打断
 				transcript.interruptTurn("DeepSeek");
@@ -3739,11 +3769,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "做某事" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "做某事" }));
 				expect(getTestUIHost(tui).isBusy()).toBe(true);
 
 				// 模拟收到内核发出的结构化 turn_aborted 事件
-				tui.consume({ type: "turn_aborted", turnNumber: 1 });
+				tui.consume(record({ type: "turn_aborted", turnNumber: 1 }));
 
 				// 此时 busy 状态自动解除，且 transcript 正确记录 interrupt 行
 				expect(getTestUIHost(tui).isBusy()).toBe(false);
@@ -3755,7 +3785,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			it("TranscriptContainer: 打断后迟到的工具结算绝不重复开辟新轮次或生成重复工具卡 (图一防御)", () => {
 				const transcript = new TranscriptContainer();
 				transcript.startTurn(1, "执行长任务");
-				transcript.startTool("bash", { command: "sleep 10" }, "call-123");
+				transcript.startTool(toolStartNode("bash", { command: "sleep 10" }, "call-123"));
 
 				// 用户按 Esc 打断
 				transcript.interruptTurn("TestModel");
@@ -3768,11 +3798,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 				// 此时底层子进程退出，迟到收到 addToolDone
 				transcript.addToolDone(
-					"bash",
-					'{"error":"工具已返回，但取消时无法确认副作用状态"}',
-					200,
-					"unknown",
-					"call-123",
+					toolDoneNode("bash", '{"error":"工具已返回，但取消时无法确认副作用状态"}', 200, "unknown", "call-123"),
 				);
 
 				// 必须严密保持为 1 轮，且绝不产生重复卡片
@@ -3786,11 +3812,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 打断的轮次在结算时 activityLine 展示 '已打断当前轮次' 而非 '本轮已完成'", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "做任务" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "做任务" }));
 				getTestUIHost(tui).cancelTurn("escape");
 
 				// 收到 Host 的取消事实，而不是把取消意图伪装成正常完成。
-				tui.consume({ type: "turn_aborted", turnNumber: 1 });
+				tui.consume(record({ type: "turn_aborted", turnNumber: 1 }));
 
 				// 校验 activityLine 总结状态为“已打断当前轮次”
 				const rendered = getTestUIHost(tui).activityLine.render(80).join("\n");
@@ -3800,7 +3826,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 排队消息回填与草稿按时间顺序拼接，并置光标于末尾 (对齐 Pi restoreQueuedMessagesToEditor)", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "运行长任务" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "运行长任务" }));
 
 				// 用户输入半截未发送的临时草稿
 				dispatchUIHostInput(getTestUIHost(tui), "未发送的临时草稿");
@@ -3825,7 +3851,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 每次空白态 Ctrl+C 只向组合根发送取消意图", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "长耗时操作" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "长耗时操作" }));
 
 				const cancelSources: Array<string | undefined> = [];
 				tui.onIntent((intent) => {
@@ -3861,7 +3887,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 工作态下按 Esc 触发 onCancel('escape') 并保留输入栏未发送草稿", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "正在执行任务" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "正在执行任务" }));
 
 				let cancelSource: string | undefined;
 				tui.onIntent((intent) => {
@@ -3880,7 +3906,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 工作态下 Ctrl+Enter 触发 onInterruptAndDeliver 且不触发 onCancel", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.consume({ type: "turn_start", turnNumber: 1, userText: "执行中" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "执行中" }));
 
 				let deliveredText: string | undefined;
 				let cancelCalled = false;
@@ -4029,10 +4055,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					tui.start();
 					const historyBefore = getTestUIHost(tui).transcript.getHistory().length;
 
-					tui.consume({
-						type: "queue",
-						items: [{ id: "q-1", text: "排队消息1", mode: "steer", order: 1 }],
-					});
+					tui.consume(
+						record({
+							type: "queue",
+							items: [{ id: "q-1", text: "排队消息1", mode: "steer", order: 1 }],
+						}),
+					);
 
 					// transcript 历史中绝对不新增 notice，杜绝历史日志被反复刷屏污染
 					expect(getTestUIHost(tui).transcript.getHistory().length).toBe(historyBefore);
@@ -4045,7 +4073,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					expect(frameText).toContain("↳ 排队消息1");
 
 					// 队列清空时，悬浮区清空，不留残影
-					tui.consume({ type: "queue", items: [] });
+					tui.consume(record({ type: "queue", items: [] }));
 					(getTestUIHost(tui) as any).renderCurrentFrame();
 					const clearedLines: string[] = (getTestUIHost(tui) as any).lastRenderedRows;
 					const clearedFrameText = clearedLines.map((l: string) => stripAnsi(l)).join("\n");
@@ -4076,7 +4104,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const initialTranscriptLen = host.transcript.render(80).length;
 
 		// 宿主事件流派发 notice（reloadExtensions 的产物）——经 tui.render 分发
-		tui.consume({ type: "notice", text: "项目扩展已重新加载：1 个扩展激活。" });
+		tui.consume(record({ type: "notice", text: "项目扩展已重新加载：1 个扩展激活。" }));
 
 		// 不污染 transcript，出现在 toast 里
 		expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
@@ -4094,8 +4122,8 @@ describe("Transcript: 帧内单一行模型（getFrameModel）", () => {
 		);
 		transcript.appendThinking("这是一段思考内容");
 		transcript.appendToken("\n\n思考后的回答正文。");
-		transcript.startTool("bash", { command: "echo hi" }, "call-1");
-		transcript.addToolDone("bash", "hi", 5, "succeeded", "call-1", { command: "echo hi" });
+		transcript.startTool(toolStartNode("bash", { command: "echo hi" }, "call-1"));
+		transcript.addToolDone(toolDoneNode("bash", "hi", 5, "succeeded", "call-1", { command: "echo hi" }));
 		transcript.appendToken("\n\n工具之后的收尾。");
 		transcript.finishTurn();
 
