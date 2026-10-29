@@ -14,7 +14,7 @@ import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode
 import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 import { listPromptSnapshots } from "../session/prompt-snapshots.js";
-import { routeTuiIntent } from "./tui-intents.js";
+import { routePresentationIntent } from "./presentation-intents.js";
 
 /**
  * 组合根：只做四件事——建宿主、挂一个消费者、装进程级守卫、退出。
@@ -444,7 +444,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			}
 			host.attachExtensionUI(tui.extensionUI);
 			tui.onIntent((intent) =>
-				routeTuiIntent(intent, {
+				routePresentationIntent(intent, {
 					submit: onUserLine,
 					interaction: () => {
 						cancellationPending = false;

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { routeTuiIntent } from "../src/cli/tui-intents.js";
+import { routePresentationIntent } from "../src/cli/presentation-intents.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
 import type { HostSnapshot } from "../src/host/events.js";
 import { createSilentTerminal, getTestUIHost } from "./harness/index.js";
 
-describe("TuiIntent application routing", () => {
+describe("PresentationIntent application routing", () => {
 	it("initializes the terminal view from HostSnapshot facts before start", () => {
 		const tui = createInteractiveUI();
 		const snapshot: HostSnapshot = {
@@ -36,12 +36,12 @@ describe("TuiIntent application routing", () => {
 		terminal.feedInput("\r");
 		terminal.feedInput("\x03");
 
-		expect(intents).toContainEqual({ type: "submit", text: "hello", mode: "direct" });
-		expect(intents).toContainEqual({ type: "cancel", source: "ctrl+c" });
+		expect(intents).toContainEqual({ type: "input.submit", text: "hello", mode: "direct" });
+		expect(intents).toContainEqual({ type: "turn.cancel", source: "ctrl+c" });
 		tui.close();
 	});
 
-	it("routes each UI action to its matching application operation", () => {
+	it("routes each presentation action to its matching application operation", () => {
 		const actions = {
 			submit: vi.fn(),
 			interaction: vi.fn(),
@@ -51,12 +51,12 @@ describe("TuiIntent application routing", () => {
 			cycleThinkingLevel: vi.fn(),
 		};
 
-		routeTuiIntent({ type: "submit", text: "hello", mode: "steer" }, actions);
-		routeTuiIntent({ type: "interaction" }, actions);
-		routeTuiIntent({ type: "cancel", source: "escape" }, actions);
-		routeTuiIntent({ type: "interrupt-and-deliver", text: "urgent" }, actions);
-		routeTuiIntent({ type: "pull-back-queue" }, actions);
-		routeTuiIntent({ type: "cycle-thinking-level" }, actions);
+		routePresentationIntent({ type: "input.submit", text: "hello", mode: "steer" }, actions);
+		routePresentationIntent({ type: "ui.interaction" }, actions);
+		routePresentationIntent({ type: "turn.cancel", source: "escape" }, actions);
+		routePresentationIntent({ type: "turn.interruptAndDeliver", text: "urgent" }, actions);
+		routePresentationIntent({ type: "queue.pullBack" }, actions);
+		routePresentationIntent({ type: "thinking.cycle" }, actions);
 
 		expect(actions.submit).toHaveBeenCalledWith("hello", "steer");
 		expect(actions.interaction).toHaveBeenCalledOnce();

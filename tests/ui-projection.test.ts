@@ -20,7 +20,7 @@ import {
 } from "../src/presentation/projection.js";
 import { TOOL_STATUS_SPEC, isToolResultStatus } from "../src/presentation/tool-status.js";
 import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
-import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
+import { TrajectoryProjection } from "../src/presentation/trajectory.js";
 
 const T0 = 1_700_000_000_000;
 

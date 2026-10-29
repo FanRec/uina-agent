@@ -8,42 +8,7 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import { highlightCode } from "../../components/primitives/syntax-text.js";
-
-export type TrajectoryNodeKind = "turn_start" | "thinking" | "tool_call" | "model_stream" | "compaction" | "error";
-
-export type TrajectoryNodeStatus = "running" | "completed" | "failed" | "cancelled" | "unknown" | "not_started";
-
-export interface TrajectoryNode {
-	id: string;
-	turn?: number;
-	kind: TrajectoryNodeKind;
-	/** 稳定聚合名（不含回合号）；热点表以 `${kind}:${name}` 归并。 */
-	name: string;
-	label: string;
-	status: TrajectoryNodeStatus;
-	/** 未知时保持 undefined；看板显示“时间未知”，不以时钟补齐。 */
-	startedAt?: number;
-	endedAt?: number;
-	durationMs?: number;
-	tokens?: {
-		input?: number;
-		output?: number;
-		total?: number;
-	};
-	argsJson?: string;
-	resultPreview?: string;
-	error?: string;
-}
-
-export interface HotspotRow {
-	kind: TrajectoryNodeKind;
-	name: string;
-	count: number;
-	totalDurationMs: number;
-	avgDurationMs: number;
-	totalTokens: number;
-	errors: number;
-}
+import type { TrajectoryEventSource, TrajectoryNode, TrajectoryNodeStatus } from "../../../presentation/trajectory.js";
 
 function formatDuration(ms: number): string {
 	if (ms < 1000) return `${ms}ms`;
@@ -153,14 +118,6 @@ export function projectWaveBand(nodes: TrajectoryNode[], width: number, cursorIn
 	}
 
 	return [line1Chars.join(""), line2Chars.join("")];
-}
-
-/**
- * 轨迹事件投影接口（只读）
- */
-export interface TrajectoryEventSource {
-	list(): readonly TrajectoryNode[];
-	aggregate(sortBy?: "duration" | "tokens" | "errors"): HotspotRow[];
 }
 
 export class TrajectoryScene implements Component, Focusable {

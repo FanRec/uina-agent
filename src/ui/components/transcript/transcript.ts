@@ -10,7 +10,7 @@ import { projectInputMessage } from "../../../session/recovery.js";
 import type { ToolResultStatus } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
 import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
-import type { PresentationNode, ToolNode } from "../../../presentation/projection.js";
+import type { PresentationNode, ToolNode, TurnNode } from "../../../presentation/projection.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
@@ -98,10 +98,9 @@ export type ThinkingItem = Extract<TurnItem, { kind: "thinking" }>;
 
 export interface TurnRecord {
 	n: number;
-	/** 由容器签发的唯一票据。n 来自「引擎 turnSeq」与「恢复期局部计数」两套互不
-	 * 共享的计数器（loop.ts turnSeq 从不从会话播种），撞号是常态；因此凡是把轮次
-	 * 当键的地方——hover、块缓存、失效集合、typewriter、滚动定位、导航轨——一律
-	 * 用 uid，n 只作为显示用的轮次编号。 */
+	/** 由容器签发的唯一票据。n 来自展示投影的 `TurnNode.turn`（恢复与实时同一来源）；
+	 * 缺节点的恢复缺口沿用最近轮号。凡是把轮次当键的地方——hover、块缓存、失效集合、
+	 * typewriter、滚动定位、导航轨——一律用 uid，n 只作为显示用的轮次编号。 */
 	readonly uid: number;
 	userText: string;
 	userImages?: readonly import("../../../core/content.js").ImageContent[];
@@ -782,21 +781,32 @@ export class TranscriptContainer implements Component {
 	 * Restores the display projection from the same ordered entries used to
 	 * build provider history. Operational events never become transcript rows.
 	 *
-	 * 工具卡的状态、参数与耗时只取 `nodes`（由 `ingestReplay → PresentationProjection`
-	 * 产出的展示节点）；容器不再自行解析 journal，缺节点时才退回 canonical 消息字段。
+	 * 工具卡的状态、参数与耗时只取 `nodes`；轮号也只取 `nodes` 中的 `TurnNode`
+	 * （投影是唯一来源，容器不再本地递增）。缺节点时才退回 canonical 消息字段。
 	 */
 	loadSession(
 		entries: readonly SessionEntry[],
-		nodes: readonly PresentationNode[] = [],
+		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
 		this.clear();
 		const toolNodes = new Map<string, ToolNode>();
+		const turnNodes: TurnNode[] = [];
 		for (const node of nodes) {
 			if (node.kind === "tool") toolNodes.set(node.callId, node);
+			else if (node.kind === "turn") turnNodes.push(node);
 		}
-		let turnN = 0;
+		// 遇 user 消息按序消费一个 TurnNode；辅助轮（无 user 的恢复缺口）沿用最近轮号。
+		let turnCursor = 0;
+		let lastTurnNumber = 0;
+		const consumeTurnNumber = (): number => {
+			const node = turnNodes[turnCursor];
+			if (!node) return lastTurnNumber;
+			turnCursor++;
+			lastTurnNumber = node.turn;
+			return node.turn;
+		};
 		let current: TurnRecord | null = null;
 		const commit = (): void => {
 			if (!current) return;
@@ -804,10 +814,8 @@ export class TranscriptContainer implements Component {
 			this.timeline.push({ kind: "turn", turn: current });
 			current = null;
 		};
-		const createTurn = (userText = ""): TurnRecord => {
-			turnN++;
-			return createTurnRecord(turnN, ++this.uidSeq, userText);
-		};
+		const createTurn = (turnNumber: number, userText = ""): TurnRecord =>
+			createTurnRecord(turnNumber, ++this.uidSeq, userText);
 
 		const decorationsByEntry = new Map<string, CompactionReplayDecoration[]>();
 		for (const decoration of decorations) {
@@ -912,10 +920,10 @@ export class TranscriptContainer implements Component {
 			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
-				current = createTurn(msg.content);
+				current = createTurn(consumeTurnNumber(), msg.content);
 				current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
-				current ??= createTurn();
+				current ??= createTurn(lastTurnNumber);
 				if (msg.thinking) {
 					current.items.push({ kind: "thinking", text: msg.thinking, uid: ++this.uidSeq });
 				}
@@ -927,7 +935,7 @@ export class TranscriptContainer implements Component {
 					current.items.push({ kind: "interrupt", text: "已打断 · 接下来想继续做什么？" });
 				}
 			} else if (msg.role === "tool") {
-				current ??= createTurn();
+				current ??= createTurn(lastTurnNumber);
 				const node = toolNodes.get(msg.tool_call_id);
 				const status: "running" | ToolResultStatus =
 					node === undefined ? (msg.status ?? "unknown") : node.status === "running" ? "unknown" : node.status;

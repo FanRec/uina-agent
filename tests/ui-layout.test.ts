@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
+import { TrajectoryProjection } from "../src/presentation/trajectory.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import {
 	listSessionBranches,
@@ -597,7 +598,7 @@ describe("C: overlay frame composition", () => {
 			});
 		}
 		const host = new UIHost({ terminal, modelName: "TestModel", registry });
-		installUIFeatures(host, {
+		installUIFeatures(host, new TrajectoryProjection(), {
 			sessionPort: {
 				list: (options) => listSessionNodes(store.state, options),
 				listBranches: () => listSessionBranches(store.state),

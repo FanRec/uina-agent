@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
+import { TrajectoryProjection } from "../src/presentation/trajectory.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import {
@@ -270,12 +270,15 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 
 	it("从单一 session entry 流按原顺序恢复消息与扩展内容", () => {
 		const transcript = new TranscriptContainer();
-		transcript.loadSession([
-			{ kind: "message", message: { role: "user", content: "ORDER_A" } },
-			{ kind: "custom_message", customType: "probe", content: "ORDER_C" },
-			{ kind: "message", message: { role: "assistant", content: "ORDER_B" } },
-			{ kind: "custom_message", customType: "hidden", content: "MUST_NOT_RENDER", display: false },
-		]);
+		transcript.loadSession(
+			[
+				{ kind: "message", message: { role: "user", content: "ORDER_A" } },
+				{ kind: "custom_message", customType: "probe", content: "ORDER_C" },
+				{ kind: "message", message: { role: "assistant", content: "ORDER_B" } },
+				{ kind: "custom_message", customType: "hidden", content: "MUST_NOT_RENDER", display: false },
+			],
+			[],
+		);
 
 		const rendered = stripAnsi(transcript.render(80).join("\n"));
 		const positions = ["ORDER_A", "ORDER_C", "ORDER_B"].map((text) => rendered.indexOf(text));
@@ -669,10 +672,13 @@ describe("UI Components & Visual Rendering", () => {
 
 	it("鼠标折叠当前 thinking 时按块对象定位，不会误切同编号的历史轮次", () => {
 		const transcript = new TranscriptContainer();
-		transcript.loadSession([
-			{ kind: "message", message: { role: "user", content: "旧问题" } },
-			{ kind: "message", message: { role: "assistant", content: "", thinking: "旧思考" } },
-		]);
+		transcript.loadSession(
+			[
+				{ kind: "message", message: { role: "user", content: "旧问题" } },
+				{ kind: "message", message: { role: "assistant", content: "", thinking: "旧思考" } },
+			],
+			[],
+		);
 		transcript.startTurn(1, "当前问题"); // 模拟重载历史后新 Subject 从 1 重新计数
 		transcript.appendThinking("当前思考");
 
@@ -1198,7 +1204,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const submittedLines: string[] = [];
 			harness.tui.onIntent((intent) => {
-				if (intent.type === "submit") submittedLines.push(intent.text);
+				if (intent.type === "input.submit") submittedLines.push(intent.text);
 			});
 
 			// 1. 模拟输入 "2222" 并按回车 (\r)
@@ -1840,11 +1846,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					onResize: () => {},
 				} as any,
 			});
-			installUIFeatures(host);
+			installUIFeatures(host, new TrajectoryProjection());
 
 			let changed: string = "";
 			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组
-			installUIFeatures(host);
+			installUIFeatures(host, new TrajectoryProjection());
 			host.openFeature({
 				name: "effort-slider",
 				payload: {
@@ -2869,7 +2875,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					onResize: () => {},
 				} as any,
 			});
-			installUIFeatures(host);
+			installUIFeatures(host, new TrajectoryProjection());
 
 			// 1. 空行按 '?' -> 唤起 HelpMenu 浮层
 			expect((host as any).inputLine.getText()).toBe("");
@@ -3958,7 +3964,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 				const cancelSources: Array<string | undefined> = [];
 				tui.onIntent((intent) => {
-					if (intent.type === "cancel") cancelSources.push(intent.source);
+					if (intent.type === "turn.cancel") cancelSources.push(intent.source);
 				});
 
 				// UI 每次只报告输入意图，是否升级退出由组合根根据 Host 状态决定。
@@ -3971,7 +3977,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				let cancelCount = 0;
 				tui.onIntent((intent) => {
-					if (intent.type === "cancel") cancelCount++;
+					if (intent.type === "turn.cancel") cancelCount++;
 				});
 
 				// 输入草稿
@@ -3994,7 +4000,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 				let cancelSource: string | undefined;
 				tui.onIntent((intent) => {
-					if (intent.type === "cancel") cancelSource = intent.source;
+					if (intent.type === "turn.cancel") cancelSource = intent.source;
 				});
 
 				dispatchUIHostInput(getTestUIHost(tui), "临时未发送的输入");
@@ -4014,8 +4020,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				let deliveredText: string | undefined;
 				let cancelCalled = false;
 				tui.onIntent((intent) => {
-					if (intent.type === "cancel") cancelCalled = true;
-					if (intent.type === "interrupt-and-deliver") deliveredText = intent.text;
+					if (intent.type === "turn.cancel") cancelCalled = true;
+					if (intent.type === "turn.interruptAndDeliver") deliveredText = intent.text;
 				});
 
 				dispatchUIHostInput(getTestUIHost(tui), "紧急插队任务");
@@ -4045,7 +4051,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				let pullBackTriggered = false;
 				tui.onIntent((intent) => {
-					if (intent.type === "pull-back-queue") pullBackTriggered = true;
+					if (intent.type === "queue.pullBack") pullBackTriggered = true;
 				});
 				const openFeatureSpy = vi.spyOn(getTestUIHost(tui), "openFeature");
 				getTestUIHost(tui).registry.registerCommand({

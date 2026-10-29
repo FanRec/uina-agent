@@ -2,7 +2,7 @@
  * 轨迹只读投影（TrajectoryProjection）。
  *
  * 只消费 PresentationNode，不再自持状态机：节点身份、时间与终态全部来自
- * Presentation Core。这里只做 UI 域翻译（节点种类、稳定聚合名、5000 上限）。
+ * Presentation Core。这里只做轨迹域翻译（节点种类、稳定聚合名、5000 上限）。
  *
  * 时间缺失保持 undefined，看板显示"时间未知"，绝不以当前时钟补齐。
  */
@@ -13,14 +13,49 @@ import {
 	type ThinkingNode,
 	type ToolNode,
 	type TurnNode,
-} from "../../presentation/projection.js";
-import type {
-	HotspotRow,
-	TrajectoryEventSource,
-	TrajectoryNode,
-	TrajectoryNodeKind,
-	TrajectoryNodeStatus,
-} from "../features/overlays/trajectory-scene.js";
+} from "./projection.js";
+
+export type TrajectoryNodeKind = "turn_start" | "thinking" | "tool_call" | "model_stream" | "compaction" | "error";
+
+export type TrajectoryNodeStatus = "running" | "completed" | "failed" | "cancelled" | "unknown" | "not_started";
+
+export interface TrajectoryNode {
+	id: string;
+	turn?: number;
+	kind: TrajectoryNodeKind;
+	/** 稳定聚合名（不含回合号）；热点表以 `${kind}:${name}` 归并。 */
+	name: string;
+	label: string;
+	status: TrajectoryNodeStatus;
+	/** 未知时保持 undefined；看板显示“时间未知”，不以时钟补齐。 */
+	startedAt?: number;
+	endedAt?: number;
+	durationMs?: number;
+	tokens?: {
+		input?: number;
+		output?: number;
+		total?: number;
+	};
+	argsJson?: string;
+	resultPreview?: string;
+	error?: string;
+}
+
+export interface HotspotRow {
+	kind: TrajectoryNodeKind;
+	name: string;
+	count: number;
+	totalDurationMs: number;
+	avgDurationMs: number;
+	totalTokens: number;
+	errors: number;
+}
+
+/** 看板数据源（只读）：任何拥有节点序列的消费者都可以喂给视图。 */
+export interface TrajectoryEventSource {
+	list(): readonly TrajectoryNode[];
+	aggregate(sortBy?: "duration" | "tokens" | "errors"): HotspotRow[];
+}
 
 /** 明细节点上限；更早的节点折叠为聚合总量，防止长会话内存增长。 */
 const NODE_LIMIT = 5000;

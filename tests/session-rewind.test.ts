@@ -394,7 +394,7 @@ describe("rewind composition", () => {
 		expect(h.history.some((message) => String(message.content ?? "").includes("会话回溯"))).toBe(true);
 		const entries = store.state.entries;
 		const transcript = new TranscriptContainer();
-		transcript.loadSession(entries);
+		transcript.loadSession(entries, []);
 		expect(transcript.render(100).join("\n")).toContain("会话回溯");
 		expect(h.history).toEqual(projectAgentHistory(entries));
 	});

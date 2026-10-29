@@ -153,7 +153,7 @@ describe("Image Content & Multimodal Tools", () => {
 		expect(restored.find((m) => m.role === "tool")?.images?.[0].data).toBe(png);
 		expect(JSON.stringify(toWireMessages(restored))).toContain(png);
 		const transcript = new TranscriptContainer();
-		transcript.loadSession(opened.snapshot.entries);
+		transcript.loadSession(opened.snapshot.entries, []);
 		expect(transcript.render(80).join("")).toContain("image/png");
 		expect(transcript.render(80).join("")).not.toContain(png);
 		await opened.store.close();

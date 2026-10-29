@@ -1,6 +1,6 @@
 import type { BuiltinUIActionRequest, BuiltinUIActions } from "../extensions/ui-contract.js";
+import type { TrajectoryEventSource } from "../presentation/trajectory.js";
 import type { SessionAccess } from "../session/types.js";
-import { TrajectoryProjection } from "./adapters/agent-events.js";
 import {
 	BranchInspectorOverlay,
 	DEFAULT_EFFORT_TIERS,
@@ -18,9 +18,9 @@ export interface UIFeatureOptions {
 
 export function installUIFeatures(
 	host: UIHost,
+	trajectory: TrajectoryEventSource,
 	options: UIFeatureOptions = {},
-): { trajectory: TrajectoryProjection; dispose: () => void } {
-	const trajectory = new TrajectoryProjection();
+): { dispose: () => void } {
 	const disposers: Array<() => void> = [];
 	const register = <Name extends keyof BuiltinUIActions>(
 		name: Name,
@@ -134,7 +134,6 @@ export function installUIFeatures(
 	);
 
 	return {
-		trajectory,
 		dispose: () => {
 			for (const dispose of disposers.splice(0)) dispose();
 		},

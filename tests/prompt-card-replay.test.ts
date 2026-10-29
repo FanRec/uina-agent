@@ -52,17 +52,20 @@ describe("提示词与外部注入卡片回放", () => {
 
 	it("回放 custom_message 时保留图片元数据", () => {
 		const transcript = new TranscriptContainer();
-		transcript.loadSession([
-			{
-				kind: "custom_message",
-				id: "cm1",
-				seq: 1,
-				timestamp: "2026-10-04T00:00:00.000Z",
-				customType: "vision",
-				content: "看图",
-				images: [{ type: "image", mimeType: "image/png", data: "abc" }],
-			},
-		]);
+		transcript.loadSession(
+			[
+				{
+					kind: "custom_message",
+					id: "cm1",
+					seq: 1,
+					timestamp: "2026-10-04T00:00:00.000Z",
+					customType: "vision",
+					content: "看图",
+					images: [{ type: "image", mimeType: "image/png", data: "abc" }],
+				},
+			],
+			[],
+		);
 		expect(stripAnsi(transcript.render(80).join("\n"))).toContain("image/png");
 	});
 	it("当前回合中插入卡片不会截断后续模型输出", () => {

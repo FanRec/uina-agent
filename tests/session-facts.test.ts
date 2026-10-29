@@ -290,7 +290,7 @@ describe("S1 tool outcome propagation", () => {
 			const reopened = await openJsonlSession(path);
 			await reopened.store.close();
 			const replay = new TranscriptContainer();
-			replay.loadSession(reopened.snapshot.entries);
+			replay.loadSession(reopened.snapshot.entries, []);
 			for (const transcript of [getTestUIHost(tui).transcript, replay]) {
 				const tool = transcript
 					.getHistory()

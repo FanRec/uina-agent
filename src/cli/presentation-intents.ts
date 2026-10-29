@@ -1,6 +1,6 @@
-import type { TuiIntent } from "../ui/intents.js";
+import type { PresentationIntent } from "../presentation/actions.js";
 
-export interface TuiIntentActions {
+export interface PresentationIntentActions {
 	submit(text: string, mode: "direct" | "steer" | "followUp"): void;
 	interaction(): void;
 	cancel(source?: "escape" | "ctrl+c"): void;
@@ -9,25 +9,25 @@ export interface TuiIntentActions {
 	cycleThinkingLevel(): void;
 }
 
-/** Application-owned handling of user actions emitted by the terminal surface. */
-export function routeTuiIntent(intent: TuiIntent, actions: TuiIntentActions): void {
+/** Application-owned handling of actions emitted by any presentation surface. */
+export function routePresentationIntent(intent: PresentationIntent, actions: PresentationIntentActions): void {
 	switch (intent.type) {
-		case "submit":
+		case "input.submit":
 			actions.submit(intent.text, intent.mode);
 			return;
-		case "interaction":
+		case "ui.interaction":
 			actions.interaction();
 			return;
-		case "cancel":
+		case "turn.cancel":
 			actions.cancel(intent.source);
 			return;
-		case "interrupt-and-deliver":
+		case "turn.interruptAndDeliver":
 			actions.interruptAndDeliver(intent.text);
 			return;
-		case "pull-back-queue":
+		case "queue.pullBack":
 			actions.pullBackQueue();
 			return;
-		case "cycle-thinking-level":
+		case "thinking.cycle":
 			actions.cycleThinkingLevel();
 			return;
 		default: {

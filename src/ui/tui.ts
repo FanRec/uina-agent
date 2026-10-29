@@ -5,23 +5,15 @@
 
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventRecord, HostSnapshot } from "../host/events.js";
-import { FactStore } from "../presentation/facts.js";
-import { ingestLive } from "../presentation/ingest-live.js";
-import { ingestReplay } from "../presentation/ingest-replay.js";
-import {
-	PresentationProjection,
-	type PresentationNode,
-	type ToolNode,
-	type TurnNode,
-} from "../presentation/projection.js";
+import type { PresentationIntent } from "../presentation/actions.js";
+import { PresentationController } from "../presentation/controller.js";
+import type { ToolNode, TurnNode } from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
-import { TrajectoryProjection } from "./adapters/agent-events.js";
 import type { PromptContextCardData } from "./components/transcript/context-card.js";
 import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
 import { installUIFeatures, type UIFeatureOptions } from "./features.js";
-import type { TuiIntent } from "./intents.js";
 import { UIHost, type UIHostOptions } from "./ui-host.js";
 
 export type { HostEvent };
@@ -48,12 +40,8 @@ function compactionTerminalText(event: Extract<HostEvent, { type: "session_compa
 
 export class InteractiveTUI {
 	private readonly host: UIHost;
-	private intentCallback?: (intent: TuiIntent) => void;
-	private readonly trajectoryProjection: TrajectoryProjection;
+	private readonly controller = new PresentationController();
 	private readonly featureDisposer: () => void;
-	/** 实时事实与展示投影的唯一副本；UI 只消费节点，不再自行记时。 */
-	private readonly facts = new FactStore();
-	private readonly projection = new PresentationProjection();
 	private lastPromptFingerprint?: string;
 	private previousSystemPrompt?: string;
 
@@ -67,57 +55,37 @@ export class InteractiveTUI {
 		this.host.notifyToolActivity();
 	}
 
-	/** 摄取一条宿主事件记录并应用投影；返回本次产生/更新的展示节点，并同步轨迹。 */
-	private ingest(record: HostEventRecord): readonly PresentationNode[] {
-		const nodes: PresentationNode[] = [];
-		for (const draft of ingestLive(record)) nodes.push(...this.projection.apply(this.facts.append(draft)));
-		for (const node of nodes) this.trajectoryProjection.apply(node);
-		return nodes;
-	}
-
-	/** 恢复/回溯：用 journal 事实整段替换，投影与轨迹随之重建，不保留旧节点。 */
-	private replaceFacts(
-		entries: readonly SessionEntry[],
-		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[],
-	): void {
-		this.facts.replaceAll(ingestReplay({ entries, auxiliary }));
-		this.projection.reset();
-		this.projection.applyAll(this.facts.list());
-		this.trajectoryProjection.replaceAll(this.projection.list());
-	}
-
 	constructor(options: InteractiveTUIOptions = {}) {
 		this.host = new UIHost(options);
-		const features = installUIFeatures(this.host, options.features);
-		this.trajectoryProjection = features.trajectory;
+		const features = installUIFeatures(this.host, this.controller.trajectory, options.features);
 		this.featureDisposer = features.dispose;
 
 		this.host.onUserLine = (line, mode) => {
 			// mode 原样穿透：direct/steer/followUp 的归一单点在 host.submitText，
 			// 门面不改名（旧实现把 direct 改写成 steer，语义误导且被 host 重判兜底）。
-			this.emitIntent({ type: "submit", text: line, mode });
+			this.emitIntent({ type: "input.submit", text: line, mode });
 		};
 
 		this.host.onCancel = (source) => {
-			this.emitIntent({ type: "cancel", source });
+			this.emitIntent({ type: "turn.cancel", source });
 		};
-		this.host.onInteraction = () => this.emitIntent({ type: "interaction" });
+		this.host.onInteraction = () => this.emitIntent({ type: "ui.interaction" });
 
 		this.host.onInterruptAndDeliver = (text) => {
-			this.emitIntent({ type: "interrupt-and-deliver", text });
+			this.emitIntent({ type: "turn.interruptAndDeliver", text });
 		};
 
 		this.host.onPullBackQueue = () => {
-			this.emitIntent({ type: "pull-back-queue" });
+			this.emitIntent({ type: "queue.pullBack" });
 		};
 
 		this.host.onThinkingLevelCycle = () => {
-			this.emitIntent({ type: "cycle-thinking-level" });
+			this.emitIntent({ type: "thinking.cycle" });
 		};
 	}
 
-	private emitIntent(intent: TuiIntent): void {
-		this.intentCallback?.(intent);
+	private emitIntent(intent: PresentationIntent): void {
+		this.controller.dispatch(intent);
 	}
 
 	get extensionUI(): ExtensionUIContext {
@@ -128,8 +96,8 @@ export class InteractiveTUI {
 		this.host.start();
 	}
 
-	onIntent(cb: (intent: TuiIntent) => void): void {
-		this.intentCallback = cb;
+	onIntent(cb: (intent: PresentationIntent) => void): void {
+		this.controller.onIntent(cb);
 	}
 
 	initialize(snapshot: HostSnapshot): void {
@@ -137,6 +105,7 @@ export class InteractiveTUI {
 	}
 
 	updateSnapshot(snapshot: HostSnapshot): void {
+		this.controller.applySnapshot(snapshot);
 		if (this.host.modelName !== snapshot.modelName) this.host.setModel(snapshot.modelName);
 		this.host.setThinkingLevels(snapshot.thinkingLevels);
 		if (this.host.getReasoningEffort() !== snapshot.thinkingLevel) {
@@ -173,8 +142,8 @@ export class InteractiveTUI {
 		const latest = promptSnapshots.at(-1);
 		this.lastPromptFingerprint = latest?.fingerprint;
 		this.previousSystemPrompt = latest?.systemPrompt;
-		this.replaceFacts(entries, auxiliary);
-		this.host.loadSession(entries, this.projection.list(), decorations, promptSnapshots);
+		const view = this.controller.replaceAll(entries, auxiliary);
+		this.host.loadSession(entries, view.transcript, decorations, promptSnapshots);
 	}
 
 	/**
@@ -188,7 +157,7 @@ export class InteractiveTUI {
 		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		const m = record.event;
-		const nodes = this.ingest(record);
+		const nodes = this.controller.ingest(record);
 		switch (m.type) {
 			case "model_select":
 				if (this.host.modelName !== m.model) this.host.setModel(m.model);
@@ -198,12 +167,11 @@ export class InteractiveTUI {
 				this.host.setReasoningEffort(m.level);
 				break;
 
-			case "session_rewind":
-				this.replaceFacts(m.entries, auxiliary);
-				// 回溯后是否仍有活动回合由引擎给出；缺失时保持重放派生的归属，不猜回合。
-				if (m.turnNumber !== undefined) this.projection.continueTurn(m.turnNumber);
-				this.host.replayRewind(m.entries, this.projection.list(), rewindDecorations, m.turnNumber, promptSnapshots);
+			case "session_rewind": {
+				const view = this.controller.replaceAll(m.entries, auxiliary, m.turnNumber);
+				this.host.replayRewind(m.entries, view.transcript, rewindDecorations, m.turnNumber, promptSnapshots);
 				break;
+			}
 			case "turn_start": {
 				const node = nodes.find((candidate): candidate is TurnNode => candidate.kind === "turn");
 				if (!node) break;
@@ -268,7 +236,6 @@ export class InteractiveTUI {
 						...(m.tokensBefore === undefined ? {} : { tokensBefore: m.tokensBefore }),
 						collapsed: true,
 					});
-					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore, record.at);
 				} else {
 					// toast 会消失；失败原因与取消/noop 的结论必须留在转录里供用户判断。
 					this.host.addCompaction({
@@ -354,7 +321,6 @@ export class InteractiveTUI {
 				this.notifyToolActivity();
 				this.host.setBusy(false, record.at);
 				this.host.addErrorCard(m.text);
-				this.trajectoryProjection.onError(m.text, record.at);
 				break;
 
 			case "queue":

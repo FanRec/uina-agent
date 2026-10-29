@@ -1529,6 +1529,34 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2d 提交前。
 遗留未知：无。
 
+[W2e] 2026-10-29
+决策：`PresentationController` 成为事实、投影、轨迹、会话快照与动作的唯一协调者；TUI 降为适配器（`consume` 只消费 `ingest` 返回的节点）。删除 `InteractiveTUI` 的 `FactStore`/`PresentationProjection`/`replaceFacts`/轨迹字段，恢复与回溯统一走 `controller.replaceAll`。`subscribe` 只发 `append/update/replace` 增量；`applySnapshot` 只存会话快照，不伪造节点。
+证据：tests/ui-controller.test.ts 五条真实断言（原 todo 全部删除）；tests/ui.test.ts 轨迹与压缩用例仍绿。
+影响文件：src/presentation/controller.ts、src/ui/tui.ts、src/ui/features.ts、src/ui/ui-host.ts。
+回滚点：W2e 提交前。
+遗留未知：无。
+
+[W2e] 2026-10-29
+决策：动作词汇迁入 `src/presentation/actions.ts`（`PresentationIntent`，命名空间化 type）。删除 `src/ui/intents.ts` 与 `src/cli/tui-intents.ts`；路由改名 `routePresentationIntent`（`src/cli/presentation-intents.ts`）。TUI 键盘/鼠标只是动作来源之一，类型名不再绑定终端。
+证据：tests/presentation-intents.test.ts（原 tui-intents.test.ts 删除）；tests/ui-controller.test.ts 的 dispatch/detach 断言。
+影响文件：src/presentation/actions.ts、src/cli/presentation-intents.ts、src/cli/app.ts、src/ui/tui.ts。
+回滚点：W2e 提交前。
+遗留未知：无。
+
+[W2e] 2026-10-29
+决策：轨迹投影从 `src/ui/adapters/agent-events.ts` 迁到 `src/presentation/trajectory.ts`，`TrajectoryNode`/`HotspotRow`/`TrajectoryEventSource` 类型词汇一并迁出 `trajectory-scene.ts`。展示层不再拥有轨迹状态；`installUIFeatures(host, trajectory, options)` 由调用方注入数据源，features 不再自建投影。
+证据：check:boundaries 的 presentation 规则（禁止 import ui）；tests/ui-projection.test.ts、tests/ui.test.ts、tests/ui-layout.test.ts、tests/ui-crap-c2.test.ts 改从新路径 import。
+影响文件：src/presentation/trajectory.ts、src/ui/features/overlays/trajectory-scene.ts、src/ui/features.ts、src/ui/tui.ts、tests/harness/ui/ui-harness.ts。
+回滚点：W2e 提交前。
+遗留未知：无。
+
+[W2e] 2026-10-29
+决策：转录容器的轮号唯一来源改为 `PresentationNode[]` 中的 `TurnNode` 顺序：遇 user 消息消费下一个 TurnNode，无 user 的辅助轮沿用最近轮号（初始 0）；删除本地 `turnN++`。`TranscriptContainer.loadSession` / `UIHost.loadSession` / `replayRewind` 的 nodes 参数改为必填，调用方显式传 `[]` 表示“无投影”。关闭 [W2d 遗留→W2e]。
+证据：tests/ui.test.ts「恢复转录只消费展示节点」等用例；tests/ui-live-replay-equivalence.test.ts 仍断言 live/replay 节点等价。
+影响文件：src/ui/components/transcript/transcript.ts、src/ui/ui-host.ts、tests/。
+回滚点：W2e 提交前。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

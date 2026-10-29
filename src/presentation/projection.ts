@@ -231,7 +231,7 @@ export class PresentationProjection {
 				return closed ? [closed] : [];
 			}
 
-			// ── 其余 Fact 在后续批次投影（W2c/W2e）；本批不产生节点。 ──
+			// ── 这些 Fact 不产生展示节点：由域专属表面（状态行、卡片、面板）表达。 ──
 			case "usage.reported":
 			case "context.updated":
 			case "context.prepared":

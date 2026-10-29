@@ -694,7 +694,7 @@ export class UIHost implements UIHostContextPort {
 
 	loadSession(
 		entries: readonly SessionEntry[],
-		nodes: readonly PresentationNode[] = [],
+		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
@@ -720,7 +720,7 @@ export class UIHost implements UIHostContextPort {
 	 */
 	replayRewind(
 		entries: readonly SessionEntry[],
-		nodes: readonly PresentationNode[] = [],
+		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		turnNumber?: number,
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],

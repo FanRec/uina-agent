@@ -2,7 +2,7 @@ import { createInteractiveUI, InteractiveTUI, type InteractiveTUIOptions } from 
 import { UIHost } from "../../../src/ui/ui-host.js";
 import { createSilentTerminal, type SilentTerminalResult } from "../environment/silent-terminal.js";
 import type { Component } from "../../../src/ui/core/types.js";
-import type { TrajectoryProjection } from "../../../src/ui/adapters/agent-events.js";
+import type { TrajectoryProjection } from "../../../src/presentation/trajectory.js";
 import type { ModelGroup } from "../../../src/ui/features/overlays/index.js";
 import type { VtScreen } from "../environment/vt-screen.js";
 
@@ -143,7 +143,7 @@ export function getTestUIHost(tui: InteractiveTUI): UIHost {
 }
 
 export function getTestTrajectoryProjection(tui: InteractiveTUI): TrajectoryProjection {
-	return (tui as unknown as { trajectoryProjection: TrajectoryProjection }).trajectoryProjection;
+	return (tui as unknown as { controller: { trajectory: TrajectoryProjection } }).controller.trajectory;
 }
 
 /** Deliver a decoded terminal chunk directly at UIHost's terminal-input boundary. */

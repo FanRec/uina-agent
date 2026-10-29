@@ -42,9 +42,9 @@
 
 ## TUI 消费者与扩展接缝
 
-交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/activity/trajectory 的投影集中在 `InteractiveTUI.consume()`，CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。
+交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/trajectory 的平台中立投影集中在 `PresentationController.ingest()`（`src/presentation/controller.ts`），TUI 只消费投影节点并翻译成宿主渲染调用；CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。
 
-TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递送、撤回队列、切换思考档位）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作。应用 UI 动作使用判别联合请求 `{ name, payload?, signal? }`；扩展的作用域信号与调用者信号合并，作用域结束会关闭该调用打开的面板。模型选择回调纳入 ResourceScope 在途工作结算。
+TUI 向 CLI 发出的动作是 `PresentationIntent` 联合（命名空间化：`input.submit`、`turn.cancel`、`turn.interruptAndDeliver`、`queue.pullBack`、`thinking.cycle`、`ui.interaction`）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作。应用 UI 动作使用判别联合请求 `{ name, payload?, signal? }`；扩展的作用域信号与调用者信号合并，作用域结束会关闭该调用打开的面板。模型选择回调纳入 ResourceScope 在途工作结算。
 
 扩展的 `pi.ui` 只提供通知、确认/选择/输入、状态和类型化应用动作；ANSI 组件、overlay、widget、编辑器控制、页眉页脚、gutter 与组件渲染器注册位于 `pi.ui.terminal`。renderer 注册由扩展 `ResourceScope` 管理，终端未接入时也注册到共享 renderer registry。没有预建 Web/GUI 布局层。
 
