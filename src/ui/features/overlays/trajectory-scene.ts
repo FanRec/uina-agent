@@ -8,6 +8,8 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import { highlightCode } from "../../components/primitives/syntax-text.js";
+import { TOOL_TONE_COLORS } from "../../components/transcript/tool-view.js";
+import { TOOL_STATUS_SPEC } from "../../../presentation/tool-status.js";
 import type { TrajectoryEventSource, TrajectoryNode, TrajectoryNodeStatus } from "../../../presentation/trajectory.js";
 
 function formatDuration(ms: number): string {
@@ -22,22 +24,11 @@ function formatTime(ts: number): string {
 	return new Date(ts).toLocaleTimeString();
 }
 
-/** 五态图标与中文标签；running 是进行态，单独表达。 */
+/** 终态图标/文案来自单一状态矩阵；running 是进行态，单独表达。 */
 function statusGlyph(status: TrajectoryNodeStatus): { icon: string; label: string } {
-	switch (status) {
-		case "completed":
-			return { icon: `${C.green}✓${C.reset}`, label: "完成" };
-		case "failed":
-			return { icon: `${C.red}✗${C.reset}`, label: "失败" };
-		case "cancelled":
-			return { icon: `${C.warning}⊘${C.reset}`, label: "已取消" };
-		case "unknown":
-			return { icon: `${C.warning}?${C.reset}`, label: "结果未知" };
-		case "not_started":
-			return { icon: `${C.dim}○${C.reset}`, label: "未执行" };
-		case "running":
-			return { icon: `${C.warning}●${C.reset}`, label: "进行中" };
-	}
+	if (status === "running") return { icon: `${C.warning}●${C.reset}`, label: "进行中" };
+	const spec = TOOL_STATUS_SPEC[status === "completed" ? "succeeded" : status];
+	return { icon: `${TOOL_TONE_COLORS[spec.tone]}${spec.icon}${C.reset}`, label: spec.label };
 }
 
 /**

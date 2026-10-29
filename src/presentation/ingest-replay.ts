@@ -28,6 +28,11 @@ interface JournalTool {
 	status?: ToolResultStatus;
 }
 
+/**
+ * presentation core 只允许 type-only 依赖 core（check:boundaries），因此这里镜像
+ * core/types 的 `TOOL_RESULT_STATUSES`；tests/ui-projection.test.ts 断言展示矩阵与
+ * core 列表一致，tests/ui-replay-equivalence 覆盖 replay 的真实状态来源。
+ */
 const TOOL_STATUSES: readonly ToolResultStatus[] = ["succeeded", "failed", "cancelled", "unknown", "not_started"];
 
 function isToolStatus(value: unknown): value is ToolResultStatus {

@@ -1557,6 +1557,13 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2e 提交前。
 遗留未知：无。
 
+[W2收口] 2026-10-29
+决策：W2 尾巴单独收口，不提前实施 W3/W4/W5 的替换。展示矩阵不再自带重复状态列表与零调用守卫；五态集合只在 core/types 定义，presentation 因 check:boundaries 只允许 type-only 依赖 core，故 ingest-replay 保留一份显式镜像并用测试锁一致。轨迹看板的终态图标/文案改由 `TOOL_STATUS_SPEC` 派生（running 仍由 surface 单独表达，颜色共用 TUI 语气映射）。删除零调用的 `FactStore.clear` 与 W2e 遗留的空目录 `src/ui/adapters/`。
+证据：tests/ui-projection.test.ts 断言矩阵键与 `TOOL_RESULT_STATUSES` 完全一致；tests/ui.test.ts 新增「轨迹终态图标与文案来自同一状态矩阵」；pnpm typecheck（含 10 条边界规则）与定向 287 测试全绿。
+影响文件：src/presentation/tool-status.ts、src/presentation/ingest-replay.ts、src/presentation/facts.ts、src/ui/features/overlays/trajectory-scene.ts、src/ui/components/transcript/tool-view.ts、tests/ui-projection.test.ts、tests/ui.test.ts。
+回滚点：W2收口提交前。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

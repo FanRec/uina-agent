@@ -146,11 +146,6 @@ export class FactStore {
 		for (const draft of drafts) this.append(draft);
 	}
 
-	clear(): void {
-		this.facts = [];
-		this.sequence = 0;
-	}
-
 	list(): readonly PresentationFact[] {
 		return this.facts;
 	}

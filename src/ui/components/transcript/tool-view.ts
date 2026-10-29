@@ -103,8 +103,8 @@ export function getToolCategoryColor(category: ToolCategory): string {
 	}
 }
 
-/** 矩阵语气 -> TUI 颜色（颜色映射只属于 TUI Surface）。 */
-const TOOL_TONE_COLORS: Record<ToolTone, string> = {
+/** 矩阵语气 -> TUI 颜色（颜色映射只属于 TUI Surface；各 TUI 组件共用）。 */
+export const TOOL_TONE_COLORS: Record<ToolTone, string> = {
 	success: C.success,
 	error: C.error,
 	warning: C.warning,

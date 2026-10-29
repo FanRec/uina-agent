@@ -8,6 +8,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
 import type { HostEventRecord } from "../src/host/events.js";
 import { FactStore, type FactDraft } from "../src/presentation/facts.js";
 import { ingestLive } from "../src/presentation/ingest-live.js";
@@ -18,7 +19,7 @@ import {
 	turnNodeId,
 	type ProjectionInput,
 } from "../src/presentation/projection.js";
-import { TOOL_STATUS_SPEC, isToolResultStatus } from "../src/presentation/tool-status.js";
+import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
 import { TrajectoryProjection } from "../src/presentation/trajectory.js";
 
@@ -37,9 +38,8 @@ function store(drafts: readonly FactDraft[]): ProjectionInput[] {
 }
 
 describe("工具状态矩阵", () => {
-	it("覆盖且只覆盖 ToolResultStatus 五态", () => {
-		const statuses = ["succeeded", "failed", "cancelled", "unknown", "not_started"] as const;
-		expect(Object.keys(TOOL_STATUS_SPEC).sort()).toEqual([...statuses].sort());
+	it("覆盖且只覆盖 core 定义的 ToolResultStatus 五态", () => {
+		expect(Object.keys(TOOL_STATUS_SPEC).sort()).toEqual([...TOOL_RESULT_STATUSES].sort());
 		expect(TOOL_STATUS_SPEC).toEqual({
 			succeeded: { icon: "✓", label: "完成", tone: "success", emptyText: "执行完成，无输出" },
 			failed: { icon: "✗", label: "失败", tone: "error", emptyText: "失败，无输出" },
@@ -47,12 +47,6 @@ describe("工具状态矩阵", () => {
 			unknown: { icon: "?", label: "结果未知", tone: "warning", emptyText: "结果未知" },
 			not_started: { icon: "○", label: "未执行", tone: "neutral", emptyText: "未执行" },
 		});
-	});
-
-	it("isToolResultStatus 只接受五态，running 不是终态", () => {
-		for (const status of Object.keys(TOOL_STATUS_SPEC)) expect(isToolResultStatus(status)).toBe(true);
-		expect(isToolResultStatus("running")).toBe(false);
-		expect(isToolResultStatus(undefined)).toBe(false);
 	});
 });
 

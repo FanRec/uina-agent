@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { TrajectoryProjection } from "../src/presentation/trajectory.js";
+import { TrajectoryProjection, type TrajectoryNode } from "../src/presentation/trajectory.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import {
@@ -438,6 +438,33 @@ describe("UI Adapters: Trajectory", () => {
 			endedAt: 200,
 			tokens: { total: 500 },
 		});
+	});
+
+	it("轨迹终态图标与文案来自同一状态矩阵", () => {
+		const cases = [
+			["completed", "succeeded"],
+			["failed", "failed"],
+			["cancelled", "cancelled"],
+			["unknown", "unknown"],
+			["not_started", "not_started"],
+		] as const;
+		for (const [status, specKey] of cases) {
+			const node: TrajectoryNode = { id: `node:${status}`, kind: "tool_call", name: status, label: status, status };
+			const scene = new TrajectoryScene({ list: () => [node], aggregate: () => [] });
+			const rendered = stripAnsi(scene.formatLines(40, 10).join("\n"));
+			expect(rendered).toContain(TOOL_STATUS_SPEC[specKey].icon);
+			expect(rendered).toContain(TOOL_STATUS_SPEC[specKey].label);
+		}
+
+		const running: TrajectoryNode = {
+			id: "node:running",
+			kind: "tool_call",
+			name: "running",
+			label: "running",
+			status: "running",
+		};
+		const runningScene = new TrajectoryScene({ list: () => [running], aggregate: () => [] });
+		expect(stripAnsi(runningScene.formatLines(40, 10).join("\n"))).toContain("进行中");
 	});
 });
 
