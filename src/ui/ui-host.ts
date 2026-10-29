@@ -5,7 +5,7 @@
  */
 
 import type { ContextSnapshot, GenerationTiming, RequestUsage, ThinkingLevel } from "../core/types.js";
-import type { ToolNode, TurnNode } from "../presentation/projection.js";
+import type { PresentationNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import type {
 	BuiltinUIActionRequest,
@@ -14,7 +14,7 @@ import type {
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
-import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
+import type { SessionEntry } from "../session/types.js";
 import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
 import { type CommandItem, formatSuggestionCardLines, InputLine } from "./components/editor/index.js";
 import { BannerComponent } from "./components/primitives/banner.js";
@@ -692,17 +692,11 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
-		this.transcript.loadHistory(messages);
-		this.scroll.resetTail();
-		this.requestRender();
-	}
-
 	loadSession(
 		entries: readonly SessionEntry[],
+		nodes: readonly PresentationNode[] = [],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
-		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		const latest = promptSnapshots.at(-1);
 		this.promptSnapshot = latest
@@ -714,7 +708,7 @@ export class UIHost implements UIHostContextPort {
 					injections: latest.injections,
 				}
 			: undefined;
-		this.transcript.loadSession(entries, decorations, promptSnapshots, auxiliary);
+		this.transcript.loadSession(entries, nodes, decorations, promptSnapshots);
 		this.scroll.resetTail();
 		this.requestRender();
 	}
@@ -726,12 +720,12 @@ export class UIHost implements UIHostContextPort {
 	 */
 	replayRewind(
 		entries: readonly SessionEntry[],
+		nodes: readonly PresentationNode[] = [],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		turnNumber?: number,
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
-		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
-		this.loadSession(entries, decorations, promptSnapshots, auxiliary);
+		this.loadSession(entries, nodes, decorations, promptSnapshots);
 		if (turnNumber !== undefined) {
 			this.transcript.startTurn(turnNumber, "");
 			this.activityLine.start("thinking", "正在思考与生成回复...");
@@ -818,8 +812,9 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** turn_end：结算转录轮，活动行按"是否被打断"给收尾文案。 */
-	finishTurnCard(): void {
+	/** turn_end：投影已结算的工具节点落回卡片，然后结算转录轮。 */
+	finishTurnCard(nodes: readonly PresentationNode[] = []): void {
+		this.transcript.settleToolNodes(nodes);
 		this.transcript.finishTurn();
 		const history = this.transcript.getHistory();
 		const lastTurn = history[history.length - 1];
@@ -832,8 +827,9 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** turn_aborted：打断态收尾。 */
-	interruptTurnCard(): void {
+	/** turn_aborted：投影结算在途工具（cancelled），容器只封顶与写打断行。 */
+	interruptTurnCard(nodes: readonly PresentationNode[] = []): void {
+		this.transcript.settleToolNodes(nodes);
 		this.transcript.interruptTurn(this.modelName);
 		this.activityLine.finish("已打断当前轮次");
 		this.requestRender();

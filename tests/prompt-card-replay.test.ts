@@ -39,6 +39,7 @@ describe("提示词与外部注入卡片回放", () => {
 				},
 			],
 			[],
+			[],
 			[snapshot],
 		);
 		const rendered = stripAnsi(transcript.render(100).join("\n"));
@@ -98,6 +99,7 @@ describe("提示词与外部注入卡片回放", () => {
 					message: { role: "assistant", content: "助手回答" },
 				},
 			],
+			[],
 			[],
 			[
 				{

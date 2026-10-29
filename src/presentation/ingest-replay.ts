@@ -20,7 +20,7 @@ export interface ReplayInput {
 	readonly auxiliary?: readonly (SessionEventRecord | SessionCustomEntryRecord)[];
 }
 
-export interface JournalTool {
+interface JournalTool {
 	name?: string;
 	args?: unknown;
 	startedAt?: number;
@@ -35,7 +35,7 @@ function isToolStatus(value: unknown): value is ToolResultStatus {
 }
 
 /** journal 时间戳（ISO 字符串）-> Unix 毫秒；缺失或非法保持 undefined。 */
-export function parseJournalTime(value: unknown): number | undefined {
+function parseJournalTime(value: unknown): number | undefined {
 	if (typeof value !== "string") return undefined;
 	const parsed = Date.parse(value);
 	return Number.isNaN(parsed) ? undefined : parsed;
@@ -45,8 +45,8 @@ function replay(payload: FactPayload, at: number | undefined): FactDraft {
 	return at === undefined ? { ...payload, origin: "replay" } : { ...payload, origin: "replay", at };
 }
 
-/** 工具 journal（开始/结束/状态）的唯一读取入口：恢复投影与恢复渲染共用。 */
-export function collectJournalTools(
+/** 工具 journal（开始/结束/状态）的唯一读取入口：只服务事实摄取，渲染不参与。 */
+function collectJournalTools(
 	auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[],
 ): Map<string, JournalTool> {
 	const tools = new Map<string, JournalTool>();

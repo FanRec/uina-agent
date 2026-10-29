@@ -7,11 +7,10 @@ import { imageNotice } from "../../../core/content.js";
 
 import type { Component } from "../../core/types.js";
 import { projectInputMessage } from "../../../session/recovery.js";
-import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
-import type { SessionEntry, SessionCustomEntryRecord, SessionEventRecord } from "../../../session/types.js";
+import type { ToolResultStatus } from "../../../core/types.js";
+import type { SessionEntry } from "../../../session/types.js";
 import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
-import type { ToolNode } from "../../../presentation/projection.js";
-import { collectJournalTools, parseJournalTime } from "../../../presentation/ingest-replay.js";
+import type { PresentationNode, ToolNode } from "../../../presentation/projection.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
@@ -657,6 +656,33 @@ export class TranscriptContainer implements Component {
 		if (node.args !== undefined && item.args === undefined) item.args = node.args;
 	}
 
+	/**
+	 * turn_end / turn_aborted：把投影已结算的工具节点写回既有卡片。
+	 * 不创建新轮或新卡片——卡片必须已由 tool_call 建立；缺卡片说明实时链路断开，
+	 * 由投影节点如实保留状态，不在这里补造。
+	 */
+	settleToolNodes(nodes: readonly PresentationNode[]): void {
+		const prevFailed = this.resolveLatestFailed();
+		const all = this.allTurns();
+		const stale = new Set<number>();
+		let changed = false;
+		for (const node of nodes) {
+			if (node.kind !== "tool" || node.status === "running") continue;
+			const owner = all.find((turn) => turn.items.some((item) => item.kind === "tool" && item.callId === node.callId));
+			const item = owner?.items.find(
+				(candidate): candidate is Extract<TurnItem, { kind: "tool" }> =>
+					candidate.kind === "tool" && candidate.callId === node.callId,
+			);
+			if (!owner || !item) continue;
+			this.applyToolNode(item, node, sanitizeRenderText(node.result ?? ""));
+			if (owner !== this.currentTurn) stale.add(owner.uid);
+			changed = true;
+		}
+		if (!changed) return;
+		for (const uid of stale) this.invalidateTurn(uid);
+		this.syncLatestFailedInvalidation(prevFailed);
+	}
+
 	addCompaction(record: CompactionCardData): void {
 		this.timeline.push({ kind: "compaction", record });
 	}
@@ -732,12 +758,7 @@ export class TranscriptContainer implements Component {
 			if (this.currentTurn.items.some((it) => it.kind === "interrupt")) {
 				return;
 			}
-			for (const item of this.currentTurn.items) {
-				if (item.kind === "tool" && item.status === "running") {
-					item.status = "unknown";
-					item.result = "已请求中断，工具结果尚未确认";
-				}
-			}
+			// 工具终态由投影结算（turn.aborted → cancelled）；容器只负责封顶与打断行。
 			this.currentTurn.items.push({ kind: "interrupt", text: notice });
 			this.finishTurn();
 		} else {
@@ -757,23 +778,26 @@ export class TranscriptContainer implements Component {
 		return this.historyTurns;
 	}
 
-	loadHistory(history: readonly ChatMsg[]): void {
-		this.loadSession(history.map((message) => ({ kind: "message", message })));
-	}
-
-	/** Restores the display projection from the same ordered entries used to
-	 * build provider history. Operational events never become transcript rows. */
+	/**
+	 * Restores the display projection from the same ordered entries used to
+	 * build provider history. Operational events never become transcript rows.
+	 *
+	 * 工具卡的状态、参数与耗时只取 `nodes`（由 `ingestReplay → PresentationProjection`
+	 * 产出的展示节点）；容器不再自行解析 journal，缺节点时才退回 canonical 消息字段。
+	 */
 	loadSession(
 		entries: readonly SessionEntry[],
+		nodes: readonly PresentationNode[] = [],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
-		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		this.clear();
-		const journalTools = collectJournalTools(auxiliary);
+		const toolNodes = new Map<string, ToolNode>();
+		for (const node of nodes) {
+			if (node.kind === "tool") toolNodes.set(node.callId, node);
+		}
 		let turnN = 0;
 		let current: TurnRecord | null = null;
-		let pendingToolCalls: Array<{ id: string; name: string; args?: unknown }> = [];
 		const commit = (): void => {
 			if (!current) return;
 			this.historyTurns.push(current);
@@ -888,7 +912,6 @@ export class TranscriptContainer implements Component {
 			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
-				pendingToolCalls = [];
 				current = createTurn(msg.content);
 				current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
@@ -903,33 +926,21 @@ export class TranscriptContainer implements Component {
 				if (msg.status === "aborted") {
 					current.items.push({ kind: "interrupt", text: "已打断 · 接下来想继续做什么？" });
 				}
-				if (msg.tool_calls) {
-					pendingToolCalls = msg.tool_calls.map((call) => ({
-						id: call.id,
-						name: call.name || "tool",
-						args: call.args,
-					}));
-				}
 			} else if (msg.role === "tool") {
 				current ??= createTurn();
-				const pending = pendingToolCalls.find((call) => call.id === msg.tool_call_id);
-				const journal = journalTools.get(msg.tool_call_id);
-				const toolName = journal?.name ?? pending?.name ?? msg.name ?? "tool";
-				const toolArgs = journal?.args ?? pending?.args;
-				const startedAt = journal?.startedAt;
-				const finishedAt = journal?.finishedAt ?? parseJournalTime(entry.timestamp);
-				const durationMs =
-					startedAt === undefined || finishedAt === undefined ? undefined : Math.max(0, finishedAt - startedAt);
+				const node = toolNodes.get(msg.tool_call_id);
+				const status: "running" | ToolResultStatus =
+					node === undefined ? (msg.status ?? "unknown") : node.status === "running" ? "unknown" : node.status;
 				current.items.push({
 					kind: "tool",
-					name: toolName,
-					args: toolArgs,
+					name: node?.name ?? msg.name ?? "tool",
+					args: node?.args,
 					result: msg.content,
 					...(msg.images ? { images: msg.images } : {}),
 					...(msg.details === undefined ? {} : { details: msg.details }),
-					startedAt,
-					elapsedMs: durationMs,
-					status: journal?.status ?? msg.status ?? "unknown",
+					startedAt: node?.startedAt,
+					elapsedMs: node?.durationMs,
+					status,
 					callId: msg.tool_call_id,
 				});
 			}

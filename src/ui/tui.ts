@@ -174,7 +174,7 @@ export class InteractiveTUI {
 		this.lastPromptFingerprint = latest?.fingerprint;
 		this.previousSystemPrompt = latest?.systemPrompt;
 		this.replaceFacts(entries, auxiliary);
-		this.host.loadSession(entries, decorations, promptSnapshots, auxiliary);
+		this.host.loadSession(entries, this.projection.list(), decorations, promptSnapshots);
 	}
 
 	/**
@@ -202,7 +202,7 @@ export class InteractiveTUI {
 				this.replaceFacts(m.entries, auxiliary);
 				// 回溯后是否仍有活动回合由引擎给出；缺失时保持重放派生的归属，不猜回合。
 				if (m.turnNumber !== undefined) this.projection.continueTurn(m.turnNumber);
-				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, promptSnapshots, auxiliary);
+				this.host.replayRewind(m.entries, this.projection.list(), rewindDecorations, m.turnNumber, promptSnapshots);
 				break;
 			case "turn_start": {
 				const node = nodes.find((candidate): candidate is TurnNode => candidate.kind === "turn");
@@ -331,7 +331,7 @@ export class InteractiveTUI {
 				this.host.setProviderRetryMessage();
 				this.notifyToolActivity();
 				this.host.setBusy(false, record.at);
-				this.host.finishTurnCard();
+				this.host.finishTurnCard(nodes);
 				if (m.requestUsage) {
 					this.host.setRequestUsage(m.requestUsage);
 				}
@@ -340,7 +340,7 @@ export class InteractiveTUI {
 			case "turn_aborted":
 				this.host.setProviderRetryMessage();
 				this.notifyToolActivity();
-				this.host.interruptTurnCard();
+				this.host.interruptTurnCard(nodes);
 				this.host.setBusy(false, record.at);
 				break;
 

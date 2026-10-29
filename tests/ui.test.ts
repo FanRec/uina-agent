@@ -24,8 +24,11 @@ import {
 	getToolCategory,
 	getToolCategoryColor,
 	TranscriptContainer,
+	type TurnItem,
 } from "../src/ui/components/transcript/index.js";
-import type { ThinkingNode } from "../src/presentation/projection.js";
+import { PresentationProjection, type ThinkingNode } from "../src/presentation/projection.js";
+import { ingestReplay } from "../src/presentation/ingest-replay.js";
+import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
 import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import { revealStep, SmoothRevealController, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
 import { formatFullMarkdown, StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
@@ -279,6 +282,64 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual([...positions].sort((a, b) => a - b));
 		expect(rendered).not.toContain("MUST_NOT_RENDER");
+	});
+
+	it("恢复转录只消费展示节点：工具状态与耗时取自 journal 投影，容器不再自行解析", () => {
+		const T1 = "2026-10-29T10:00:02.000Z";
+		const T2 = "2026-10-29T10:00:05.000Z";
+		const entries: SessionEntry[] = [
+			{ kind: "message", id: "u1", seq: 1, timestamp: T1, message: { role: "user", content: "检查目录" } },
+			{
+				kind: "message",
+				id: "a1",
+				seq: 2,
+				timestamp: T1,
+				message: {
+					role: "assistant",
+					content: "执行",
+					tool_calls: [{ id: "c1", name: "exec", args: { command: "dir" } }],
+				},
+			},
+			// 消息的 status 只是模型可见投影；journal 的终态才是权威。
+			{
+				kind: "message",
+				id: "r1",
+				seq: 3,
+				timestamp: T2,
+				message: { role: "tool", tool_call_id: "c1", name: "exec", content: "ok", status: "succeeded" },
+			},
+		];
+		const auxiliary: SessionEventRecord[] = [
+			{
+				kind: "event",
+				id: "e1",
+				seq: 2,
+				timestamp: T1,
+				event: "tool_started",
+				data: { callId: "c1", name: "exec", args: { command: "dir" } },
+			},
+			{
+				kind: "event",
+				id: "e2",
+				seq: 3,
+				timestamp: T2,
+				event: "tool_finished",
+				data: { callId: "c1", name: "exec", status: "failed" },
+			},
+		];
+
+		const projection = new PresentationProjection();
+		projection.applyAll(ingestReplay({ entries, auxiliary }));
+
+		const transcript = new TranscriptContainer();
+		transcript.loadSession(entries, projection.list());
+		const tool = transcript
+			.getHistory()[0]!
+			.items.find((item): item is Extract<TurnItem, { kind: "tool" }> => item.kind === "tool");
+		if (!tool) throw new Error("恢复转录缺少工具卡");
+		expect(tool.status).toBe("failed");
+		expect(tool.elapsedMs).toBe(Date.parse(T2) - Date.parse(T1));
+		expect(tool.startedAt).toBe(Date.parse(T1));
 	});
 
 	it("live custom_message：轮内到达归入当前轮保时间序，轮外到达为独立卡片，display:false 不渲染", () => {
@@ -608,9 +669,9 @@ describe("UI Components & Visual Rendering", () => {
 
 	it("鼠标折叠当前 thinking 时按块对象定位，不会误切同编号的历史轮次", () => {
 		const transcript = new TranscriptContainer();
-		transcript.loadHistory([
-			{ role: "user", content: "旧问题" },
-			{ role: "assistant", content: "", thinking: "旧思考" },
+		transcript.loadSession([
+			{ kind: "message", message: { role: "user", content: "旧问题" } },
+			{ kind: "message", message: { role: "assistant", content: "", thinking: "旧思考" } },
 		]);
 		transcript.startTurn(1, "当前问题"); // 模拟重载历史后新 Subject 从 1 重新计数
 		transcript.appendThinking("当前思考");
@@ -3702,40 +3763,33 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(submittedMode).toBe("interrupt");
 			});
 
-			it("TranscriptContainer: interruptTurn 会封顶思考、把未确认的运行中工具标为 unknown，并插入暗调打断行", () => {
-				const transcript = new TranscriptContainer();
-				transcript.startTurn(1, "用户任务");
-				transcript.appendThinking("正在推理中...");
-				transcript.startTool(toolStartNode("bash", { command: "sleep 10" }, "call-1"));
+			it("turn_aborted：投影把在途工具结算为 cancelled，容器不再自造 unknown 状态", () => {
+				const tui = createInteractiveUI({ modelName: "DeepSeek" });
+				tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "用户任务" }));
+				tui.consume(record({ type: "tool_call", toolName: "bash", args: { command: "sleep 10" }, callId: "call-1" }));
+				tui.consume(record({ type: "turn_aborted", turnNumber: 1 }));
 
-				// 触发打断
-				transcript.interruptTurn("DeepSeek");
-
-				// 校验思考已封顶且当前轮已结束
+				const transcript = getTestUIHost(tui).transcript;
+				// 封顶：当前轮已提交
 				expect(transcript.getCurrentTurn()).toBeNull();
 				const history = transcript.getHistory();
 				expect(history.length).toBe(1);
 				const turn = history[0]!;
 
-				// 工具状态必须为 failed，且包含已由用户打断
+				// 工具端态只由投影给出（用户主动取消 = cancelled），不再写 "结果未知" 文案
 				const toolItem = turn.items.find((it) => it.kind === "tool") as any;
-				expect(toolItem).toBeDefined();
-				expect(toolItem.status).toBe("unknown");
-				expect(toolItem.result).toBe("已请求中断，工具结果尚未确认");
+				expect(toolItem.status).toBe("cancelled");
+				expect(toolItem.result).toBe("");
 
-				// 存在 interrupt 行
 				const interruptItem = turn.items.find((it) => it.kind === "interrupt") as any;
-				expect(interruptItem).toBeDefined();
 				expect(interruptItem.text).toBe("已打断 · 接下来想让 DeepSeek 做什么？");
 
-				// 渲染测试：暗淡样式
-				const lines = transcript.render(80);
-				const joined = lines.join("\n");
+				const joined = transcript.render(80).join("\n");
 				expect(joined).toContain("已打断 · 接下来想让 DeepSeek 做什么？");
 				expect(joined).toContain("\x1b[2m");
 
-				// 幂等性测试：重复调用不会产生重复的打断行
-				transcript.interruptTurn("DeepSeek");
+				// 幂等：重复的 turn_aborted 不产生重复打断行
+				tui.consume(record({ type: "turn_aborted", turnNumber: 1 }));
 				expect(turn.items.filter((it) => it.kind === "interrupt").length).toBe(1);
 			});
 

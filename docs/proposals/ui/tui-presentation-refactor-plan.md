@@ -1515,6 +1515,20 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2c 提交前。
 遗留未知：无。
 
+[W2d] 2026-10-29
+决策：`TranscriptContainer.loadSession(entries, nodes, decorations, promptSnapshots)` 只从 `PresentationNode[]` 读取工具卡的状态、参数与耗时，删除对 journal（`collectJournalTools` / `parseJournalTime` / duration 计算）的自有解析；`auxiliary` 参数从 transcript、UIHost、InteractiveTUI 三层一并删除。`collectJournalTools` 与 `parseJournalTime` 降为 `ingest-replay` 私有。无节点时才退回 canonical 消息的 `name/status`（恢复缺口，不补时间）。关闭 [W2a 遗留→W2d]。
+证据：tests/ui.test.ts「恢复转录只消费展示节点：工具状态与耗时取自 journal 投影，容器不再自行解析」（journal `failed` 覆盖消息 `succeeded`，耗时 3s 来自时间戳之差）。
+影响文件：src/ui/components/transcript/transcript.ts、src/ui/ui-host.ts、src/ui/tui.ts、src/presentation/ingest-replay.ts。
+回滚点：W2d 提交前。
+遗留未知：容器轮号仍按 user 消息本地计数；投影 `TurnNode.turn` 尚未成为轮号来源，归 W2e 控制器统一。
+
+[W2d] 2026-10-29
+决策：删除容器在打断时自造的“未确认工具 → unknown + 已请求中断…”推导。`turn_end` / `turn_aborted` 由投影结算的 `ToolNode` 通过 `settleToolNodes` 写回既有卡片（不创建新轮、新卡片），`turn.aborted` 的在途工具显示 `cancelled`。同时删除无生产调用方的 `UIHost.loadHistory` 与 `TranscriptContainer.loadHistory`（审计 B4-03）。
+证据：tests/ui.test.ts「turn_aborted：投影把在途工具结算为 cancelled，容器不再自造 unknown 状态」；「打断后迟到的工具结算绝不重复开辟新轮次」保留并仍绿。
+影响文件：src/ui/components/transcript/transcript.ts、src/ui/ui-host.ts、tests/ui.test.ts。
+回滚点：W2d 提交前。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。
