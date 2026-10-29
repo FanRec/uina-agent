@@ -1323,7 +1323,7 @@ export function hintsFor(map: Keymap, width: number): string;
 
 ```text
 日期：2026-10-29
-提交：95a477d（W0 测试与基线自该提交起测，W0 批次紧随其后）
+提交：8babedf（W0 测试、基准与基线数据同批提交）
 fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OSC 注入、Markdown 表格+代码块、工具五状态、失败压缩卡、3 条 toast、working、pending queue）；scripts/ui-frame-bench.ts 的 seedNodes()（250 回合 × 4 节点）
 尺寸 80×24 单帧：p50 0.081 ms / p95 0.150 ms
 尺寸 120×40 单帧：p50 0.235 ms / p95 0.370 ms
@@ -1346,6 +1346,48 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：
 遗留未知：
 ```
+
+[W1] 2026-10-29
+决策：Host 的事实订阅用 `onEventRecord(listener)`，与 `subscribe()` 并列挂在同一派发点；不改 `HostEvent` 自身的形状。规划说 Host 有 `onEvent` 回调，与源码不符（源码只有 `subscribe`）。
+证据：tests/host-separation.test.ts「事实记录订阅与事件订阅共享同一派发点与同一时刻」。
+影响文件：src/host/events.ts、src/host/host.ts。
+回滚点：95a477d 之前。
+遗留未知：无。
+
+[W1] 2026-10-29
+决策：ingest-replay 的输入是 `ReplayInput{entries, auxiliary?}`。工具事实（name/args/status/时间戳）只在 journal 的 `SessionEventRecord`（`store.state.auxiliary`），`SessionEntry` 没有工具事件；规划假定只吃 `SessionEntry[]` 与源码不符。
+证据：tests/ui-live-replay-equivalence.test.ts 断言工具耗时应等于 journal 时间戳之差；无 journal 且无消息 status 时为 `unknown`。
+影响文件：src/presentation/ingest-replay.ts。
+回滚点：95a477d 之前。
+遗留未知：旧会话若 auxiliary 缺失，工具状态只能 `unknown`（不伪造）。
+
+[W1] 2026-10-29
+决策：`thinking.delta` / `assistant.delta` / `tool.*` 不携带 turn；投影按最近 `turn.started` 归属。规划 §3.4 的 payload 草案含 turn，但流式通道在 HostEvent 上本就不带 turn id。
+证据：src/presentation/facts.ts、src/presentation/ingest-live.ts。
+影响文件：src/presentation/facts.ts、src/presentation/ingest-live.ts。
+回滚点：95a477d 之前。
+遗留未知：若将来 HostEvent 带上 turn id，再补字段；当前不预支。
+
+[W1] 2026-10-29
+决策：恢复回合的终局：journal 有 `turn_aborted` / `turn_failed` 时按其结算；否则在下一条 user 消息或回放结束时发 `turn.ended`（`at` 为 undefined，表示“已不活跃”，不伪造完成时间与用量）。journal 不持久化正常 turn_end，规划未覆盖此空白。
+证据：src/presentation/ingest-replay.ts 的 `closeTurn()`。
+影响文件：src/presentation/ingest-replay.ts。
+回滚点：95a477d 之前。
+遗留未知：无。
+
+[W0] 2026-10-29
+决策：G0 的 controller / keymap 一致性测试以 `it.todo` 骨架交付，列出验收条款与审计编号（F1/F3/F5/F7）；真实断言分别在 W2e、W5 替换并删除 todo。理由：当前没有 controller 与 keymap 模块，写成 fake 断言会制造假绿。
+证据：tests/ui-controller.test.ts、tests/ui-keymap-conformance.test.ts、B.1 已知失败清单。
+影响文件：上述两个测试。
+回滚点：8babedf。
+遗留未知：W2e/W5 必须删除 todo，否则 G2/G5 不通过。
+
+[W2a 预] 2026-10-29
+决策：稳定节点 ID 用 `turnUid`（`turn:${uid}:tool:${callId}`）而不是回合序号 `turn:${n}`。恢复后 turnSeq 会重排，序号 ID 会与上一段投影碰撞；规划 §W2 写的是 `turn:${n}`。
+证据：src/presentation/ingest-replay.ts 的 turn 计数与 live 的 turn id 不同源。
+影响文件：W2a 的投影键。
+回滚点：W2a 提交。
+遗留未知：待 W2a 用测试证明 live/replay 的 ID 一致。
 
 ### B.3 当前待决问题
 
