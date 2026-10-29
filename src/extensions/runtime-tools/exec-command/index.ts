@@ -34,6 +34,10 @@ export async function execCommandDirect(
 	return runCommand(command, signal, options);
 }
 
+/** Foreground commands get a wall-clock default so one hanging command can
+ * never park an unattended subject forever; `timeout` (seconds) overrides it. */
+export const DEFAULT_TIMEOUT_S = 120;
+
 /** One process/collector lifecycle for foreground calls. */
 async function runCommand(
 	command: string,
@@ -82,12 +86,12 @@ export function createExecCommandTool(cwd?: string): Tool {
 			type: "function",
 			function: {
 				name: "exec_command",
-				description: `执行开发或系统诊断命令并返回 stdout、stderr、退出码。当前平台使用 ${shellDisplayName()}；已有领域工具时不要绕过它。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时返回尾部并提供 fullOutputPath。`,
+				description: `执行开发或系统诊断命令并返回 stdout、stderr、退出码。当前平台使用 ${shellDisplayName()}；已有领域工具时不要绕过它。默认 ${DEFAULT_TIMEOUT_S} 秒超时，timeout（秒）可覆盖；取消或超时的调用状态为 unknown，正文附已收集输出，重试前先核实副作用。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时返回尾部并提供 fullOutputPath。`,
 				parameters: {
 					type: "object",
 					properties: {
 						command: { type: "string" },
-						timeout: { type: "number", description: "超时秒数；省略表示不设超时" },
+						timeout: { type: "number", description: `超时秒数；省略时默认 ${DEFAULT_TIMEOUT_S}` },
 					},
 					required: ["command"],
 					additionalProperties: false,
@@ -97,35 +101,35 @@ export function createExecCommandTool(cwd?: string): Tool {
 		async run(args, signal) {
 			const command = typeof args.command === "string" ? args.command.trim() : "";
 			if (!command) return { result: "command 为空", status: "not_started" };
-			const timeoutMs = resolveTimeoutMs(args.timeout);
+			const timeoutMs = resolveTimeoutMs(args.timeout ?? DEFAULT_TIMEOUT_S);
 			const result = await execCommandDirect(command, signal, { timeoutMs, cwd });
-			const status: ToolResultStatus = result.cancelled
-				? "cancelled"
-				: result.timedOut
-					? "failed"
-					: result.code === 0
-						? "succeeded"
-						: "failed";
+			// 启动后被中止（取消/超时）的命令效果不可确认：归 unknown 并附已收集输出，
+			// 不推断成败（与 broker/world 工具的中止路径一致，规则见 dev/DECISIONS.md）。
+			const status: ToolResultStatus =
+				result.cancelled || result.timedOut ? "unknown" : result.code === 0 ? "succeeded" : "failed";
 			const body: Record<string, unknown> = {
 				code: result.code,
 				stdout: result.stdout,
 				stderr: result.stderr,
 				status,
-				stdoutBytes: result.stdoutMeta?.totalBytes,
-				stdoutLines: result.stdoutMeta?.totalLines,
-				stderrBytes: result.stderrMeta?.totalBytes,
-				stderrLines: result.stderrMeta?.totalLines,
-				truncated: {
+				...(result.cancelled ? { reason: "cancelled" } : result.timedOut ? { reason: "timeout" } : {}),
+			};
+			if (result.timedOut) body.error = `命令超时（${timeoutMs} ms，可用 timeout 参数延长）`;
+			else if (result.code !== 0 && !result.cancelled) body.error = `退出码 ${result.code}`;
+			if (result.stdoutMeta?.truncated || result.stderrMeta?.truncated) {
+				body.stdoutBytes = result.stdoutMeta?.totalBytes;
+				body.stdoutLines = result.stdoutMeta?.totalLines;
+				body.stderrBytes = result.stderrMeta?.totalBytes;
+				body.stderrLines = result.stderrMeta?.totalLines;
+				body.truncated = {
 					stdout: result.stdoutMeta?.truncated ?? false,
 					stderr: result.stderrMeta?.truncated ?? false,
-				},
-				fullOutputPath: {
+				};
+				body.fullOutputPath = {
 					stdout: result.stdoutMeta?.fullOutputPath,
 					stderr: result.stderrMeta?.fullOutputPath,
-				},
-			};
-			if (result.timedOut) body.error = `命令超时（${timeoutMs} ms）`;
-			else if (result.code !== 0 && !result.cancelled) body.error = `退出码 ${result.code}`;
+				};
+			}
 			return {
 				result: JSON.stringify(body),
 				status,

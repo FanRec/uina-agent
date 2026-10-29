@@ -92,12 +92,12 @@ describe("grep_file 工具", () => {
 		expect(String(miss.result)).toBe("No matches found");
 	});
 
-	it("respects limit and signals paging", async () => {
+	it("respects limit and signals possible more matches", async () => {
 		const { api, dir } = await setup();
 		await seedProject(dir);
 		const result = await api.callTool("grep_file", { pattern: "alpha", literal: true, limit: 1 });
 		const text = String(result.result);
-		expect(text).toContain("已达 1 条匹配上限");
+		expect(text).toContain("已达 1 条匹配上限（可能还有更多）");
 		expect(result.details).toMatchObject({ limitHit: true });
 	});
 });
@@ -244,10 +244,17 @@ describe("matchLines", () => {
 		expect(matches).toEqual([{ file: "f.ts", line: 2, text: "yes here" }]);
 	});
 
-	it("达上限立即返回 true，且不再继续行", () => {
+	it("超过 limit（收满 limit+1 条）才返回 true，且不再继续行", () => {
 		const matches = collect();
 		const hit = matchLines("a\na\na", buildLineMatcher("a", true, false), "f", matches, 2);
 		expect(hit).toBe(true);
+		expect(matches).toHaveLength(3);
+	});
+
+	it("恰好 limit 条总量不算达上限（偷看语义）", () => {
+		const matches = collect();
+		const hit = matchLines("a\na", buildLineMatcher("a", true, false), "f", matches, 2);
+		expect(hit).toBe(false);
 		expect(matches).toHaveLength(2);
 	});
 

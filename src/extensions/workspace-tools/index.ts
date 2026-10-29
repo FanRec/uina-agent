@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 import { atomicWriteFile } from "./atomic-write.js";
@@ -16,6 +16,14 @@ import {
 
 /** Trusted filesystem capabilities; no shell process or Core changes. */
 export default function activate(api: ExtensionAPI): void {
+	// write 守卫的会话内读取记录：path → 读取/写入时的 mtime。目标存在且
+	// mtime 与记录不符（未读过或读后被外部改过）时拒绝整体覆盖，逼一次
+	// read_file；与 edit_file 的精确匹配防线同一立场——不防对抗，防盲写。
+	// edit_file 不接入：它执行时重读文件做精确匹配，外部修改天然失败或避开。
+	const readState = new Map<string, number>();
+	const recordRead = async (file: string): Promise<void> => {
+		readState.set(file, (await stat(file)).mtimeMs);
+	};
 	const fileSchema = {
 		type: "object",
 		properties: { path: { type: "string", minLength: 1 } },
@@ -53,6 +61,15 @@ export default function activate(api: ExtensionAPI): void {
 				throw new Error(`疑似二进制文件，read_file 拒绝读为文本：${file}（用 read_image 或 exec_command 处理）`);
 			const lines = buffer.toString("utf8").split("\n");
 			if (lines.at(-1) === "") lines.pop(); // 结尾换行不产生幽灵空行
+			if (lines.length === 0) {
+				// 零字节文件：此前会误报"offset 1 超出文件末尾"。
+				await recordRead(file);
+				return {
+					result: "（空文件）",
+					status: "succeeded",
+					details: { path: file, lines: 0, totalLines: 0, offset: Number(args.offset ?? 1), truncated: false },
+				};
+			}
 			// CRLF 文件：剥掉每行尾部 \r（只读展示；不碰原文件，edit_file 自行保留行尾）
 			const cleanLines = lines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 			const offset = Number(args.offset ?? 1);
@@ -75,6 +92,7 @@ export default function activate(api: ExtensionAPI): void {
 				// 用户指定 limit 读完了所选段但文件还有后续：同样给出续读提示。
 				text += `\n\n[文件共 ${lines.length} 行，当前显示到第 ${end} 行。用 offset=${end + 1} 继续读。]`;
 			}
+			await recordRead(file);
 			return {
 				result: text,
 				status: "succeeded",
@@ -96,7 +114,7 @@ export default function activate(api: ExtensionAPI): void {
 			function: {
 				name: "write_file",
 				description:
-					"Overwrite or create a UTF-8 text file under the workspace. Creates parent directories; use read_file afterward when the written content must be verified.",
+					"Overwrite or create a UTF-8 text file. Path resolves against the runtime cwd; absolute paths may point outside it. Overwriting an existing file requires a prior read_file (external modifications since the read require re-reading). Creates parent directories.",
 				parameters: {
 					type: "object",
 					properties: { path: { type: "string", minLength: 1 }, text: { type: "string" } },
@@ -107,8 +125,17 @@ export default function activate(api: ExtensionAPI): void {
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
+			const existing = await stat(file).catch(() => null);
+			if (existing && readState.get(file) !== existing.mtimeMs) {
+				return {
+					result: `目标文件存在但未读取过当前内容（或读取后已被外部修改）：${file}。先 read_file 确认内容，再决定 write_file 或改用 edit_file。`,
+					status: "failed",
+					details: { path: file, reason: "stale_or_unread" },
+				};
+			}
 			await mkdir(dirname(file), { recursive: true });
 			await atomicWriteFile(file, String(args.text), { encoding: "utf8", signal });
+			await recordRead(file);
 			return {
 				result: "Written " + file,
 				status: "succeeded",

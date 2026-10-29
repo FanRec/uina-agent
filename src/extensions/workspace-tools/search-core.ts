@@ -8,7 +8,10 @@
  *
  * 输出防护（对齐 pi truncate.ts 的三重限制，Uina 精简为常量）：
  * 匹配数上限、输出字节上限、单行长度上限——任一触发即在输出尾部
- * 附带可操作的提示（如何翻页/如何收窄）。
+ * 附带可操作的提示（如何收窄、如何加大 limit）。
+ *
+ * limit 语义为"偷看一条"：采集到 limit+1 条才停，limitHit = 采集数 > limit，
+ * 输出前裁回 limit。恰好 limit 条总量时不再谎报"已达上限"。
  */
 
 import { spawn } from "node:child_process";
@@ -107,7 +110,8 @@ interface RgMatchEvent {
  *
  * 从 grepWithRg 的 stdout 闭包中抽出为纯逻辑单元——不依赖子进程即可
  * 用合成事件穷举测试（跨 chunk 解析由 createJsonLineParser 负责）。
- * 调用方持有 matches 数组与截断回调（杀子进程、置 limitHit）。
+ * 调用方持有 matches 数组与截断回调（杀子进程）；偷看语义由调用方
+ * 传入 limit+1 实现，本函数只做"收满即通知"。
  */
 export function createRgMatchSink(
 	matches: SearchMatch[],
@@ -154,7 +158,6 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 		const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"], shell: false });
 		const matches: SearchMatch[] = [];
 		let stderr = "";
-		let limitHit = false;
 		let settled = false;
 		const settle = (fn: () => void) => {
 			if (!settled) {
@@ -169,8 +172,8 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stderr?.on("data", (c) => (stderr += c.toString()));
 		const parser = createJsonLineParser();
-		const sink = createRgMatchSink(matches, limit, () => {
-			limitHit = true;
+		// 偷看一条：收满 limit+1 才杀 rg，恰好 limit 条总量时不算 limitHit
+		const sink = createRgMatchSink(matches, limit + 1, () => {
 			child.kill();
 		});
 		child.stdout?.on("data", (chunk) => {
@@ -186,11 +189,12 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 		});
 		child.on("close", (code) => {
 			opts.signal?.removeEventListener("abort", onAbort);
+			const limitHit = matches.length > limit;
 			if (!limitHit && code !== 0 && code !== 1) {
 				settle(() => reject(new Error(`search：rg 退出码 ${code}${stderr.trim() ? "：" + stderr.trim() : ""}`)));
 				return;
 			}
-			settle(() => resolve({ matches, limitHit, engine: "rg" }));
+			settle(() => resolve({ matches: matches.slice(0, limit), limitHit, engine: "rg" }));
 		});
 	});
 }
@@ -329,7 +333,8 @@ export function buildLineMatcher(pattern: string, literal?: boolean, ignoreCase?
 	}
 }
 
-/** 逐行匹配已读内容：命中追加进 matches（1 基行号、剥 \r），达上限返回 true（纯计算，无 IO）。 */
+/** 逐行匹配已读内容：命中追加进 matches（1 基行号、剥 \r），超过 limit（即收满
+ * limit+1 条）返回 true——偷看语义，恰好 limit 条总量不算达上限（纯计算，无 IO）。 */
 export function matchLines(
 	content: string,
 	regex: RegExp,
@@ -342,34 +347,28 @@ export function matchLines(
 		const line = lines[i].replace(/\r$/, "");
 		if (regex.test(line)) {
 			matches.push({ file, line: i + 1, text: line });
-			if (matches.length >= limit) return true;
+			if (matches.length > limit) return true;
 		}
 	}
 	return false;
 }
 
-/** 目录遍历 + glob 过滤 + 逐文件匹配（matchFile 返回是否已达上限）。 */
+/** 目录遍历 + glob 过滤 + 逐文件匹配（matchFile 返回 true 即终止遍历；是否达上限由调用方按计数判定）。 */
 async function walkGrep(
 	opts: GrepOptions,
 	matcher: GitignoreMatcher,
 	matchFile: (full: string) => boolean,
-): Promise<boolean> {
-	let limitHit = false;
+): Promise<void> {
 	await walkTree(
 		opts.root,
 		matcher,
 		(rel, _name, isDirEntry, full) => {
 			if (isDirEntry) return false;
 			if (opts.glob && !globFilter(rel, opts.glob)) return false;
-			if (matchFile(full)) {
-				limitHit = true;
-				return true;
-			}
-			return false;
+			return matchFile(full);
 		},
 		opts.signal,
 	);
-	return limitHit;
 }
 
 /** 单文件搜索：取消检查 + 匹配。 */
@@ -389,7 +388,7 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 
 	const matches: SearchMatch[] = [];
 	const matchFile = (full: string): boolean => {
-		// 同步读 + 逐行匹配；返回是否已达上限
+		// 同步读 + 逐行匹配；返回 true 表示超过 limit，遍历终止
 		let content: string;
 		try {
 			content = readFileSync(full, "utf8");
@@ -400,15 +399,16 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 		return matchLines(content, regex, full, matches, limit);
 	};
 
-	let limitHit = false;
 	if (isDir) {
-		limitHit = await walkGrep(opts, matcher, matchFile);
+		await walkGrep(opts, matcher, matchFile);
 		if (opts.signal?.aborted) throw new Error("search：调用已取消。");
 	} else {
 		// 单文件搜索
-		limitHit = searchSingleFile(opts, matchFile);
+		searchSingleFile(opts, matchFile);
 	}
-	return { matches, limitHit, engine: "node" };
+	// 偷看语义：matchLines 收满 limit+1 才停遍历，恰好 limit 条不算 limitHit
+	const limitHit = matches.length > limit;
+	return { matches: matches.slice(0, limit), limitHit, engine: "node" };
 }
 
 /* ---------------- 组合入口 ---------------- */
@@ -452,7 +452,7 @@ export function formatGrepOutput(matches: SearchMatch[], root: string, limitHit:
 		lines.push(rendered);
 	}
 	const notices: string[] = [];
-	if (limitHit) notices.push(`已达 ${limit} 条匹配上限；可用更大的 limit 翻页，或收窄 pattern/path`);
+	if (limitHit) notices.push(`已达 ${limit} 条匹配上限（可能还有更多）；请收窄 pattern/path 或加大 limit`);
 	if (bytesHit) notices.push(`输出超过 ${MAX_OUTPUT_BYTES / 1024}KB 上限，已截断；请收窄 pattern 或加 glob`);
 	if (notices.length > 0) lines.push("", `[${notices.join("；")}]`);
 	return lines.join("\n");

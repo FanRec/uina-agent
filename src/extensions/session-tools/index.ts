@@ -1,6 +1,10 @@
 import type { SessionAccess } from "../../session/types.js";
 import type { ExtensionActivation } from "../runner.js";
 
+/** session_read 的默认正文上限：与 read_file/grep/exec 的 50KB 档一致，
+ * 让"进模型上下文的工具输出有界"这一前提全覆盖。 */
+const DEFAULT_MAX_CHARS = 50_000;
+
 /** Tool implementations resolve the executing subject; inherited tools never rewind their parent. */
 export function activateSessionTools(resolve: (ownerId: string) => SessionAccess): ExtensionActivation {
 	return (api) => {
@@ -14,9 +18,13 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 					parameters: {
 						type: "object",
 						properties: {
-							scope: { type: "string", enum: ["main", "all"] },
-							after: { type: "string", minLength: 1 },
-							limit: { type: "integer", minimum: 1 },
+							scope: {
+								type: "string",
+								enum: ["main", "all"],
+								description: "main 只列主线节点；all 额外包含只读历史分支节点",
+							},
+							after: { type: "string", minLength: 1, description: "分页游标，取自上一次结果的 next.after" },
+							limit: { type: "integer", minimum: 1, description: "最多返回的节点数" },
 						},
 						additionalProperties: false,
 					},
@@ -33,7 +41,8 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				type: "function",
 				function: {
 					name: "session_read",
-					description: "读取指定会话节点的完整事实，用于核实历史；不会改变当前上下文，也不会重放工具。结果可能较大。",
+					description:
+						"读取指定会话节点的完整事实，用于核实历史；不会改变当前上下文，也不会重放工具。消息正文默认上限 50000 字符，超限返回截断正文和 next 翻页参数。",
 					parameters: {
 						type: "object",
 						properties: {
@@ -42,7 +51,7 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 								type: "integer",
 								minimum: 1,
 								maximum: 200_000,
-								description: "可选消息正文上限；省略返回完整节点",
+								description: `消息正文上限；省略时默认 ${DEFAULT_MAX_CHARS}`,
 							},
 						},
 						required: ["id"],
@@ -56,8 +65,8 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 					throw new Error("session_read 需要提供有效的 id");
 				}
 				const entry = resolve(context?.ownerId ?? "root").read(id);
-				const maxChars = typeof args.max_chars === "number" ? args.max_chars : undefined;
-				if (maxChars === undefined || (entry.kind !== "message" && entry.kind !== "custom_message"))
+				const maxChars = typeof args.max_chars === "number" ? args.max_chars : DEFAULT_MAX_CHARS;
+				if (entry.kind !== "message" && entry.kind !== "custom_message")
 					return { status: "succeeded", result: JSON.stringify(entry) };
 				const content = entry.kind === "message" ? entry.message.content : entry.content;
 				if (content.length <= maxChars) return { status: "succeeded", result: JSON.stringify(entry) };

@@ -82,7 +82,7 @@ World action 也必须返回该结构化合同；字符串结果不再隐式视�
 
 结果可附带 `continuation: "stop"`，在结果记录后结束当前决策，不丢弃其他排队输入。文件扩展用它表达明确的安静决定；UI 不需要过滤生成文本。
 
-shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结论；启动后遇到取消且工具抛错、无法确认结果时为 `unknown`。JSONL、实时 transcript 和恢复 transcript 保留五种结果状态；旧消息未记录状态时显示未知。UI 收到中断请求不会擅自将运行中工具定为失败，随后确认的结果可以更新已结束轮次中的对应工具卡。
+shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结论；启动后被中止（取消、超时）且效果不可确认时为 `unknown`，正文附已收集的部分输出与 reason——不推断成败，规则见 dev/DECISIONS.md「工具层修复（2026-10-29）」。JSONL、实时 transcript 和恢复 transcript 保留五种结果状态；旧消息未记录状态时显示未知。UI 收到中断请求不会擅自将运行中工具定为失败，随后确认的结果可以更新已结束轮次中的对应工具卡。
 
 ## TTS 文件生成
 
@@ -197,7 +197,7 @@ Host 级 SubjectProfile 仍可通过 `--profile` 显式启用，为主体绑定�
 
 进程级信号由 `cli/app.ts` 安装并在 shutdown 时卸载；`ui/core/terminal.ts` 只提供终端恢复，导入它不会注册任何进程监听器。SIGINT 保持普通中断语义（Node 会把信号名作为监听器首参，因此必须包一层零参闭包，否则信号名会被当成 force 标志）；SIGTERM（以及非 Windows 的 SIGHUP）先执行完整关闭（等待活动轮次、扩展 teardown、session flush、杀掉已追踪的分离子进程），再以 143/129 退出。stdout/stderr 的 EPIPE 被忽略，其余写错误继续抛出。
 
-shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计时 100ms），因此持有继承管道的分离子进程不会让工具永久挂起；子进程 PID 被登记，关闭时统一杀进程树。`exec_command` 的 `timeout`（秒）可省略；非法值直接报错，不做静默截断。
+shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计时 100ms），因此持有继承管道的分离子进程不会让工具永久挂起；子进程 PID 被登记，关闭时统一杀进程树。`exec_command` 默认 120 秒超时，`timeout`（秒）参数可覆盖，不提供无限档；非法值直接报错，不做静默截断。取消或超时返回 `unknown` 并附已收集输出。
 
 ## 已验证与未验证
 

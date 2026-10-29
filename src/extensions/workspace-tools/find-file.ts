@@ -43,8 +43,8 @@ export function activateFindFile(api: ExtensionAPI): void {
 
 			const matcher = new GitignoreMatcher(root);
 			const results: string[] = [];
-			let limitHit = false;
 			let bytes = 0;
+			let bytesHit = false;
 
 			await walkTree(
 				root,
@@ -54,28 +54,29 @@ export function activateFindFile(api: ExtensionAPI): void {
 					if (!hit) return false;
 					const size = Buffer.byteLength(rel + "\n", "utf8");
 					if (bytes + size > MAX_OUTPUT_BYTES) {
-						limitHit = true;
+						bytesHit = true;
 						return true;
 					}
 					bytes += size;
 					results.push(rel + (isDir ? "/" : ""));
-					if (results.length >= limit) {
-						limitHit = true;
-						return true;
-					}
-					return false;
+					// 偷看一条：收满 limit+1 才停，恰好 limit 条总量不算达上限
+					return results.length > limit;
 				},
 				signal,
 			);
 			if (signal?.aborted) throw new Error("find_file：调用已取消。");
 
-			let text = results.length === 0 ? "No matches found" : results.join("\n");
-			if (limitHit)
-				text += `\n\n[已达上限（${results.length} 条 / ${MAX_OUTPUT_BYTES / 1024}KB）；请收窄 pattern 或加 limit 翻页]`;
+			const countHit = results.length > limit;
+			const shown = results.slice(0, limit);
+			let text = shown.length === 0 ? "No matches found" : shown.join("\n");
+			const notices: string[] = [];
+			if (countHit) notices.push(`已达 ${limit} 条上限（可能还有更多）；请收窄 pattern 或加大 limit`);
+			if (bytesHit) notices.push(`输出超过 ${MAX_OUTPUT_BYTES / 1024}KB 上限；请收窄 pattern 或 path`);
+			if (notices.length > 0) text += `\n\n[${notices.join("；")}]`;
 			return {
 				result: text,
 				status: "succeeded",
-				details: { entries: results.length, limitHit },
+				details: { entries: shown.length, limitHit: countHit || bytesHit },
 			};
 		},
 	});
