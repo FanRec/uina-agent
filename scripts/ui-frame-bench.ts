@@ -1,11 +1,10 @@
 /**
  * W0 基线：1000 节点转录的单帧成本（只记录，不设门槛）。
  *
- *   pnpm exec tsx scripts/ui-frame-bench.ts
+ *   pnpm bench:ui
  *
- * 与 scripts/bench-ui.mts 的分工：那边是分相位对照工具；这里只产出规划附录 B.1
- * 要求的可复现基线（80×24、120×40、200×60，以及 1000 节点转录的 80×24）。
- * 终端用空 syncWrite 的假实现，计时只覆盖「生产帧字符串」的 CPU 成本。
+ * 只产出规划附录 B.1 要求的可复现基线（80×24、120×40、200×60，以及 1000 节点
+ * 转录的 80×24）。终端用空 syncWrite 的假实现，计时只覆盖「生产帧字符串」的 CPU 成本。
  */
 
 import { UIHost } from "../src/ui/ui-host.js";
