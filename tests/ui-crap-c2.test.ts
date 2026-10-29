@@ -8,6 +8,7 @@ function node(overrides: Partial<TrajectoryNode> = {}): TrajectoryNode {
 	return {
 		id: "n1",
 		kind: "model_stream",
+		name: "stream",
 		label: "stream",
 		status: "completed",
 		startedAt: 1_000,

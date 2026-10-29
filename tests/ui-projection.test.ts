@@ -6,6 +6,7 @@
  * 2. 节点身份稳定（turn:${n} / turn:${n}:tool:${callId}），与展示面无关；
  * 3. 时间只来自 Fact 的 at，缺任一端 durationMs 保持 undefined。
  */
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HostEventRecord } from "../src/host/events.js";
 import { FactStore, type FactDraft } from "../src/presentation/facts.js";
@@ -19,6 +20,7 @@ import {
 } from "../src/presentation/projection.js";
 import { TOOL_STATUS_SPEC, isToolResultStatus } from "../src/presentation/tool-status.js";
 import type { SessionEntry, SessionEventRecord } from "../src/session/types.js";
+import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 
 const T0 = 1_700_000_000_000;
 
@@ -206,13 +208,127 @@ describe("PresentationProjection", () => {
 		const projection = new PresentationProjection();
 		projection.reset();
 		projection.continueTurn(7);
-		const node = projection.apply({
+		const nodes = projection.apply({
 			kind: "tool.started",
 			callId: "call-x",
 			name: "exec",
 			at: T0,
 		});
-		expect(node).toMatchObject({ id: "turn:7:tool:call-x", turn: 7, status: "running" });
+		expect(nodes).toHaveLength(1);
+		expect(nodes[0]).toMatchObject({ id: "turn:7:tool:call-x", turn: 7, status: "running" });
+	});
+});
+
+describe("思考块与回合结算", () => {
+	it("思考增量累积到同一块，助手内容开始即完成关闭", () => {
+		const projection = new PresentationProjection();
+		projection.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		projection.apply({ kind: "thinking.delta", text: "先看", at: T0 + 10 });
+		projection.apply({ kind: "thinking.delta", text: "调用链", at: T0 + 20 });
+		expect(projection.list().at(-1)).toMatchObject({
+			id: "turn:1:thinking:1",
+			text: "先看调用链",
+			status: "running",
+		});
+
+		const closed = projection.apply({ kind: "assistant.delta", text: "回复", at: T0 + 30 });
+		expect(closed).toHaveLength(1);
+		expect(closed[0]).toMatchObject({ kind: "thinking", status: "completed", durationMs: 20 });
+	});
+
+	it("回合中止把在途工具结算为 cancelled，正常结束缺完成事实标为 unknown", () => {
+		const aborted = project(
+			store([
+				{ kind: "turn.started", turn: 1, userText: "任务", origin: "live", at: T0 },
+				{ kind: "tool.started", callId: "call-1", name: "exec", args: {}, origin: "live", at: T0 + 10 },
+				{ kind: "turn.aborted", turn: 1, origin: "live", at: T0 + 50 },
+			]),
+		);
+		expect(aborted.tool("call-1")).toMatchObject({ status: "cancelled", endedAt: T0 + 50, durationMs: 40 });
+
+		const ended = project(
+			store([
+				{ kind: "turn.started", turn: 1, userText: "任务", origin: "live", at: T0 },
+				{ kind: "tool.started", callId: "call-2", name: "exec", args: {}, origin: "live", at: T0 + 10 },
+				{ kind: "turn.ended", turn: 1, origin: "live", at: T0 + 50 },
+			]),
+		);
+		expect(ended.tool("call-2")).toMatchObject({ status: "unknown", endedAt: T0 + 50 });
+	});
+});
+
+describe("TrajectoryProjection（节点消费者）", () => {
+	it("聚合键不含回合号：多回合同名工具合并为一行", () => {
+		const projection = new TrajectoryProjection();
+		for (const turn of [1, 2]) {
+			projection.apply({
+				kind: "tool",
+				id: `turn:${turn}:tool:call-${turn}`,
+				turn,
+				callId: `call-${turn}`,
+				name: "exec",
+				status: "succeeded",
+				durationMs: 10,
+				result: "ok",
+			});
+		}
+		const rows = projection.aggregate("duration").filter((row) => row.name === "exec");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ count: 2, totalDurationMs: 20, avgDurationMs: 10 });
+	});
+
+	it("5000 上限淘汰后聚合仍累计历史总量", () => {
+		const projection = new TrajectoryProjection();
+		for (let index = 0; index < 5001; index++) {
+			projection.apply({
+				kind: "tool",
+				id: `turn:1:tool:call-${index}`,
+				turn: 1,
+				callId: `call-${index}`,
+				name: "exec",
+				status: "succeeded",
+				durationMs: 1,
+				result: "ok",
+			});
+		}
+		expect(projection.list()).toHaveLength(5000);
+		expect(projection.aggregate("duration").find((row) => row.name === "exec")).toMatchObject({
+			count: 5001,
+			totalDurationMs: 5001,
+		});
+	});
+
+	it("replaceAll 丢弃旧节点并按回合尾部补出 model_stream", () => {
+		const projection = new TrajectoryProjection();
+		projection.apply({ kind: "turn", id: "turn:1", turn: 1, userText: "旧", status: "completed", endedAt: 20 });
+		projection.replaceAll([
+			{
+				kind: "turn",
+				id: "turn:2",
+				turn: 2,
+				userText: "新",
+				status: "completed",
+				startedAt: 100,
+				endedAt: 200,
+				usage: { callId: "call-2", totalTokens: 7 },
+			},
+		]);
+		expect(projection.list().map((node) => node.id)).toEqual(["turn:2", "turn:2:stream"]);
+		expect(projection.list().find((node) => node.kind === "model_stream")).toMatchObject({
+			startedAt: 100,
+			endedAt: 200,
+			tokens: { total: 7 },
+		});
+	});
+});
+
+describe("展示层静态约束", () => {
+	it("presentation 目录不出现时钟、进程、终端与文件模块", () => {
+		const dir = new URL("../src/presentation/", import.meta.url);
+		const forbidden = /Date\.now|performance\.now|setInterval|setTimeout|process\.|node:fs|node:process|node:readline/;
+		for (const name of readdirSync(dir)) {
+			expect(readFileSync(new URL(name, dir), "utf8"), name).not.toMatch(forbidden);
+		}
 	});
 });
 

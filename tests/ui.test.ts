@@ -25,6 +25,7 @@ import {
 	getToolCategoryColor,
 	TranscriptContainer,
 } from "../src/ui/components/transcript/index.js";
+import type { ThinkingNode } from "../src/presentation/projection.js";
 import { TOOL_STATUS_SPEC } from "../src/presentation/tool-status.js";
 import { revealStep, SmoothRevealController, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
 import { formatFullMarkdown, StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
@@ -65,6 +66,7 @@ import {
 	record,
 	toolDoneNode,
 	toolStartNode,
+	turnNode,
 } from "./harness/index.js";
 
 describe("UI Core: Utils", () => {
@@ -333,36 +335,45 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 });
 
 describe("UI Adapters: Trajectory", () => {
-	it("TrajectoryProjection 严格从真实运行时事件构建时序与性能热点，杜绝假数据", () => {
+	it("TrajectoryProjection 只消费展示节点：稳定 ID 更新、聚合与热点看板无假数据", () => {
 		const proj = new TrajectoryProjection();
 		expect(proj.list()).toEqual([]);
 
-		// 1. 用户轮次开始
-		proj.onTurnStart(1, "请排查死锁");
-		expect(proj.list().length).toBe(1);
-		expect(proj.list()[0]!.kind).toBe("turn_start");
+		const turn = turnNode(1, "请排查死锁");
+		proj.apply(turn);
+		expect(proj.list().map((node) => node.kind)).toEqual(["turn_start"]);
 
-		// 2. 深度思考
-		const thinkId = proj.onThinkingStart("思考链推演");
-		proj.onThinkingDone(thinkId, "推演完成：锁顺序颠倒");
-		expect(proj.list().length).toBe(2);
+		const thinking: ThinkingNode = {
+			kind: "thinking",
+			id: "turn:1:thinking:1",
+			turn: 1,
+			text: "推演完成：锁顺序颠倒",
+			status: "completed",
+			startedAt: 10,
+			endedAt: 20,
+			durationMs: 10,
+		};
+		proj.apply(thinking);
+		proj.apply(toolDoneNode("run_command", "exit code 0", 120, "succeeded", "call-1", { CommandLine: "pnpm test" }));
+		expect(proj.list().map((node) => node.kind)).toEqual(["turn_start", "thinking", "tool_call"]);
 
-		// 3. 工具执行
-		const toolId = proj.onToolStart("run_command", { CommandLine: "pnpm test" });
-		proj.onToolDone(toolId, "run_command", "exit code 0", 120, "succeeded");
-		expect(proj.list().length).toBe(3);
-
-		// 4. 热点聚合
 		const hotspots = proj.aggregate("duration");
-		expect(hotspots.length).toBeGreaterThan(0);
-		expect(hotspots.some((h) => h.name === "run_command")).toBe(true);
+		expect(hotspots.some((row) => row.name === "run_command")).toBe(true);
+		expect(hotspots.every((row) => !row.name.includes("Turn #"))).toBe(true);
 
-		// 5. 轨迹看板渲染无假数据 (Tab 切换到热点视图可审查聚合的工具指标)
 		const scene = new TrajectoryScene(proj);
 		scene.handleInput("\t");
-		const lines = scene.formatLines(80);
-		expect(lines.join("\n")).toContain("全屏事件时序与审计轨迹");
-		expect(lines.join("\n")).toContain("run_command");
+		const lines = stripAnsi(scene.formatLines(80).join("\n"));
+		expect(lines).toContain("全屏事件时序与审计轨迹");
+		expect(lines).toContain("run_command");
+
+		// 回合终态补出 model_stream：时间来自回合节点，不新增时钟。
+		proj.apply({ ...turn, status: "completed", endedAt: 200, usage: { callId: "call-1", totalTokens: 500 } });
+		expect(proj.list().find((node) => node.kind === "model_stream")).toMatchObject({
+			startedAt: turn.startedAt,
+			endedAt: 200,
+			tokens: { total: 500 },
+		});
 	});
 });
 

@@ -8,7 +8,12 @@ import type { HostEvent, HostEventRecord, HostSnapshot } from "../host/events.js
 import { FactStore } from "../presentation/facts.js";
 import { ingestLive } from "../presentation/ingest-live.js";
 import { ingestReplay } from "../presentation/ingest-replay.js";
-import { PresentationProjection, type PresentationNode } from "../presentation/projection.js";
+import {
+	PresentationProjection,
+	type PresentationNode,
+	type ToolNode,
+	type TurnNode,
+} from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
@@ -37,7 +42,6 @@ const COMPACT_PHASE_LABEL: Record<"queued" | "planning" | "summarizing" | "apply
 export class InteractiveTUI {
 	private readonly host: UIHost;
 	private intentCallback?: (intent: TuiIntent) => void;
-	private currentThinkingId?: string;
 	private readonly trajectoryProjection: TrajectoryProjection;
 	private readonly featureDisposer: () => void;
 	/** 实时事实与展示投影的唯一副本；UI 只消费节点，不再自行记时。 */
@@ -56,17 +60,15 @@ export class InteractiveTUI {
 		this.host.notifyToolActivity();
 	}
 
-	/** 摄取一条宿主事件记录并应用投影；返回本次产生/更新的展示节点。 */
+	/** 摄取一条宿主事件记录并应用投影；返回本次产生/更新的展示节点，并同步轨迹。 */
 	private ingest(record: HostEventRecord): readonly PresentationNode[] {
 		const nodes: PresentationNode[] = [];
-		for (const draft of ingestLive(record)) {
-			const node = this.projection.apply(this.facts.append(draft));
-			if (node) nodes.push(node);
-		}
+		for (const draft of ingestLive(record)) nodes.push(...this.projection.apply(this.facts.append(draft)));
+		for (const node of nodes) this.trajectoryProjection.apply(node);
 		return nodes;
 	}
 
-	/** 恢复/回溯：用 journal 事实整段替换，投影随之重建。 */
+	/** 恢复/回溯：用 journal 事实整段替换，投影与轨迹随之重建，不保留旧节点。 */
 	private replaceFacts(
 		entries: readonly SessionEntry[],
 		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[],
@@ -74,15 +76,7 @@ export class InteractiveTUI {
 		this.facts.replaceAll(ingestReplay({ entries, auxiliary }));
 		this.projection.reset();
 		this.projection.applyAll(this.facts.list());
-	}
-
-	/** 结束当前思考块（若打开）：思考块的开关在 output_update/tool_call/turn 终态等
-	 * 五处出现，统一收口避免漏一处导致轨迹投影悬挂。 */
-	private closeThinking(): void {
-		if (this.currentThinkingId) {
-			this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-			this.currentThinkingId = undefined;
-		}
+		this.trajectoryProjection.replaceAll(this.projection.list());
 	}
 
 	constructor(options: InteractiveTUIOptions = {}) {
@@ -188,7 +182,6 @@ export class InteractiveTUI {
 	): void {
 		const m = record.event;
 		const nodes = this.ingest(record);
-		const node = nodes[0];
 		switch (m.type) {
 			case "model_select":
 				if (this.host.modelName !== m.model) this.host.setModel(m.model);
@@ -199,20 +192,18 @@ export class InteractiveTUI {
 				break;
 
 			case "session_rewind":
-				this.currentThinkingId = undefined;
 				this.replaceFacts(m.entries, auxiliary);
 				// 回溯后是否仍有活动回合由引擎给出；缺失时保持重放派生的归属，不猜回合。
 				if (m.turnNumber !== undefined) this.projection.continueTurn(m.turnNumber);
 				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, promptSnapshots, auxiliary);
 				break;
 			case "turn_start": {
-				if (node?.kind !== "turn") break;
-				this.currentThinkingId = undefined;
+				const node = nodes.find((candidate): candidate is TurnNode => candidate.kind === "turn");
+				if (!node) break;
 				this.host.setProviderRetryMessage();
 				this.host.markUsageEstimated();
 				this.host.setBusy(true, record.at);
 				this.host.startTurnCard(node);
-				this.trajectoryProjection.onTurnStart(node.turn, node.userText);
 				break;
 			}
 
@@ -270,7 +261,7 @@ export class InteractiveTUI {
 						...(m.tokensBefore === undefined ? {} : { tokensBefore: m.tokensBefore }),
 						collapsed: true,
 					});
-					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore ?? 0);
+					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore, record.at);
 				}
 				break;
 
@@ -292,43 +283,40 @@ export class InteractiveTUI {
 
 			case "output_update":
 				if (m.channel === "thinking") {
-					if (!this.currentThinkingId) {
-						this.currentThinkingId = this.trajectoryProjection.onThinkingStart("深度推理");
-					}
 					// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
 					this.host.appendThinkingStream(m.text);
 					break;
 				}
 				if (m.channel !== "content") break;
-				this.closeThinking();
 				this.host.appendAssistantStream(m.text);
 				break;
 
 			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
-				if (node?.kind !== "tool") break;
-				this.closeThinking();
+				const node = nodes.find(
+					(candidate): candidate is ToolNode => candidate.kind === "tool" && candidate.callId === m.callId,
+				);
+				if (!node) break;
 				this.host.beginToolCard(node);
-				this.trajectoryProjection.onToolStart(node.name, node.args, node.callId);
 				this.notifyToolActivity();
 				break;
 			}
 
 			case "tool_result": {
-				if (node?.kind !== "tool" || node.status === "running") break;
+				const node = nodes.find(
+					(candidate): candidate is ToolNode => candidate.kind === "tool" && candidate.callId === m.callId,
+				);
+				if (!node || node.status === "running") break;
 				this.host.settleToolCard(node);
-				this.trajectoryProjection.onToolDone(node.callId, node.name, node.result ?? "", node.durationMs, node.status);
 				this.notifyToolActivity();
 				break;
 			}
 
 			case "turn_end":
 				this.host.setProviderRetryMessage();
-				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false, record.at);
 				this.host.finishTurnCard();
-				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
 				if (m.requestUsage) {
 					this.host.setRequestUsage(m.requestUsage);
 				}
@@ -336,7 +324,6 @@ export class InteractiveTUI {
 
 			case "turn_aborted":
 				this.host.setProviderRetryMessage();
-				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.interruptTurnCard();
 				this.host.setBusy(false, record.at);
@@ -349,11 +336,10 @@ export class InteractiveTUI {
 
 			case "error":
 				this.host.setProviderRetryMessage();
-				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false, record.at);
 				this.host.addErrorCard(m.text);
-				this.trajectoryProjection.onError(m.text);
+				this.trajectoryProjection.onError(m.text, record.at);
 				break;
 
 			case "queue":

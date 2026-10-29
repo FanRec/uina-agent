@@ -1459,6 +1459,41 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2b 提交。
 遗留未知：无。
 
+[W2b] 2026-10-29
+决策：一条事实可结算多个节点（`turn.aborted` 关闭思考并结算该回合全部在途工具），因此 `PresentationProjection.apply` 返回 `readonly PresentationNode[]`，顺序即展示顺序（结算工具在前、回合在后）。思考块成为独立节点 `ThinkingNode`，ID 为 `turn:${n}:thinking:${i}`。
+证据：tests/ui-projection.test.ts「思考增量累积到同一块」「回合中止把在途工具结算为 cancelled，正常结束缺完成事实标为 unknown」。
+影响文件：src/presentation/projection.ts。
+回滚点：W2b 提交前。
+遗留未知：无。
+
+[W2b] 2026-10-29
+决策：删除 `TrajectoryProjection` 的挂钟、自增节点 ID、回合生命周期方法与无人调用的订阅（`subscribe/listeners/notify` 全仓无消费者）。改为只消费节点：`apply` upsert、`replaceAll` 重建、`onError/onCompaction` 由调用方传入事实时刻。`model_stream` 由回合节点的时间/用量派生；聚合键 `${kind}:${name}`；超过 5000 的节点折叠进聚合总量。
+证据：tests/ui-projection.test.ts「聚合键不含回合号」「5000 上限淘汰后聚合仍累计历史总量」「replaceAll 丢弃旧节点并按回合尾部补出 model_stream」；tests/ui.test.ts 轨迹测试改节点驱动。
+影响文件：src/ui/adapters/agent-events.ts、src/ui/features/overlays/trajectory-scene.ts。
+回滚点：W2b 提交前。
+遗留未知：无。
+
+[W2b] 2026-10-29
+决策：TUI 删除 `currentThinkingId` 状态机与全部 8 个旧轨迹调用；`ingest` 统一投喂投影节点，恢复与回溯经 `replaceFacts` 收口到 `replaceAll`，不再保留旧节点。压缩 token 不再以 `?? 0` 伪造。
+证据：src/ui/tui.ts 的 `ingest`/`replaceFacts`；`pnpm typecheck` 与 tests/ui.test.ts 179 例全绿。
+影响文件：src/ui/tui.ts。
+回滚点：W2b 提交前。
+遗留未知：无。
+
+[W2b] 2026-10-29
+决策：轨迹详情顺序统一为 参数 → 结果 → 错误（宽屏与紧凑共用），状态图标/文案来自 `statusGlyph`；波形带过滤无时间节点，缺时间显示“时间未知/耗时未知”。热点表展示 errors 与 tokens，压缩 token 不并入热点合计。
+证据：src/ui/features/overlays/trajectory-scene.ts；tests/ui-crap-c2.test.ts fixture 补 `name`。
+影响文件：src/ui/features/overlays/trajectory-scene.ts。
+回滚点：W2b 提交前。
+遗留未知：无。
+
+[W2b] 2026-10-29
+决策：为“单一事实源”增加静态扫描测试：`src/presentation` 不得出现 `Date.now`/`performance.now`/`setInterval`/`setTimeout`/`process.`/`node:fs`/`node:process`/`node:readline`。布局与计时只能在 Surface。
+证据：tests/ui-projection.test.ts「展示层静态约束」。
+影响文件：tests/ui-projection.test.ts。
+回滚点：W2b 提交前。
+遗留未知：无。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

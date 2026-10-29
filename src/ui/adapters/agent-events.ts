@@ -1,197 +1,284 @@
-import type { RequestUsage, ToolResultStatus } from "../../core/types.js";
 /**
- * Agent 运行时事件适配器与轨迹只读投影（TrajectoryProjection）。
- * 接收 Subject 生命周期 hooks，向 Transcript 分发内容并构建真实时间线时序节点，杜绝任何假数据。
+ * 轨迹只读投影（TrajectoryProjection）。
+ *
+ * 只消费 PresentationNode，不再自持状态机：节点身份、时间与终态全部来自
+ * Presentation Core。这里只做 UI 域翻译（节点种类、稳定聚合名、5000 上限）。
+ *
+ * 时间缺失保持 undefined，看板显示"时间未知"，绝不以当前时钟补齐。
  */
 
-import type { HotspotRow, TrajectoryEventSource, TrajectoryNode } from "../features/overlays/trajectory-scene.js";
+import {
+	durationBetween,
+	type PresentationNode,
+	type ThinkingNode,
+	type ToolNode,
+	type TurnNode,
+} from "../../presentation/projection.js";
+import type {
+	HotspotRow,
+	TrajectoryEventSource,
+	TrajectoryNode,
+	TrajectoryNodeKind,
+	TrajectoryNodeStatus,
+} from "../features/overlays/trajectory-scene.js";
+
+/** 明细节点上限；更早的节点折叠为聚合总量，防止长会话内存增长。 */
+const NODE_LIMIT = 5000;
+
+interface HotspotTotals {
+	readonly kind: TrajectoryNodeKind;
+	readonly name: string;
+	count: number;
+	totalDurationMs: number;
+	totalTokens: number;
+	errors: number;
+}
+
+const TOOL_STATUS: Record<ToolNode["status"], TrajectoryNodeStatus> = {
+	running: "running",
+	succeeded: "completed",
+	failed: "failed",
+	cancelled: "cancelled",
+	unknown: "unknown",
+	not_started: "not_started",
+};
+
+const THINKING_STATUS: Record<ThinkingNode["status"], TrajectoryNodeStatus> = {
+	running: "running",
+	completed: "completed",
+	cancelled: "cancelled",
+};
+
+function argsJson(args: unknown): string | undefined {
+	if (args === undefined) return undefined;
+	return typeof args === "string" ? args : JSON.stringify(args);
+}
+
+function turnEntry(node: TurnNode): TrajectoryNode {
+	return {
+		id: node.id,
+		turn: node.turn,
+		kind: "turn_start",
+		name: "用户提问",
+		label: `用户提问: ${node.userText.slice(0, 40)}`,
+		status: node.status === "running" ? "running" : node.status === "aborted" ? "cancelled" : "completed",
+		startedAt: node.startedAt,
+		endedAt: node.endedAt,
+		durationMs: durationBetween(node.startedAt, node.endedAt),
+	};
+}
+
+function streamEntry(node: TurnNode): TrajectoryNode {
+	return {
+		id: `${node.id}:stream`,
+		turn: node.turn,
+		kind: "model_stream",
+		name: "回复生成",
+		label: `回复生成 (Turn #${node.turn})`,
+		status: node.status === "aborted" ? "cancelled" : "completed",
+		startedAt: node.startedAt,
+		endedAt: node.endedAt,
+		durationMs: durationBetween(node.startedAt, node.endedAt),
+		...(node.usage?.totalTokens === undefined ? {} : { tokens: { total: node.usage.totalTokens } }),
+	};
+}
+
+function thinkingEntry(node: ThinkingNode): TrajectoryNode {
+	return {
+		id: node.id,
+		turn: node.turn,
+		kind: "thinking",
+		name: "深度推理",
+		label: "深度推理",
+		status: THINKING_STATUS[node.status],
+		startedAt: node.startedAt,
+		endedAt: node.endedAt,
+		durationMs: node.durationMs,
+		...(node.text.length === 0 ? {} : { resultPreview: node.text.slice(0, 100) }),
+	};
+}
+
+function toolEntry(node: ToolNode): TrajectoryNode {
+	const args = argsJson(node.args);
+	return {
+		id: node.id,
+		turn: node.turn,
+		kind: "tool_call",
+		name: node.name,
+		label: node.name,
+		status: TOOL_STATUS[node.status],
+		startedAt: node.startedAt,
+		endedAt: node.endedAt,
+		durationMs: node.durationMs,
+		...(args === undefined ? {} : { argsJson: args }),
+		...(node.result === undefined || node.result.length === 0 ? {} : { resultPreview: node.result.slice(0, 100) }),
+		...(node.status === "failed" ? { error: node.result ?? "执行失败" } : {}),
+	};
+}
 
 export class TrajectoryProjection implements TrajectoryEventSource {
-	private readonly nodes: TrajectoryNode[] = [];
-	private readonly listeners = new Set<() => void>();
-	private currentTurnN = 0;
-	private turnStartTime = 0;
-	/** 节点 id 用单调序列：Date.now() 同毫秒撞号会让 onThinkingDone/onToolDone 错配节点。 */
-	private nodeSeq = 0;
-	private nextNodeId(prefix: string): string {
-		return `${prefix}-${++this.nodeSeq}`;
-	}
-
-	subscribe(fn: () => void): () => void {
-		this.listeners.add(fn);
-		return () => this.listeners.delete(fn);
-	}
-
-	private notify(): void {
-		for (const fn of this.listeners) {
-			try {
-				fn();
-			} catch {}
-		}
-	}
+	private nodes: TrajectoryNode[] = [];
+	private readonly byId = new Map<string, TrajectoryNode>();
+	/** 被上限淘汰的节点按聚合键折叠，热点表仍保留历史总量。 */
+	private readonly folded = new Map<string, HotspotTotals>();
+	private errorSeq = 0;
+	private compactionSeq = 0;
 
 	list(): readonly TrajectoryNode[] {
 		return this.nodes;
 	}
 
-	onTurnStart(n: number, userText: string): void {
-		this.currentTurnN = n;
-		this.turnStartTime = Date.now();
-
-		this.nodes.push({
-			id: this.nextNodeId("turn"),
-			turn: n,
-			kind: "turn_start",
-			label: `用户提问: ${userText.slice(0, 40)}`,
-			status: "completed",
-			startedAt: this.turnStartTime,
-			endedAt: this.turnStartTime,
-			durationMs: 0,
-		});
-		this.notify();
-	}
-
-	onThinkingStart(preview = "深度推理"): string {
-		const id = this.nextNodeId("think");
-		this.nodes.push({
-			id,
-			turn: this.currentTurnN,
-			kind: "thinking",
-			label: preview,
-			status: "running",
-			startedAt: Date.now(),
-		});
-		this.notify();
-		return id;
-	}
-
-	onThinkingDone(id: string, fullPreview?: string): void {
-		const node = this.nodes.find((n) => n.id === id);
-		if (node) {
-			node.status = "completed";
-			node.endedAt = Date.now();
-			node.durationMs = Math.max(1, node.endedAt - node.startedAt);
-			if (fullPreview) node.resultPreview = fullPreview.slice(0, 100);
-			this.notify();
+	/** 单节点 upsert：同一稳定 ID 只更新，不重复追加。 */
+	apply(node: PresentationNode): void {
+		switch (node.kind) {
+			case "turn":
+				this.upsert(turnEntry(node));
+				if (node.status !== "running") this.upsert(streamEntry(node));
+				return;
+			case "thinking":
+				this.upsert(thinkingEntry(node));
+				return;
+			case "tool":
+				this.upsert(toolEntry(node));
+				return;
+			default: {
+				const _exhaustive: never = node;
+				return _exhaustive;
+			}
 		}
 	}
 
-	onToolStart(name: string, args: unknown, callId?: string): string {
-		const id = callId ?? this.nextNodeId(`tool-${name}`);
-		this.nodes.push({
-			id,
-			turn: this.currentTurnN,
-			kind: "tool_call",
-			label: name,
-			status: "running",
-			startedAt: Date.now(),
-			argsJson: typeof args === "string" ? args : JSON.stringify(args),
-		});
-		this.notify();
-		return id;
-	}
-
-	onToolDone(id: string, name: string, result: string, elapsedMs?: number, status: ToolResultStatus = "unknown"): void {
-		const node =
-			this.nodes.find((n) => n.id === id) ??
-			[...this.nodes].reverse().find((n) => n.kind === "tool_call" && n.label === name && n.status === "running");
-
-		if (node) {
-			node.status = status === "succeeded" ? "completed" : status;
-			node.endedAt = Date.now();
-			node.durationMs = elapsedMs ?? Math.max(1, node.endedAt - node.startedAt);
-			node.resultPreview = result.slice(0, 100);
-			if (status === "failed") node.error = result;
-			this.notify();
+	/**
+	 * 恢复/回溯：用投影的完整节点序列重建，不保留旧轨迹。
+	 * `model_stream` 在所属回合的尾部补出，保持与实时路径相同的时序。
+	 */
+	replaceAll(nodes: readonly PresentationNode[]): void {
+		this.nodes = [];
+		this.byId.clear();
+		this.folded.clear();
+		let pendingTurn: TurnNode | undefined;
+		const flushStream = (): void => {
+			if (pendingTurn && pendingTurn.status !== "running") this.upsert(streamEntry(pendingTurn));
+			pendingTurn = undefined;
+		};
+		for (const node of nodes) {
+			if (node.kind === "turn") {
+				flushStream();
+				this.upsert(turnEntry(node));
+				pendingTurn = node;
+				continue;
+			}
+			this.apply(node);
 		}
+		flushStream();
 	}
 
-	onTurnEnd(n: number, usage?: RequestUsage): void {
-		const now = Date.now();
-		const elapsed = Math.max(1, now - this.turnStartTime);
-
-		this.nodes.push({
-			id: this.nextNodeId("stream"),
-			turn: n,
-			kind: "model_stream",
-			label: `回复生成 (Turn #${n})`,
-			status: "completed",
-			startedAt: this.turnStartTime,
-			endedAt: now,
-			durationMs: elapsed,
-			tokens: usage?.totalTokens !== undefined ? { total: usage.totalTokens } : undefined,
-		});
-		this.notify();
-	}
-
-	onError(msg: string): void {
-		this.nodes.push({
-			id: this.nextNodeId("err"),
-			turn: this.currentTurnN,
+	/** 运行错误不是 PresentationNode；时间仍由调用方传入事实时刻。 */
+	onError(text: string, at?: number): void {
+		this.upsert({
+			id: `error:${++this.errorSeq}`,
 			kind: "error",
-			label: msg.slice(0, 50),
+			name: "运行错误",
+			label: text.slice(0, 50),
 			status: "failed",
-			startedAt: Date.now(),
-			endedAt: Date.now(),
-			durationMs: 0,
-			error: msg,
+			startedAt: at,
+			endedAt: at,
+			durationMs: at === undefined ? undefined : 0,
+			error: text,
 		});
-		this.notify();
 	}
 
-	onCompaction(summary: string, tokensBefore: number): void {
-		this.nodes.push({
-			id: this.nextNodeId("comp"),
-			turn: this.currentTurnN,
+	/** 压缩 token 只用于本节点展示，不进入热点 token 合计。 */
+	onCompaction(summary: string, tokensBefore: number | undefined, at?: number): void {
+		this.upsert({
+			id: `compaction:${++this.compactionSeq}`,
 			kind: "compaction",
+			name: "会话历史压缩",
 			label: "会话历史压缩",
 			status: "completed",
-			startedAt: Date.now(),
-			endedAt: Date.now(),
-			durationMs: 0,
+			startedAt: at,
+			endedAt: at,
+			durationMs: at === undefined ? undefined : 0,
 			resultPreview: summary.slice(0, 80),
-			tokens: { total: tokensBefore },
+			...(tokensBefore === undefined ? {} : { tokens: { total: tokensBefore } }),
 		});
-		this.notify();
 	}
 
 	aggregate(sortBy: "duration" | "tokens" | "errors" = "duration"): HotspotRow[] {
-		const map = new Map<string, HotspotRow>();
-
-		for (const n of this.nodes) {
-			const key = `${n.kind}:${n.label}`;
-			const existing = map.get(key);
-			const dur = n.durationMs ?? (n.endedAt ? n.endedAt - n.startedAt : 0);
-			const tok = n.tokens?.total ?? 0;
-			const err = n.status === "failed" ? 1 : 0;
-
-			if (existing) {
-				existing.count++;
-				existing.totalDurationMs += dur;
-				existing.avgDurationMs = Math.round(existing.totalDurationMs / existing.count);
-				existing.totalTokens += tok;
-				existing.errors += err;
-			} else {
-				map.set(key, {
-					kind: n.kind,
-					name: n.label,
-					count: 1,
-					totalDurationMs: dur,
-					avgDurationMs: dur,
-					totalTokens: tok,
-					errors: err,
-				});
-			}
+		const rows = new Map<string, HotspotRow>();
+		const accumulate = (node: TrajectoryNode): void => {
+			const key = `${node.kind}:${node.name}`;
+			const row = rows.get(key) ?? {
+				kind: node.kind,
+				name: node.name,
+				count: 0,
+				totalDurationMs: 0,
+				avgDurationMs: 0,
+				totalTokens: 0,
+				errors: 0,
+			};
+			row.count += 1;
+			row.totalDurationMs += node.durationMs ?? 0;
+			// 压缩 token 是上下文规模，不是生成量，不混入热点合计。
+			if (node.kind !== "compaction") row.totalTokens += node.tokens?.total ?? 0;
+			row.errors += node.status === "failed" ? 1 : 0;
+			rows.set(key, row);
+		};
+		for (const totals of this.folded.values()) {
+			const key = `${totals.kind}:${totals.name}`;
+			const row = rows.get(key) ?? {
+				kind: totals.kind,
+				name: totals.name,
+				count: 0,
+				totalDurationMs: 0,
+				avgDurationMs: 0,
+				totalTokens: 0,
+				errors: 0,
+			};
+			row.count += totals.count;
+			row.totalDurationMs += totals.totalDurationMs;
+			row.totalTokens += totals.totalTokens;
+			row.errors += totals.errors;
+			rows.set(key, row);
 		}
+		for (const node of this.nodes) accumulate(node);
+		const result = [...rows.values()];
+		for (const row of result) row.avgDurationMs = Math.round(row.totalDurationMs / row.count);
+		if (sortBy === "duration") result.sort((a, b) => b.totalDurationMs - a.totalDurationMs);
+		else if (sortBy === "tokens") result.sort((a, b) => b.totalTokens - a.totalTokens);
+		else result.sort((a, b) => b.errors - a.errors);
+		return result;
+	}
 
-		const rows = Array.from(map.values());
-		if (sortBy === "duration") {
-			rows.sort((a, b) => b.totalDurationMs - a.totalDurationMs);
-		} else if (sortBy === "tokens") {
-			rows.sort((a, b) => b.totalTokens - a.totalTokens);
-		} else if (sortBy === "errors") {
-			rows.sort((a, b) => b.errors - a.errors);
+	private upsert(next: TrajectoryNode): void {
+		const existing = this.byId.get(next.id);
+		if (existing) {
+			Object.assign(existing, next);
+			return;
 		}
-		return rows;
+		this.nodes.push(next);
+		this.byId.set(next.id, next);
+		while (this.nodes.length > NODE_LIMIT) {
+			const evicted = this.nodes.shift()!;
+			this.byId.delete(evicted.id);
+			this.fold(evicted);
+		}
+	}
+
+	private fold(node: TrajectoryNode): void {
+		const key = `${node.kind}:${node.name}`;
+		const totals = this.folded.get(key) ?? {
+			kind: node.kind,
+			name: node.name,
+			count: 0,
+			totalDurationMs: 0,
+			totalTokens: 0,
+			errors: 0,
+		};
+		totals.count += 1;
+		totals.totalDurationMs += node.durationMs ?? 0;
+		if (node.kind !== "compaction") totals.totalTokens += node.tokens?.total ?? 0;
+		totals.errors += node.status === "failed" ? 1 : 0;
+		this.folded.set(key, totals);
 	}
 }

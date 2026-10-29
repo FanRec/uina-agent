@@ -24,9 +24,12 @@ export interface TrajectoryNode {
 	id: string;
 	turn?: number;
 	kind: TrajectoryNodeKind;
+	/** 稳定聚合名（不含回合号）；热点表以 `${kind}:${name}` 归并。 */
+	name: string;
 	label: string;
 	status: TrajectoryNodeStatus;
-	startedAt: number;
+	/** 未知时保持 undefined；看板显示“时间未知”，不以时钟补齐。 */
+	startedAt?: number;
 	endedAt?: number;
 	durationMs?: number;
 	tokens?: {
@@ -61,6 +64,24 @@ function formatTime(ts: number): string {
 	return new Date(ts).toLocaleTimeString();
 }
 
+/** 五态图标与中文标签；running 是进行态，单独表达。 */
+function statusGlyph(status: TrajectoryNodeStatus): { icon: string; label: string } {
+	switch (status) {
+		case "completed":
+			return { icon: `${C.green}✓${C.reset}`, label: "完成" };
+		case "failed":
+			return { icon: `${C.red}✗${C.reset}`, label: "失败" };
+		case "cancelled":
+			return { icon: `${C.warning}⊘${C.reset}`, label: "已取消" };
+		case "unknown":
+			return { icon: `${C.warning}?${C.reset}`, label: "结果未知" };
+		case "not_started":
+			return { icon: `${C.dim}○${C.reset}`, label: "未执行" };
+		case "running":
+			return { icon: `${C.warning}●${C.reset}`, label: "进行中" };
+	}
+}
+
 /**
  * 余弦/密度能量波形带投影器 (WaveBand)
  */
@@ -72,22 +93,30 @@ export function projectWaveBand(nodes: TrajectoryNode[], width: number, cursorIn
 	}
 
 	const GLYPHS = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-	const minTime = nodes[0]!.startedAt;
-	const maxTime = Math.max(...nodes.map((n) => n.endedAt ?? n.startedAt), minTime + 1);
+	// 时间未知的节点不参与波形：波形是时间轴投影，没有时刻就没有位置。
+	const timed = nodes
+		.map((node, index) => ({ node, index }))
+		.filter(
+			(entry): entry is { node: TrajectoryNode & { startedAt: number }; index: number } =>
+				entry.node.startedAt !== undefined,
+		);
+	if (timed.length === 0) {
+		const emptyLine = " ".repeat(width);
+		return [emptyLine, emptyLine];
+	}
+	const minTime = Math.min(...timed.map((entry) => entry.node.startedAt));
+	const maxTime = Math.max(...timed.map((entry) => entry.node.endedAt ?? entry.node.startedAt), minTime + 1);
 	const totalSpan = Math.max(1, maxTime - minTime);
 
 	// 将全会话切分为 width 根时间柱
 	const colNodes: TrajectoryNode[][] = Array.from({ length: width }, () => []);
 	let cursorCol = 0;
 
-	for (let i = 0; i < nodes.length; i++) {
-		const n = nodes[i]!;
-		const midTime = (n.startedAt + (n.endedAt ?? n.startedAt)) / 2;
+	for (const { node, index } of timed) {
+		const midTime = (node.startedAt + (node.endedAt ?? node.startedAt)) / 2;
 		const col = Math.min(width - 1, Math.max(0, Math.floor(((midTime - minTime) / totalSpan) * width)));
-		colNodes[col]!.push(n);
-		if (i === cursorIndex) {
-			cursorCol = col;
-		}
+		colNodes[col]!.push(node);
+		if (index === cursorIndex) cursorCol = col;
 	}
 
 	const line1Chars: string[] = [];
@@ -235,53 +264,54 @@ export class TrajectoryScene implements Component, Focusable {
 
 			// 4. 当前选中节点的检查器
 			const current = nodes[this.cursorIndex]!;
-			const statusIcon =
-				current.status === "completed"
-					? `${C.green}✓${C.reset}`
-					: current.status === "failed"
-						? `${C.red}✗${C.reset}`
-						: `${C.yellow}●${C.reset}`;
-			const timeStr = formatTime(current.startedAt);
-			const durStr = current.durationMs ? formatDuration(current.durationMs) : "";
+			const glyph = statusGlyph(current.status);
+			const timeStr = current.startedAt === undefined ? "时间未知" : formatTime(current.startedAt);
+			const durStr = current.durationMs === undefined ? "耗时未知" : formatDuration(current.durationMs);
 
-			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${statusIcon} ${C.dim}[${current.status}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
+			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${C.dim}[${glyph.label}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
 			output.push(
 				`  ${borderCol}│${C.reset} ${truncateToWidth(detailHeader, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailHeader)))} ${borderCol}│${C.reset}`,
 			);
 
+			// 详情顺序统一为 参数 → 结果 → 错误，宽屏与紧凑共用。
+			const detailLines: string[] = [];
+			if (current.argsJson) {
+				detailLines.push(`${C.dim}参数:${C.reset} ${highlightCode(current.argsJson, "json")}`);
+			}
+			if (current.resultPreview) {
+				detailLines.push(`${C.dim}结果:${C.reset} ${current.resultPreview}`);
+			}
 			if (current.error) {
-				const errLine = `${C.red}错误: ${current.error}${C.reset}`;
+				detailLines.push(`${C.red}错误: ${current.error}${C.reset}`);
+			}
+			for (const detailLine of detailLines) {
 				output.push(
-					`  ${borderCol}│${C.reset} ${truncateToWidth(errLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(errLine)))} ${borderCol}│${C.reset}`,
-				);
-			} else if (current.argsJson) {
-				const argsHighlight = highlightCode(current.argsJson, "json");
-				const argsLine = `${C.dim}参数:${C.reset} ${argsHighlight}`;
-				output.push(
-					`  ${borderCol}│${C.reset} ${truncateToWidth(argsLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(argsLine)))} ${borderCol}│${C.reset}`,
-				);
-			} else if (current.resultPreview) {
-				const preview = `${C.dim}结果:${C.reset} ${current.resultPreview}`;
-				output.push(
-					`  ${borderCol}│${C.reset} ${truncateToWidth(preview, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(preview)))} ${borderCol}│${C.reset}`,
+					`  ${borderCol}│${C.reset} ${truncateToWidth(detailLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailLine)))} ${borderCol}│${C.reset}`,
 				);
 			}
 		} else {
 			// 热点视图
 			const hotspots = this.source.aggregate("duration");
+			// 数值列固定宽度：次数 4 / 总耗时 8 / 平均耗时 8 / 错误 4 / Token 7，间隔 2。
+			const NUM_COLS = 39;
+			const nameWidth = Math.max(6, innerW - NUM_COLS);
 			output.push(
-				`  ${borderCol}│${C.reset} ${C.bold}类别/操作${" ".repeat(Math.max(1, innerW - 40))}次数    总耗时     平均耗时${C.reset} ${borderCol}│${C.reset}`,
+				`  ${borderCol}│${C.reset} ${C.bold}类别/操作${" ".repeat(Math.max(1, nameWidth - 9))}次数  总耗时  平均耗时  错误    Token${C.reset} ${borderCol}│${C.reset}`,
 			);
 			output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
 
 			const maxRows = Math.min(6, hotspots.length);
 			for (let i = 0; i < maxRows; i++) {
 				const h = hotspots[i]!;
-				const name = truncateToWidth(h.name, innerW - 32);
-				const countStr = String(h.count).padStart(4);
-				const totalDur = formatDuration(h.totalDurationMs).padStart(8);
-				const avgDur = formatDuration(h.avgDurationMs).padStart(8);
-				const row = `${C.cyan}${name}${C.reset}${" ".repeat(Math.max(1, innerW - visibleWidth(name) - 22))}${countStr}  ${totalDur}  ${avgDur}`;
+				const name = truncateToWidth(h.name, nameWidth, "…");
+				const cells = [
+					String(h.count).padStart(4),
+					formatDuration(h.totalDurationMs).padStart(8),
+					formatDuration(h.avgDurationMs).padStart(8),
+					String(h.errors).padStart(4),
+					String(h.totalTokens).padStart(7),
+				].join("  ");
+				const row = `${C.cyan}${name}${C.reset}${" ".repeat(Math.max(1, nameWidth - visibleWidth(name)))}${cells}`;
 				output.push(
 					`  ${borderCol}│${C.reset} ${row}${" ".repeat(Math.max(0, innerW - visibleWidth(row)))} ${borderCol}│${C.reset}`,
 				);
@@ -317,11 +347,11 @@ export class TrajectoryScene implements Component, Focusable {
 			output.push(frame("当前会话暂无运行生命周期事件记录"));
 		} else {
 			const node = nodes[this.cursorIndex]!;
-			const status = node.status === "completed" ? "✓" : node.status === "failed" ? "✗" : "●";
-			output.push(frame(`[${this.cursorIndex + 1}/${nodes.length}] ${status} ${node.label} · ${node.status}`));
+			const glyph = statusGlyph(node.status);
+			output.push(frame(`[${this.cursorIndex + 1}/${nodes.length}] ${glyph.icon} ${node.label} · ${glyph.label}`));
+			if (node.argsJson) output.push(frame(`参数: ${node.argsJson}`));
+			if (node.resultPreview) output.push(frame(`结果: ${node.resultPreview}`));
 			if (node.error) output.push(frame(`错误: ${node.error}`));
-			else if (node.resultPreview) output.push(frame(`结果: ${node.resultPreview}`));
-			else if (node.argsJson) output.push(frame(`参数: ${node.argsJson}`));
 		}
 		if (terminalHeight >= 3) output.push(frame("←/→ 移动 · Tab 热点 · Esc 关闭"));
 		output.push(`${pad}${border}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`);
