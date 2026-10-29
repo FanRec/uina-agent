@@ -51,7 +51,7 @@ import { FocusManager } from "../src/ui/core/focus.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
 import { WidgetSlots } from "../src/ui/core/slots.js";
-import { C, stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
+import { C, countGraphemes, stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
 import { EffortSlider, HelpMenu, ModelPicker, TrajectoryScene } from "../src/ui/features/overlays/index.js";
 import { installUIFeatures } from "../src/ui/features.js";
@@ -78,6 +78,12 @@ describe("UI Core: Utils", () => {
 		expect(visibleWidth("hello")).toBe(5);
 		expect(visibleWidth("你好世界")).toBe(8);
 		expect(visibleWidth("\x1b[31m你好\x1b[0m world")).toBe(10);
+	});
+
+	it("按字形簇计数，不把 emoji ZWJ 组合与代理对算成多个字符", () => {
+		expect(countGraphemes("你好")).toBe(2);
+		expect(countGraphemes("👨‍👩‍👧‍👦")).toBe(1);
+		expect(countGraphemes("a👍🏽b")).toBe(3);
 	});
 
 	it("ANSI 安全截断：不截断转义码且正确补齐闭合", () => {

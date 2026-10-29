@@ -50,7 +50,15 @@ import { ScrollController } from "./core/scroll-controller.js";
 import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import { C, copyToClipboardUnified, normalizeFrameLine, stripAnsi, visibleWidth } from "./core/utils.js";
+import { toReadableError } from "../presentation/copy.js";
+import {
+	C,
+	countGraphemes,
+	copyToClipboardUnified,
+	normalizeFrameLine,
+	stripAnsi,
+	visibleWidth,
+} from "./core/utils.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 import { fitLine } from "./layout/fit.js";
 import { computeFrame, type FrameLayout } from "./layout/frame.js";
@@ -205,7 +213,7 @@ export class UIHost implements UIHostContextPort {
 		this.scroll.stopAutoScroll();
 	}
 
-	showCopyToast(text: string): void {
+	showCopyToast(text: string, level: "info" | "error" = "info"): void {
 		// 复制回执也是 toast：进队列、按内容去重，2s 过期（audit C2）。
 		this.composition.publish(
 			{
@@ -214,7 +222,7 @@ export class UIHost implements UIHostContextPort {
 				priority: 40,
 				ttlMs: 2000,
 				dedupeKey: `copy:${text}`,
-				payload: { kind: "text", text, level: "info", tone: "copy" },
+				payload: { kind: "text", text, level, tone: "copy" },
 			},
 			Date.now(),
 		);
@@ -222,12 +230,19 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	private onCopyOnSelect = (text: string): void => {
+	private onCopyOnSelect = async (text: string): Promise<void> => {
 		text = this.cleanCodeBlockSelection(text);
-		copyToClipboardUnified(text);
+		if (!text) return;
+
+		const result = await copyToClipboardUnified(text);
+		if (!result.ok) {
+			this.showCopyToast("复制失败：剪贴板不可用", "error");
+			return;
+		}
 
 		const lineCount = text.split("\n").length;
-		const toast = lineCount > 1 ? `已复制 ${lineCount} 行 (${text.length} 字符)` : `已复制 ${text.length} 字符`;
+		const charCount = countGraphemes(text);
+		const toast = lineCount > 1 ? `已复制 ${lineCount} 行（${charCount} 字）` : `已复制 ${charCount} 字`;
 		this.showCopyToast(toast);
 	};
 
@@ -302,7 +317,7 @@ export class UIHost implements UIHostContextPort {
 			.find((item) => item.keybinding && item.handler && matchesKey(data, item.keybinding));
 		if (!command?.handler) return false;
 		void Promise.resolve(command.handler("")).catch((error: unknown) => {
-			this.notify(`命令错误: ${String(error)}`, "error");
+			this.notify(`命令错误：${toReadableError(error)}`, "error");
 		});
 		return true;
 	}
@@ -370,7 +385,7 @@ export class UIHost implements UIHostContextPort {
 		this.focusManager = new FocusManager();
 		this.componentBoundary = new ComponentBoundary((component, operation, error) => {
 			const name = component.constructor?.name || "TUI 组件";
-			this.notify(`${name} ${operation === "render" ? "渲染" : "输入处理"}失败: ${String(error)}`, "error");
+			this.notify(`${name} ${operation === "render" ? "渲染" : "输入处理"}失败：${toReadableError(error)}`, "error");
 		});
 
 		this.overlayStack = new OverlayStack(this.focusManager, () => this.requestRender(), this.componentBoundary);
@@ -952,7 +967,7 @@ export class UIHost implements UIHostContextPort {
 					}
 					this.activeSuggestions = null;
 					this.requestRender();
-					this.notify(`文件候选查询失败：${String(error)}`, "warning", 2500);
+					this.notify(`文件候选查询失败：${toReadableError(error)}`, "warning", 2500);
 				},
 			);
 		}
@@ -1928,9 +1943,11 @@ export class UIHost implements UIHostContextPort {
 		if (matchesKey(data, Key.ctrl("c"))) {
 			// 输入框编辑语义优先；但取消/退出事实由组合根查询 Host，不能读 UI busy。
 			if (this.inputLine.hasSelection()) {
-				this.inputLine.copySelection();
+				const pending = this.inputLine.copySelection();
 				this.inputLine.clearSelection();
-				this.notify("已复制输入框内容", "info", 1500);
+				void pending.then((result) => {
+					this.notify(result.ok ? "已复制输入框内容" : "复制失败：剪贴板不可用", result.ok ? "info" : "error", 1500);
+				});
 				this.requestRender();
 				return true;
 			}

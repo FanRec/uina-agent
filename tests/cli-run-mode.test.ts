@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { composeInitialPrompt, formatStartupBanner, resolveExitCode, resolveRunMode } from "../src/cli/run-mode.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "../src/cli/stdio-render.js";
 import type { HostEvent } from "../src/host/events.js";
+import { PresentationController } from "../src/presentation/controller.js";
+import type { ToolNode } from "../src/presentation/projection.js";
 
 describe("composeInitialPrompt", () => {
 	it("管道输入与 -p 叠加拼接", () => {
@@ -152,6 +154,27 @@ describe("formatToolCallLine / formatToolResultBlock（G6 与 TUI 同源）", ()
 			0,
 		);
 		expect(strip(withImage)).toContain("[图片: 1 张]");
+	});
+
+	it("耗时由 PresentationController 结算：两端 record.at 差值直达 stdio 输出", () => {
+		const controller = new PresentationController();
+		controller.ingest({
+			at: 1000,
+			event: { type: "tool_call", toolName: "exec", args: {}, callId: "c1" },
+		});
+		const nodes = controller.ingest({
+			at: 1250,
+			event: { type: "tool_result", toolName: "exec", args: {}, callId: "c1", result: "ok", status: "succeeded" },
+		});
+		const node = nodes.find((item): item is ToolNode => item.kind === "tool" && item.callId === "c1");
+		expect(node?.durationMs).toBe(250);
+		const block = strip(
+			formatToolResultBlock(
+				{ type: "tool_result", toolName: "exec", args: {}, callId: "c1", result: "ok", status: "succeeded" },
+				node?.durationMs,
+			),
+		);
+		expect(block).toContain("250ms");
 	});
 });
 

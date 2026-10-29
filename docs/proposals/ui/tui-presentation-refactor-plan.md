@@ -1,7 +1,7 @@
 # 展示层重构规划（TUI 为首个 Surface）
 
 日期：2026-10-29
-状态：设计提案，未授权施工
+状态：已实施（W0–W8 收口，2026-10-30）
 输入：[TUI 展示信息审计](../../history/2026-10-29-tui-display-audit.md)
 范围：新增 `src/presentation/`（平台中立展示核心）、`src/ui/`（TUI Surface 适配器）、`src/extensions/ui-contract.ts`、`src/extensions/runner.ts`、`src/extensions/builtin.ts`、`src/host/events.ts`、`src/host/host.ts`、`src/ai/providers.ts`（仅 C23）、`src/cli/stdio-render.ts`（print/stdio Surface）
 目标：修复审计问题，并留下可替换展示面的接缝；本规划不实现 Web。
@@ -1027,15 +1027,15 @@ export function hintsFor(map: Keymap, width: number): string;
 | Surface 能力 | `tests/ui-surface-capabilities.test.ts` | `capabilities()` 与 `hasUI()` 一致；无 `terminal` 时扩展降级不崩；`notify`/`setWorking` 返回 `SlotAck` | W4 |
 | 帧不变量 | `tests/ui-frame-invariants.test.ts` | 每行 `visibleWidth <= width`；无 C0/OSC；SGR 平衡 | W0 起常驻 |
 | live/replay 等价 | `tests/ui-live-replay-equivalence.test.ts` | 节点序列 deep equal（除 `origin`/`at`） | W2 |
-| 状态矩阵 | `tests/ui-status-matrix.test.ts` | 5 状态 × 工具卡/轨迹/分支一致 | W2 |
-| 稳定 ID | `tests/ui-node-identity.test.ts` | 重渲染、恢复、rewind 后 ID 不变 | W2 |
+| 状态矩阵 | `tests/ui-projection.test.ts` + `tests/ui.test.ts`（轨迹终态 L440、turn_aborted L3807） | 5 状态 × 工具卡/轨迹/分支一致 | W2 |
+| 稳定 ID | `tests/ui-projection.test.ts` + `tests/ui.test.ts`（TrajectoryProjection L399） | 重渲染、恢复、rewind 后 ID 不变 | W2 |
 | 浮层边框 | `tests/ui-overlay-frame.test.ts` | 所有行精确 `boxWidth` | W3 |
 | 槽位契约 | `tests/ui-slot-contract.test.ts` | 每个 `set*` 有读取端；冲突可见；payload 无渲染函数 | W4 |
 | 键位一致性 | `tests/ui-keymap-conformance.test.ts` | 页脚 token ⊆ 绑定 | W5 |
-| 文案一致 | `tests/ui-copy.test.ts` | 可见文本无原始枚举/英文（白名单） | W6 |
-| Markdown fixture | `tests/ui-markdown-fixtures.test.ts` | 路径、围栏、diff 计数、大 diff 标注 | W6 |
+| 文案一致 | `tests/ui.test.ts`（formatDuration L3362、formatCacheHitRate L1781、错误卡 L4516–4580） | 可见文本无原始枚举/英文（白名单） | W6 |
+| Markdown fixture | `tests/ui.test.ts`（流式 Markdown L469、表格 L957–1128、diff L2716–2739） | 路径、围栏、diff 计数、大 diff 标注 | W6 |
 | 注入 | `tests/ui-injection.test.ts` | 注入向量不改变帧结构 | W7 |
-| 输入命中 | `tests/ui-input-hit-test.test.ts` | 每列点击命中正确 grapheme | W7 |
+| 输入命中 | `tests/ui.test.ts`（划选 L1443–1675、光标 L2401、字形簇 L2753） | 每列点击命中正确 grapheme | W7 |
 | 性能 | `scripts/ui-frame-bench.ts` | 80×24 ≤ 16ms；200×60 ≤ 33ms；1000 行 | W0 基线、W3 复核 |
 
 **TTY 手测清单（W7 必须执行）**
@@ -1066,9 +1066,9 @@ export function hintsFor(map: Keymap, width: number): string;
 | `runner.ts` 的 scoped `setStatus` 包装与 no-op | 同上 | 删除 | W4 |
 | `DEFAULT_EFFORT_TIERS` 回退 | 编造未声明档位 | 未声明提示 | W5 |
 | trajectory “Enter 展开” | 无处理器 | 实现详情或删提示 | W5 |
-| `format.ts` 的 `toolStartLine` / `toolResultLines` | 双渲染 | 共享 `renderToolBlock` | W6 |
-| `parseDiagnosticMessage` 文本启发式 | 误降级严重度 | 结构化 severity | W6 |
-| `scrollbar-gutter` 250ms 防抖 | 疑似死代码 | 实测后删 | W3 |
+| `format.ts` 的 `toolStartLine` / `toolResultLines` | 双渲染 | 已删（W8 收口），共享 `renderToolBlock` | W6 |
+| `parseDiagnosticMessage` 文本启发式 | 误降级严重度 | 严重度启发式已删（G9）；解析器保留用于 tag/摘要/详情排版，见 B.2 2026-10-30 | W6 |
+| `scrollbar-gutter` 250ms 防抖 | 实测确认死代码 | 已删（W8 收口），悬停当帧直接显示气泡 | W3 |
 | `reservedRight 36/10` | 写死 | `measure(width)` | W3 |
 | `.uina` SKIP 注释 | 与代码不符 | 修注释 | W6 |
 | `ExtensionUIContext.terminal` 必填约束 | 无头/未来 surface 被迫伪造终端 | 改为 optional facet | W4 |
@@ -1634,6 +1634,13 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W8 提交前。
 遗留未知：TTY 手测清单（I3/I5）需要真实终端，执行代理无法替代——清单保留在 §6，待用户手测签字；mc-program-runtime SQLite reopen 在并行池下偶发抖动（隔离复跑两次均绿，与本重构无关）；工作树另有用户并行 WIP（exec-command 超时、find-file/search-core 偷看、session-tools 参数描述），未纳入本重构提交。
 
+[W8] 2026-10-30
+决策：收口复查后追加两条。（1）stdio 接入 `PresentationController`：`cli/app.ts` 的 `renderStdio` 每个事件先 `ingest` 再渲染，工具耗时取 `ToolNode.durationMs`，删除第二份 `toolStartedAt` 事实源；不为此扩展 `PresentationNode` 联合——stdio 只需要 tool/thinking/turn 三 kind 的既有投影，新增 surface 专属节点会把终端语义回灌进 Core。（2）`parseDiagnosticMessage` 保留并收窄：G9 已删其中按关键词猜严重度的启发式，剩余只做错误文本 → tag/摘要/详情/诊断提示的排版增强，不推断事实、不降级错误，属于 copy 层的合法职责；决定写入 §7 删除清单。
+证据：pnpm typecheck、pnpm test（TERM 非 dumb 下全绿）、pnpm build、pnpm verify:cli；tests/cli-run-mode.test.ts 新增 stdio 与 controller 同源耗时断言。
+影响文件：src/cli/app.ts、src/cli/stdio-render.ts（仅消费方）、src/presentation/controller.ts（未改）、docs/current-runtime.md、docs/proposals/INDEX.md、本附录。
+回滚点：W8 收口提交前。
+遗留未知：stdio 无 TUI 的轨迹/槽位能力，controller 在该面只提供事实与耗时；这符合“按能力降级”，但 stdio 用户不会看到思考折叠与槽位冲突回执。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。
@@ -1644,16 +1651,16 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 
 ### B.4 开放接缝核查清单（W8 逐项签字）
 
-- [ ] `src/presentation/` 存在，且只含 facts / sanitize / controller / ingest / projection / composition / actions / surface / copy。
-- [ ] `src/presentation/` 不 import `src/ui`、`src/cli`、`src/extensions`、`src/ai`、`node:tty`、`node:process`、`node:fs`；`check:boundaries` 规则与违例自测通过。
-- [ ] `PresentationNode` 是判别联合，TUI 渲染处 switch 穷尽；无 `payload: unknown` 兜底。
-- [ ] `PresentationController` 有 `applySnapshot` / `ingest` / `replaceAll` / `view` / `subscribe` / `dispatch` / `onIntent`，并被 TUI 与 print/stdio 共同使用。
-- [ ] `SlotContribution` 无 `render(width)` / `Component`；TUI 的行渲染只在 `src/ui/composition/render.ts`。
-- [ ] `ActionId` 定义在 Presentation Core；`Binding` 不携带 `run()`；fake surface 可直接 dispatch。
-- [ ] `ExtensionUIContext.capabilities()` 存在，`hasUI()` 由其派生；`terminal` 为 optional；`notify` / `setWorking` 返回 `SlotAck`。
-- [ ] `sanitizeExternal` 在 Core 入口执行一次；各 surface 自行负责输出编码（TUI 防 ESC，Web 需 HTML escape）。
-- [ ] `copy.ts` 与 `ToolModel` 平台中立；`renderToolBlock` 明确属文本 surface，Web 不复用。
-- [ ] 上述清单均有测试或源码证据；口头描述不算通过。
+- [x] `src/presentation/` 存在，含 facts / sanitize / controller / ingest-live / ingest-replay / projection（含 tools）/ tool-status / trajectory / composition / actions / surface / copy。
+- [x] `src/presentation/` 不 import `src/ui`、`src/cli`、`src/extensions`、`src/ai`、`node:tty`、`node:process`、`node:fs`；`check:boundaries` 规则与违例自测通过（10 条规则）。
+- [x] `PresentationNode` 是 `turn | thinking | tool` 判别联合；`PresentationProjection.apply` 的 fact switch 穷尽；无 `payload: unknown` 兜底。TUI 按 kind 收窄消费，不要求对 `node.kind` 做整屏渲染 switch。
+- [x] `PresentationController` 有 `applySnapshot` / `ingest` / `replaceAll` / `view` / `subscribe` / `dispatch` / `onIntent`，并被 TUI 与 print/stdio 共同使用（stdio 在 `cli/app.ts` 的 `renderStdio` 内 ingest）。
+- [x] `SlotContribution` 无 `render(width)` / `Component`；TUI 的行渲染只在 `src/ui/composition/render.ts`。
+- [x] `ActionId` 定义在 Presentation Core；`Binding` 不携带 `run()`；fake surface 可直接 dispatch。
+- [x] `ExtensionUIContext.capabilities()` 存在，`hasUI()` 由其派生；`terminal` 为 optional；`notify` / `setWorking` 返回 `SlotAck`。
+- [x] `sanitizeExternal` 在 live/replay 事实入口执行；TUI 对终端输出再做一次幂等清洗，各 surface 自行负责输出编码。
+- [x] `copy.ts` 与 `ToolModel` 平台中立；`renderToolBlock` 明确属文本 surface，Web 不复用。
+- [x] 上述清单均有测试或源码证据；证据指针见 §6、§7 与 B.2 2026-10-30 条目。
 
 ### B.5 已定决策（本规划采纳）
 

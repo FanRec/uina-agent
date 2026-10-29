@@ -3,10 +3,13 @@ import { errorMessage } from "../core/errors.js";
 import { compactionDecorations } from "../extensions/compaction/index.js";
 import type { HostEventRecord } from "../host/events.js";
 import { UinaHost } from "../host/host.js";
+import { PresentationController } from "../presentation/controller.js";
+import type { ToolNode } from "../presentation/projection.js";
 import { releaseProfileLock, resolveProfile } from "../host/profile.js";
 import { listPromptSnapshots } from "../session/prompt-snapshots.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
-import { toolResultLines } from "../ui/format.js";
+import { renderToolBlock } from "../ui/render-text.js";
+import type { ToolModel } from "../presentation/projection/tools.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
@@ -55,23 +58,21 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let execRunning = false;
 	let execAbort: AbortController | null = null;
 
-	/** 工具耗时的两端时刻都取自 HostEventRecord.at；缺任一端保持未知。 */
-	const toolStartedAt = new Map<string, number>();
-	const elapsedFor = (callId: string, endedAt: number): number | undefined => {
-		const startedAt = toolStartedAt.get(callId);
-		toolStartedAt.delete(callId);
-		return startedAt === undefined ? undefined : Math.max(0, endedAt - startedAt);
-	};
+	/** print/stdio 与 TUI 共用同一事实投影；工具耗时的两端时刻由 controller 统一结算。 */
+	let stdioPresentation: PresentationController | null = null;
 	const renderStdio = (record: HostEventRecord): void => {
+		if (!stdioPresentation) stdioPresentation = new PresentationController();
+		const nodes = stdioPresentation.ingest(record);
 		const message = record.event;
 		switch (message.type) {
 			case "tool_call":
-				toolStartedAt.set(message.callId, record.at);
 				process.stdout.write(formatToolCallLine(message));
 				return;
-			case "tool_result":
-				process.stdout.write(formatToolResultBlock(message, elapsedFor(message.callId, record.at)));
+			case "tool_result": {
+				const toolNode = nodes.find((node): node is ToolNode => node.kind === "tool" && node.callId === message.callId);
+				process.stdout.write(formatToolResultBlock(message, toolNode?.durationMs));
 				return;
+			}
 			default: {
 				const line = formatStdioEventLine(message);
 				if (line !== null) process.stdout.write(line);
@@ -377,14 +378,14 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		try {
 			const started = Date.now();
 			const outcome = await host.runToolDirect("exec_command", { command }, execAbort.signal);
-			const plain = (value: string): string => value;
-			const lines = toolResultLines(outcome.result, Date.now() - started, {
-				ok: plain,
-				err: plain,
-				warn: plain,
-				dim: plain,
-			});
-			if (outcome.status !== "succeeded") lines.push(`[${outcome.status}]`);
+			// G6：与 TUI/stdio 同源——同一 ToolModel 走 renderToolBlock，状态在卡片头部表达
+			const model: ToolModel = {
+				name: "exec_command",
+				status: outcome.status,
+				result: outcome.result,
+				durationMs: Date.now() - started,
+			};
+			const lines = renderToolBlock(model, 100);
 			if (lines.length > 0) writeCommandOutput(lines.join("\n"));
 		} finally {
 			execRunning = false;

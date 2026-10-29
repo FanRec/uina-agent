@@ -28,6 +28,6 @@
 - [记忆系统技术调研](memory-tech-survey.md)：分层技术清单与本机实测（FTS5/分词/向量/图遍历）；尚无架构提案，未授权施工。
 - [Live2D 程序化动画作者层重设计](live2d/live2d-animation-authoring-redesign.md)：Timeline 与已确认 A2 决策冲突，仍是未授权提案。
 - [Live2D Cue 链路修复计划](live2d/live2d-cue-action-repair-plan.md)：parser 生命周期与结果语义边界见文首复核。
-- [展示层重构规划（TUI 为首个 Surface）](ui/tui-presentation-refactor-plan.md)：四项结构性根因 + 展示层被终端假设锁死；Presentation Core 与 Surface Adapter 分离、W0–W8 工作流、阶段门、审计 114 条处置、开放接缝核查清单；W0–W8 已于 2026-10-29 施工完成（提交 8babedf…W8）；本规划转为已实现档案，开放接缝核查见附录 B.4。
+- [展示层重构规划（TUI 为首个 Surface）](ui/tui-presentation-refactor-plan.md)：四项结构性根因 + 展示层被终端假设锁死；Presentation Core 与 Surface Adapter 分离、W0–W8 工作流、阶段门、审计 114 条处置、开放接缝核查清单；W0–W8 已于 2026-10-29 施工完成，W8 收口于 2026-10-30（stdio 共用 controller、剪贴板真实回执、死代码清理、文档对齐）；本规划转为已实现并收口档案，开放接缝核查见附录 B.4。
 
 当前运行事实：[current-runtime.md](../current-runtime.md)。归档原因、当前依据和保留的历史证据：[归档提案导航](../archive/proposals/README.md)。

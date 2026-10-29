@@ -1,4 +1,5 @@
 import type { BuiltinUIActionRequest, BuiltinUIActions } from "../extensions/ui-contract.js";
+import { toReadableError } from "../presentation/copy.js";
 import type { TrajectoryEventSource } from "../presentation/trajectory.js";
 import type { SessionAccess } from "../session/types.js";
 import {
@@ -51,7 +52,7 @@ export function installUIFeatures(
 				const picker = new ModelPicker(action.payload.currentModel, action.payload.groups);
 				picker.onPick = (name) => {
 					const reportFailure = (error: unknown): void => {
-						if (!action.signal?.aborted) host.notify(`模型切换失败：${String(error)}`, "error");
+						if (!action.signal?.aborted) host.notify(`模型切换失败：${toReadableError(error)}`, "error");
 					};
 					try {
 						void Promise.resolve(action.payload.onPick(name)).catch(reportFailure);

@@ -5,6 +5,7 @@
 
 import { imageNotice } from "../../../core/content.js";
 import type { CustomMessage, MessageRenderer } from "../../../extensions/ui-contract.js";
+import { toReadableError } from "../../../presentation/copy.js";
 import { Container } from "../../core/container.js";
 import type { Component } from "../../core/types.js";
 import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
@@ -193,7 +194,7 @@ abstract class BaseCustomComponent<
 				}
 			} catch (err) {
 				this.addChild({
-					render: () => [`${C.red}✗ [${this.item.customType}] 渲染失败: ${String(err)}${C.reset}`],
+					render: () => [`${C.red}✗ [${this.item.customType}] 渲染失败：${toReadableError(err)}${C.reset}`],
 					invalidate: () => {},
 				});
 				return;

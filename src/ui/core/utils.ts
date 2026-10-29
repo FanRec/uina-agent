@@ -2,7 +2,7 @@
  * 终端字符与 ANSI 控制码工具函数（移植自 pi-tui utils 并做零外部依赖纯净实现）。
  */
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 // ANSI Escape Code 正则（覆盖 CSI, OSC, APC 序列，包含以 \x07 或 \x1b\\ 结尾的 APC 序列如 CURSOR_MARKER）
 export const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -599,38 +599,68 @@ export function extractAnsiCode(text: string, index: number): { code: string; le
 	return { code: text.slice(index, end), length: end - index };
 }
 
+export type ClipboardMethod = "osc52" | "clip" | "pbcopy" | "none";
+
+export interface ClipboardResult {
+	readonly ok: boolean;
+	readonly method: ClipboardMethod;
+	readonly reason?: string;
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** 等待原生剪贴板子进程真正启动；错误事件作为失败回执，不再静默吞掉。 */
+function runClipboardCommand(
+	command: string,
+	args: readonly string[],
+	text: string,
+	method: "clip" | "pbcopy",
+): Promise<ClipboardResult> {
+	return new Promise((resolve) => {
+		let child: ChildProcess;
+		try {
+			child = spawn(command, args, {
+				stdio: ["pipe", "ignore", "ignore"],
+				...(method === "clip" ? { windowsHide: true } : {}),
+			});
+		} catch (error) {
+			resolve({ ok: false, method, reason: errorText(error) });
+			return;
+		}
+		child.once("spawn", () => resolve({ ok: true, method }));
+		child.once("error", (error) => resolve({ ok: false, method, reason: error.message }));
+		child.stdin!.end(Buffer.from(text, "utf-8"));
+		child.unref();
+	});
+}
+
 /**
  * 统一跨平台剪贴板复制服务：
  * 1. 首选终端原生 OSC 52 转义协议（零子进程、跨 SSH 宿主直达）；
  * 2. 本地系统原生工具轻量兜底（Windows clip.exe 确保 UTF-8，macOS pbcopy）。
+ *
+ * 回执语义：OSC 52 只能确认写入是否成功；本地工具以子进程 spawn/error 为真实结果。
  */
-export function copyToClipboardUnified(text: string): void {
-	if (!text) return;
+export async function copyToClipboardUnified(text: string): Promise<ClipboardResult> {
+	if (!text) return { ok: false, method: "none" };
+
 	const b64 = Buffer.from(text, "utf-8").toString("base64");
+	let osc52Ok = true;
 	try {
 		process.stdout.write(`\x1b]52;c;${b64}\x07`);
-	} catch {}
+	} catch {
+		osc52Ok = false;
+	}
 
 	if (process.platform === "win32" && !process.env["SSH_CONNECTION"]) {
-		try {
-			const child = spawn("cmd.exe", ["/c", "chcp 65001 >nul && clip"], {
-				stdio: ["pipe", "ignore", "ignore"],
-				windowsHide: true,
-			});
-			child.on("error", () => {});
-			child.stdin.end(Buffer.from(text, "utf-8"));
-			child.unref();
-		} catch {}
-	} else if (process.platform === "darwin" && !process.env["SSH_CONNECTION"]) {
-		try {
-			const child = spawn("pbcopy", [], {
-				stdio: ["pipe", "ignore", "ignore"],
-			});
-			child.on("error", () => {});
-			child.stdin.end(Buffer.from(text, "utf-8"));
-			child.unref();
-		} catch {}
+		return runClipboardCommand("cmd.exe", ["/c", "chcp 65001 >nul && clip"], text, "clip");
 	}
+	if (process.platform === "darwin" && !process.env["SSH_CONNECTION"]) {
+		return runClipboardCommand("pbcopy", [], text, "pbcopy");
+	}
+	return osc52Ok ? { ok: true, method: "osc52" } : { ok: false, method: "none", reason: "OSC 52 写入失败" };
 }
 
 /**
@@ -667,6 +697,10 @@ export function getPrevGraphemeIndex(text: string, cursorIndex: number): number 
 		}
 	}
 	return prevIndex;
+}
+
+export function countGraphemes(text: string): number {
+	return Array.from(graphemeSegmenter.segment(text)).length;
 }
 
 export function getNextGraphemeIndex(text: string, cursorIndex: number): number {

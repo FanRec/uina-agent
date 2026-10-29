@@ -8,7 +8,7 @@
  *    - trackH = max(1, viewport - thumbH)
  *    - thumbTop = round((scrollTop / maxScroll) * trackH)
  * 3. 单击轨道任意行快速定位跳转：点击行映射回 scrollTop 并平滑滚动；
- * 4. 悬停防抖气泡片（Position Chip）：指针在滚动条停留约 250ms 时向左侧浮现
+ * 4. 悬停气泡片（Position Chip）：指针悬停滚动条时向左侧浮现
  *    '62% · 340/540' 位置提示卡片；
  * 5. 纯净 ANSI 渲染与 noSelect 保护：与 MouseSelectionTracker 结合，划词复制绝不拾取滚动条。
  */
@@ -25,7 +25,6 @@ export const SCROLLBAR_THUMB_GLYPHS: Record<ScrollbarThumbStyle, string> = {
 };
 
 export const SCROLLBAR_THUMB = " ▐";
-export const SCROLLBAR_DWELL_MS = 250;
 
 export interface ScrollbarGeometry {
 	viewport: number;
@@ -44,8 +43,6 @@ export interface ScrollbarChip {
 
 export class ScrollbarGutterComponent implements Component {
 	private hoverRow: number | null = null;
-	private chipRow: number | null = null;
-	private dwellTimer: NodeJS.Timeout | null = null;
 	private enabled = true;
 	private thumbStyle: ScrollbarThumbStyle = "slim";
 
@@ -68,26 +65,6 @@ export class ScrollbarGutterComponent implements Component {
 	setHover(row: number | null): boolean {
 		if (this.hoverRow === row) return false;
 		this.hoverRow = row;
-
-		if (this.dwellTimer) {
-			clearTimeout(this.dwellTimer);
-			this.dwellTimer = null;
-		}
-
-		if (row !== null) {
-			if (this.chipRow !== null) {
-				// 已经开启气泡，随鼠标立即滑动更新
-				this.chipRow = row;
-			} else {
-				// 防抖 250ms 后弹出气泡，防止扫过时闪烁
-				this.dwellTimer = setTimeout(() => {
-					this.chipRow = this.hoverRow;
-				}, SCROLLBAR_DWELL_MS);
-			}
-		} else {
-			this.chipRow = null;
-		}
-
 		return true;
 	}
 
@@ -96,12 +73,7 @@ export class ScrollbarGutterComponent implements Component {
 	}
 
 	clearHover(): void {
-		if (this.dwellTimer) {
-			clearTimeout(this.dwellTimer);
-			this.dwellTimer = null;
-		}
 		this.hoverRow = null;
-		this.chipRow = null;
 	}
 
 	/**
@@ -168,7 +140,7 @@ export class ScrollbarGutterComponent implements Component {
 
 		// 悬停气泡片（Position Chip）：严格对标 dsh-TUI 悬浮徽标
 		let hoverChip: ScrollbarChip | undefined;
-		const activeChipRow = this.chipRow ?? (this.hoverRow !== null ? this.hoverRow : null);
+		const activeChipRow = this.hoverRow;
 		if (activeChipRow !== null && geo.maxScroll > 0 && activeChipRow >= 0 && activeChipRow < viewport) {
 			const jumpTop = this.mapRowToScrollTop(activeChipRow, geo);
 			const pct = Math.round((jumpTop / geo.maxScroll) * 100);

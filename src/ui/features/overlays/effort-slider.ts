@@ -170,7 +170,7 @@ export class EffortSlider implements Component, Focusable {
 			: `${C.inactive}未声明思考档位${C.reset}`;
 
 		return renderPanel({
-			title: "推理强度 (Reasoning effort)",
+			title: "思考强度",
 			body: [sliderBar, descRaw, hintsFor(this.keymap(), innerW)],
 			boxWidth,
 			leftPad,

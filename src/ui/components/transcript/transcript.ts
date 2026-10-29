@@ -14,6 +14,7 @@ import type {
 	MessageRenderer,
 	ToolRenderer,
 } from "../../../extensions/ui-contract.js";
+import { toReadableError } from "../../../presentation/copy.js";
 import type { PresentationNode, ToolNode, TurnNode } from "../../../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
 import { projectInputMessage } from "../../../session/recovery.js";
@@ -517,7 +518,7 @@ export class TranscriptContainer implements Component {
 				return lines;
 			}
 		} catch (error) {
-			failure = "[tool renderer " + item.name + ": " + String(error) + "]";
+			failure = `[工具卡渲染失败：${item.name} · ${toReadableError(error)}]`;
 		}
 		const text = item.result ?? "";
 		const lines = formatToolCardLines(item.name, text, item.elapsedMs, width, item.status, item.args, options);
@@ -530,7 +531,7 @@ export class TranscriptContainer implements Component {
 		try {
 			return this.markdownTransformer(text, { role, width, streaming });
 		} catch (error) {
-			return text + "\n[markdown renderer: " + String(error) + "]";
+			return text + `\n[Markdown 渲染失败：${toReadableError(error)}]`;
 		}
 	}
 	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;

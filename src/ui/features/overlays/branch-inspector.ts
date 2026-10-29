@@ -153,7 +153,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const nodes = this.nodes();
 		const selectedIndex = nodes.length === 0 ? -1 : Math.min(Math.max(0, this.selectedIndex), nodes.length - 1);
 		const entry = selectedIndex < 0 ? null : this.tryReadEntry(nodes[selectedIndex]!.id);
-		return formatNodeDetails(entry, this.detailWidth()).length;
+		return formatNodeDetails(entry, this.detailWidth(), this.lastReadFailed).length;
 	}
 
 	private detailWidth(): number {
@@ -163,10 +163,16 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		return Math.max(8, splitBudget - leftW);
 	}
 
+	/** 最近一次 read 是否失败（A14）：读取失败与未选中是两种状态，展示不得混同。 */
+	private lastReadFailed = false;
+
 	private tryReadEntry(id: string): HydratedSessionEntry | null {
 		try {
-			return this.sessionPort.read(id);
+			const entry = this.sessionPort.read(id);
+			this.lastReadFailed = false;
+			return entry;
 		} catch {
+			this.lastReadFailed = true;
 			return null;
 		}
 	}
@@ -252,7 +258,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		if (selectedIndex >= 0) selectedEntry = this.tryReadEntry(nodes[selectedIndex]!.id);
 
 		const leftRows = formatNodeList(nodes, selectedIndex, leftW);
-		const rightRows = formatNodeDetails(selectedEntry, rightW);
+		const rightRows = formatNodeDetails(selectedEntry, rightW, this.lastReadFailed);
 		const maxOffset = Math.max(0, rightRows.length - LIST_ROWS);
 		this.detailScrollOffset = Math.min(this.detailScrollOffset, maxOffset);
 		const visibleDetail = rightRows.slice(this.detailScrollOffset, this.detailScrollOffset + LIST_ROWS);
@@ -346,14 +352,18 @@ function getListWindowStart(itemCount: number, selectedIndex: number, visibleRow
 	return Math.max(0, Math.min(selectedIndex - Math.floor(visibleRows / 2), Math.max(0, itemCount - visibleRows)));
 }
 
-function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): string[] {
-	if (!entry) return [`${C.dim}(未选中任何节点)${C.reset}`];
+function formatNodeDetails(entry: HydratedSessionEntry | null, width: number, readFailed = false): string[] {
+	// A14：读取失败与未选中是两种状态，展示不得混同
+	if (!entry) return [`${C.dim}${readFailed ? "(节点读取失败)" : "(未选中任何节点)"}${C.reset}`];
 
 	const label = (name: string, value: string): string => `${C.dim}${name}:${C.reset} ${value}`;
 	const rows: string[] = [
 		label("节点", `${C.claude}${entry.id}${C.reset}`),
 		label("父级", `${entry.parentId ?? "(根节点)"}`),
-		label("序号", `${C.dim}#${entry.seq}${C.reset}  类型 ${entry.kind}`),
+		// A12：seq 为 0/缺失时不渲染占位序号
+		...(entry.seq > 0
+			? [label("序号", `${C.dim}#${entry.seq}${C.reset}  类型 ${entry.kind}`)]
+			: [label("类型", entry.kind)]),
 		label("时间", `${C.dim}${entry.timestamp}${C.reset}`),
 	];
 
@@ -388,7 +398,15 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 		if (message.role === "assistant" && message.tool_calls?.length) {
 			rows.push(`${C.dim}工具调用 (${message.tool_calls.length})${C.reset}`);
 			for (const call of message.tool_calls) {
-				rows.push(...wrapPlain(`${C.cyan}${call.name}${C.reset}(${JSON.stringify(call.args ?? {})})`, width));
+				// A13：详情补 call_id；args 缺失显式未知，空对象注明无参数，不再渲染成空括号或裸 JSON
+				const callId = call.id ? ` ${C.dim}#${call.id.slice(0, 8)}${C.reset}` : "";
+				const argsText =
+					call.args === undefined
+						? `${C.dim}(参数未知)${C.reset}`
+						: typeof call.args === "object" && call.args !== null && Object.keys(call.args as object).length === 0
+							? `${C.dim}(无参数)${C.reset}`
+							: sanitizeRenderText(JSON.stringify(call.args));
+				rows.push(...wrapPlain(`${C.cyan}${sanitizeRenderText(call.name)}${C.reset}${callId}(${argsText})`, width));
 			}
 		}
 		return rows;

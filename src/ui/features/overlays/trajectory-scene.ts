@@ -4,6 +4,7 @@
  * 彻底消除模拟假数据，无事件时如实呈现空状态。
  */
 
+import { formatDuration } from "../../../presentation/copy.js";
 import { TOOL_STATUS_SPEC } from "../../../presentation/tool-status.js";
 import type { TrajectoryEventSource, TrajectoryNode, TrajectoryNodeStatus } from "../../../presentation/trajectory.js";
 import { highlightCode } from "../../components/primitives/syntax-text.js";
@@ -21,14 +22,6 @@ import {
 	panelTopBorder,
 	renderPanel,
 } from "../../layout/panel.js";
-
-function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-	const min = Math.floor(ms / 60000);
-	const sec = Math.floor((ms % 60000) / 1000);
-	return `${min}m${sec}s`;
-}
 
 function formatTime(ts: number): string {
 	return new Date(ts).toLocaleTimeString();
@@ -225,7 +218,7 @@ export class TrajectoryScene implements Component, Focusable {
 			const current = nodes[this.cursorIndex]!;
 			const glyph = statusGlyph(current.status);
 			const timeStr = current.startedAt === undefined ? "时间未知" : formatTime(current.startedAt);
-			const durStr = current.durationMs === undefined ? "耗时未知" : formatDuration(current.durationMs);
+			const durStr = current.durationMs === undefined ? "耗时未知" : formatDuration(current.durationMs, "precise");
 
 			output.push(
 				panelRow(
@@ -262,8 +255,8 @@ export class TrajectoryScene implements Component, Focusable {
 				const name = fitLine(h.name, nameWidth);
 				const cells = [
 					String(h.count).padStart(4),
-					formatDuration(h.totalDurationMs).padStart(8),
-					formatDuration(h.avgDurationMs).padStart(8),
+					formatDuration(h.totalDurationMs, "precise").padStart(8),
+					formatDuration(h.avgDurationMs, "precise").padStart(8),
 					String(h.errors).padStart(4),
 					String(h.totalTokens).padStart(7),
 				].join("  ");

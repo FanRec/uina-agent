@@ -16,7 +16,7 @@
 import { Key, matchesKey } from "../../core/keys.js";
 import { TextBuffer } from "../../core/text-buffer.js";
 import { type Component, CURSOR_MARKER, type Focusable } from "../../core/types.js";
-import { C, copyToClipboardUnified, sgr, visibleWidth } from "../../core/utils.js";
+import { C, type ClipboardResult, copyToClipboardUnified, sgr, visibleWidth } from "../../core/utils.js";
 import { fitLine } from "../../layout/fit.js";
 import { type ContextSegments, formatTokensCompact, renderSegmentedBar } from "../widgets/context-bar.js";
 
@@ -304,10 +304,9 @@ export class InputLine implements Component, Focusable {
 		return this.isAllSelected && this.text.length > 0;
 	}
 
-	copySelection(): void {
-		if (this.hasSelection()) {
-			copyToClipboardUnified(this.getText());
-		}
+	copySelection(): Promise<ClipboardResult> {
+		if (!this.hasSelection()) return Promise.resolve({ ok: false, method: "none" });
+		return copyToClipboardUnified(this.getText());
 	}
 
 	clearSelection(): void {
