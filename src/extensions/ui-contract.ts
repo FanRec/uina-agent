@@ -3,12 +3,14 @@
  */
 
 import type { ThinkingLevel } from "../core/types.js";
+import type { SlotAck } from "../presentation/composition/slots.js";
+import type { SurfaceCapabilities } from "../presentation/surface.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
 
+export type { SurfaceCapabilities } from "../presentation/surface.js";
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
-/** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
-export interface ModelPickerModel {
+/** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */ export interface ModelPickerModel {
 	id: string;
 	name: string;
 	description: string;
@@ -40,6 +42,8 @@ export interface MessageRenderOptions {
 	expanded?: boolean;
 }
 
+/** TUI-only 消息渲染器：终端行组件模型，由 TerminalUIContext 提供。
+ * 其他 surface 用各自的组件系统渲染 PresentationNode payload，不复用此契约。 */
 export type MessageRenderer<T = unknown> = (
 	message: CustomMessage<T>,
 	options: MessageRenderOptions,
@@ -129,27 +133,32 @@ export interface ExtensionUIContext {
 	/** 显示单行文本输入对话框 */
 	input(title: string, placeholder?: string, promptOptions?: PromptOptions): Promise<string | undefined>;
 
-	/** 向用户发送瞬态通知（悬浮于输入框右上角呼吸空隙，零高度不污染历史） */
-	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
+	/** 向用户发送瞬态通知（toast 队列，按 dedupeKey 去重、按等级排序）。
+	 * 返回受理回执：accepted 表示已入队展示，shadowed 表示同键通知仍在展示中被去重。 */
+	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): SlotAck;
 
 	/** 清除当前的瞬态通知 */
 	clearNotification(): void;
 
-	/** 设置状态栏/底栏文本（传 undefined 表示清除） */
-	setStatus(key: string, text: string | undefined): void;
+	/** 设置由当前扩展拥有的原子工作指示器；undefined 删除该指示器。
+	 * 工作指示器按 priority 并列展示（最多 3 条 + “+N”），回执表示是否被受理。 */
+	setWorking(key: string, message: string | undefined): SlotAck;
 
-	/** 设置由当前扩展拥有的原子工作指示器；undefined 删除该指示器。 */
-	setWorking(key: string, message: string | undefined): void;
-
-	/** 是否存在真实交互式 UI。非 TTY 兜底实现返回 false，扩展据此分支，
-	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
+	/** 是否存在真实交互式 UI。由 capabilities().interactive 派生；非 TTY 兜底实现返回 false，
+	 * 扩展据此分支，而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
+
+	/** 本 surface 的能力声明：扩展据此降级（无 overlays 时走行内表单，无 images 时不发图），
+	 * 不再用 hasUI() 布尔猜。 */
+	capabilities(): SurfaceCapabilities;
 
 	/** Open a typed application action without exposing terminal panel geometry. */
 	openFeature(action: BuiltinUIActionRequest): boolean;
 
-	/** Terminal components, overlays, editor control and terminal renderers. */
-	readonly terminal: TerminalUIContext;
+	/** Terminal components, overlays, editor control and terminal renderers.
+	 * 仅交互式终端 surface 提供；无头/未来 surface 为 undefined——扩展必须显式处理
+	 * “无终端”分支，或在 activate 早期用 capabilities() 判断。 */
+	readonly terminal?: TerminalUIContext;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */
@@ -162,6 +171,7 @@ export interface ToolRenderData {
 	readonly details?: unknown;
 	readonly images?: readonly import("../core/content.js").ImageContent[];
 }
+/** TUI-only 工具渲染器：与 MessageRenderer 同属终端行组件模型。 */
 export type ToolRenderer = (
 	tool: ToolRenderData,
 	options: { expanded: boolean; hovered: boolean; width: number; elapsedMs?: number },

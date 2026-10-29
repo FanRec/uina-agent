@@ -96,7 +96,8 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		const choices = registry.choices();
 		expect(choices.some((c) => c.id === "p1/dyn-m1")).toBe(true);
 		expect(choices.some((c) => c.id === "p1/dyn-m2")).toBe(true);
-		expect(choices.some((c) => c.id === "p1/unselectable-no-window")).toBe(false);
+		// C23：窗口未知的模型可见（描述“窗口未知”）但保持 discovery-only，不可解析
+		expect(choices.some((c) => c.id === "p1/unselectable-no-window")).toBe(true);
 
 		// 通过 resolve 解析动态模型
 		const resolvedDyn = registry.resolve("p1/dyn-m1");

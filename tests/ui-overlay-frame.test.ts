@@ -80,7 +80,7 @@ describe("浮层整框宽度一致", () => {
 	function assertUniform(name: string, lines: readonly string[], maxWidth: number): void {
 		expect(lines.length, name).toBeGreaterThan(0);
 		const widths = new Set(lines.map((l) => visibleWidth(l)));
-		expect([...widths].join(","), `${name} 行宽不齐`).toSatisfy((s: string) => widths.size === 1);
+		expect(widths.size, `${name} 行宽不齐`).toBe(1);
 		for (const line of lines) {
 			expect(visibleWidth(line), name).toBeLessThanOrEqual(maxWidth);
 		}
@@ -109,9 +109,10 @@ describe("浮层整框宽度一致", () => {
 				id: "g1",
 				name: "分组一",
 				description: "描述文本",
+				provider: "p",
 				models: [
-					{ id: "p/m1", name: "模型一", description: "很长的模型描述".repeat(4) },
-					{ id: "p/m2", name: "模型二", description: "另一个" },
+					{ id: "p/m1", name: "模型一", description: "很长的模型描述".repeat(4), provider: "p" },
+					{ id: "p/m2", name: "模型二", description: "另一个", provider: "p" },
 				],
 			},
 		];

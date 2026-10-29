@@ -1599,6 +1599,27 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W3 提交前。
 遗留未知：tts-bridge-protocol 仍为已知环境失败（沙箱缺 Python httpx），与本重构无关。
 
+[W4] 2026-10-29
+决策：Composition 中立层落地 `src/presentation/composition/slots.ts`（SlotRegistry：publish/retract/expire/snapshot；payload 只有 text/activity/notice 三种，**没有 custom**——自定义组件属 TerminalUIContext facet，进中立载荷就是把 Component 走私进 Core）。回执 SlotAck 只有受理/去重（shadowed）/溢出（overflow）语义，不承诺像素可见。TUI 的行渲染唯一入口 `src/ui/composition/render.ts`；toast 渲染在底部空隙自下而上（最新贴输入框），working 渲染在输入框上方并列至多 3 条 + “+N”。
+证据：tests/ui-slot-contract.test.ts（队列容量 3、dedupeKey 去重、TTL 心跳过期、activity upsert、header 覆盖、读取端枚举、setStatus 零引用）；tests/ui-surface-capabilities.test.ts。
+影响文件：src/presentation/composition/slots.ts、src/presentation/surface.ts（新增）、src/ui/composition/render.ts（新增）、src/ui/ui-host.ts。
+回滚点：W4 提交前。
+遗留未知：notice 槽（进转录的去重通知）本批未接生产写入者，Registry 已支持；首个真实需求到来时接线。
+
+[W4] 2026-10-29
+决策：`ExtensionUIContext` 开放面按 §3.6 一次改完：新增 `capabilities()`，`hasUI()` 由其派生；`notify`/`setWorking` 返回 `SlotAck`；`terminal` 改 optional，`createPrintUI` 不再伪造 terminal facet（无头面访问 terminal 得到 undefined，扩展用 capabilities() 分支）；`setStatus`/`UIHost.statuses`/runner scoped 包装与 no-op 全部删除（C4，核实全仓无调用者）。runner 的 scoped `showOverlay` 在无终端面显式抛错，不静默成功。受影响的项目扩展（embodiment 的 Markdown 转换器）按能力守卫改写。
+证据：pnpm typecheck 全绿；tests/extension-runner.test.ts 失效探针从 terminal 改为 notify；tests/hardening.test.ts 槽位清理断言更新。
+影响文件：src/extensions/ui-contract.ts、src/extensions/runner.ts、src/extensions/builtin.ts、src/ui/extension-ui-context.ts、.uina/extensions/embodiment/index.ts。
+回滚点：W4 提交前。
+遗留未知：无。
+
+[W4] 2026-10-29
+决策：可见性修复一组：C2 toast 队列（容量 3 + 文本去重 + 等级排序，复制回执 tone=copy 最高优先）；C5 压缩进度单一写入者（builtin 经 pi.ui.setWorking，tui.ts 删除重复消费，终态加即时 toast + 转录卡片双通道）；C6 working 并列；C8 provider_retry 删除并发 toast；C18 帧上方预算溢出显示“还有 N 行未显示”而不是静默 slice；C22 建议卡空结果显示“无匹配”卡（且该卡不可交互，不吞噬 Esc，busy 取消一步可达）；C23 contextWindow 未知的动态模型进入候选并显示“窗口未知”（仍 discovery-only，resolve 显式拒绝）；C24 空分组 Enter 给出面板内反馈。
+证据：tests/ui.test.ts（压缩单一写入者 + working 并列重写）、tests/provider-model-decoupling.test.ts、tests/ui-suggestions.test.ts、tests/ui-layout.test.ts 边界隔离用例仍绿。
+影响文件：src/ui/ui-host.ts、src/ui/tui.ts、src/ui/components/editor/suggestions.ts、src/ui/features/overlays/model-picker.ts、src/ai/providers.ts、src/ui/layout/frame.ts。
+回滚点：W4 提交前。
+遗留未知：Esc 阶梯的“无匹配卡不吞噬”是有意取舍：信息卡不可交互就不该消费按键；有可选条目时 Esc 仍先清卡。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

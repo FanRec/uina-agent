@@ -372,7 +372,6 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 	it("createExtensionUIContext 调度宿主接口", () => {
 		const hostPort = {
 			notify: vi.fn(),
-			setStatus: vi.fn(),
 			setWorking: vi.fn(),
 			setWidget: vi.fn(),
 			setHeader: vi.fn(),
@@ -389,13 +388,10 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		ctx.notify("test message", "warning");
 		expect(hostPort.notify).toHaveBeenCalledWith("test message", "warning");
 
-		ctx.setStatus("model", "gpt-4o");
-		expect(hostPort.setStatus).toHaveBeenCalledWith("model", "gpt-4o");
-
 		ctx.setWorking("search", "searching...");
 		expect(hostPort.setWorking).toHaveBeenCalledWith("search", "searching...");
 
-		expect(ctx.terminal.getEditorText()).toBe("current-text");
+		expect(ctx.terminal!.getEditorText()).toBe("current-text");
 	});
 });
 
@@ -662,10 +658,13 @@ describe("UI Components & Visual Rendering", () => {
 			host.setWorking("compaction", "正在压缩上下文：重建请求");
 			host.activityLine.update("tool", "正在执行工具: echo");
 			await vi.advanceTimersByTimeAsync(1_200);
+			// C6 并列语义：工作指示占独立行，回合活动行不再被单槽抢占，两者同屏
 			expect(terminal.getVisibleText()).toContain("正在压缩上下文：重建请求");
-			expect(terminal.getVisibleText()).not.toContain("正在执行工具: echo");
+			expect(terminal.getVisibleText()).toContain("正在执行工具: echo");
 			host.setWorking("compaction", undefined);
 			await vi.advanceTimersByTimeAsync(50);
+			// 工作指示撤回后行消失，回合活动行仍在
+			expect(terminal.getVisibleText()).not.toContain("正在压缩上下文：重建请求");
 			expect(terminal.getVisibleText()).toContain("正在执行工具: echo");
 		} finally {
 			host.stop();
@@ -1941,35 +1940,34 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.close();
 		});
 
-		it("InteractiveTUI 从 RuntimeEvent 驱动压缩进度显示，所有终态清除", async () => {
+		it("压缩进度单一写入者（C5）：工作指示经槽位层并列显示，终态清除并出卡", async () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 			const tui = createTestTUI({ columns: 120, rows: 30 });
 			try {
-				tui.tui.consume(
-					record({
-						type: "session_compact_progress",
-						operationId: "compact-1",
-						phase: "summarizing",
-						detail: "生成历史摘要（已接收 12000 字）",
-					}),
-				);
+				// 进度的唯一写入者是 builtin 扩展（pi.ui.setWorking）；这里从同一入口驱动。
+				tui.tui.extensionUI.setWorking("compaction", "正在压缩上下文：生成历史摘要（已接收 12000 字）");
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).toContain("正在压缩上下文：生成历史摘要（已接收 12000 字）");
 				expect(isHeartbeatActive(tui.host)).toBe(true);
 
-				tui.tui.consume(record({ type: "session_compact_progress", operationId: "compact-1", phase: "measuring" }));
+				// 第二条工作指示并列可见（C6），不是互相覆盖
+				tui.tui.extensionUI.setWorking("world", "正在等待世界回复");
 				await vi.advanceTimersByTimeAsync(50);
-				expect(tui.visibleText).toContain("测量压缩后上下文");
+				expect(tui.visibleText).toContain("正在等待世界回复");
+				expect(tui.visibleText).toContain("正在压缩上下文：生成历史摘要（已接收 12000 字）");
 
+				tui.tui.extensionUI.setWorking("compaction", undefined);
 				tui.tui.consume(
 					record({ type: "session_compact", operationId: "compact-1", status: "failed", error: "摘要模型请求终止" }),
 				);
 				await vi.advanceTimersByTimeAsync(50);
 				expect(tui.visibleText).not.toContain("正在压缩上下文");
-				// toast 会消失；失败原因必须作为终态卡片留在转录里。
+				// 失败原因作为终态卡片留在转录里；即时 toast 同步提示（W4 收口）。
 				expect(tui.visibleText).toContain("压缩失败");
 				expect(tui.visibleText).toContain("摘要模型请求终止");
+				tui.tui.extensionUI.setWorking("world", undefined);
+				await vi.advanceTimersByTimeAsync(50);
 				expect(isHeartbeatActive(tui.host)).toBe(false);
 			} finally {
 				tui.dispose();

@@ -71,15 +71,17 @@ export interface SuggestionRenderOptions {
 	items: Array<CommandItem | FileItem>;
 	loading?: boolean;
 	maxVisible?: number;
+	/** 空结果的显式文案（C22）：提供时渲染“无匹配”卡而不是空数组。 */
+	emptyText?: string;
 }
 
 /**
  * 格式化渲染 SuggestionCard 圆角浮层行集合
  */
 export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string[] {
-	const { type, title, query, columns, selectedIndex, items, loading = false, maxVisible = 5 } = opts;
+	const { type, title, query, columns, selectedIndex, items, loading = false, maxVisible = 5, emptyText } = opts;
 
-	if (items.length === 0 && !loading) return [];
+	if (items.length === 0 && !loading && emptyText === undefined) return [];
 
 	// 卡片不超终端宽（审计 D2）：窄终端下收缩内容列而不是溢出
 	const cardWidth = Math.max(1, columns);
@@ -88,7 +90,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 	// 1. 视口窗口计算
 	// 2. 顶边框：╭─ 标题 · 共 N 项 ───────────────────────╮
-	const fullTitle = loading ? `${title} · 扫描中` : `${title} · 共 ${items.length} 项`;
+	const fullTitle = loading ? `${title} · 扫描中` : items.length === 0 ? title : `${title} · 共 ${items.length} 项`;
 	const titleTag = `─ ${fullTitle} `;
 	const topFillLen = Math.max(1, cardWidth - 2 - visibleWidth(titleTag));
 	const topLine = `${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
@@ -102,6 +104,16 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 		);
 		const botFillLen = Math.max(1, cardWidth - 2);
 		output.push(`${borderCol}╰${"─".repeat(botFillLen)}╯${C.reset}`);
+		return output;
+	}
+
+	if (items.length === 0) {
+		const label = fitLine(`  ${emptyText ?? "无匹配"}`, usable);
+		const rowBody = `${C.dim}${label}${C.reset}`;
+		output.push(
+			`${borderCol}│${C.reset} ${rowBody}${" ".repeat(Math.max(0, usable - visibleWidth(rowBody)))} ${borderCol}│${C.reset}`,
+		);
+		output.push(`${borderCol}╰${"─".repeat(Math.max(1, cardWidth - 2))}╯${C.reset}`);
 		return output;
 	}
 

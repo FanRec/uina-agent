@@ -47,9 +47,7 @@ export function renderPanel(spec: PanelSpec): string[] {
 	const boxWidth = Math.floor(spec.boxWidth);
 	if (boxWidth < 4) return [];
 	const leftPad = Math.max(0, spec.leftPad ?? 0);
-	const pad = " ".repeat(leftPad);
 	const border = spec.borderColor ?? C.subtle;
-	const innerW = panelInnerWidth(boxWidth);
 
 	const rows: string[] = [
 		panelTopBorder(boxWidth, { title: spec.title, borderColor: border, titleColor: spec.titleColor, leftPad }),

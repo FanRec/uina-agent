@@ -47,11 +47,12 @@ describe("project extension runner", () => {
 		expect(messages).toEqual([{ customType: "test.message", content: "visible to provider" }]);
 		expect(entries).toEqual([{ customType: "test.entry", data: { ok: true } }]);
 		const old = (globalThis as Record<string, unknown>).__uinaTestExtension as {
-			ui: { terminal: { getEditorText(): string } };
+			ui: { notify(message: string): unknown };
 		};
 		await runner.reload();
 		expect((globalThis as Record<string, unknown>).__uinaDisposed).toBe(true);
-		expect(() => old.ui.terminal.getEditorText()).toThrow(/已失效/);
+		// 失效作用域的任何 UI 调用都必须显式失败；terminal 是可选 facet，不再充当失效探针
+		expect(() => old.ui.notify("probe")).toThrow(/已失效/);
 		await runner.dispose();
 	});
 

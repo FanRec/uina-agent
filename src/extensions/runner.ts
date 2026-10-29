@@ -15,6 +15,7 @@ import type {
 	RequestInspection,
 	RequestUsage,
 } from "../core/types.js";
+import { HEADLESS_CAPABILITIES } from "../presentation/surface.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
 import type { HookName, RuntimeHooks } from "../runtime/hooks.js";
 import type { Tool, ToolBroker, ToolExecutionResult } from "../tools/broker.js";
@@ -26,6 +27,7 @@ import { createRuntimeHooks } from "./runtime-hooks.js";
 import type { CallOptions, ExtensionModelAccess, ExtensionModelRequest, ServiceHandler } from "./services.js";
 import type {
 	BuiltinUIActionRequest,
+	Component,
 	CustomEntry,
 	CustomMessage,
 	ExtensionUIContext,
@@ -193,10 +195,7 @@ export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private readonly services = new Registrations<ServiceHandler>();
-	private readonly sharedUI = new Map<
-		string,
-		Map<string, Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0]>
-	>();
+	private readonly sharedUI = new Map<string, Map<string, Component | undefined>>();
 	private readonly extensions = new Map<string, ResourceScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
@@ -215,6 +214,7 @@ export class ExtensionRunner extends ExtensionHost {
 
 	attachUI(ui: ExtensionUIContext): void {
 		this.ui = ui;
+		if (ui.terminal === undefined) return;
 		for (const [slot, entries] of this.sharedUI) {
 			const current = [...entries.values()].at(-1);
 			if (slot === "header") ui.terminal.setHeader(current);
@@ -230,16 +230,13 @@ export class ExtensionRunner extends ExtensionHost {
 		return discoverExtensions(this.options.cwd, this.options.extensionPaths);
 	}
 
-	private setSharedUI(
-		slot: "header" | "footer",
-		owner: string,
-		component: Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0],
-	): void {
+	private setSharedUI(slot: "header" | "footer", owner: string, component: Component | undefined): void {
 		const entries = this.sharedUI.get(slot) ?? new Map();
 		entries.delete(owner);
 		if (component !== undefined) entries.set(owner, component);
 		this.sharedUI.set(slot, entries);
 		const current = [...entries.values()].at(-1);
+		if (this.ui.terminal === undefined) return;
 		if (slot === "header") this.ui.terminal.setHeader(current);
 		else this.ui.terminal.setFooter(current);
 	}
@@ -765,7 +762,7 @@ function ownedUI(
 	assertActive: () => void,
 	own: (dispose: ExtensionTeardown) => void,
 	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
-	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0]) => void,
+	setShared: (slot: "header" | "footer", component: Component | undefined) => void,
 	scopeSignal: AbortSignal,
 	runScoped: <T>(work: (signal: AbortSignal) => T | Promise<T>, signal?: AbortSignal) => Promise<T>,
 ): ExtensionUIContext {
@@ -781,8 +778,9 @@ function ownedUI(
 		setWidget: (name, component, options) => {
 			assertActive();
 			const scoped = key(name);
+			if (base.terminal === undefined) return;
 			base.terminal.setWidget(scoped, component, options);
-			ownKeyed(`widget:${name}`, () => base.terminal.setWidget(scoped, undefined));
+			ownKeyed(`widget:${name}`, () => base.terminal?.setWidget(scoped, undefined));
 		},
 		setHeader: (component) => {
 			assertActive();
@@ -796,6 +794,10 @@ function ownedUI(
 		},
 		showOverlay: (component, options) => {
 			assertActive();
+			if (base.terminal === undefined) {
+				// 无终端 surface：明确不受理，而不是静默成功（audit H1）。
+				throw new Error(`扩展 ${id} 调用 showOverlay，但当前 surface 无终端能力；应先用 capabilities() 判断`);
+			}
 			const handle = base.terminal.showOverlay(component, options);
 			own(() => handle.hide());
 			return handle;
@@ -813,18 +815,21 @@ function ownedUI(
 			return ownRegistration(registry.registerMarkdownTransformer(name, transformer, options));
 		},
 	};
-	const terminal = new Proxy(base.terminal, {
-		get: (target, property) => {
-			const override = Reflect.get(terminalOverrides as object, property) as unknown;
-			if (override !== undefined) return override;
-			const value = Reflect.get(target as object, property) as unknown;
-			if (typeof value !== "function") return value;
-			return (...args: unknown[]) => {
-				assertActive();
-				return (value as (...inner: unknown[]) => unknown).apply(target, args);
-			};
-		},
-	});
+	const terminal: TerminalUIContext | undefined =
+		base.terminal === undefined
+			? undefined
+			: new Proxy(base.terminal, {
+					get: (target, property) => {
+						const override = Reflect.get(terminalOverrides as object, property) as unknown;
+						if (override !== undefined) return override;
+						const value = Reflect.get(target as object, property) as unknown;
+						if (typeof value !== "function") return value;
+						return (...args: unknown[]) => {
+							assertActive();
+							return (value as (...inner: unknown[]) => unknown).apply(target, args);
+						};
+					},
+				});
 	const overrides: Partial<ExtensionUIContext> = {
 		terminal,
 		select: (title, options, promptOptions) => {
@@ -872,18 +877,16 @@ function ownedUI(
 			}
 			return base.openFeature({ ...action, signal });
 		},
-		setStatus: (name, text) => {
-			assertActive();
-			const scoped = key(name);
-			base.setStatus(scoped, text);
-			ownKeyed(`status:${name}`, () => base.setStatus(scoped, undefined));
-		},
 		setWorking: (name, message) => {
 			assertActive();
 			const scoped = key(name);
-			base.setWorking(scoped, message);
-			ownKeyed(`working:${name}`, () => base.setWorking(scoped, undefined));
+			const ack = base.setWorking(scoped, message);
+			ownKeyed(`working:${name}`, () => {
+				base.setWorking(scoped, undefined);
+			});
+			return ack;
 		},
+		capabilities: () => base.capabilities(),
 	};
 	return new Proxy(base, {
 		get: (target, property) => {
@@ -906,32 +909,16 @@ export function createPrintUI(
 		select: async () => undefined,
 		confirm: async () => false,
 		input: async () => undefined,
-		notify: write,
-		clearNotification: () => {},
-		setStatus: () => {},
-		setWorking: () => {},
-		hasUI: () => false,
-		openFeature: () => false,
-		terminal: {
-			setWidget: () => {},
-			setHeader: () => {},
-			setFooter: () => {},
-			showOverlay: () => ({
-				hide() {},
-				setHidden() {},
-				requestRender() {},
-				isHidden: () => true,
-				focus() {},
-				unfocus() {},
-				isFocused: () => false,
-			}),
-			openGutter: () => false,
-			pasteToEditor: () => {},
-			setEditorText: () => {},
-			getEditorText: () => "",
-			registerMessageRenderer: () => () => {},
-			registerToolRenderer: () => () => {},
-			registerMarkdownTransformer: () => () => {},
+		// print 面把通知直接写出去：受理即已表达，无像素概念。
+		notify: (message, type) => {
+			write(message, type);
+			return { accepted: true };
 		},
+		clearNotification: () => {},
+		// 无展示面可承载工作指示：明确不受理，不静默成功（audit H1）。
+		setWorking: () => ({ accepted: false }),
+		hasUI: () => false,
+		capabilities: () => HEADLESS_CAPABILITIES,
+		openFeature: () => false,
 	};
 }

@@ -12,6 +12,7 @@ import type {
 	ExtensionUIContext,
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
+import { createSlotRegistry, type SlotAck } from "../presentation/composition/slots.js";
 import type { PresentationNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import type { SessionEntry } from "../session/types.js";
@@ -36,6 +37,7 @@ import {
 	ScrollbarGutterComponent,
 	TimelineRailComponent,
 } from "./components/widgets/index.js";
+import { renderActivityLines, renderToastLines } from "./composition/render.js";
 import { ComponentBoundary } from "./core/component-boundary.js";
 import { FocusManager } from "./core/focus.js";
 import { resolveGutterAction } from "./core/gutter.js";
@@ -157,8 +159,6 @@ export class UIHost implements UIHostContextPort {
 	private heartbeatTimer: NodeJS.Timeout | null = null;
 	/** busy 动画需要重绘（转圈 spinner、耗时计时器）。仅作心跳状态源标志。 */
 	private busyAnimation = false;
-	private readonly workingContributions = new Map<string, { message: string; startedAt: number; sequence: number }>();
-	private contributionSequence = 0;
 	private providerRetryMessage?: string;
 	/** 本次重试提示的起点（HostEventRecord.at）；缺失时不显示耗时。 */
 	private providerRetryStartedAt?: number;
@@ -173,8 +173,6 @@ export class UIHost implements UIHostContextPort {
 		loading: boolean;
 	} | null = null;
 	private suggestionGeneration = 0;
-
-	private readonly statuses = new Map<string, { text: string; sequence: number }>();
 
 	private activeModalId: string | null = null;
 	private activeModalHandle: OverlayHandle | null = null;
@@ -191,13 +189,6 @@ export class UIHost implements UIHostContextPort {
 	private viewportStatusText = "";
 	/** Geometry of the most recently rendered frame; reused by scroll/anchor paths. */
 	private lastLayout: FrameLayout | null = null;
-	private copyToastText = "";
-	private copyToastTimer: NodeJS.Timeout | null = null;
-	private notificationToast: {
-		message: string;
-		type: "info" | "warning" | "error";
-		timer?: NodeJS.Timeout;
-	} | null = null;
 
 	startAutoScroll(direction: "up" | "down"): void {
 		this.scroll.startAutoScroll(direction, () => {
@@ -215,13 +206,20 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	showCopyToast(text: string): void {
-		this.copyToastText = text;
+		// 复制回执也是 toast：进队列、按内容去重，2s 过期（audit C2）。
+		this.composition.publish(
+			{
+				id: `toast:${++this.toastSeq}`,
+				slot: "toast",
+				priority: 40,
+				ttlMs: 2000,
+				dedupeKey: `copy:${text}`,
+				payload: { kind: "text", text, level: "info", tone: "copy" },
+			},
+			Date.now(),
+		);
+		this.scheduleToastExpiry(2000);
 		this.requestRender();
-		if (this.copyToastTimer) clearTimeout(this.copyToastTimer);
-		this.copyToastTimer = setTimeout(() => {
-			this.copyToastText = "";
-			this.requestRender();
-		}, 2000);
 	}
 
 	private onCopyOnSelect = (text: string): void => {
@@ -338,9 +336,12 @@ export class UIHost implements UIHostContextPort {
 	 * 本方法按各自已钉住的行为收敛，恒消费事件。
 	 */
 	private handleEscapeKey(): void {
+		// “无匹配”提示卡不可交互（C22），不吞噬 Esc：busy 回合取消仍一步可达。
+		const actionableSuggestions =
+			this.activeSuggestions !== null && (this.activeSuggestions.items.length > 0 || this.activeSuggestions.loading);
 		if (this.overlayStack.hasVisible) {
 			this.overlayStack.hideTopOverlay();
-		} else if (this.activeSuggestions) {
+		} else if (actionableSuggestions) {
 			this.clearSuggestions();
 		} else if (this.busy) {
 			this.cancelTurn("escape");
@@ -434,19 +435,13 @@ export class UIHost implements UIHostContextPort {
 		this.running = false;
 		this.transcript.smoothReveal.setEnabled(false);
 		this.stopAutoScroll();
-		this.workingContributions.clear();
+		for (const activity of this.composition.snapshot("activity")) this.composition.retract(activity.id);
+		for (const toast of this.composition.snapshot("toast")) this.composition.retract(toast.id);
+		for (const timer of this.toastTimers) clearTimeout(timer);
+		this.toastTimers.clear();
 		this.providerRetryMessage = undefined;
 		this.stopAnimation();
 		this.stopHeartbeat();
-		if (this.notificationToast?.timer) {
-			clearTimeout(this.notificationToast.timer);
-			this.notificationToast = null;
-		}
-		if (this.copyToastTimer) {
-			clearTimeout(this.copyToastTimer);
-			this.copyToastTimer = null;
-		}
-		this.copyToastText = "";
 		this.mouseTracker.clear();
 		this.overlayStack.clear();
 		this.clearSuggestions();
@@ -889,30 +884,27 @@ export class UIHost implements UIHostContextPort {
 			const filtered = commands.filter(
 				(c) => c.name.toLowerCase().includes(query) || c.description.toLowerCase().includes(query),
 			);
-			if (filtered.length > 0) {
-				const prevSelected =
-					previous?.type === "command" ? (previous.items[previous.selectedIndex] as CommandItem)?.name : undefined;
-				let newIndex = 0;
-				if (prevSelected) {
-					const found = filtered.findIndex((c) => c.name === prevSelected);
-					if (found >= 0) newIndex = found;
-				}
-				this.activeSuggestions = {
-					type: "command",
-					query: detection.query,
-					start: detection.start,
-					end: detection.end,
-					items: filtered.map((c) => ({
-						name: c.name,
-						description: c.description,
-						hasArgs: Boolean(c.hasArgs),
-					})),
-					selectedIndex: newIndex,
-					loading: false,
-				};
-			} else {
-				this.activeSuggestions = null;
+			const prevSelected =
+				previous?.type === "command" ? (previous.items[previous.selectedIndex] as CommandItem)?.name : undefined;
+			let newIndex = 0;
+			if (prevSelected) {
+				const found = filtered.findIndex((c) => c.name === prevSelected);
+				if (found >= 0) newIndex = found;
 			}
+			// 空结果也是可见状态（audit C22）：显示“无匹配”卡，而不是静默消失
+			this.activeSuggestions = {
+				type: "command",
+				query: detection.query,
+				start: detection.start,
+				end: detection.end,
+				items: filtered.map((c) => ({
+					name: c.name,
+					description: c.description,
+					hasArgs: Boolean(c.hasArgs),
+				})),
+				selectedIndex: newIndex,
+				loading: false,
+			};
 		} else if (detection.type === "file") {
 			this.activeSuggestions = {
 				type: "file",
@@ -940,18 +932,15 @@ export class UIHost implements UIHostContextPort {
 						this.requestRender();
 						return;
 					}
-					this.activeSuggestions =
-						candidates.length > 0
-							? {
-									type: "file",
-									query: detection.query,
-									start: detection.start,
-									end: detection.end,
-									items: candidates,
-									selectedIndex: 0,
-									loading: false,
-								}
-							: null;
+					this.activeSuggestions = {
+						type: "file",
+						query: detection.query,
+						start: detection.start,
+						end: detection.end,
+						items: candidates,
+						selectedIndex: 0,
+						loading: false,
+					};
 					this.requestRender();
 				},
 				(error: unknown) => {
@@ -978,54 +967,75 @@ export class UIHost implements UIHostContextPort {
 	// UIHostContextPort 实现
 	// =========================================================================
 
-	notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs = 3000): void {
-		if (this.notificationToast?.timer) {
-			clearTimeout(this.notificationToast.timer);
-		}
-		let timer: NodeJS.Timeout | undefined;
-		if (timeoutMs > 0) {
-			timer = setTimeout(() => {
-				this.clearNotification();
-			}, timeoutMs);
-			timer.unref?.();
-		}
-		this.notificationToast = { message, type, timer };
+	/** 槽位注册表（Composition 中立层）的 surface 侧所有权；渲染在 renderCurrentFrame。 */
+	readonly composition = createSlotRegistry();
+	private toastSeq = 0;
+	private toastTimers = new Set<NodeJS.Timeout>();
+
+	notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs = 3000): SlotAck {
+		const ack = this.composition.publish(
+			{
+				id: `toast:${++this.toastSeq}`,
+				slot: "toast",
+				priority: type === "error" ? 30 : type === "warning" ? 20 : 10,
+				...(timeoutMs > 0 ? { ttlMs: timeoutMs } : {}),
+				dedupeKey: message,
+				payload: { kind: "notice", text: message, level: type },
+			},
+			Date.now(),
+		);
+		if (ack.accepted && timeoutMs > 0) this.scheduleToastExpiry(timeoutMs);
 		this.requestRender();
+		return ack;
+	}
+
+	private scheduleToastExpiry(ttlMs: number): void {
+		const timer = setTimeout(() => {
+			this.toastTimers.delete(timer);
+			if (this.composition.expire(Date.now()).length > 0) this.requestRender();
+		}, ttlMs);
+		timer.unref?.();
+		this.toastTimers.add(timer);
 	}
 
 	clearNotification(): void {
-		if (this.notificationToast) {
-			if (this.notificationToast.timer) {
-				clearTimeout(this.notificationToast.timer);
-			}
-			this.notificationToast = null;
-			this.requestRender();
-		}
-	}
-
-	getNotificationToast(): { message: string; type: "info" | "warning" | "error" } | null {
-		if (!this.notificationToast) return null;
-		return { message: this.notificationToast.message, type: this.notificationToast.type };
-	}
-
-	setStatus(key: string, text: string | undefined): void {
-		if (text) this.statuses.set(key, { text, sequence: ++this.contributionSequence });
-		else this.statuses.delete(key);
+		const toasts = this.composition.snapshot("toast");
+		if (toasts.length === 0) return;
+		for (const toast of toasts) this.composition.retract(toast.id);
 		this.requestRender();
 	}
 
-	setWorking(key: string, message: string | undefined): void {
-		if (message === undefined) this.workingContributions.delete(key);
-		else {
-			const previous = this.workingContributions.get(key);
-			this.workingContributions.set(key, {
-				message,
-				startedAt: previous?.startedAt ?? Date.now(),
-				sequence: ++this.contributionSequence,
-			});
+	/** 展示中最显著的一条 toast（最高优先级，同级取最新）；队列为空返回 null。 */
+	getNotificationToast(): { message: string; type: "info" | "warning" | "error" } | null {
+		const toasts = this.composition.snapshot("toast").filter((t) => t.payload.kind === "notice");
+		const latest = toasts[0];
+		if (!latest || latest.payload.kind !== "notice") return null;
+		return { message: latest.payload.text, type: latest.payload.level };
+	}
+
+	/** working 并列展示（C6）：写入 activity 槽，回执表示受理；undefined 撤回。 */
+	setWorking(key: string, message: string | undefined): SlotAck {
+		if (message === undefined) {
+			this.composition.retract(`activity:${key}`);
+			this.updateHeartbeat();
+			this.requestRender();
+			return { accepted: true };
 		}
+		const previous = this.composition.snapshot("activity").find((c) => c.id === `activity:${key}`);
+		const startedAt =
+			previous && previous.payload.kind === "activity" ? (previous.payload.startedAt ?? Date.now()) : Date.now();
+		const ack = this.composition.publish(
+			{
+				id: `activity:${key}`,
+				slot: "activity",
+				priority: 100,
+				payload: { kind: "activity", label: message, startedAt },
+			},
+			Date.now(),
+		);
 		this.updateHeartbeat();
 		this.requestRender();
+		return ack;
 	}
 
 	/** 当前 Provider 重试状态。独立于回合 ActivityLine，直到恢复或回合结束才清除。 */
@@ -1172,12 +1182,7 @@ export class UIHost implements UIHostContextPort {
 					this.providerRetryStartedAt === undefined ? 0 : Math.max(0, Date.now() - this.providerRetryStartedAt),
 					statusWidth,
 				)
-			: this.workingContributions.size === 0
-				? this.activityLine.getHeaderString(statusWidth)
-				: (() => {
-						const working = [...this.workingContributions.values()].sort((a, b) => b.sequence - a.sequence)[0]!;
-						return formatWorkingHeader(working.message, Date.now() - working.startedAt, statusWidth);
-					})();
+			: this.activityLine.getHeaderString(statusWidth);
 		const viewportLabel = scrolled
 			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}${viewportStatusText}${C.reset}`
 			: "";
@@ -1203,23 +1208,23 @@ export class UIHost implements UIHostContextPort {
 		// must see it, otherwise the API silently does nothing.
 		const footerLines = this.footerComponent ? this.componentBoundary.render(this.footerComponent, inputWidth) : [];
 
-		const suggestionLines =
-			this.activeSuggestions && (this.activeSuggestions.items.length > 0 || this.activeSuggestions.loading)
-				? formatSuggestionCardLines({
-						type: this.activeSuggestions.type,
-						title: this.activeSuggestions.type === "command" ? "命令" : "文件",
-						query: this.activeSuggestions.query,
-						columns: inputWidth,
-						selectedIndex: this.activeSuggestions.selectedIndex,
-						items: this.activeSuggestions.items,
-						loading: this.activeSuggestions.loading,
-						maxVisible: 5,
-					})
-				: [];
-		const pendingLines =
-			!this.activeSuggestions || (this.activeSuggestions.items.length === 0 && !this.activeSuggestions.loading)
-				? this.pendingQueue.render(innerW)
-				: [];
+		const suggestionLines = this.activeSuggestions
+			? formatSuggestionCardLines({
+					type: this.activeSuggestions.type,
+					title: this.activeSuggestions.type === "command" ? "命令" : "文件",
+					query: this.activeSuggestions.query,
+					columns: inputWidth,
+					selectedIndex: this.activeSuggestions.selectedIndex,
+					items: this.activeSuggestions.items,
+					loading: this.activeSuggestions.loading,
+					maxVisible: 5,
+					// 空结果显式成卡（C22）：打字者能看到“无匹配”，而不是卡片凭空消失
+					...(this.activeSuggestions.items.length === 0 && !this.activeSuggestions.loading
+						? { emptyText: this.activeSuggestions.type === "command" ? "无匹配命令" : "无匹配文件" }
+						: {}),
+				})
+			: [];
+		const pendingLines = !this.activeSuggestions ? this.pendingQueue.render(innerW) : [];
 
 		const transcriptContentW = Math.max(18, reserveGutter ? Math.max(20, innerW - 1) - 2 : innerW - 1);
 		const frameModel = this.transcript.getFrameModel(transcriptContentW);
@@ -1230,8 +1235,12 @@ export class UIHost implements UIHostContextPort {
 			inputLines,
 			contextBarLines,
 			footerLines,
+			// working 并列行（C6）排在部件上方，同属输入框之上的浮动区
 			belowWidgetLines: this.widgetSlots.render("belowEditor", innerW),
-			aboveWidgetLines: this.widgetSlots.render("aboveEditor", innerW),
+			aboveWidgetLines: [
+				...renderActivityLines(this.composition.snapshot("activity"), innerW, Date.now()),
+				...this.widgetSlots.render("aboveEditor", innerW),
+			],
 			renderOverlays: (w, maxAboveH) => this.overlayStack.renderAbove(w, maxAboveH),
 			hasVisibleOverlay: this.overlayStack.hasVisible,
 			suggestionLines,
@@ -1319,26 +1328,18 @@ export class UIHost implements UIHostContextPort {
 		this.scroll.setTurnNeighbors(upTurnUid, downTurnUid);
 
 		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
-		let toastStr = "";
-		if (this.copyToastText) {
-			toastStr = `${C.suggestion}${this.copyToastText}${C.reset}`;
-		} else if (this.notificationToast) {
-			const col =
-				this.notificationToast.type === "error"
-					? C.error
-					: this.notificationToast.type === "warning"
-						? C.warning
-						: C.inactive;
-			toastStr = `${col}${this.notificationToast.message}${C.reset}`;
-		}
+		// toast 队列（audit C2）：最多 3 条堆叠在底部空隙，最新的贴住输入框。
+		// toastLines 按“最显著在前”排序；gap 自下而上放置 newest→older。
+		const toastLines = renderToastLines(this.composition.snapshot("toast"), transcriptContentW);
 
 		const gapCount = Math.max(0, height - visibleTranscript.length - aboveH - inputH - belowH);
 		const gapLines: string[] = [];
 		for (let g = 0; g < gapCount; g++) {
-			if (g === gapCount - 1 && toastStr) {
-				const toastW = visibleWidth(toastStr);
-				const pad = Math.max(0, transcriptContentW - toastW - 1);
-				gapLines.push(`${" ".repeat(pad)}${toastStr}`);
+			const fromBottom = gapCount - 1 - g;
+			if (fromBottom < toastLines.length) {
+				const line = toastLines[fromBottom]!;
+				const pad = Math.max(0, transcriptContentW - visibleWidth(line) - 1);
+				gapLines.push(`${" ".repeat(pad)}${line}`);
 			} else {
 				gapLines.push("");
 			}
@@ -1690,7 +1691,7 @@ export class UIHost implements UIHostContextPort {
 		const needed =
 			this.busyAnimation ||
 			this.providerRetryMessage !== undefined ||
-			this.workingContributions.size > 0 ||
+			this.composition.snapshot("activity").length > 0 ||
 			this.transcript.smoothReveal.isAnimating() ||
 			this.transcript.hasRunningTools();
 		if (needed && this.heartbeatTimer === null) {
@@ -1701,7 +1702,7 @@ export class UIHost implements UIHostContextPort {
 				if (
 					!this.busyAnimation &&
 					this.providerRetryMessage === undefined &&
-					this.workingContributions.size === 0 &&
+					this.composition.snapshot("activity").length === 0 &&
 					!this.transcript.smoothReveal.isAnimating() &&
 					!this.transcript.hasRunningTools()
 				) {

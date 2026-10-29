@@ -22,15 +22,6 @@ export interface InteractiveTUIOptions extends UIHostOptions {
 	features?: UIFeatureOptions;
 }
 
-/** 压缩进度 phase 的兜底文案；事件自带 detail 时优先用 detail。 */
-const COMPACT_PHASE_LABEL: Record<"queued" | "planning" | "summarizing" | "applying" | "measuring", string> = {
-	queued: "排队等待",
-	planning: "规划压缩边界",
-	summarizing: "生成历史摘要",
-	applying: "应用压缩",
-	measuring: "测量压缩后上下文",
-};
-
 /** 非 completed 压缩终态的卡片正文：toast 只闪一下，原因必须留在转录里。 */
 function compactionTerminalText(event: Extract<HostEvent, { type: "session_compact" }>): string {
 	if (event.status === "failed") return event.error ?? "未提供错误原因";
@@ -226,8 +217,8 @@ export class InteractiveTUI {
 				break;
 
 			case "session_compact":
-				// 终态（completed/failed/cancelled/noop）一律清除压缩工作状态。
-				this.host.setWorking("compaction", undefined);
+				// 进度与终态清理的唯一写入者是 builtin 扩展（C5：单一写入者）；
+				// TUI 只表达转录卡片与即时 toast。
 				if (m.status === "completed") {
 					this.host.addCompaction({
 						status: m.status,
@@ -237,7 +228,16 @@ export class InteractiveTUI {
 						collapsed: true,
 					});
 				} else {
-					// toast 会消失；失败原因与取消/noop 的结论必须留在转录里供用户判断。
+					// toast 即时提示 + 终态卡片留存原因（W2c 收口）。
+					this.host.notify(
+						m.status === "failed"
+							? "会话压缩失败，已保留原历史"
+							: m.status === "cancelled"
+								? "会话压缩被中止"
+								: "当前上下文无需压缩",
+						m.status === "failed" ? "error" : m.status === "cancelled" ? "warning" : "info",
+						3000,
+					);
 					this.host.addCompaction({
 						status: m.status,
 						summary: compactionTerminalText(m),
@@ -247,14 +247,10 @@ export class InteractiveTUI {
 				break;
 
 			case "provider_retry":
+				// 重试只保留 activity 状态行（C8）：toast 与状态行重复，且每次重试都闪会淹没真正要紧的通知。
 				this.host.setProviderRetryMessage(
 					`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`,
 					record.at,
-				);
-				this.host.notify(
-					`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`,
-					"warning",
-					Math.min(3000, Math.max(1000, m.delayMs)),
 				);
 				break;
 
@@ -343,7 +339,7 @@ export class InteractiveTUI {
 
 			case "session_compact_start":
 				// 压缩可能耗时数十秒（多块摘要 + 再压缩 + fit 测量），起点给一条提示，
-				// 终点由 session_compact 卡片表达；逐块进度不进转录（会刷屏）。
+				// 逐块进度由 builtin 扩展写工作指示（C5 单一写入者），终点由 session_compact 表达。
 				this.host.notify("正在压缩会话历史…", "info", 2500);
 				break;
 
@@ -367,8 +363,8 @@ export class InteractiveTUI {
 				// 扩展私有辅助词汇：由域专属表面表达（压缩卡片与 /prompt 快照）。
 				break;
 			case "session_compact_progress":
-				// 压缩全程写进状态行：摘要请求可能几十秒无中间结果，进度是唯一生命迹象。
-				this.host.setWorking("compaction", `正在压缩上下文：${m.detail ?? COMPACT_PHASE_LABEL[m.phase]}`);
+				// 逐块进度的唯一写入者是 builtin 扩展（pi.ui.setWorking，C5）；
+				// TUI 不重复写，避免同一指示器两条漂移的生命周期。
 				break;
 			default: {
 				// 穷尽性收口：走到这里说明 RuntimeEvent 有新类型未显式决策。

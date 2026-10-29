@@ -9,6 +9,8 @@ import type {
 	PromptOptions,
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
+import type { SlotAck } from "../presentation/composition/slots.js";
+import { INTERACTIVE_TERMINAL_CAPABILITIES, type SurfaceCapabilities } from "../presentation/surface.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { TextBuffer } from "./core/text-buffer.js";
 import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
@@ -17,10 +19,9 @@ import { C, graphemeSegmenter, visibleWidth } from "./core/utils.js";
 import { fitLine, wrapLine } from "./layout/fit.js";
 
 export interface UIHostContextPort {
-	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
+	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): SlotAck;
 	clearNotification?(): void;
-	setStatus(key: string, text: string | undefined): void;
-	setWorking(key: string, message: string | undefined): void;
+	setWorking(key: string, message: string | undefined): SlotAck;
 	setWidget(key: string, component: Component | undefined, placement?: WidgetPlacement, priority?: number): void;
 	setHeader(component: Component | undefined): void;
 	setFooter(component: Component | undefined): void;
@@ -448,32 +449,31 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			});
 		},
 
-		notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs?: number): void {
+		notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs?: number): SlotAck {
 			if (timeoutMs !== undefined) {
-				host.notify(message, type, timeoutMs);
-			} else {
-				host.notify(message, type);
+				return host.notify(message, type, timeoutMs);
 			}
+			return host.notify(message, type);
 		},
 
 		clearNotification(): void {
 			host.clearNotification?.();
 		},
 
-		setStatus(key: string, text: string | undefined): void {
-			host.setStatus(key, text);
-		},
-
-		setWorking(key: string, message: string | undefined): void {
-			host.setWorking(key, message);
+		setWorking(key: string, message: string | undefined): SlotAck {
+			return host.setWorking(key, message);
 		},
 
 		openFeature(action: BuiltinUIActionRequest): boolean {
 			return host.openFeature?.(action) ?? false;
 		},
 
+		capabilities(): SurfaceCapabilities {
+			return INTERACTIVE_TERMINAL_CAPABILITIES;
+		},
+
 		hasUI(): boolean {
-			return true;
+			return this.capabilities().interactive;
 		},
 
 		terminal,

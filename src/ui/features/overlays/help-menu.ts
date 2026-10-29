@@ -120,7 +120,6 @@ export class HelpMenu implements Component, Focusable {
 
 		// 双栏预算：leftW + rightW = boxWidth - 7（panelSplitRow 行模型）
 		const leftW = Math.floor((boxWidth - 7) * 0.46);
-		const rightW = boxWidth - 7 - leftW;
 		const midCol = leftW + 4;
 
 		// 1. 双栏数据

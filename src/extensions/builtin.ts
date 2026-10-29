@@ -45,6 +45,11 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		hasArgs: true,
 		argumentHint: "[scrollbar|timeline] [slim|block|wide]",
 		handler: (arg) => {
+			// 导航轨是终端 facet：无终端 surface（capabilities().overlays=false）明确提示，不静默成功
+			if (!ui.capabilities().interactive || ui.terminal === undefined) {
+				pi.ui.notify("当前 surface 无终端能力，/gutter 不可用", "warning", 2500);
+				return;
+			}
 			ui.terminal.openGutter(arg);
 		},
 	});

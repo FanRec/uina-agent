@@ -6,7 +6,7 @@
  * 2. 节点身份稳定（turn:${n} / turn:${n}:tool:${callId}），与展示面无关；
  * 3. 时间只来自 Fact 的 at，缺任一端 durationMs 保持 undefined。
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
 import type { HostEventRecord } from "../src/host/events.js";
@@ -317,12 +317,20 @@ describe("TrajectoryProjection（节点消费者）", () => {
 });
 
 describe("展示层静态约束", () => {
-	it("presentation 目录不出现时钟、进程、终端与文件模块", () => {
+	it("presentation 目录不出现时钟、进程、终端与文件模块（递归含子目录）", () => {
 		const dir = new URL("../src/presentation/", import.meta.url);
 		const forbidden = /Date\.now|performance\.now|setInterval|setTimeout|process\.|node:fs|node:process|node:readline/;
-		for (const name of readdirSync(dir)) {
-			expect(readFileSync(new URL(name, dir), "utf8"), name).not.toMatch(forbidden);
-		}
+		const walk = (url: URL): void => {
+			for (const name of readdirSync(url)) {
+				const child = new URL(`${name}${name.endsWith("/") ? "" : "/"}`, url);
+				if (statSync(child).isDirectory()) {
+					walk(child);
+					continue;
+				}
+				expect(readFileSync(child, "utf8"), name).not.toMatch(forbidden);
+			}
+		};
+		walk(dir);
 	});
 });
 

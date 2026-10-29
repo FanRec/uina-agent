@@ -1039,12 +1039,17 @@ export class ModelRegistry {
 		for (const [providerId, models] of this.discovered.entries()) {
 			const group = ensureGroup(providerId);
 			for (const m of models) {
-				if (m.contextWindow && !group.models.has(m.id)) {
-					const ctx = m.contextWindow >= 1000 ? `${Math.round(m.contextWindow / 1000)}k` : `${m.contextWindow}`;
+				if (!group.models.has(m.id)) {
+					// contextWindow 未知的模型同样进入候选（C23）：能力未知保持未知，
+					// 显示“窗口未知”而不是静默消失；选中后 resolve 仍按 discovery-only 拒绝。
+					const ctx =
+						m.contextWindow === undefined
+							? "上下文窗口未知"
+							: `上下文 ~${m.contextWindow >= 1000 ? `${Math.round(m.contextWindow / 1000)}k` : m.contextWindow}`;
 					group.models.set(m.id, {
 						id: `${providerId}/${m.id}`,
 						name: m.id,
-						description: `上下文 ~${ctx}`,
+						description: ctx,
 						provider: providerId,
 					});
 				}

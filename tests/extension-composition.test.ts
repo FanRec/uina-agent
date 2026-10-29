@@ -17,6 +17,7 @@ import {
 	toolDoneNode,
 	toolStartNode,
 } from "./harness/index.js";
+import { createTerminalStub } from "./harness/ui/terminal-stub.js";
 
 const envs: IsolatedEnv[] = [];
 const runners: ExtensionRunner[] = [];
@@ -292,12 +293,12 @@ describe("extension composition", () => {
 		const footer = vi.fn();
 		host.attachUI({
 			...ui,
-			terminal: { ...ui.terminal, setHeader: header, setFooter: footer },
+			terminal: createTerminalStub({ setHeader: header, setFooter: footer }),
 		});
 		await host.load();
 		await activate(host, "later", (api) => {
-			api.ui.terminal.setHeader({ render: () => ["B"] });
-			api.ui.terminal.setFooter({ render: () => ["B"] });
+			api.ui.terminal!.setHeader({ render: () => ["B"] });
+			api.ui.terminal!.setFooter({ render: () => ["B"] });
 		});
 		await host.disposeProjects();
 		expect(header.mock.lastCall?.[0].render(80)).toEqual(["B"]);
@@ -456,6 +457,8 @@ describe("extension composition", () => {
 	});
 	it("renders tool details and Markdown through replaceable presentation contracts", async () => {
 		const host = runner(await temp());
+		// 渲染器注册走 TerminalUIContext（TUI facet）：测试装配终端桩，注册本身只进 registry
+		host.attachUI({ ...createPrintUI(() => {}), terminal: createTerminalStub() });
 		const api = await activate(host, "ui");
 		const transcript = new TranscriptContainer();
 		transcript.setRendererResolver({
@@ -464,7 +467,7 @@ describe("extension composition", () => {
 			markdown: (text, ctx) => host.registry.transformMarkdown(text, ctx),
 		});
 		host.registry.onChange(() => transcript.invalidate());
-		const remove = api.ui.terminal.registerToolRenderer("echo", (tool, options) => ({
+		const remove = api.ui.terminal!.registerToolRenderer("echo", (tool, options) => ({
 			render: () => [options.expanded ? "expanded" : "custom:" + JSON.stringify(tool.details)],
 		}));
 		transcript.startTurn(1, "user");
@@ -473,7 +476,7 @@ describe("extension composition", () => {
 		expect(transcript.render(80).join("")).toContain('custom:{"count":3}');
 		remove();
 		expect(transcript.render(80).join("")).not.toContain("custom:");
-		api.ui.terminal.registerMarkdownTransformer("replace", (text) => text.replace("user", "transformed"));
+		api.ui.terminal!.registerMarkdownTransformer("replace", (text) => text.replace("user", "transformed"));
 		expect(transcript.render(80).join("")).toContain("transformed");
 	});
 	it("accepts explicit CLI extension paths and rejects an absent path", () => {

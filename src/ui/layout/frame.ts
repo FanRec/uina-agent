@@ -89,9 +89,19 @@ export function computeFrame(input: FrameInput): FrameLayout {
 	const pendingLines = input.hasVisibleOverlay || input.pendingLines.length === 0 ? [] : [...input.pendingLines];
 
 	// The stack is ordered top → editor-adjacent; when the budget is exceeded
-	// keep the lines closest to the input box instead of the far ones.
+	// keep the lines closest to the input box instead of the far ones, and make
+	// the overflow visible instead of silently dropping rows (audit C18).
 	const aboveRaw = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines, ...pendingLines];
-	const aboveLines = aboveRaw.length > maxAboveH ? aboveRaw.slice(aboveRaw.length - maxAboveH) : aboveRaw;
+	const hiddenAbove = Math.max(0, aboveRaw.length - Math.max(0, maxAboveH - 1));
+	const aboveLines =
+		aboveRaw.length > maxAboveH
+			? maxAboveH >= 1
+				? [
+						`… 上方还有 ${hiddenAbove} 行未显示（浮层/部件超出高度预算）`,
+						...aboveRaw.slice(aboveRaw.length - maxAboveH + 1),
+					]
+				: []
+			: aboveRaw;
 	const aboveH = aboveLines.length;
 
 	const breathingGap = 1;

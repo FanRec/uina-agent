@@ -19,6 +19,8 @@ export class ModelPicker implements Component, Focusable {
 	private level: "groups" | "models" = "groups";
 	private selectedGroupIndex = 0;
 	private selectedModelIndex = 0;
+	/** 空分组的显式反馈（C24）：Enter 不再无响应，提示留在面板内直到下一次操作。 */
+	private notice?: string;
 
 	onPick?: (modelId: string) => void;
 	onClose?: () => void;
@@ -42,6 +44,7 @@ export class ModelPicker implements Component, Focusable {
 	}
 
 	navigateUp(): void {
+		this.notice = undefined;
 		if (this.groups.length === 0) return;
 		if (this.level === "groups") {
 			this.selectedGroupIndex = Math.max(0, this.selectedGroupIndex - 1);
@@ -51,6 +54,7 @@ export class ModelPicker implements Component, Focusable {
 	}
 
 	navigateDown(): void {
+		this.notice = undefined;
 		if (this.groups.length === 0) return;
 		if (this.level === "groups") {
 			this.selectedGroupIndex = Math.min(this.groups.length - 1, this.selectedGroupIndex + 1);
@@ -65,7 +69,11 @@ export class ModelPicker implements Component, Focusable {
 	confirm(): { action: "drilled" } | { action: "picked"; modelId: string } | null {
 		if (this.level === "groups") {
 			const group = this.groups[this.selectedGroupIndex];
-			if (!group || group.models.length === 0) return null;
+			if (!group || group.models.length === 0) {
+				this.notice = group ? `分组「${group.name}」暂无可用模型` : "暂无可用模型分组";
+				return null;
+			}
+			this.notice = undefined;
 			this.level = "models";
 			const mIdx = group.models.findIndex((m) => this.isCurrent(m));
 			this.selectedModelIndex = mIdx >= 0 ? mIdx : 0;
@@ -84,6 +92,7 @@ export class ModelPicker implements Component, Focusable {
 	back(): { action: "back" } | { action: "close" } {
 		if (this.level === "models") {
 			this.level = "groups";
+			this.notice = undefined;
 			return { action: "back" };
 		}
 		return { action: "close" };
@@ -124,7 +133,6 @@ export class ModelPicker implements Component, Focusable {
 		if (terminalWidth < 5) return [fitLine("模型", terminalWidth, "clip")];
 		const leftPad = terminalWidth >= 48 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 78));
-		const innerW = Math.max(1, boxWidth - 4);
 		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0];
 		const title = this.level === "groups" ? "切换模型服务商 (Providers)" : `选择模型 (${currentGroup?.name ?? "未知"})`;
 		const items = this.level === "groups" ? this.groups : (currentGroup?.models ?? []);
@@ -159,6 +167,7 @@ export class ModelPicker implements Component, Focusable {
 		const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(visibleCount / 2), items.length - visibleCount));
 		const endIndex = startIndex + visibleCount;
 		const body: string[] = [];
+		if (this.notice !== undefined) body.push(`${C.warning}⚠ ${this.notice}${C.reset}`);
 
 		if (items.length === 0) {
 			body.push(`${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`);

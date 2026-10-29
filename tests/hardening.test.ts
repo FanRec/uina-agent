@@ -9,6 +9,7 @@ import { MainScreenRenderer } from "../src/ui/core/renderer.js";
 import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
 import { IsolatedEnv, mockTool, Scenario, SubjectHarness } from "./harness/index.js";
+import { createTerminalStub } from "./harness/ui/terminal-stub.js";
 
 const tool = (name: string): Tool => mockTool(name, async () => ({ result: "ok", status: "succeeded" }));
 
@@ -90,29 +91,26 @@ describe("hardening: extension host honesty", () => {
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: new ToolBroker() });
 		runner.attachUI({
 			...createPrintUI(() => {}),
-			setStatus: set,
-			terminal: {
-				...createPrintUI(() => {}).terminal,
-				setWidget: set,
+			terminal: createTerminalStub({
+				setWidget: (key, component) => set(key, component),
 				setHeader: (value) => set("header", value),
 				setFooter: (value) => set("footer", value),
-			},
+			}),
 		});
 		const first = { render: () => ["first"] },
 			second = { render: () => ["second"] };
 		await runner.activateBuiltin("slots", (pi) => {
 			for (const component of [first, second]) {
-				pi.ui.setStatus("status", component.render()[0]);
-				pi.ui.terminal.setWidget("widget", component);
-				pi.ui.terminal.setHeader(component);
-				pi.ui.terminal.setFooter(component);
+				pi.ui.terminal!.setWidget("widget", component);
+				pi.ui.terminal!.setHeader(component);
+				pi.ui.terminal!.setFooter(component);
 			}
 		});
-		expect([...slots.values()]).toEqual(["second", second, second, second]);
+		expect([...slots.values()]).toEqual([second, second, second]);
 		expect(clears).toEqual([]);
 		await runner.dispose();
-		expect([...slots.values()]).toEqual([undefined, undefined, undefined, undefined]);
-		expect(clears).toHaveLength(4);
+		expect([...slots.values()]).toEqual([undefined, undefined, undefined]);
+		expect(clears).toHaveLength(3);
 	});
 	it("aborts an in-flight Extension UI prompt before activation teardown completes", async () => {
 		let promptSignal: AbortSignal | undefined;

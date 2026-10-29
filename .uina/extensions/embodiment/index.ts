@@ -156,9 +156,13 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 
 	// 4. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
 	//    确保 TUI / Markdown 渲染视图干净自然，不泄露动作标签代码给终端用户。
-	const unregisterMarkdown = pi.ui.terminal.registerMarkdownTransformer("embodiment.strip-cues", (md) =>
-		md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
-	);
+	//    转换器属终端 facet：无终端 surface（capabilities().richText=false）跳过注册。
+	const unregisterMarkdown =
+		pi.ui.terminal === undefined || !pi.ui.capabilities().richText
+			? undefined
+			: pi.ui.terminal.registerMarkdownTransformer("embodiment.strip-cues", (md) =>
+					md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
+				);
 
 	// 5. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
 	//    不再 safeStop（急停会暂停身体，过度惩罚一次回合打断；边界规范 §5）。
