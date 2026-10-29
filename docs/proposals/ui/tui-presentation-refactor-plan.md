@@ -1389,6 +1389,20 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W2a 提交。
 遗留未知：待 W2a 用测试证明 live/replay 的 ID 一致。
 
+[W2 执行规则] 2026-10-29（用户纠正后追加）
+决策：每个批次先设计细化卡，再**先删除该批次要替换的旧实现**（含调用方参数与测试），然后写新实现；同一批次内不允许旧推导与新投影双轨并存。W1 的 `onEventRecord` / ingest 目前只有测试消费者，W2a 必须把新事实层接入实时路径，否则视为未完成。
+证据：用户指出“一直在新增代码行数，旧代码没有清理”；git show 8babedf/95a477d 无删除。
+影响文件：W2a–W2e 各批次。
+回滚点：按批次 revert。
+遗留未知：删除旧实现会让中间态不可运行，因此删除与重写必须在同一提交内完成，测试绿后才提交。
+
+[W2a 预·撤回] 2026-10-29
+决策：撤回上一条“用 turnUid 替代 turn 序号”的预支。W1 的 Fact 只有 `turn: number`；恢复与回溯走 `replaceAll` 会清空旧节点，`turn:${n}:tool:${callId}` 不会跨段碰撞。按规划原文执行，不新增字段。
+证据：src/presentation/facts.ts 的 `turn.started` / `turn.ended` 只带数字；会话回溯计划用 replaceAll。
+影响文件：W2a 投影键。
+回滚点：W2a 提交。
+遗留未知：若同一进程内 rewind 后 turn 编号重新从 1 开始且未 replaceAll，则需再评估；W2b 的 rewind 测试会覆盖。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。
