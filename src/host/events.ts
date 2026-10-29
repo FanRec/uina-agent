@@ -23,6 +23,17 @@ export interface HostNoticeEvent {
 
 export type HostEventListener = (event: HostEvent) => void;
 
+/**
+ * 事件 + 宿主派发时刻。`at` 是唯一权威的时间事实：消费者不得再用接收时刻
+ * 替代（Presentation Core 的 ingest 直接读取它）。包装不改变 `event` 本身。
+ */
+export interface HostEventRecord {
+	readonly at: number;
+	readonly event: HostEvent;
+}
+
+export type HostEventRecordListener = (record: HostEventRecord) => void;
+
 /** Consumer snapshot: stable Host facts, independent of any UI implementation. */
 export interface HostSnapshot {
 	readonly modelName: string;

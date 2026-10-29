@@ -23,7 +23,7 @@ import { createSessionAccess } from "../session/access.js";
 import type { ProjectionPolicy } from "../agent/projection.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
-import type { HostEvent, HostEventListener, HostSnapshot } from "./events.js";
+import type { HostEvent, HostEventListener, HostEventRecordListener, HostSnapshot } from "./events.js";
 
 /**
  * 宿主：主体生命期的所有者。
@@ -69,6 +69,9 @@ export interface HostStartOptions {
 
 export class UinaHost {
 	private readonly listeners: Set<HostEventListener>;
+	private readonly recordListeners: Set<HostEventRecordListener>;
+	/** 唯一派发点：事件与带时刻的记录从同一处广播，消费者与记录订阅者不分叉。 */
+	private readonly dispatch: (event: HostEvent) => void;
 	private stopPromise?: Promise<void>;
 	private readonly directRuns = new Map<AbortController, Promise<ToolExecutionResult>>();
 	private reloading = 0;
@@ -91,10 +94,14 @@ export class UinaHost {
 			| import("../session/types.js").SessionCustomEntryRecord
 		)[],
 		listeners: Set<HostEventListener>,
+		recordListeners: Set<HostEventRecordListener>,
+		dispatch: (event: HostEvent) => void,
 		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
 		private readonly state: { stopping: boolean },
 	) {
 		this.listeners = listeners;
+		this.recordListeners = recordListeners;
+		this.dispatch = dispatch;
 	}
 
 	/** 当前 canonical 会话的 auxiliary 登记（store 活状态的副本）。
@@ -174,13 +181,23 @@ export class UinaHost {
 		try {
 			// 这些对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
 			const listeners = new Set<HostEventListener>();
+			const recordListeners = new Set<HostEventRecordListener>();
 			const state = { stopping: false };
 			const emit = (event: HostEvent): void => {
+				// 记录在派发点生成一次：所有监听者看到同一个 `at`，消费者不得自行再记时刻。
+				const record = { at: Date.now(), event } as const;
 				for (const listener of [...listeners]) {
 					try {
 						listener(event);
 					} catch (error) {
 						options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`);
+					}
+				}
+				for (const listener of [...recordListeners]) {
+					try {
+						listener(record);
+					} catch (error) {
+						options.onError?.(`事实消费者处理事件失败: ${errorMessage(error)}`);
 					}
 				}
 			};
@@ -314,6 +331,8 @@ export class UinaHost {
 				restoredEntries,
 				[...store.state.auxiliary],
 				listeners,
+				recordListeners,
+				emit,
 				state,
 			));
 		} catch (error) {
@@ -329,15 +348,20 @@ export class UinaHost {
 		};
 	}
 
+	/**
+	 * 事实记录订阅：与 subscribe 同一派发点，额外携带宿主派发时刻。
+	 * Presentation Core 只经此入口取事件；它不知道 Host 的存在，Host 也不认识它。
+	 */
+	onEventRecord(listener: HostEventRecordListener): () => void {
+		this.recordListeners.add(listener);
+		return () => {
+			this.recordListeners.delete(listener);
+		};
+	}
+
 	/** 向当前所有消费者广播。单个消费者抛错不影响其它消费者，但错误绝不静默。 */
 	emit(event: HostEvent): void {
-		for (const listener of [...this.listeners]) {
-			try {
-				listener(event);
-			} catch (error) {
-				this.options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`);
-			}
-		}
+		this.dispatch(event);
 	}
 
 	async send(input: AgentInput): Promise<void> {
@@ -590,6 +614,7 @@ export class UinaHost {
 				errors.push(error);
 			}
 			this.listeners.clear();
+			this.recordListeners.clear();
 			if (errors.length) throw new AggregateError(errors, "宿主关闭时发生错误");
 		})();
 		return this.stopPromise;

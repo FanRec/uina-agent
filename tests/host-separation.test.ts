@@ -8,7 +8,7 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { HostEvent } from "../src/host/events.js";
+import type { HostEvent, HostEventRecord } from "../src/host/events.js";
 import { describe, expect, test, UinaTestHarness } from "./harness/index.js";
 
 /** 一个普通项目扩展：注册一个工具。扩展装载也一并被这条路径验证。 */
@@ -133,6 +133,25 @@ describe("RC-1 宿主与消费者分离", () => {
 		const turnStart = second.find((e) => e.type === "turn_start");
 		expect(turnStart).toMatchObject({ type: "turn_start", userText: "第三次" });
 		expect(second.at(-1)?.type).toBe("agent_settled");
+	});
+
+	test("事实记录订阅与事件订阅共享同一派发点与同一时刻", async ({ uina, scenario }) => {
+		scenario.reply("收到");
+
+		const events: HostEvent[] = [];
+		const records: HostEventRecord[] = [];
+		const offEvents = uina.host.subscribe((event) => events.push(event));
+		const offRecords = uina.host.onEventRecord((record) => records.push(record));
+
+		await uina.send("记录测试");
+		await uina.waitForIdle();
+
+		expect(records.length).toBe(events.length);
+		expect(records.map((record) => record.event)).toEqual(events);
+		expect(records.every((record) => typeof record.at === "number" && record.at > 0)).toBe(true);
+
+		offRecords();
+		offEvents();
 	});
 
 	test("会话由宿主拥有：dispose 后重开能恢复历史", async ({ uina, scenario }) => {
