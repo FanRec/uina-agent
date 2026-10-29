@@ -5,6 +5,7 @@
 import { Key, matchesKey } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C } from "../../core/utils.js";
+import { hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
 import {
 	panelBottomBorder,
 	panelCrossDivider,
@@ -27,9 +28,10 @@ const SHORTCUTS: readonly HelpRow[] = [
 	["Alt+H", "会话历史分支检视 (History)"],
 	["Alt+↑ / Alt+Q", "待办队列撤回至草稿"],
 	["Ctrl+Enter", "紧急打断并立即插队发送"],
-	["Shift+Tab", "循环切换思考强度 (off/high/max)"],
+	["Shift+Tab", "循环切换思考强度（档位随 Provider 声明）"],
 	["Ctrl+O", "展开/收起思考或会话卡片"],
 	["Alt+O", "全展开/全折叠思考链"],
+	["Ctrl+L", "展开/收起上下文详情栏"],
 	["Shift+Enter", "多行换行编辑"],
 	["Esc", "取消浮层 / 打断并递送待办"],
 	["?", "在空行快速唤起/收起此帮助"],
@@ -69,40 +71,56 @@ export class HelpMenu implements Component, Focusable {
 		this.commands = [...commands];
 	}
 
+	keymap(): Keymap {
+		return {
+			capturing: true,
+			bindings: [
+				{ keys: [Key.up], action: "overlay.scrollUp", label: "↑↓/j/k 滚动" },
+				{ keys: [Key.down], action: "overlay.scrollDown", label: "↑↓/j/k 滚动" },
+				{ keys: ["k"], action: "overlay.scrollUp", label: "↑↓/j/k 滚动" },
+				{ keys: ["j"], action: "overlay.scrollDown", label: "↑↓/j/k 滚动" },
+				{ keys: [Key.pageup], action: "overlay.pageUp", label: "PgUp/PgDn 翻页" },
+				{ keys: [Key.pagedown], action: "overlay.pageDown", label: "PgUp/PgDn 翻页" },
+				{ keys: ["?"], action: "overlay.toInput", label: "? 转为普通输入" },
+				{ keys: [Key.escape], action: "overlay.close", label: "Esc 收起" },
+			],
+		};
+	}
+
 	handleInput(data: string): void {
 		// 忽略终端鼠标移动报告序列 (SGR 模式 \x1b[<... 或 X10 \x1b[M...)
 		if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) {
 			return;
 		}
-		if (data === "?") {
-			if (this.onConvertToInput) {
-				this.onConvertToInput("?");
-			} else {
+		const action = resolve(this.keymap(), data);
+		const step = matchesKey(data, Key.pageup) || matchesKey(data, Key.pagedown) ? 6 : 1;
+		switch (action) {
+			case "overlay.scrollUp":
+				this.scrollOffset = Math.max(0, this.scrollOffset - step);
+				this.onRequestRender?.();
+				return;
+			case "overlay.scrollDown":
+				this.scrollOffset += step;
+				this.onRequestRender?.();
+				return;
+			case "overlay.pageUp":
+				this.scrollOffset = Math.max(0, this.scrollOffset - 6);
+				this.onRequestRender?.();
+				return;
+			case "overlay.pageDown":
+				this.scrollOffset += 6;
+				this.onRequestRender?.();
+				return;
+			case "overlay.toInput":
+				if (this.onConvertToInput) this.onConvertToInput("?");
+				else this.onClose?.();
+				return;
+			case "overlay.close":
 				this.onClose?.();
-			}
-			return;
-		}
-		const pageKey = matchesKey(data, Key.pageup) || matchesKey(data, Key.pagedown);
-		const step = pageKey ? 6 : 1;
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.pageup) || data === "k" || data === "K") {
-			this.scrollOffset = Math.max(0, this.scrollOffset - step);
-			this.onRequestRender?.();
-			return;
-		}
-		if (matchesKey(data, Key.down) || matchesKey(data, Key.pagedown) || data === "j" || data === "J") {
-			this.scrollOffset += step;
-			this.onRequestRender?.();
-			return;
-		}
-		if (
-			matchesKey(data, Key.escape) ||
-			matchesKey(data, Key.enter) ||
-			data === "q" ||
-			data === "Q" ||
-			data === " " ||
-			(!data.startsWith("\x1b") && data.length > 0)
-		) {
-			this.onClose?.();
+				return;
+			default:
+				// F5：关闭键限定 Esc/?；其他键既不关闭也不吞掉——未绑定键交还原分发
+				return;
 		}
 	}
 
@@ -149,12 +167,12 @@ export class HelpMenu implements Component, Focusable {
 
 		// 3. 底部提示区
 		output.push(panelDivider(boxWidth, { leftPad, borderColor: C.subtle }));
+		// 页脚由键位表生成（W5）：提示写什么，按键就做什么
 		output.push(
-			panelRow(
-				`${C.inactive}按 ${C.suggestion}Esc${C.inactive}、${C.suggestion}q${C.inactive} 收起 · 再按 ${C.suggestion}?${C.inactive} 转为普通输入${C.reset}`,
-				boxWidth,
-				{ leftPad, borderColor: C.subtle },
-			),
+			panelRow(`${C.inactive}${hintsFor(this.keymap(), boxWidth)}${C.reset}`, boxWidth, {
+				leftPad,
+				borderColor: C.subtle,
+			}),
 		);
 		output.push(panelBottomBorder(boxWidth, { leftPad, borderColor: C.subtle }));
 
@@ -173,7 +191,7 @@ export class HelpMenu implements Component, Focusable {
 		return renderPanel({
 			title: "帮助 · 快捷键与指令",
 			body: visible,
-			footer: `↑↓/j/k 滚动 · ↑${this.scrollOffset} ↓${maxOffset - this.scrollOffset} · Esc 关闭`,
+			footer: `${C.inactive}${hintsFor(this.keymap(), boxWidth)}${C.reset} · ↑${this.scrollOffset} ↓${maxOffset - this.scrollOffset}`,
 			boxWidth,
 			leftPad,
 			borderColor: C.subtle,

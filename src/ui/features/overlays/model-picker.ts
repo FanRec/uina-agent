@@ -3,9 +3,10 @@
  */
 
 import type { ModelPickerGroup } from "../../../extensions/ui-contract.js";
-import { Key, matchesKey } from "../../core/keys.js";
+import { Key } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C } from "../../core/utils.js";
+import { hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
 import { fitLine } from "../../layout/fit.js";
 import { panelRow, panelTopBorder, renderPanel } from "../../layout/panel.js";
 
@@ -41,6 +42,23 @@ export class ModelPicker implements Component, Focusable {
 	// 调用方传入并回传的都是 providerId/modelId 复合键（groups() 统一产出），精确比较即可
 	private isCurrent(m: ModelItem): boolean {
 		return m.id === this.currentModelId;
+	}
+
+	keymap(): Keymap {
+		const browsing = this.level === "groups" ? (this.groups[this.selectedGroupIndex]?.models.length ?? 0) > 0 : true;
+		return {
+			capturing: true,
+			bindings: [
+				{ keys: [Key.up], action: "overlay.up", label: "↑↓ 移动" },
+				{ keys: [Key.down], action: "overlay.down", label: "↑↓ 移动" },
+				{
+					keys: [Key.enter],
+					action: "overlay.confirm",
+					label: browsing ? (this.level === "groups" ? "Enter 展开" : "Enter 确认切换") : "Enter（空分组）",
+				},
+				{ keys: [Key.escape], action: "overlay.esc", label: this.level === "groups" ? "Esc 关闭" : "Esc 返回" },
+			],
+		};
 	}
 
 	navigateUp(): void {
@@ -99,26 +117,36 @@ export class ModelPicker implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.up)) {
-			this.navigateUp();
-			this.onRequestRender?.();
-		} else if (matchesKey(data, Key.down)) {
-			this.navigateDown();
-			this.onRequestRender?.();
-		} else if (matchesKey(data, Key.enter)) {
-			const res = this.confirm();
-			if (res?.action === "picked") {
-				this.onPick?.(res.modelId);
-			} else {
+		const action = resolve(this.keymap(), data);
+		switch (action) {
+			case "overlay.up":
+				this.navigateUp();
 				this.onRequestRender?.();
-			}
-		} else if (matchesKey(data, Key.escape)) {
-			const res = this.back();
-			if (res.action === "close") {
-				this.onClose?.();
-			} else {
+				return;
+			case "overlay.down":
+				this.navigateDown();
 				this.onRequestRender?.();
+				return;
+			case "overlay.confirm": {
+				const res = this.confirm();
+				if (res?.action === "picked") {
+					this.onPick?.(res.modelId);
+				} else {
+					this.onRequestRender?.();
+				}
+				return;
 			}
+			case "overlay.esc": {
+				const res = this.back();
+				if (res.action === "close") {
+					this.onClose?.();
+				} else {
+					this.onRequestRender?.();
+				}
+				return;
+			}
+			default:
+				return;
 		}
 	}
 
@@ -196,12 +224,8 @@ export class ModelPicker implements Component, Focusable {
 		const above = startIndex;
 		const below = Math.max(0, items.length - endIndex);
 		const scrollHint = above > 0 || below > 0 ? `↑${above} ↓${below} · ` : "";
-		const actionHint =
-			items.length === 0
-				? "Esc 关闭"
-				: this.level === "groups"
-					? "↑↓ 移动 · Enter 展开 · Esc 关闭"
-					: "↑↓ 移动 · Enter 确认切换 · Esc 返回";
+		// 底边提示由键位表生成（W5）：提示与绑定不再可能漂移
+		const actionHint = hintsFor(this.keymap(), Number.MAX_SAFE_INTEGER);
 		return renderPanel({
 			title,
 			body,

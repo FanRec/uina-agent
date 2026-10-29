@@ -11,6 +11,7 @@ import { TOOL_TONE_COLORS } from "../../components/transcript/tool-view.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C, visibleWidth } from "../../core/utils.js";
+import { type Keymap, resolve } from "../../keys/keymap.js";
 import { fitLine } from "../../layout/fit.js";
 import {
 	panelBottomBorder,
@@ -130,6 +131,19 @@ export class TrajectoryScene implements Component, Focusable {
 
 	constructor(private readonly source: TrajectoryEventSource) {}
 
+	keymap(): Keymap {
+		return {
+			capturing: true,
+			bindings: [
+				{ keys: [Key.left], action: "overlay.prev", label: "←→ 移动时序" },
+				{ keys: [Key.right], action: "overlay.next", label: "←→ 移动时序" },
+				{ keys: ["e"], action: "overlay.nextError", label: "e 下一错误" },
+				{ keys: [Key.tab], action: "overlay.tab", label: "Tab 切换热点" },
+				{ keys: [Key.escape], action: "overlay.close", label: "Esc 关闭" },
+			],
+		};
+	}
+
 	handleInput(data: string): void {
 		const nodes = this.source.list();
 
@@ -138,20 +152,22 @@ export class TrajectoryScene implements Component, Focusable {
 			return;
 		}
 
-		if (matchesKey(data, Key.tab)) {
+		const action = resolve(this.keymap(), data);
+
+		if (action === "overlay.tab") {
 			this.viewMode = this.viewMode === "timeline" ? "hotspot" : "timeline";
 			this.onRequestRender?.();
 			return;
 		}
 
 		if (this.viewMode === "timeline") {
-			if (matchesKey(data, Key.left)) {
+			if (action === "overlay.prev") {
 				this.cursorIndex = Math.max(0, this.cursorIndex - 1);
 				this.onRequestRender?.();
-			} else if (matchesKey(data, Key.right)) {
+			} else if (action === "overlay.next") {
 				this.cursorIndex = Math.min(Math.max(0, nodes.length - 1), this.cursorIndex + 1);
 				this.onRequestRender?.();
-			} else if (data === "e" || data === "E") {
+			} else if (action === "overlay.nextError") {
 				// 跳转到下一个报错节点
 				const nextErr = nodes.findIndex((n, idx) => idx > this.cursorIndex && n.status === "failed");
 				if (nextErr >= 0) {
@@ -263,7 +279,15 @@ export class TrajectoryScene implements Component, Focusable {
 			}
 		}
 
-		output.push(panelBottomBorder(boxWidth, { tag: `←→ 移动时序 · Tab 切换热点 · Enter 展开 · Esc 关闭`, ...border }));
+		// F1：详情（参数/结果/错误）已内联展示，页脚不再承诺不存在的 “Enter 展开”；e 进提示
+		output.push(
+			panelBottomBorder(boxWidth, {
+				tag: this.keymap()
+					.bindings.map((b) => b.label)
+					.join(" · "),
+				...border,
+			}),
+		);
 		return output;
 	}
 

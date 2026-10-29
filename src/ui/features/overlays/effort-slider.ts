@@ -1,11 +1,16 @@
 /**
- * 思考强度滑块组件（对齐 Pi Component 契约，保留 5 档拟态滑动变阻器视觉）。
+ * 思考强度滑块组件（对齐 Pi Component 契约）。
+ *
+ * 键位语义（W5/F4）：←/→ 只移动焦点做预览（✓ 标已提交值，高亮标焦点）；
+ * Enter 提交焦点档位；Esc 回滚关闭。未声明档位时不预选任何项（A5），
+ * 也不存在编造的默认档位表（A6：DEFAULT_EFFORT_TIERS 已删除）。
  */
 
 import type { ThinkingLevel } from "../../../core/types.js";
-import { Key, matchesKey } from "../../core/keys.js";
+import { Key } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C, visibleWidth } from "../../core/utils.js";
+import { type Binding, hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
 import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
 
 export interface EffortTier {
@@ -14,21 +19,8 @@ export interface EffortTier {
 	description: string;
 }
 
-export const DEFAULT_EFFORT_TIERS: EffortTier[] = [
-	{ id: "off", name: "Off", description: "关闭额外思考，快速直出回复 (No extra thinking)" },
-	{ id: "minimal", name: "Minimal", description: "最小思考预算" },
-	{ id: "low", name: "Low", description: "轻量快速推理，适合简单任务与日常问答 (Faster responses)" },
-	{ id: "medium", name: "Medium", description: "兼顾推理深度与响应速度，推荐日常使用 (Balanced speed & depth)" },
-	{ id: "high", name: "High", description: "深度系统分析，全面权衡边界与代码严谨性 (Deep thinking)" },
-	{ id: "xhigh", name: "XHigh", description: "更高的思考预算" },
-	{ id: "max", name: "Max", description: "极限推演，探索最复杂架构与疑难难题 (Maximum reasoning effort)" },
-];
-
-export function normalizeEffortId(id: string): ThinkingLevel {
-	return knownEffortId(id) ?? "medium";
-}
-
-function knownEffortId(id: string): ThinkingLevel | undefined {
+/** 字符串档位名的宽容归一（/effort <level> 参数用）；未知名返回 undefined，不编造档位（A5/A6）。 */
+export function normalizeEffortId(id: string): ThinkingLevel | undefined {
 	const lower = id.toLowerCase().trim();
 	if (lower === "none" || lower === "off" || lower === "0") return "off";
 	if (lower === "minimal") return "minimal";
@@ -42,11 +34,9 @@ function knownEffortId(id: string): ThinkingLevel | undefined {
 
 export function toEffortTier(item: EffortTier | ThinkingLevel | string): EffortTier {
 	if (typeof item === "string") {
-		const norm = normalizeEffortId(item);
-		const found = DEFAULT_EFFORT_TIERS.find((t) => t.id === norm || t.id === item);
-		if (found) return found;
+		const id = normalizeEffortId(item) ?? (item as ThinkingLevel);
 		const name = item.charAt(0).toUpperCase() + item.slice(1);
-		return { id: norm, name, description: "" };
+		return { id, name, description: "" };
 	}
 	return item;
 }
@@ -54,6 +44,7 @@ export function toEffortTier(item: EffortTier | ThinkingLevel | string): EffortT
 export class EffortSlider implements Component, Focusable {
 	focused = true;
 	private tiers: EffortTier[];
+	/** 已提交档位；未声明当前值时保持 undefined，不预选（A5）。 */
 	private activeTierId: ThinkingLevel | undefined;
 	private focusIndex = 0;
 
@@ -62,46 +53,74 @@ export class EffortSlider implements Component, Focusable {
 	onRequestRender?: () => void;
 
 	constructor(
-		activeTierId: ThinkingLevel | string = "medium",
-		tiers: readonly (EffortTier | ThinkingLevel | string)[] = DEFAULT_EFFORT_TIERS,
+		activeTierId: ThinkingLevel | string | undefined,
+		tiers: readonly (EffortTier | ThinkingLevel | string)[],
 	) {
-		const resolvedTiers = (tiers.length > 0 ? tiers : DEFAULT_EFFORT_TIERS).map(toEffortTier);
-		this.tiers = resolvedTiers.length > 0 ? resolvedTiers : DEFAULT_EFFORT_TIERS;
-		const normalized = knownEffortId(activeTierId);
-		const found = normalized ? this.tiers.findIndex((t) => t.id === normalized) : -1;
-		this.focusIndex = Math.max(0, Math.min(found >= 0 ? found : 0, this.tiers.length - 1));
-		this.activeTierId = normalized !== undefined && found >= 0 ? normalized : undefined;
+		this.tiers = tiers.map(toEffortTier);
+		const normalized = typeof activeTierId === "string" ? normalizeEffortId(activeTierId) : activeTierId;
+		const declared = normalized !== undefined ? this.tiers.findIndex((t) => t.id === normalized) : -1;
+		this.focusIndex = declared >= 0 ? declared : 0;
+		this.activeTierId = declared >= 0 ? this.tiers[declared]!.id : undefined;
 	}
 
-	navigateLeft(): EffortTier {
-		if (this.tiers.length === 0) return { id: "off", name: "Off", description: "" };
-		this.focusIndex = (this.focusIndex - 1 + this.tiers.length) % this.tiers.length;
-		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
-		this.onChange?.(this.activeTierId);
-		return this.getCurrentTier();
+	keymap(): Keymap {
+		const bindings: Binding[] = [
+			{ keys: [Key.left], action: "overlay.previewPrev", label: "←/→ 预览" },
+			{ keys: [Key.right], action: "overlay.previewNext", label: "←/→ 预览" },
+			{ keys: [Key.enter], action: "overlay.commit", label: "Enter 提交" },
+			{ keys: [Key.escape], action: "overlay.rollback", label: "Esc 回滚" },
+		];
+		// 单档位时 ←/→ 无处可去：不进提示也不响应
+		if (this.tiers.length <= 1) return { capturing: true, bindings: bindings.slice(2) };
+		return { capturing: true, bindings };
 	}
 
-	navigateRight(): EffortTier {
-		if (this.tiers.length === 0) return { id: "off", name: "Off", description: "" };
-		this.focusIndex = (this.focusIndex + 1) % this.tiers.length;
-		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
-		this.onChange?.(this.activeTierId);
-		return this.getCurrentTier();
+	private preview(delta: number): void {
+		if (this.tiers.length === 0) return;
+		this.focusIndex = (this.focusIndex + delta + this.tiers.length) % this.tiers.length;
+		this.onRequestRender?.();
 	}
 
-	getCurrentTier(): EffortTier {
-		return this.tiers[this.focusIndex] ?? this.tiers[0] ?? { id: "off", name: "Off", description: "" };
+	private currentTier(): EffortTier | undefined {
+		return this.tiers[this.focusIndex];
+	}
+
+	/** 测试与调试视图：当前预览焦点档位。 */
+	getFocusedTier(): EffortTier | undefined {
+		return this.currentTier();
+	}
+
+	/** 测试与调试视图：已提交档位（未声明时 undefined，不预选）。 */
+	getActiveTierId(): ThinkingLevel | undefined {
+		return this.activeTierId;
+	}
+
+	/** Enter：提交焦点档位（值变化时才回调）。 */
+	commit(): void {
+		const tier = this.currentTier();
+		if (!tier || this.activeTierId === tier.id) return;
+		this.activeTierId = tier.id;
+		this.onChange?.(tier.id);
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.left)) {
-			this.navigateLeft();
-			this.onRequestRender?.();
-		} else if (matchesKey(data, Key.right)) {
-			this.navigateRight();
-			this.onRequestRender?.();
-		} else if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) {
-			this.onClose?.();
+		const action = resolve(this.keymap(), data);
+		switch (action) {
+			case "overlay.previewPrev":
+				this.preview(-1);
+				return;
+			case "overlay.previewNext":
+				this.preview(1);
+				return;
+			case "overlay.commit":
+				this.commit();
+				this.onClose?.();
+				return;
+			case "overlay.rollback":
+				this.onClose?.();
+				return;
+			default:
+				return;
 		}
 	}
 
@@ -119,8 +138,9 @@ export class EffortSlider implements Component, Focusable {
 
 		const renderSliderWindow = (visibleTiers: readonly EffortTier[]): string => {
 			const segments = visibleTiers.map((tier) => {
-				const current = this.activeTierId === tier.id ? `${C.suggestion}✓${C.reset}` : "";
-				const label = `${tier.name}${current}`;
+				// ✓ = 已提交值；反色高亮 = 预览焦点（F4：两者分离）
+				const committed = this.activeTierId === tier.id ? `${C.suggestion}✓${C.reset}` : "";
+				const label = `${tier.name}${committed}`;
 				return tier === this.tiers[this.focusIndex]
 					? `\x1b[7m\x1b[1m${label}\x1b[0m`
 					: `${C.inactive}${label}${C.reset}`;
@@ -131,27 +151,27 @@ export class EffortSlider implements Component, Focusable {
 			const rightHint = remaining > 0 ? ` ${C.inactive}→${remaining}${C.reset}` : "";
 			return `${leftHint}${segments.join(` ${C.subtle}·${C.reset} `)}${rightHint}`;
 		};
-		const availableTiers = this.tiers[this.focusIndex] ? [this.tiers[this.focusIndex]!] : [];
+		const focusedTier = this.tiers[this.focusIndex];
+		const availableTiers = focusedTier ? [focusedTier] : [];
 		for (let index = this.focusIndex + 1; index < this.tiers.length; index++) {
 			const candidate = [...availableTiers, this.tiers[index]!];
 			if (visibleWidth(renderSliderWindow(candidate)) > innerW) break;
 			availableTiers.push(this.tiers[index]!);
 		}
-		const focusedTier = this.tiers[this.focusIndex];
 		const sliderBar = focusedTier
 			? renderSliderWindow(availableTiers)
 			: `${C.inactive}当前模型未声明可用档位${C.reset}`;
 
-		const current = this.getCurrentTier();
-		const descRaw = current.description
-			? `${C.text}${current.description}${C.reset}`
-			: `${C.inactive}当前档位: ${current.name}${C.reset}`;
-
-		const hintText = `${C.inactive}←/→ 调整 · Enter/Esc 完成${C.reset}`;
+		const current = this.currentTier();
+		const descRaw = current
+			? current.description
+				? `${C.text}${current.description}${C.reset}`
+				: `${C.inactive}当前档位: ${current.name}${C.reset}`
+			: `${C.inactive}未声明思考档位${C.reset}`;
 
 		return renderPanel({
 			title: "推理强度 (Reasoning effort)",
-			body: [sliderBar, descRaw, hintText],
+			body: [sliderBar, descRaw, hintsFor(this.keymap(), innerW)],
 			boxWidth,
 			leftPad,
 			borderColor: C.subtle,

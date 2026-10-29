@@ -3,7 +3,6 @@ import type { TrajectoryEventSource } from "../presentation/trajectory.js";
 import type { SessionAccess } from "../session/types.js";
 import {
 	BranchInspectorOverlay,
-	DEFAULT_EFFORT_TIERS,
 	EffortSlider,
 	HelpMenu,
 	ModelPicker,
@@ -70,18 +69,16 @@ export function installUIFeatures(
 
 	register("effort-slider", (action) => {
 		const levels = host.getThinkingLevels();
-		if (!levels.length) {
-			host.notify("当前模型未声明思考档位", "info");
+		// A5/A6：只认声明档位，不回退编造表；过滤后为空与未声明同样处理。
+		const tiers = action.payload.tiers.filter((tier) => levels.includes(typeof tier === "string" ? tier : tier.id));
+		if (tiers.length === 0) {
+			host.notify("当前模型未声明可用的思考档位", "info");
 			return;
 		}
 		host.showPanel(
 			"effort",
 			(close) => {
-				const tiers =
-					action.payload.tiers.length > 0
-						? action.payload.tiers.filter((tier) => levels.includes(typeof tier === "string" ? tier : tier.id))
-						: DEFAULT_EFFORT_TIERS.filter((tier) => levels.includes(tier.id));
-				const slider = new EffortSlider(action.payload.currentLevel ?? host.getReasoningEffort() ?? "off", tiers);
+				const slider = new EffortSlider(action.payload.currentLevel ?? host.getReasoningEffort(), tiers);
 				slider.onChange = (level) => {
 					host.setReasoningEffort(level);
 					action.payload.onChange(level);

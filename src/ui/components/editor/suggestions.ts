@@ -189,7 +189,12 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 		});
 	}
 
-	// 4. 滚动提示行（仅当超出视口裁剪时显示）
+	// F10：键位提示常驻（有可选条目时），不再让用户猜 Enter/Tab 的区别
+	output.push(
+		`${borderCol}│${C.reset} ${C.dim}  ↑↓ 选择 · Enter 接受${type === "command" ? "/执行" : ""} · Tab 补全 · Esc 取消${C.reset}${" ".repeat(Math.max(0, usable - visibleWidth("  ↑↓ 选择 · Enter 接受/执行 · Tab 补全 · Esc 取消")))} ${borderCol}│${C.reset}`,
+	);
+
+	// 5. 滚动提示行（仅当超出视口裁剪时显示）
 	if (above > 0 || below > 0) {
 		const hints: string[] = [];
 		if (above > 0) hints.push(`↑${above}`);

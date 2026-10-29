@@ -72,13 +72,13 @@ describe("responsive TUI overlays", () => {
 	});
 
 	it("keeps the focused reasoning tier visible and counts hidden tiers on narrow panels", () => {
-		const slider = new EffortSlider("off");
+		const slider = new EffortSlider("off", ["off", "medium", "high"]);
 		const initial = stripAnsi(slider.render(40).join("\n"));
 		expect(initial).toContain("→");
-		for (let index = 0; index < 4; index++) slider.navigateRight();
+		for (let index = 0; index < 4; index++) slider.handleInput("[C");
 		const focused = stripAnsi(slider.render(40).join("\n"));
-		expect(focused).toContain("High");
-		expect(focused).toContain("←4");
+		expect(focused).toContain("Medium");
+		expect(focused).toContain("←1");
 	});
 
 	it("redraws the compact help panel after a scroll key", () => {
@@ -107,7 +107,7 @@ describe("responsive TUI overlays", () => {
 
 	it("keeps compact help entries aligned with the wide help menu", () => {
 		const menu = new HelpMenu([{ name: "only", description: "Only registered command" }]);
-		const compact = stripAnsi(menu.render(40, 14).join("\n"));
+		const compact = stripAnsi(menu.render(40, 15).join("\n"));
 		const wide = stripAnsi(menu.render(80, 24).join("\n"));
 
 		expect(compact).toContain("Alt+O");

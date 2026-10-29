@@ -1273,7 +1273,6 @@ export class UIHost implements UIHostContextPort {
 		this.lastLayout = layout;
 		this.scroll.syncFromLayout(layout.effScroll, layout.maxScroll);
 		const {
-			width,
 			height,
 			inputWidth,
 			inputLines,
@@ -1497,23 +1496,6 @@ export class UIHost implements UIHostContextPort {
 				},
 			})),
 		);
-
-		// (1.9) 注册帮助浮层全域点击收起交互
-		if (this.activeModalId === "help" && aboveH > 0) {
-			const aboveStartRow = allChatRows.length;
-			for (let r = 0; r < aboveH; r++) {
-				interactiveTargets.push({
-					id: encodeHoverTarget({ kind: "help-overlay-row", row: r }),
-					row: aboveStartRow + r,
-					colStart: 0,
-					colEnd: Math.max(0, width - 1),
-					onClick: () => {
-						this.closeModal();
-						this.requestRender();
-					},
-				});
-			}
-		}
 
 		// (2) 注册右侧 Gutter 交互（ScrollbarGutter 或 TimelineRail）
 		if (layout.hasGutter && this.gutterMode === "scrollbar") {

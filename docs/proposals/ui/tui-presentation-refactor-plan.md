@@ -1620,6 +1620,13 @@ fixture：tests/ui-frame-invariants.test.ts 的 populate()（CJK/emoji、ANSI/OS
 回滚点：W4 提交前。
 遗留未知：Esc 阶梯的“无匹配卡不吞噬”是有意取舍：信息卡不可交互就不该消费按键；有可选条目时 Esc 仍先清卡。
 
+[W5] 2026-10-29
+决策：`src/ui/keys/keymap.ts` 落地（Binding 只声明 keys/action/label/when，不携带闭包；resolve 复用 matchesKey；hintsFor 从绑定生成提示并对多键同段去重）。六个浮层键处理全部改为 resolve(keymap)→动作分派：help 关闭键限定 Esc/?（F5，q/Enter/空格不再关闭，页脚由键位表生成）；effort ←/→ 只预览、Enter 提交、Esc 回滚（F4/A5：未知档位不预选 ✓；A6：DEFAULT_EFFORT_TIERS 删除，features 只认声明档位）；prompt ↑/↓ 1 行 + PgUp/PgDn 8 行 + 页脚位置指示（F3）；trajectory 页脚删除无绑定的 "Enter 展开"、e 进提示（F1，详情本就内联）；branch 提示按焦点与视图生成、history 模式 Esc 写"返回"（F7，最具体键排前防窄框截断）；model-picker 底边提示由键位表生成。F9：捕获浮层点击外部不再关闭（删除 help 全域点击收起热区）。F10：建议卡补键位提示行。键位一致性测试由 W0 todo 替换为真实断言（10 例：capturing 声明、绑定 round-trip、页脚=hintsFor、F1/F3/F4/F5/F7 行为）。
+证据：tests/ui-keymap-conformance.test.ts 全绿；tests/ui-responsive-overlays.test.ts、tests/ui-crap-c1.test.ts 断言随预览语义更新。
+影响文件：src/ui/keys/keymap.ts（新增）、六个浮层、src/ui/features.ts、src/ui/ui-host.ts、src/ui/components/editor/suggestions.ts。
+回滚点：W5 提交前。
+遗留未知：effort 预览语义改变肌肉记忆（旧版 ←/→ 立即生效）；help 文案已在键位表同步，无需额外迁移。
+
 ### B.3 当前待决问题
 
 1. `RequestUsage.promptTokens` 是否存在于持久化记录？若存在，改名需要迁移；本规划默认只加注释。

@@ -10,6 +10,7 @@ import { Key, matchesKey } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
+import { type Binding, hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
 import { fitLine } from "../../layout/fit.js";
 
 /**
@@ -48,68 +49,106 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		this.detailScrollOffset = 0;
 	}
 
+	keymap(): Keymap {
+		// 顺序即提示顺序：视图相关的最具体键在前，窄框截断时先保住动作承诺（F7）
+		const bindings: Binding[] = [];
+		if (this.focusTarget === "list") {
+			if (this.view.mode === "branch-list") {
+				bindings.push({ keys: [Key.enter], action: "overlay.openBranch", label: "Enter 选择分支" });
+			}
+			if (this.view.mode !== "branch-history") {
+				bindings.push({ keys: [Key.left], action: "overlay.switchView", label: "←/→ 切换视图" });
+				bindings.push({ keys: [Key.right], action: "overlay.switchView", label: "←/→ 切换视图" });
+			}
+			bindings.push({ keys: [Key.up], action: "overlay.up", label: "↑/↓ 移动" });
+			bindings.push({ keys: [Key.down], action: "overlay.down", label: "↑/↓ 移动" });
+		} else {
+			const maxOffset = Math.max(0, this.detailRowCount() - LIST_ROWS);
+			const page = maxOffset > 0 ? `←/→ 翻页详情 ${this.detailScrollOffset + 1}/${maxOffset + 1}` : "←/→ 详情已到边界";
+			bindings.push({ keys: [Key.left], action: "overlay.pageDetail", label: page });
+			bindings.push({ keys: [Key.right], action: "overlay.pageDetail", label: page });
+			bindings.push({ keys: [Key.up], action: "overlay.scrollDetail", label: "↑/↓ 滚动详情" });
+			bindings.push({ keys: [Key.down], action: "overlay.scrollDetail", label: "↑/↓ 滚动详情" });
+		}
+		bindings.push({ keys: [Key.tab], action: "overlay.tab", label: "Tab 焦点" });
+		bindings.push({
+			keys: [Key.escape],
+			action: "overlay.esc",
+			// history 视图的 Esc 是返回上一层，不是关闭（F7）
+			label: this.view.mode === "branch-history" ? "Esc 返回" : "Esc 关闭",
+		});
+		return { capturing: true, bindings };
+	}
+
 	handleInput(data: string): void {
 		const nodes = this.nodes();
+		// 动作与 keymap 同源：提示承诺的每个键在这里都有对应分支
+		const action = resolve(this.keymap(), data);
 
-		if (matchesKey(data, Key.escape)) {
-			if (this.view.mode === "branch-history") {
-				this.view = { mode: "branch-list" };
-				this.selectedIndex = 0;
+		switch (action) {
+			case "overlay.esc": {
+				if (this.view.mode === "branch-history") {
+					this.view = { mode: "branch-list" };
+					this.selectedIndex = 0;
+					this.detailScrollOffset = 0;
+					this.onRequestRender?.();
+					return;
+				}
+				this.onClose?.();
 				this.onRequestRender?.();
 				return;
 			}
-			this.onClose?.();
-			this.onRequestRender?.();
-			return;
-		}
-
-		if (matchesKey(data, Key.tab)) {
-			this.focusTarget = this.focusTarget === "list" ? "detail" : "list";
-			this.onRequestRender?.();
-			return;
-		}
-
-		// ←/→ 的语义取决于焦点，这不是可选的润色而是提示文案已经承诺的行为：
-		// 底部写着「←→ 翻页详情 X/Y」时，按键必须真的翻页。
-		if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
-			const forward = matchesKey(data, Key.right);
-			if (this.focusTarget === "detail") {
+			case "overlay.tab":
+				this.focusTarget = this.focusTarget === "list" ? "detail" : "list";
+				this.onRequestRender?.();
+				return;
+			// ←/→ 的语义取决于焦点：详情翻页，列表切视图
+			case "overlay.pageDetail": {
+				const forward = matchesKey(data, Key.right);
 				const maxOffset = Math.max(0, this.detailRowCount() - LIST_ROWS);
 				this.detailScrollOffset = Math.max(
 					0,
 					Math.min(maxOffset, this.detailScrollOffset + (forward ? LIST_ROWS : -LIST_ROWS)),
 				);
-			} else {
-				this.view = this.view.mode === "main" ? { mode: "branch-list" } : { mode: "main" };
-				this.selectedIndex = 0;
-				this.detailScrollOffset = 0;
+				this.onRequestRender?.();
+				return;
 			}
-			this.onRequestRender?.();
-			return;
-		}
-		if (matchesKey(data, Key.enter) && this.view.mode === "branch-list") {
-			// 行 id 就是分支 id（listBranchNodes 建立的投影），不必再查一次分支列表。
-			const row = nodes[this.selectedIndex];
-			if (row) {
-				this.view = { mode: "branch-history", branchId: row.id };
+			case "overlay.switchView":
+				this.view = this.view.mode === "main" ? { mode: "branch-list" } : { mode: "main" };
 				this.selectedIndex = 0;
 				this.detailScrollOffset = 0;
 				this.onRequestRender?.();
 				return;
+			case "overlay.openBranch": {
+				// 行 id 就是分支 id（listBranchNodes 建立的投影），不必再查一次分支列表。
+				const row = nodes[this.selectedIndex];
+				if (row) {
+					this.view = { mode: "branch-history", branchId: row.id };
+					this.selectedIndex = 0;
+					this.detailScrollOffset = 0;
+					this.onRequestRender?.();
+				}
+				return;
 			}
+			case "overlay.up":
+			case "overlay.scrollDetail": {
+				if (this.focusTarget === "list") this.moveSelection(-1, Math.max(0, nodes.length - 1));
+				else this.detailScrollOffset = Math.max(0, this.detailScrollOffset - 1);
+				this.onRequestRender?.();
+				return;
+			}
+			case "overlay.down": {
+				if (this.focusTarget === "list") this.moveSelection(1, Math.max(0, nodes.length - 1));
+				else this.detailScrollOffset++;
+				this.onRequestRender?.();
+				return;
+			}
+			default:
+				return;
 		}
-
-		if (matchesKey(data, Key.up)) {
-			if (this.focusTarget === "list") this.moveSelection(-1, Math.max(0, nodes.length - 1));
-			else this.detailScrollOffset = Math.max(0, this.detailScrollOffset - 1);
-		} else if (matchesKey(data, Key.down)) {
-			if (this.focusTarget === "list") this.moveSelection(1, Math.max(0, nodes.length - 1));
-			else this.detailScrollOffset++;
-		}
-		this.onRequestRender?.();
 	}
 
-	/** 详情行数。渲染与翻页共用同一投影，X/Y 才不会和实际能翻的页数脱节。 */
+	/** 详情行数。.渲染与翻页共用同一投影，X/Y 才不会和实际能翻的页数脱节。 */
 	private detailRowCount(): number {
 		const nodes = this.nodes();
 		const selectedIndex = nodes.length === 0 ? -1 : Math.min(Math.max(0, this.selectedIndex), nodes.length - 1);
@@ -187,7 +226,8 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const listWindowEnd = Math.min(nodes.length, listWindowStart + LIST_ROWS);
 		const listScrollHint =
 			nodes.length > LIST_ROWS ? ` · 列表 ↑${listWindowStart} ↓${Math.max(0, nodes.length - listWindowEnd)}` : "";
-		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点${listScrollHint} · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
+		// F7：提示按焦点与视图生成——提示承诺的每个键都有真实绑定
+		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点${listScrollHint} · ${hintsFor(this.keymap(), boxWidth)}`;
 		output.push(contentRow(help, C.dim));
 		output.push(`  ${border}├${"─".repeat(boxWidth - 4)}${cha(colRight)}${border}┤${C.reset}`);
 

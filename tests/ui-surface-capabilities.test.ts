@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPrintUI } from "../src/extensions/runner.js";
 import type { ExtensionUIContext } from "../src/extensions/ui-contract.js";
 import { HEADLESS_CAPABILITIES, INTERACTIVE_TERMINAL_CAPABILITIES } from "../src/presentation/surface.js";
-import { createExtensionUIContext, type UIHostContextPort } from "../src/ui/extension-ui-context.js";
+import { type UIHostContextPort } from "../src/ui/extension-ui-context.js";
 import { UIHost } from "../src/ui/ui-host.js";
 import { createSilentTerminal } from "./harness/index.js";
 

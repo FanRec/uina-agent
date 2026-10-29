@@ -69,19 +69,19 @@ describe("copyToClipboardUnified", () => {
 
 describe("EffortSlider.formatLines", () => {
 	it("默认档位下渲染完整盒体：标题、滑条与当前档位描述", () => {
-		const slider = new EffortSlider("high");
+		const slider = new EffortSlider("high", ["off", "medium", "high", "max"]);
 		const lines = slider.formatLines(100);
 		expect(lines.length).toBeGreaterThan(3);
 		const plain = lines.join("\n");
 		expect(plain).toContain("推理强度");
-		expect(plain).toContain("XHigh");
+		expect(plain).toContain("Max");
 		// focus 落在 high：反显高亮；current 也有 ✓
 		expect(plain).toContain("\x1b[7m");
 		expect(plain).toContain("✓");
 	});
 
 	it("窄屏面板填满可用宽度，宽屏面板夹取到最大宽度", () => {
-		const slider = new EffortSlider("medium");
+		const slider = new EffortSlider("medium", ["off", "medium", "high", "max"]);
 		// 紧凑布局与宽屏布局共享一套行宽合同：窄屏填满，高于最大宽度后居中收窄。
 		const cases: [number, number][] = [
 			[40, 40],

@@ -1828,35 +1828,41 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("EffortSlider 在只有少量或单个档位时安全初始化不发生越界崩溃", () => {
 			const slider1 = new EffortSlider("high", [{ id: "high", name: "High", description: "Deep" }]);
-			expect(slider1.getCurrentTier().id).toBe("high");
-			expect(slider1.navigateRight().id).toBe("high");
-			expect(slider1.navigateLeft().id).toBe("high");
+			expect(slider1.getFocusedTier()?.id).toBe("high");
+			slider1.handleInput("[C"); // Key.right：单档位无处可去
+			slider1.handleInput("[D"); // Key.left
+			expect(slider1.getFocusedTier()?.id).toBe("high");
 
 			const slider2 = new EffortSlider("unknown", [{ id: "low", name: "Low", description: "Fast" }]);
-			expect(slider2.getCurrentTier().id).toBe("low");
+			// A5：未声明档位不预选（✓ 不亮），焦点停在第一档用于导航
+			expect(slider2.getActiveTierId()).toBeUndefined();
+			expect(slider2.getFocusedTier()?.id).toBe("low");
 		});
 
-		it("EffortSlider 支持传入 ThinkingLevel[] 纯字符串数组并安全切换与触发 onChange", () => {
+		it("EffortSlider 预览/提交分离（F4）：←/→ 只动焦点，Enter 才写回", () => {
 			const changedLevels: string[] = [];
 			const slider = new EffortSlider("off", ["off", "high", "max"]);
 			slider.onChange = (level) => changedLevels.push(level);
 
-			expect(slider.getCurrentTier().id).toBe("off");
-			expect(slider.getCurrentTier().name).toBe("Off");
+			expect(slider.getFocusedTier()?.id).toBe("off");
+
+			slider.handleInput("\x1b[C"); // Key.right：预览，不写回
+			expect(slider.getFocusedTier()?.id).toBe("high");
+			expect(slider.getActiveTierId()).toBe("off");
+			expect(changedLevels).toEqual([]);
 
 			slider.handleInput("\x1b[C"); // Key.right
-			expect(slider.getCurrentTier().id).toBe("high");
-			expect(slider.getCurrentTier().name).toBe("High");
-			expect(changedLevels).toEqual(["high"]);
+			expect(slider.getFocusedTier()?.id).toBe("max");
 
-			slider.handleInput("\x1b[C"); // Key.right
-			expect(slider.getCurrentTier().id).toBe("max");
-			expect(slider.getCurrentTier().name).toBe("Max");
-			expect(changedLevels).toEqual(["high", "max"]);
+			slider.handleInput("\r"); // Enter 提交
+			expect(slider.getActiveTierId()).toBe("max");
+			expect(changedLevels).toEqual(["max"]);
 
-			slider.handleInput("\x1b[D"); // Key.left
-			expect(slider.getCurrentTier().id).toBe("high");
-			expect(changedLevels).toEqual(["high", "max", "high"]);
+			slider.handleInput("\x1b[D"); // Key.left 预览回 high
+			slider.handleInput("\x1b"); // Esc 回滚：不写回
+			expect(slider.getFocusedTier()?.id).toBe("high");
+			expect(slider.getActiveTierId()).toBe("max");
+			expect(changedLevels).toEqual(["max"]);
 		});
 
 		it("UIHost: openEffortSlider 传入 ThinkingLevel[] 字符串并在按右箭头时不发生 toLowerCase 崩溃", () => {
@@ -1890,7 +1896,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			expect(() => dispatchUIHostInput(host, "\x1b[C")).not.toThrow();
-			expect(changed).toBe("high");
+			expect(changed).toBe("");
+			dispatchUIHostInput(host, "\r");
 			expect(host.getReasoningEffort()).toBe("high");
 			expect(() => host.setReasoningEffort(undefined)).not.toThrow();
 		});
@@ -2806,8 +2813,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const lines = menu.render(80).join("\n");
 			expect(lines).not.toContain("/diff");
 
-			// 按 q 键关闭
+			// F5：关闭键限定 Esc/?；q 不再关闭
 			menu.handleInput("q");
+			expect(closed).toBe(false);
+			menu.handleInput("");
 			expect(closed).toBe(true);
 		});
 
