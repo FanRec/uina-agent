@@ -100,7 +100,18 @@ const rules = [
 		roots: ["src/presentation"],
 		test: (source) => {
 			const runtimeSource = stripTypeOnlyImports(source);
-			const forbiddenSegments = ["ui", "cli", "extensions", "ai", "host", "session", "core", "runtime", "tools", "agent"];
+			const forbiddenSegments = [
+				"ui",
+				"cli",
+				"extensions",
+				"ai",
+				"host",
+				"session",
+				"core",
+				"runtime",
+				"tools",
+				"agent",
+			];
 			return (
 				forbiddenSegments.some((segment) => importsSegment(runtimeSource, segment)) ||
 				["node:tty", "node:process", "node:fs"].some((name) => importsPackage(runtimeSource, name))
