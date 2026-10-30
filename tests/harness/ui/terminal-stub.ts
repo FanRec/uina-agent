@@ -19,7 +19,6 @@ const noopComponent: Component = { render: () => [] };
 
 export function createTerminalStub(overrides: Partial<TerminalUIContext> = {}): TerminalUIContext {
 	return {
-		setWidget: () => {},
 		setHeader: () => {},
 		setFooter: () => {},
 		showOverlay: () => NOOP_HANDLE,

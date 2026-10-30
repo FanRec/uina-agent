@@ -775,13 +775,6 @@ function ownedUI(
 		return dispose;
 	};
 	const terminalOverrides: Partial<TerminalUIContext> = {
-		setWidget: (name, component, options) => {
-			assertActive();
-			const scoped = key(name);
-			if (base.terminal === undefined) return;
-			base.terminal.setWidget(scoped, component, options);
-			ownKeyed(`widget:${name}`, () => base.terminal?.setWidget(scoped, undefined));
-		},
 		setHeader: (component) => {
 			assertActive();
 			setShared("header", component);

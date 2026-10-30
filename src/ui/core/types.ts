@@ -92,13 +92,3 @@ export interface OverlayHandle {
 	unfocus(): void;
 	isFocused(): boolean;
 }
-
-/** 小部件挂载槽位 */
-export type WidgetPlacement = "aboveEditor" | "belowEditor";
-
-export interface WidgetItem {
-	id: string;
-	component: Component;
-	placement: WidgetPlacement;
-	priority?: number;
-}

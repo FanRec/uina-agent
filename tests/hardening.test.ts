@@ -92,7 +92,6 @@ describe("hardening: extension host honesty", () => {
 		runner.attachUI({
 			...createPrintUI(() => {}),
 			terminal: createTerminalStub({
-				setWidget: (key, component) => set(key, component),
 				setHeader: (value) => set("header", value),
 				setFooter: (value) => set("footer", value),
 			}),
@@ -101,16 +100,15 @@ describe("hardening: extension host honesty", () => {
 			second = { render: () => ["second"] };
 		await runner.activateBuiltin("slots", (pi) => {
 			for (const component of [first, second]) {
-				pi.ui.terminal!.setWidget("widget", component);
 				pi.ui.terminal!.setHeader(component);
 				pi.ui.terminal!.setFooter(component);
 			}
 		});
-		expect([...slots.values()]).toEqual([second, second, second]);
+		expect([...slots.values()]).toEqual([second, second]);
 		expect(clears).toEqual([]);
 		await runner.dispose();
-		expect([...slots.values()]).toEqual([undefined, undefined, undefined]);
-		expect(clears).toHaveLength(3);
+		expect([...slots.values()]).toEqual([undefined, undefined]);
+		expect(clears).toHaveLength(2);
 	});
 	it("aborts an in-flight Extension UI prompt before activation teardown completes", async () => {
 		let promptSignal: AbortSignal | undefined;

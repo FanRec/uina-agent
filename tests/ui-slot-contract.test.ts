@@ -134,7 +134,7 @@ describe("槽位契约：读取端枚举与删除清单", () => {
 	it("ExtensionUIContext 的每个展示接口都有 src 内读取端（H1）", () => {
 		const sources = walkSource(join(import.meta.dirname, "../src")).map((f) => readFileSync(f, "utf8"));
 		const joined = sources.join("\n");
-		for (const reader of [".notify(", ".setWorking(", ".setWidget(", ".setHeader(", ".setFooter("]) {
+		for (const reader of [".notify(", ".setWorking(", ".setHeader(", ".setFooter("]) {
 			expect(joined.includes(reader), `接口 ${reader} 无读取端`).toBe(true);
 		}
 	});

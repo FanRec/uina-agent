@@ -46,7 +46,6 @@ export interface FrameInput {
 	inputLines: readonly string[];
 	contextBarLines: readonly string[];
 	footerLines: readonly string[];
-	belowWidgetLines: readonly string[];
 	aboveWidgetLines: readonly string[];
 	/** 浮层行依赖 maxAboveH（几何内部值），由装配方以回调渲染。 */
 	renderOverlays: (innerW: number, maxAboveH: number) => readonly string[];
@@ -77,7 +76,7 @@ export function computeFrame(input: FrameInput): FrameLayout {
 	// The footer slot is a real frame region: extensions that call setFooter()
 	// must see it, otherwise the API silently does nothing.
 	const footerLines = [...input.footerLines];
-	const belowLines = [...contextBarLines, ...input.belowWidgetLines, ...footerLines];
+	const belowLines = [...contextBarLines, ...footerLines];
 	const belowH = belowLines.length;
 
 	const aboveEditorWidgets = [...input.aboveWidgetLines];

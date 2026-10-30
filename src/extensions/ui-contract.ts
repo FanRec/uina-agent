@@ -5,10 +5,10 @@
 import type { ThinkingLevel } from "../core/types.js";
 import type { SlotAck } from "../presentation/composition/slots.js";
 import type { SurfaceCapabilities } from "../presentation/surface.js";
-import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
+import type { Component, OverlayHandle, OverlayOptions } from "../ui/core/types.js";
 
 export type { SurfaceCapabilities } from "../presentation/surface.js";
-export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
+export type { Component, OverlayHandle, OverlayOptions };
 
 /** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */ export interface ModelPickerModel {
 	id: string;
@@ -97,11 +97,6 @@ export type BuiltinUIActionRequest<Name extends keyof BuiltinUIActions = keyof B
 
 /** Terminal-only component lifecycle and renderer registration facet. */
 export interface TerminalUIContext {
-	setWidget(
-		key: string,
-		component: Component | undefined,
-		options?: { placement?: WidgetPlacement; priority?: number },
-	): void;
 	setHeader(component: Component | undefined): void;
 	setFooter(component: Component | undefined): void;
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;

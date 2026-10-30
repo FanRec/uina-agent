@@ -175,23 +175,6 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		expect(stack.hasVisible).toBe(false);
 		expect(baseComp.focused).toBe(true);
 	});
-	it("WidgetSlots 小部件插槽：placement 分离与优先级排序", () => {
-		const renderSpy = vi.fn();
-		const slots = new WidgetSlots(renderSpy);
-
-		slots.setWidget("w1", { render: () => ["above-1"] }, "aboveEditor", 10);
-		slots.setWidget("w2", { render: () => ["above-0"] }, "aboveEditor", 0);
-		slots.setWidget("w3", { render: () => ["below-1"] }, "belowEditor", 10);
-
-		const above = slots.render("aboveEditor", 80);
-		expect(above).toEqual(["above-0", "above-1"]);
-
-		const below = slots.render("belowEditor", 80);
-		expect(below).toEqual(["below-1"]);
-
-		slots.removeWidget("w1");
-		expect(slots.render("aboveEditor", 80)).toEqual(["above-0"]);
-	});
 });
 
 describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
@@ -404,7 +387,6 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		const hostPort = {
 			notify: vi.fn(),
 			setWorking: vi.fn(),
-			setWidget: vi.fn(),
 			setHeader: vi.fn(),
 			setFooter: vi.fn(),
 			showOverlay: vi.fn(),

@@ -1,6 +1,6 @@
 /**
  * ExtensionUIContext 具体实现。
- * 将扩展的狭窄接口调用映射到底层 UIHost 的 Container、OverlayStack、WidgetSlots 与输入层。
+ * 将扩展的狭窄接口调用映射到底层 UIHost 的 Container、OverlayStack 与输入层。
  */
 
 import type {
@@ -13,7 +13,7 @@ import type { SlotAck } from "../presentation/composition/slots.js";
 import { INTERACTIVE_TERMINAL_CAPABILITIES, type SurfaceCapabilities } from "../presentation/surface.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { TextBuffer } from "./core/text-buffer.js";
-import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import type { Component, Focusable, OverlayHandle, OverlayOptions } from "./core/types.js";
 import { CURSOR_MARKER } from "./core/types.js";
 import { C, graphemeSegmenter, visibleWidth } from "./core/utils.js";
 import { fitLine, wrapLine } from "./layout/fit.js";
@@ -22,7 +22,6 @@ export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): SlotAck;
 	clearNotification?(): void;
 	setWorking(key: string, message: string | undefined): SlotAck;
-	setWidget(key: string, component: Component | undefined, placement?: WidgetPlacement, priority?: number): void;
 	setHeader(component: Component | undefined): void;
 	setFooter(component: Component | undefined): void;
 	showOverlay(component: Component, options?: OverlayOptions, dispose?: () => void): OverlayHandle;
@@ -169,9 +168,6 @@ function runPrompt<T>(
 
 export function createExtensionUIContext(host: UIHostContextPort): ExtensionUIContext {
 	const terminal: TerminalUIContext = {
-		setWidget(key, component, options) {
-			host.setWidget(key, component, options?.placement, options?.priority);
-		},
 		setHeader(component) {
 			host.setHeader(component);
 		},

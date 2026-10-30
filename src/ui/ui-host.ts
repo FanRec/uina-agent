@@ -49,8 +49,7 @@ import { OverlayStack } from "./core/overlay.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { ScrollController } from "./core/scroll-controller.js";
 import { ProcessTerminal } from "./core/terminal.js";
-import { WidgetSlots } from "./core/slots.js";
-import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import type { Component, OverlayHandle, OverlayOptions } from "./core/types.js";
 import {
 	C,
 	copyToClipboardUnified,
@@ -118,7 +117,6 @@ export class UIHost implements UIHostContextPort {
 	readonly renderer: MainScreenRenderer;
 	readonly focusManager: FocusManager;
 	readonly overlayStack: OverlayStack;
-	readonly widgetSlots: WidgetSlots;
 	private readonly componentBoundary: ComponentBoundary;
 	readonly registry: ExtensionRegistry;
 	readonly ctxUI: ExtensionUIContext;
@@ -389,7 +387,6 @@ export class UIHost implements UIHostContextPort {
 		});
 
 		this.overlayStack = new OverlayStack(this.focusManager, () => this.requestRender(), this.componentBoundary);
-		this.widgetSlots = new WidgetSlots(() => this.requestRender(), this.componentBoundary);
 		this.registry = options.registry ?? new ExtensionRegistry();
 		this.ctxUI = createExtensionUIContext(this);
 
@@ -1064,10 +1061,6 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	setWidget(key: string, component: Component | undefined, placement?: WidgetPlacement, priority?: number): void {
-		this.widgetSlots.setWidget(key, component, placement, priority);
-	}
-
 	setHeader(component: Component | undefined): void {
 		this.headerComponent = component;
 		this.requestRender();
@@ -1253,12 +1246,8 @@ export class UIHost implements UIHostContextPort {
 			inputLines,
 			contextBarLines,
 			footerLines,
-			// working 并列行（C6）排在部件上方，同属输入框之上的浮动区
-			belowWidgetLines: this.widgetSlots.render("belowEditor", innerW),
-			aboveWidgetLines: [
-				...renderActivityLines(this.composition.snapshot("activity"), innerW, Date.now()),
-				...this.widgetSlots.render("aboveEditor", innerW),
-			],
+			// working 并列行（C6）与活动行同属输入框之上的浮动区
+			aboveWidgetLines: [...renderActivityLines(this.composition.snapshot("activity"), innerW, Date.now())],
 			renderOverlays: (w, maxAboveH) => this.overlayStack.renderAbove(w, maxAboveH),
 			hasVisibleOverlay: this.overlayStack.hasVisible,
 			suggestionLines,
