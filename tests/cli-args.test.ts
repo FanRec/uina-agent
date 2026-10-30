@@ -43,6 +43,24 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 		expect(parseArgs(["--no-session", "test prompt"]).prompt).toBe("test prompt");
 	});
 
+	it("parses gateway flags with defaults and validation", () => {
+		const defaults = parseArgs([]);
+		expect(defaults.gateway).toBe(false);
+		expect(defaults.gatewayPort).toBe(8787);
+		expect(defaults.gatewayHost).toBe("127.0.0.1");
+
+		expect(parseArgs(["--gateway"]).gateway).toBe(true);
+		expect(parseArgs(["--gateway", "--gateway-port", "9000"]).gatewayPort).toBe(9000);
+		expect(parseArgs(["--gateway-port=9001"]).gatewayPort).toBe(9001);
+		expect(parseArgs(["--gateway-host", "192.168.1.8"]).gatewayHost).toBe("192.168.1.8");
+		expect(parseArgs(["--gateway-host=0.0.0.0"]).gatewayHost).toBe("0.0.0.0");
+
+		expect(() => parseArgs(["--gateway-port", "0"])).toThrow();
+		expect(() => parseArgs(["--gateway-port", "70000"])).toThrow();
+		expect(() => parseArgs(["--gateway-port", "abc"])).toThrow();
+		expect(() => parseArgs(["--gateway-host"])).toThrow();
+	});
+
 	it("parses help and version flags", () => {
 		expect(parseArgs(["-h"]).help).toBe(true);
 		expect(parseArgs(["--help"]).help).toBe(true);
@@ -66,6 +84,7 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 		expect(help).toContain("-p, --print");
 		expect(help).toContain("-m, --model");
 		expect(help).toContain("--no-session");
+		expect(help).toContain("--gateway");
 	});
 
 	describe("resolveSessionPath", () => {

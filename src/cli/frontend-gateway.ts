@@ -14,7 +14,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { errorMessage } from "../core/errors.js";
 import type { InputSource } from "../core/types.js";
@@ -60,6 +60,18 @@ export class FrontendGatewayCore {
 		// 先建恢复基线再订阅：两步之间无 await，单线程派发保证无事件窗口。
 		this.controller.replaceAll(host.restoredEntries, host.restoredAuxiliary);
 		this.detach = host.onEventRecord((record) => {
+			// 回溯不是增量事实（ingestLive 对它返回空）：与 TUI 消费者同构地整段重建，
+			// 并对已接入客户端就地推新快照——客户端对 snapshot 幂等 restore，无需新消息种。
+			if (record.event.type === "session_rewind") {
+				const rewind = record.event;
+				this.controller.replaceAll(rewind.entries, this.host.auxiliaryEntries(), rewind.turnNumber);
+				for (const client of this.clients.values()) {
+					if (client.joined) {
+						this.send(client, { v: SYNC_PROTOCOL_VERSION, kind: "snapshot", view: this.controller.view() });
+					}
+				}
+				return;
+			}
 			this.controller.ingest(record);
 			for (const client of this.clients.values()) {
 				if (!client.joined) {
@@ -307,7 +319,9 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, staticRoot
 	let pathname = decodeURIComponent(url.pathname);
 	if (pathname === "/") pathname = "/index.html";
 	const resolved = normalize(join(staticRoot, pathname));
-	if (!resolved.startsWith(normalize(staticRoot))) {
+	// 前缀必须贴着分隔符比：否则兄弟目录（webx）能绕过 web 的边界。
+	const rootWithSep = normalize(staticRoot).endsWith(sep) ? normalize(staticRoot) : normalize(staticRoot) + sep;
+	if (!resolved.startsWith(rootWithSep) && resolved !== normalize(staticRoot)) {
 		res.writeHead(403);
 		res.end();
 		return;

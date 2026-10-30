@@ -9,19 +9,18 @@
 import type { PresentationIntent } from "../presentation/actions.js";
 import { PresentationController } from "../presentation/controller.js";
 import type { PresentationNode } from "../presentation/projection.js";
-import { sanitizeExternal } from "../presentation/sanitize.js";
 import type { SurfaceAdapter, SurfaceCapabilities } from "../presentation/surface.js";
 import { SyncClient, type SyncTransport } from "../presentation/sync.js";
 
 // ── DOM 骨架 ──────────────────────────────────────────────────────────
-const transcriptEl = require0<HTMLDivElement>("transcript");
-const statusEl = require0<HTMLDivElement>("status");
-const connEl = require0<HTMLDivElement>("conn");
-const inputEl = require0<HTMLTextAreaElement>("input");
-const sendBtn = require0<HTMLButtonElement>("send");
-const cancelBtn = require0<HTMLButtonElement>("cancel");
+const transcriptEl = mustEl<HTMLDivElement>("transcript");
+const statusEl = mustEl<HTMLDivElement>("status");
+const connEl = mustEl<HTMLDivElement>("conn");
+const inputEl = mustEl<HTMLTextAreaElement>("input");
+const sendBtn = mustEl<HTMLButtonElement>("send");
+const cancelBtn = mustEl<HTMLButtonElement>("cancel");
 
-function require0<T extends HTMLElement>(id: string): T {
+function mustEl<T extends HTMLElement>(id: string): T {
 	const el = document.getElementById(id);
 	if (el === null) throw new Error(`页面骨架缺少 #${id}`);
 	return el as T;
@@ -96,7 +95,8 @@ function nodeElement(node: PresentationNode): HTMLElement {
 	const duration = node.durationMs === undefined ? "" : ` · ${(node.durationMs / 1000).toFixed(1)}s`;
 	summary.textContent = `${node.name} [${node.status}]${duration}`;
 	const body = document.createElement("pre");
-	body.textContent = sanitizeExternal(node.result ?? "");
+	// 节点文本已在事实入口清洗过一次；渲染层不再重复。
+	body.textContent = node.result ?? "";
 	el.append(summary, body);
 	return el;
 }

@@ -27,6 +27,7 @@ function createFakeHost(entries: readonly SessionEntry[] = []) {
 	const host = {
 		restoredEntries: entries,
 		restoredAuxiliary: [],
+		auxiliaryEntries: () => [],
 		onEventRecord: (listener: (record: HostEventRecord) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -210,6 +211,38 @@ describe("FrontendGatewayCore：意图路径", () => {
 			kind: "error",
 			message: "远程端暂不支持队列撤回，请在本机终端操作",
 		});
+	});
+
+	it("回溯整段重建并对已接入客户端就地推新快照（客户端幂等 restore）", () => {
+		const entries: SessionEntry[] = [
+			{ kind: "message", message: { role: "user", content: "第一轮" } },
+			{ kind: "message", message: { role: "assistant", content: "第一轮回答" } },
+		];
+		const { host, emit } = createFakeHost(entries);
+		const core = new FrontendGatewayCore(host, "secret");
+		const client = createClient(core);
+		client.send(hello());
+		const firstView = (client.received[0] as { view: { transcript: unknown[] } }).view;
+		expect(firstView.transcript).toHaveLength(2);
+
+		// 回溯到只留 user 消息的主线：视图整段替换，客户端收到第二份快照
+		const rewoundEntries: SessionEntry[] = [{ kind: "message", message: { role: "user", content: "第一轮" } }];
+		emit(
+			{
+				type: "session_rewind",
+				requestId: "r1",
+				rewindId: "w1",
+				fromId: "a",
+				targetId: "u",
+				turnNumber: 1,
+				entries: rewoundEntries,
+			},
+			2000,
+		);
+		const kinds = client.received.map((m) => (m as { kind: string }).kind);
+		expect(kinds).toEqual(["snapshot", "snapshot"]);
+		const secondView = (client.received[1] as { view: { transcript: Array<{ kind: string }> } }).view;
+		expect(secondView.transcript.map((node) => node.kind)).toEqual(["turn"]);
 	});
 
 	it("dispose 摘除宿主订阅", () => {
