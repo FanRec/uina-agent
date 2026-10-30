@@ -163,6 +163,8 @@ export interface SyncClientOptions {
 	readonly scheduler: SyncScheduler;
 	/** 诊断出口：重连与协议违约必须可见，绝不静默。 */
 	readonly onError?: (text: string) => void;
+	/** 事实旁路：Surface 需要未经投影的状态事实（model_select/turn 边界）时订阅。 */
+	readonly onRecord?: (record: HostEventRecord) => void;
 }
 
 export type SyncClientState = "stopped" | "connecting" | "synced";
@@ -257,6 +259,7 @@ export class SyncClient {
 					return;
 				}
 				this.controller.ingest(message.record);
+				this.options.onRecord?.(message.record);
 				return;
 			case "error":
 				this.options.onError?.(`sync: ${message.message}`);

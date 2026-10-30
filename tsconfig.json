@@ -17,5 +17,6 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true
   },
+  "exclude": ["src/web-client", "dist"],
   "include": ["examples", "src", "tests", "scripts", "vitest.config.ts", ".uina/apps", ".uina/extensions", ".uina/worlds/live2d", ".uina/worlds/minecraft", ".uina/worlds/soundboard"]
 }

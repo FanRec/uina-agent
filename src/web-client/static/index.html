@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<title>Uina</title>
+		<link rel="stylesheet" href="/style.css" />
+	</head>
+	<body>
+		<div id="conn" hidden></div>
+		<header id="status">连接中…</header>
+		<main id="transcript"></main>
+		<footer id="composer">
+			<button id="cancel" type="button" title="打断当前回合">打断</button>
+			<textarea id="input" rows="1" placeholder="发消息给 Uina…（Enter 发送，Shift+Enter 换行）"></textarea>
+			<button id="send" type="button">发送</button>
+		</footer>
+		<script type="module" src="/web-client/main.js"></script>
+	</body>
+</html>

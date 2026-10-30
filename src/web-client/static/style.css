@@ -1,0 +1,140 @@
+:root {
+	color-scheme: dark;
+	--bg: #101216;
+	--panel: #171a20;
+	--text: #e8e6e1;
+	--dim: #8b93a1;
+	--accent: #82aaff;
+	--border: #2a2f3a;
+}
+* {
+	box-sizing: border-box;
+}
+html,
+body {
+	height: 100%;
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+body {
+	display: flex;
+	flex-direction: column;
+}
+#status {
+	padding: 0.5rem 1rem;
+	font-size: 0.85rem;
+	color: var(--dim);
+	background: var(--panel);
+	border-bottom: 1px solid var(--border);
+}
+#conn {
+	padding: 0.4rem 1rem;
+	font-size: 0.8rem;
+	color: #ffb86c;
+	background: #2a2118;
+	border-bottom: 1px solid var(--border);
+	white-space: pre-wrap;
+}
+#transcript {
+	flex: 1;
+	overflow-y: auto;
+	padding: 1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	max-width: 60rem;
+	width: 100%;
+	margin: 0 auto;
+}
+.node {
+	line-height: 1.55;
+	overflow-wrap: anywhere;
+}
+.node.turn {
+	color: var(--accent);
+	font-weight: 600;
+	margin-top: 0.6rem;
+}
+.node.assistant {
+	white-space: pre-wrap;
+}
+.node.assistant.streaming::after {
+	content: "▍";
+	color: var(--accent);
+	animation: blink 1s steps(1) infinite;
+}
+.node.thinking summary {
+	cursor: pointer;
+	color: var(--dim);
+	font-size: 0.85rem;
+}
+.node.thinking pre {
+	margin: 0.3rem 0 0;
+	padding: 0.5rem;
+	background: var(--panel);
+	border-radius: 6px;
+	white-space: pre-wrap;
+	color: var(--dim);
+	font-size: 0.85rem;
+	max-height: 40vh;
+	overflow-y: auto;
+}
+.node.tool summary {
+	cursor: pointer;
+	color: var(--dim);
+	font-family: ui-monospace, Consolas, monospace;
+	font-size: 0.85rem;
+}
+.node.tool pre {
+	margin: 0.3rem 0 0;
+	padding: 0.5rem;
+	background: var(--panel);
+	border-radius: 6px;
+	white-space: pre-wrap;
+	font-size: 0.8rem;
+	max-height: 30vh;
+	overflow-y: auto;
+}
+#composer {
+	display: flex;
+	gap: 0.5rem;
+	padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom));
+	background: var(--panel);
+	border-top: 1px solid var(--border);
+	max-width: 60rem;
+	width: 100%;
+	margin: 0 auto;
+}
+#input {
+	flex: 1;
+	resize: none;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.5rem 0.7rem;
+	font: inherit;
+	max-height: 8rem;
+}
+#input:focus {
+	outline: 1px solid var(--accent);
+}
+button {
+	background: var(--border);
+	color: var(--text);
+	border: none;
+	border-radius: 8px;
+	padding: 0 1rem;
+	font: inherit;
+	cursor: pointer;
+}
+button:active {
+	filter: brightness(1.2);
+}
+@keyframes blink {
+	50% {
+		opacity: 0;
+	}
+}
