@@ -129,6 +129,35 @@ export class PresentationProjection {
 		for (const fact of facts) this.apply(fact);
 	}
 
+	/**
+	 * 视图空间重建：安装一份已归并的节点列表（多前端快照恢复）。
+	 * 除重放各索引映射外，还把快照中仍在流式的 thinking/assistant 节点恢复为
+	 * 开启段——后续增量事实在远端无缝续流，不重开新段。
+	 */
+	restore(nodes: readonly PresentationNode[]): void {
+		this.reset();
+		for (const node of nodes) {
+			this.nodes.push(node);
+			switch (node.kind) {
+				case "turn":
+					this.turns.set(node.turn, node);
+					this.currentTurn = node.turn;
+					break;
+				case "tool":
+					this.tools.set(node.callId, node);
+					break;
+				case "thinking":
+					this.thinkingCounters.set(node.turn, (this.thinkingCounters.get(node.turn) ?? 0) + 1);
+					if (node.status === "running") this.openThinking = node;
+					break;
+				case "assistant":
+					this.assistantCounters.set(node.turn, (this.assistantCounters.get(node.turn) ?? 0) + 1);
+					if (node.status === "running") this.openAssistant = node;
+					break;
+			}
+		}
+	}
+
 	/** 回溯后当前回合由引擎给出；只影响后续 Fact 的归属，不伪造回合事实。 */
 	continueTurn(turn: number): void {
 		this.currentTurn = turn;

@@ -36,7 +36,7 @@ export class PresentationController {
 	private readonly known = new Set<string>();
 	private readonly listeners = new Set<PresentationChangeListener>();
 	private intentSink?: (intent: PresentationIntent) => void;
-	private session?: HostSnapshot;
+	private session: HostSnapshot | undefined;
 
 	/**
 	 * 摄取一条宿主事件记录：事实追加 → 投影 → 轨迹 → 变更通知。
@@ -79,6 +79,24 @@ export class PresentationController {
 		const view = this.view();
 		this.notify({ kind: "replace", view });
 		return view;
+	}
+
+	/**
+	 * 视图空间重建：远端 Surface（多前端 SyncClient）以一份 PresentationView 快照
+	 * 恢复投影与轨迹。与 replaceAll（事实空间）互补——快照视图的正文/轨迹已是
+	 * 归并后的节点，客户端无需重放事实即可获得与宿主侧逐字段一致的视图；
+	 * 快照中仍在流式的节点（running）由投影 restore 恢复为开启段，后续事实无缝续流。
+	 */
+	restore(view: PresentationView): PresentationView {
+		this.facts.replaceAll([]);
+		this.projection.restore(view.transcript);
+		this.trajectoryProjection.replaceAll(this.projection.list());
+		this.session = view.session;
+		this.known.clear();
+		for (const node of this.projection.list()) this.known.add(node.id);
+		const restored = this.view();
+		this.notify({ kind: "replace", view: restored });
+		return restored;
 	}
 
 	/** 宿主快照只描述会话状态，不伪造展示节点。 */
