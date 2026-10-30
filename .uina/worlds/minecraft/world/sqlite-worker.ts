@@ -38,6 +38,45 @@ export interface AppendGapItem {
 
 export type AppendItem = AppendEvidenceItem | AppendGapItem;
 
+/** 领域记录写入（public-api §5）：CAS 与分区校验在 worker 单事务内完成。 */
+export interface RecordWrite {
+	ref?: string;
+	schema: string;
+	world: string;
+	worldRevision: string;
+	expectedRevision: number | null;
+	value: JsonValue;
+	evidence: string[];
+}
+
+export interface StoredRecordRow {
+	ref: string;
+	schema: string;
+	world: string;
+	worldRevision: string;
+	revision: number;
+	value: JsonValue;
+	evidence: string[];
+}
+
+export interface RecordReadParams {
+	world: string;
+	worldRevision: string;
+	ref: string;
+}
+
+/** 按确切 schema 列出分区记录（places@1 的存储面；kind/near 过滤在 World 值层做）。 */
+export interface RecordsListParams {
+	schema: string;
+	world: string;
+	worldRevision: string;
+}
+
+export interface RecordsListResult {
+	rows: StoredRecordRow[];
+	recordVersion: number;
+}
+
 export type WorkerRequest =
 	| { type: "open"; dbPath: string }
 	| { type: "append"; items: AppendItem[] }
@@ -46,6 +85,10 @@ export type WorkerRequest =
 	| { type: "barrier"; id: number }
 	| { type: "readEvents"; id: number; params: EventQueryParams }
 	| { type: "readContainer"; id: number; params: ContainerQueryParams }
+	| { type: "writeRecord"; id: number; change: RecordWrite }
+	| { type: "readRecord"; id: number; params: RecordReadParams }
+	| { type: "readRecords"; id: number; params: RecordsListParams }
+	| { type: "removeRecord"; id: number; params: RecordReadParams }
 	| { type: "retain"; id: number; owner: string; evidence: string[] }
 	| { type: "release"; id: number; owner: string }
 	| { type: "prune"; id: number; options: WorldHistoryPrune }
@@ -64,19 +107,24 @@ export type WorkerResponse =
 			watermarks: Record<string, number>;
 			storage: string;
 			version: number;
+			recordVersion: number;
 	  }
 	| { type: "durable"; acks: DurableAck[]; version: number }
 	| { type: "barrierReached"; id: number }
 	| { type: "eventsPage"; id: number; result: EventQueryResult }
 	| { type: "queryFailed"; id: number; code: string; message: string }
 	| { type: "containerLast"; id: number; result: ContainerEvidence | null }
+	| { type: "recordWritten"; id: number; record: StoredRecordRow; recordVersion: number }
+	| { type: "recordResult"; id: number; record: StoredRecordRow | null }
+	| { type: "recordsPage"; id: number; result: RecordsListResult }
+	| { type: "recordRemoved"; id: number; removed: boolean; recordVersion: number }
 	| { type: "retained"; id: number }
 	| { type: "pruned"; id: number; result: WorldHistoryPruneResult }
 	| { type: "conflict"; message: string }
 	| { type: "fatal"; message: string }
 	| { type: "closed" };
 
-const SCHEMA_VERSION = "3";
+const SCHEMA_VERSION = "4";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -153,9 +201,23 @@ CREATE TABLE IF NOT EXISTS event_highwater (
 	store_seq INTEGER NOT NULL,
 	PRIMARY KEY (binding, world, world_revision)
 );
+-- 领域记录（world.md §11.1）：分区 = world + worldRevision；dimension 在记录值里，
+-- 不做顶层分区列。只保留最新修订值与单调 revision 计数，修订历史不逐版追加（§10.1）。
+CREATE TABLE IF NOT EXISTS records (
+	ref TEXT NOT NULL,
+	schema TEXT NOT NULL,
+	world TEXT NOT NULL,
+	world_revision TEXT NOT NULL,
+	revision INTEGER NOT NULL,
+	value TEXT NOT NULL,
+	evidence TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (world, world_revision, ref)
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_schema ON evidence (schema);
 CREATE INDEX IF NOT EXISTS idx_holds_ref ON evidence_holds (ref);
 CREATE INDEX IF NOT EXISTS idx_streams_partition ON streams (binding, world, world_revision);
+CREATE INDEX IF NOT EXISTS idx_records_schema ON records (schema, world, world_revision);
 `;
 
 /** 源协议冲突：同身份不同载荷（§5.3/§5.6）。 */
@@ -192,6 +254,7 @@ function openDatabase(dbPath: string): OpenedStorage {
 		db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(SCHEMA_VERSION);
 		db.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run("storage_id", randomUUID());
 		db.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run("commit_version", "0");
+		db.prepare("INSERT INTO meta (key,value) VALUES (?,?)").run("record_version", "0");
 		db.exec(SCHEMA_SQL);
 		db.exec("COMMIT");
 	} else if (String(versionRow.value) !== SCHEMA_VERSION) {
@@ -213,6 +276,21 @@ function historyIdentity(db: DatabaseSync): { storage: string; version: number }
 function bumpVersion(db: DatabaseSync, version: number): void {
 	if (!Number.isSafeInteger(version)) throw new Error("history commit version exhausted");
 	db.prepare("UPDATE meta SET value=? WHERE key='commit_version'").run(String(version));
+}
+
+/** 记录版本：只随记录写推进，驱动 places@1 的观察失效；不复用 commit_version。 */
+function recordVersionOf(db: DatabaseSync): number {
+	const row = db.prepare("SELECT value FROM meta WHERE key='record_version'").get() as Row | undefined;
+	return row == null ? 0 : Number(row.value);
+}
+
+function bumpRecordVersion(db: DatabaseSync): number {
+	const next = recordVersionOf(db) + 1;
+	if (!Number.isSafeInteger(next)) throw new Error("record version exhausted");
+	db.prepare(
+		"INSERT INTO meta (key, value) VALUES ('record_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+	).run(String(next));
+	return next;
 }
 
 /** 首个证据登记源流元数据（绑定、采集 schema、源身份、起点，§5.3）；重复登记必须一致。 */
@@ -548,6 +626,148 @@ function inputFailure(message: string, code = "INVALID_INPUT"): Error {
 	return Object.assign(new Error(message), { code });
 }
 
+// ---- 领域记录（world.md §10；每条消息一个事务边界） ----
+
+function validateRecordWrite(change: RecordWrite): void {
+	if (
+		typeof change.schema !== "string" ||
+		!change.schema.trim() ||
+		typeof change.world !== "string" ||
+		!change.world.trim() ||
+		typeof change.worldRevision !== "string" ||
+		!change.worldRevision.trim()
+	)
+		throw inputFailure("record write requires nonempty schema/world/worldRevision");
+	if (
+		change.expectedRevision !== null &&
+		(!Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 1)
+	)
+		throw inputFailure("expectedRevision must be null (create) or a positive revision");
+	if (change.value === undefined) throw inputFailure("record value is required");
+	if (!Array.isArray(change.evidence) || change.evidence.some((ref) => typeof ref !== "string" || !ref.trim()))
+		throw inputFailure("record evidence must be an array of nonempty immutable references");
+	if (change.ref !== undefined && (typeof change.ref !== "string" || !change.ref.trim()))
+		throw inputFailure("record ref must be a nonempty reference when provided");
+}
+
+function storedRecord(row: Row, partition: { world: string; worldRevision: string }): StoredRecordRow {
+	return {
+		ref: String(row.ref),
+		schema: String(row.schema),
+		world: partition.world,
+		worldRevision: partition.worldRevision,
+		revision: Number(row.revision),
+		value: JSON.parse(String(row.value)) as JsonValue,
+		evidence: JSON.parse(String(row.evidence)) as string[],
+	};
+}
+
+function writeRecordOp(db: DatabaseSync, change: RecordWrite): { record: StoredRecordRow; recordVersion: number } {
+	validateRecordWrite(change);
+	db.exec("BEGIN");
+	try {
+		// §6.2：引用证据的记录写入不建立悬空持久引用——被引证据必须已在库。
+		for (const ref of new Set(change.evidence)) {
+			if (!db.prepare("SELECT 1 FROM evidence WHERE ref=?").get(ref))
+				throw inputFailure(`evidence is unavailable: ${ref}`, "EVIDENCE_UNAVAILABLE");
+		}
+		const evidence = JSON.stringify([...new Set(change.evidence)]);
+		const value = JSON.stringify(change.value);
+		const now = new Date().toISOString();
+		if (change.expectedRevision === null) {
+			const ref = change.ref ?? `rec:${randomUUID()}`;
+			const existing = db
+				.prepare("SELECT 1 FROM records WHERE world=? AND world_revision=? AND ref=?")
+				.get(change.world, change.worldRevision, ref);
+			if (existing != null) throw inputFailure(`record already exists: ${ref}`, "CONFLICT");
+			db.prepare(
+				"INSERT INTO records (ref, schema, world, world_revision, revision, value, evidence, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+			).run(ref, change.schema, change.world, change.worldRevision, value, evidence, now);
+			const recordVersion = bumpRecordVersion(db);
+			db.exec("COMMIT");
+			return {
+				record: {
+					ref,
+					schema: change.schema,
+					world: change.world,
+					worldRevision: change.worldRevision,
+					revision: 1,
+					value: change.value,
+					evidence: JSON.parse(evidence) as string[],
+				},
+				recordVersion,
+			};
+		}
+		if (typeof change.ref !== "string") throw inputFailure("record update requires an explicit record ref");
+		const existing = db
+			.prepare("SELECT schema, revision FROM records WHERE world=? AND world_revision=? AND ref=?")
+			.get(change.world, change.worldRevision, change.ref) as Row | undefined;
+		if (existing == null) throw inputFailure(`record does not exist: ${change.ref}`, "NOT_FOUND");
+		if (Number(existing.revision) !== change.expectedRevision)
+			throw inputFailure(
+				`record revision moved: expected ${change.expectedRevision}, actual ${Number(existing.revision)}`,
+				"CONFLICT",
+			);
+		if (String(existing.schema) !== change.schema)
+			throw inputFailure("record schema cannot change on revision", "CONFLICT");
+		db.prepare(
+			"UPDATE records SET revision=revision+1, value=?, evidence=?, updated_at=? WHERE world=? AND world_revision=? AND ref=? AND revision=?",
+		).run(value, evidence, now, change.world, change.worldRevision, change.ref, change.expectedRevision);
+		const recordVersion = bumpRecordVersion(db);
+		db.exec("COMMIT");
+		return {
+			record: {
+				ref: change.ref as string,
+				schema: change.schema,
+				world: change.world,
+				worldRevision: change.worldRevision,
+				revision: change.expectedRevision + 1,
+				value: change.value,
+				evidence: JSON.parse(evidence) as string[],
+			},
+			recordVersion,
+		};
+	} catch (err) {
+		db.exec("ROLLBACK");
+		throw err;
+	}
+}
+
+function readRecordOp(db: DatabaseSync, params: RecordReadParams): StoredRecordRow | null {
+	const row = db
+		.prepare("SELECT ref, schema, revision, value, evidence FROM records WHERE world=? AND world_revision=? AND ref=?")
+		.get(params.world, params.worldRevision, params.ref) as Row | undefined;
+	return row == null ? null : storedRecord(row, { world: params.world, worldRevision: params.worldRevision });
+}
+
+function readRecordsOp(db: DatabaseSync, params: RecordsListParams): RecordsListResult {
+	if (typeof params.schema !== "string" || !params.schema.trim())
+		throw inputFailure("record list requires a nonempty schema");
+	const rows = db
+		.prepare(
+			"SELECT ref, schema, revision, value, evidence FROM records WHERE schema=? AND world=? AND world_revision=? ORDER BY ref ASC",
+		)
+		.all(params.schema, params.world, params.worldRevision) as Row[];
+	const partition = { world: params.world, worldRevision: params.worldRevision };
+	return { rows: rows.map((row) => storedRecord(row, partition)), recordVersion: recordVersionOf(db) };
+}
+
+function removeRecordOp(db: DatabaseSync, params: RecordReadParams): { removed: boolean; recordVersion: number } {
+	db.exec("BEGIN");
+	try {
+		const result = db
+			.prepare("DELETE FROM records WHERE world=? AND world_revision=? AND ref=?")
+			.run(params.world, params.worldRevision, params.ref);
+		const removed = Number(result.changes) > 0;
+		const recordVersion = removed ? bumpRecordVersion(db) : recordVersionOf(db);
+		db.exec("COMMIT");
+		return { removed, recordVersion };
+	} catch (err) {
+		db.exec("ROLLBACK");
+		throw err;
+	}
+}
+
 function checkOwner(owner: string): void {
 	if (typeof owner !== "string" || !owner.trim()) throw inputFailure("a durable evidence owner is required");
 }
@@ -690,6 +910,7 @@ port.on("message", (request: WorkerRequest) => {
 				synchronousMode: opened.synchronousMode,
 				watermarks: loadWatermarks(opened.db),
 				...historyIdentity(opened.db),
+				recordVersion: recordVersionOf(opened.db),
 			} satisfies WorkerResponse);
 			return;
 		}
@@ -721,6 +942,35 @@ port.on("message", (request: WorkerRequest) => {
 			} satisfies WorkerResponse);
 			return;
 		}
+		if (request.type === "writeRecord") {
+			const { record, recordVersion } = writeRecordOp(db, request.change);
+			port.postMessage({ type: "recordWritten", id: request.id, record, recordVersion } satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "readRecord") {
+			port.postMessage({
+				type: "recordResult",
+				id: request.id,
+				record: readRecordOp(db, request.params),
+			} satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "readRecords") {
+			port.postMessage({
+				type: "recordsPage",
+				id: request.id,
+				result: readRecordsOp(db, request.params),
+			} satisfies WorkerResponse);
+			return;
+		}
+		if (request.type === "removeRecord") {
+			port.postMessage({
+				type: "recordRemoved",
+				id: request.id,
+				...removeRecordOp(db, request.params),
+			} satisfies WorkerResponse);
+			return;
+		}
 		if (request.type === "retain" || request.type === "release") {
 			if (request.type === "retain") retain(db, request.owner, request.evidence);
 			else {
@@ -740,15 +990,21 @@ port.on("message", (request: WorkerRequest) => {
 		port.postMessage({ type: "closed" } satisfies WorkerResponse);
 		port.close();
 	} catch (err) {
-		if (
-			(request.type === "readEvents" && (err as { code?: string }).code === "SNAPSHOT_EXPIRED") ||
+		const code = (err as { code?: string }).code ?? "";
+		const domainFailure =
+			(request.type === "readEvents" && code === "SNAPSHOT_EXPIRED") ||
 			((request.type === "retain" || request.type === "release" || request.type === "prune") &&
-				["INVALID_INPUT", "EVIDENCE_UNAVAILABLE"].includes((err as { code?: string }).code ?? ""))
-		) {
+				["INVALID_INPUT", "EVIDENCE_UNAVAILABLE"].includes(code)) ||
+			((request.type === "writeRecord" ||
+				request.type === "readRecord" ||
+				request.type === "readRecords" ||
+				request.type === "removeRecord") &&
+				["INVALID_INPUT", "EVIDENCE_UNAVAILABLE", "CONFLICT", "NOT_FOUND"].includes(code));
+		if (domainFailure) {
 			port.postMessage({
 				type: "queryFailed",
 				id: request.id,
-				code: (err as { code: string }).code,
+				code,
 				message: messageOf(err),
 			} satisfies WorkerResponse);
 		} else if (err instanceof SourceConflict) {

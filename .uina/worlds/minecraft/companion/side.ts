@@ -136,6 +136,8 @@ export async function openExecutionSide(
 		dbPath: join(init.worldDataDir, "world-history.db"),
 		binding,
 		namespace,
+		// route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现，World 不依赖 Driver。
+		routePlanner: { plan: (query) => gotoDirector.plan(query.input as Parameters<GotoDirector["plan"]>[0]) },
 	});
 	try {
 		const library = createLibrary({

@@ -396,7 +396,7 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 - 输入 `{ kind?: "home"|"mine"|"farm"|"other", near?: number }`
 - 返回 `{ places:[{ name, at:{position,dimension}, kind, note?, savedAt }] }`
 
-实现说明：事件登记为 `client.event@1` 证据，沿既有接收/提交队列入库，复用 evidence 表与 rowid 顺序（不建第二份聊天队列）；`gaps` 返回分区内已知缺口，重复读取同一 gap ref 不代表新的丢失。Driver 只捕获本客户端的 chat/damage/death/connection，其他实体的受伤不记成自身事件。
+实现说明（2026-10-30 批11）：记录 schema 固定 `minecraft:place@1`，ref 为 `place:<name>`，存储分区 = world + worldRevision（dimension 在记录值里，跨维度地点照常列出）。`kind` 精确匹配；`near` 是当前维度内到当前位置的欧氏距离上限，设置 `near` 时其他维度的地点不返回，当前位置不可得时显式 `DISCONNECTED`（不静默放开过滤）。watchable：记录写入推进 record_version 触发 changed（保守复查提示），存储换代触发 reset。
 
 ### container.last · `container.last@1`
 - 输入 `{ at: Pos }`
@@ -412,6 +412,8 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 - 返回 `{ ok, distance, steps:[{ at, action:"walk"|"dig"|"place"|"jump" }], needs:{ dig, place }, blockers:[{ at, reason }], estTimeSec }`
 - **不可等待**：路径是试算结果，`version: null`；要盯路况就等 `block@1`/`blocks@1`。
 - 例：`{ ok:false, distance:64, blockers:[{at:{x:130,y:64,z:-30},reason:"3 格宽岩浆"}] }`
+
+实现说明（2026-10-30 批11）：计划是只读试算，不占控制、不写世界、不产生效果；distance 是当前位置到目标的直线距离（诊断用）。经组合根注入的窄计划端口（`WorldRoutePlanner`）走 Driver 受控寻路：局部 Movements（不触碰活动导航的共享配置）、never setGoal、optimizePath=false 保留上游 Move 的 toBreak/toPlace。逐格动作按固定优先级导出：垫块 > 挖掘 > 跳跃（上升/跑酷）> 行走；`needs` 聚合实际 toBreak/toPlace 数量；`estTimeSec` 由上游 a* 代价折算（近似秒，`ok:false` 时如实 null）；`blockers` 在上游停在半路时取路径前沿节点并给诚实原因。并发 plan 顺延串行；执行仍用 goto 并按新现场复核，不引入 plan ID。
 
 ### build.plan · `build.plan@1`
 - 输入与 build 共用 BuildTargetRequest（下文）；可读材料与现场差异，不执行拆除、放置或开箱。
@@ -469,6 +471,8 @@ type ExploreTarget =
 - 返回 `{found:{kind:"block"|"biome"|"player"|"entity",at,name,ref?:EntityRef},traveled,scanned}`；实体 ref 只在当前仍可核验跟踪代次时给出。先检查当前覆盖，再逐段移动、扫描，命中便停止本次探索控制；只读 players 中出现名字不算已找到位置。
 - 未满足 until 抛 NOT_FOUND/TIMEOUT，progress 保留 traveled/scanned，不把目标未找到报告成已完成。复杂组合条件由程序组织多次短探索与查询，不在原生目标中增加逻辑表达式。
 - 失败 `TIMEOUT`、`UNREACHABLE`、`INTERRUPTED`
+
+实现说明（2026-10-30 批11，冻结）：整个多段循环持有一次 `navigate` 控制作用域；每段按未访问方向 `goto`（段距 24、段容差 4、不挖不垫、段超时 min(45s, 余量)），每站扫描（blocks/entities 半径 32、biome 读 world@1）并推进 `progress{traveled,scanned}`。失败映射：预算耗尽仍有未走方向 → `TIMEOUT`；空间穷尽且一步未成（四方向从起点即不可达）→ `UNREACHABLE`；真实移动过后穷尽 → `NOT_FOUND`；控制被夺/断线如实上抛；全局取消 → `INTERRUPTED`。方向死 = 该方向上一段 `UNREACHABLE`；"未访问"按扫描点整数格计。玩家目标只认 tracked 实体（players 名单属 K6，名单出现名字不算位置）。
 
 #### transit · `transit@1` · act · P2
 - 输入 `{ destination: { dimension: string, at?: Pos }, allow?: ["portal"|"minecart"|"boat"|"horse"], maxTimeMs?: 600000 }`
@@ -730,12 +734,18 @@ await mc.call("chat@1", {text:"/list"});
 - 做：把坐标写进世界记录（同名覆盖）。`at` 省略时记当前位置。
 - 返回 `{name, at:{position,dimension}, kind}`；失败 `INVALID_INPUT`（名字不合法）
 
+实现说明（2026-10-30 批11）：名字 = 去首尾空白后 1..32 个可见字符（控制字符/纯空白拒绝）；显式维度照存（§2.2），不做同维度断言。写入走 CAS：读旧修订 → 有则按 revision 覆盖、无则创建；`CONFLICT`（并发写者抢先）有界重读重试（共 3 次），仍冲突如实上抛。记录 `evidence=[]`——记录本身是本次动作，不引用会过期的观察。
+
 #### forget · `forget@1` · act · P1
 - 输入 `{ name }` → `{ removed }`；失败 `NOT_FOUND`
+
+实现说明（2026-10-30 批11）：删除走 `WorldPort.removeRecord`（按当前绑定分区）；记录不存在如实 `NOT_FOUND`，成功返回 `{removed:true}`。名字校验先于存在性检查。
 
 ## 5. 记录
 
 `remember`/`forget`/`places` 读写的是 **World 的记录**（不是程序状态、不是 Library）：一个世界里 Uina 自己攒的地点表，跨运行、跨会话存活。这是"越玩越熟"的最小载体：家、矿口、农田、传送门。
+
+实现说明（2026-10-30 批11）：存储在 world-history.db 的 records 表（world.md §11），经 `WorldPort.readRecord/writeRecord/removeRecord` 走提交屏障与 CAS；写入方（能力层）从 self 取世界身份，World 校验分区与当前绑定一致。历史库 schema 版本随 records 表升到 v4——旧库明确拒绝，不迁移真实数据。
 
 容器只保存最后一次真实观察，不维护推算库存。transfer 使用历史选择候选，实际转移前重新开窗核验；没有历史时按 nearest 规则查找。
 

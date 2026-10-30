@@ -1,6 +1,6 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **10 查询 + 15 动作（25/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；**批 9B 的决策、调度、现有历史引用清理与 I2 已实现**，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25（批11 更新 2026-10-30）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **12 查询 + 18 动作（30/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 15 动作”的计数错误在本轮更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；**批 9B 的决策、调度、现有历史引用清理与 I2 已实现**，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](archive/native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -199,8 +199,8 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 |---|---|---|---|
 | K1 基础观察与操作（**2026-10-23 实现，真服 PASS**） | self inventory block blocks entities item recipe world events | goto mine place equip eat use chat attack | I1 起步，I2 验收。完成真实身体/知识/消息、空手装备、牌面编辑与效果确认；先打通这些操作再包装长任务 |
 | K2 物品与生产 | container.last | container transfer drop pickup collect craft smelt | K1、窗口/拾取/配方、历史。完成木→石→铁、两向转移、熔炼等待与部分剩余；自身持有和祖先委托分别正确 |
-| K3 导航与战斗 | route.plan | follow flee surface explore fight | K1/K2 的移动、挖掘、装备/输入和实体事实。复用路径/攻击算法，补实体探索、战斗结束原因与默认 safety |
-| K4 空间与记录 | region places | remember forget tunnel excavate | 地点只依赖 W 领域记录和当前位置，可先做；地形切片及空间作业各自消费 K1 挖放与必要导航，不等待整组 K3 |
+| K3 导航与战斗 | route.plan（**2026-10-30 实现**） | follow flee surface explore（**2026-10-30 实现**） fight | K1/K2 的移动、挖掘、装备/输入和实体事实。复用路径/攻击算法，补实体探索、战斗结束原因与默认 safety |
+| K4 空间与记录 | places（**2026-10-30 实现**） | remember forget（**2026-10-30 实现**） tunnel excavate | 地点只依赖 W 领域记录和当前位置，可先做；地形切片及空间作业各自消费 K1 挖放与必要导航，不等待整组 K3 |
 | K5 施工与蓝图 | build.plan | build | K2 供料、K4 地形/挖放、Library 蓝图文件。完成 Raw→Target→Project、同目标计划/执行、差异修复与局部改图 |
 | K6 玩家与地图 | players map | — | 当前名单/实体、地图包、现有图片附件；可与 K2–K5 并行。名单不造实体，地图不造中心或像素 |
 | K7 专用工作站 | — | brew enchant anvil grindstone trade | K2 窗口、装备/物品与材料；经验/效果当前值。按真实协议补选择、改名等受控操作及完成口径 |
@@ -253,7 +253,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](archive/native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **下一工作包为地点记录与路径探索**：批10已接高频 feedback/loop、默认自保与 safety 记录；places/remember/forget 和 route.plan/explore 按直接依赖推进。批10范围与验证见 archive/feedback-implementation.md，仍不计完整战斗或51项完成。
+3. **下一工作包为移动鲁棒性与完整战斗**（follow/flee/surface、fight）：批11已接领域记录（G1 关闭）、地点（places/remember/forget）与路径探索（route.plan/explore），能力面 **30/51**；位置记录与找资源/返回基地已可用，见 dev/MC-WORLD.md 批11 节。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -295,7 +295,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ### 10.3 玩法就绪队列（默认优先级，可据校准调整）
 
-以下不是“前一行全部完成才能开始下一行”的串行表。**批10已接反馈与默认自保；接下来先做地点与找资源/返回基地，再做完整导航战斗，随后空间作业和施工**；其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
+以下不是“前一行全部完成才能开始下一行”的串行表。**批11已接地点记录与路径探索（places/remember/forget/route.plan/explore，G1 关闭）；接下来先做移动鲁棒性与完整战斗（follow/flee/surface、fight），随后空间作业和施工**；其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
 
 | 工作包 | 交付范围 | 直接依赖与边界 | 验收任务 |
 |---|---|---|---|

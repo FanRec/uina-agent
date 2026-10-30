@@ -1,5 +1,12 @@
 # 设计变更记录
 
+## 2026-10-30 · 批11 领域记录与地点、路径探索
+
+- World 领域记录（known-gaps G1）落地：world-history.db 增 records 表，SCHEMA v3→v4（旧库明确拒绝、不迁移）；`WorldPort` 增 `removeRecord`，CAS/分区校验在存储 Worker 单事务内，非空 evidence 同事务核验存在性；`meta.record_version` 只随记录写推进，驱动 places 观察，不复用提交版本。
+- 能力面 +5：`places@1`（watchable，kind/near 过滤，near 只作用于当前维度、原点不可得显式 DISCONNECTED）、`remember@1`（CAS 同名覆盖、显式维度照存、名字 1..32 可见字符）、`forget@1`（removeRecord + NOT_FOUND）、`route.plan@1`（只读试算：组合根注入 `WorldRoutePlanner` 窄端口，World 不依赖 Driver；steps/needs 从上游 Move 的 toBreak/toPlace 导出，estTimeSec 由 a* 代价折算，不占控制不产生效果）、`explore@1`（单次 navigate 作用域包多段 goto+扫描，TIMEOUT/NOT_FOUND 带 traveled/scanned）。
+- 合同先行：public-api §5（removeRecord、route.plan 分派）、world.md §11（records 表）、capabilities.md 五节冻结细节（near/维度、探索失败映射与常量、试算推导、名字规则、删除语义）。
+- Runtime v6/history v4/ledger v3/Host journal v4。能力 **30/51**（12 查询 + 18 动作）；下一包按 §10.3 为移动鲁棒性（follow/flee/surface）与完整战斗。验证与证据见 dev/MC-WORLD.md 批11 节。
+
 ## 2026-10-27 · 批10反馈与默认自保
 
 - ClientHost 生命周期监听与化身退役修正；self 氧气、最大生命值和效果寿命沿实际客户端数据读取。

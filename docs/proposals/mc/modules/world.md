@@ -437,7 +437,7 @@ SQLite 保存世界绑定、源会话/范围/缺口、不可变观察、Section 
 | 接收/证据 | 稳定 evidence ref、stream/E 唯一、store_seq、提交版本（schema v3：无 receiver/R 列，接收代次只在 durable ACK 语义里） |
 | 历史空间/Section | 世界/代次/维度/section、不可变修订、基底/补丁依赖 |
 | 容器/实体/事件 | 原始归属与证据，不能仅坐标或网络 ID |
-| 领域修订 | record/ref/revision、schema、世界代次、作者/调用与依据 |
+| 领域修订 | record/ref/revision、schema、世界代次、作者/调用与依据（schema v4 落地 records 表：分区 = world+worldRevision+ref，只保留最新修订值与单调 revision 计数；非空 evidence 同事务校验存在性，删除走 removeRecord 并推进 meta.record_version——它只随记录写推进、驱动记录观察失效，与提交版本分开） |
 | 保留关系 | 持久 owner 到本地证据及依赖 |
 | 派生索引 | 最近观察、空间/类别、时间、领域检索；可重建 |
 

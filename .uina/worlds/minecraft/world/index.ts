@@ -1,12 +1,13 @@
 /**
- * Minecraft World 组合：当前读 + 静态知识 + 事件历史 + 可用性快照。
+ * Minecraft World 组合：当前读 + 静态知识 + 事件历史 + 领域记录 + 可用性快照。
  *
- * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §4.2、§8、§13.1。
- * 读取按 §8.2 三类分派：current（facts.sample）/ static（版本知识，不建连接依赖）
- * / history（events@1，走历史存储与提交屏障）。cur=null 只出现在没有观察源的查询。
+ * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §4.2、§8、§10、§13.1。
+ * 读取按 §8.2 分派：current（facts.sample）/ static（版本知识，不建连接依赖）
+ * / history（events@1、places@1，走历史存储与提交屏障）/ derived（route.plan@1，
+ * 组合根注入的窄计划端口，World 不依赖 Driver）。cur=null 只出现在没有观察源的查询。
  * 绑定由 World 拥有（组合根注入当前绑定投影，Driver 据此标注捕获 scope）；
  * 历史侧两段启动（§13.1）：句柄立即可用，historyReady 结算 ready/unavailable。
- * I1 不做领域记录（readRecord/writeRecord 显式失败，沿 writeSign 先例）；
+ * 领域记录经 HistoryIngest 的记录消息落地（CAS 在 worker 单事务内）；
  * WorldEvidencePort 仅保护可信记录所有者实际持有的不可变观察引用。
  */
 
@@ -31,9 +32,12 @@ import type {
 	WorldHistoryPrune,
 	WorldHistoryPruneResult,
 	WorldQuery,
+	WorldRoutePlanner,
 	WorldWatch,
 } from "../contracts/world.js";
 import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
+import { PLACES_REF, PLACE_SCHEMA, placesObservation, resolvePlacesQuery, type PlacesOrigin } from "./places.js";
+import { ROUTE_PLAN_REF, routePlanObservation } from "./route-plan.js";
 import { checkCursor, queryStream, watchFailure } from "./watch.js";
 import { CurrentReads } from "./current.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
@@ -51,17 +55,19 @@ export interface MinecraftWorldOptions {
 	binding: { binding: Ref; world: Ref; worldRevision: Ref; state?: "bound" | "unbound" };
 	/** 本次启动命名空间（与 Driver 证据流命名空间同源；跨进程不复用，§5.3）。 */
 	namespace: string;
+	/** route.plan@1 的窄计划端口（组合根用 Driver 受控寻路实现）；缺省时该查询明确失败。 */
+	routePlanner?: WorldRoutePlanner;
 }
 
-function unimplementedRecords(op: string): CallFailure {
+function recordFailure(code: string, message: string, hint?: string): CallFailure {
 	return callFailure({
-		code: "INTERNAL",
+		code,
 		source: "world",
-		message: `${op} is not implemented in world I1 scope`,
-		hint: "domain records arrive with the executor/program work packages (development-plan.md §4)",
+		message,
+		hint,
 		dispatch: "not_sent",
 		effects: [],
-		recoverable: false,
+		recoverable: true,
 	});
 }
 
@@ -121,7 +127,10 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly binding: MinecraftWorldOptions["binding"];
 	private readonly readers: ReadonlyMap<ExactRef, QueryReader>;
 	private readonly validators: ReadonlyMap<ExactRef, QueryValidator>;
+	private readonly routePlanner: WorldRoutePlanner | null;
 	private readonly eventScope: EventScope;
+	/** places 记录观察的分区键：换分区后旧游标失效（与 events 同形）。 */
+	private readonly placesPartition: string;
 	private readonly watchable: Set<string>;
 	private readonly watches = new Set<WorldWatch>();
 	private closed = false;
@@ -133,8 +142,15 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		this.binding = options.binding;
 		this.readers = options.readers;
 		this.validators = options.validators;
+		this.routePlanner = options.routePlanner ?? null;
 		this.watchable = new Set(options.queries.filter((q) => q.watchable).map((q) => q.ref));
-		const queryRefs: ExactRef[] = [...options.readers.keys(), EVENTS_REF, CONTAINER_LAST_REF];
+		const queryRefs: ExactRef[] = [
+			...options.readers.keys(),
+			EVENTS_REF,
+			CONTAINER_LAST_REF,
+			PLACES_REF,
+			ROUTE_PLAN_REF,
+		];
 		for (const ref of queryRefs) {
 			if (typeof options.validators?.get(ref) !== "function") throw new Error(`query validator is missing: ${ref}`);
 		}
@@ -145,6 +161,11 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		});
 		this.historyReady = this.history.historyReady;
 		this.eventScope = eventScopeOf(options.binding.binding, options.binding.world, options.binding.worldRevision);
+		this.placesPartition = JSON.stringify([
+			options.binding.binding,
+			options.binding.world,
+			options.binding.worldRevision,
+		]);
 	}
 
 	async read<T>(query: WorldQuery): Promise<Observation<T>> {
@@ -178,6 +199,12 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			const params = resolveContainerQuery(input, this.binding, this.facts);
 			return containerObservation<T>(await this.history.readContainer(params));
 		}
+		if (query.ref === PLACES_REF) return await this.readPlaces<T>(input);
+		if (query.ref === ROUTE_PLAN_REF) {
+			if (this.routePlanner == null)
+				throw watchFailure("INTERNAL", "route.plan planner is not wired in this composition");
+			return routePlanObservation<T>(await this.routePlanner.plan({ ref: query.ref, input }));
+		}
 		throw unknownQuery(query.ref, this.readers);
 	}
 
@@ -195,6 +222,9 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 					"events waiting requires a fixed after and a complete page; read next pages first",
 				);
 			inner = this.history.watchEvents(queryStream(EVENTS_REF, input, this.eventScope.partition));
+		} else if (query.ref === PLACES_REF) {
+			// 记录观察按 record_version 失效：任何记录写都会触发 changed（保守提示，复查重读）。
+			inner = this.history.watchRecords(queryStream(PLACES_REF, input, this.placesPartition));
 		} else {
 			const reader = this.readers.get(query.ref);
 			if (reader?.kind !== "current" || reader.cursor === "none")
@@ -246,12 +276,62 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		};
 	}
 
-	async readRecord(_ref: Ref): Promise<DomainRecord> {
-		throw unimplementedRecords("readRecord");
+	/** places@1：分区记录 + kind/near 过滤；near 原点取当前 self，断线显式失败。 */
+	private async readPlaces<T>(input: JsonValue): Promise<Observation<T>> {
+		const origin: PlacesOrigin | null = this.placesOrigin();
+		const params = resolvePlacesQuery(input, origin);
+		const result = await this.history.readRecords({
+			schema: PLACE_SCHEMA,
+			world: this.binding.world,
+			worldRevision: this.binding.worldRevision,
+		});
+		return placesObservation<T>(result.rows, params, {
+			observedAt: new Date().toISOString(),
+			evidence: result.rows.map((row) => row.ref),
+			cursor: this.history.placesCursor(queryStream(PLACES_REF, input, this.placesPartition)),
+		});
 	}
 
-	async writeRecord(_change: Parameters<WorldPort["writeRecord"]>[0]): Promise<DomainRecord> {
-		throw unimplementedRecords("writeRecord");
+	private placesOrigin(): PlacesOrigin | null {
+		const self = this.facts.sample((view) => view.self()).value.value;
+		return self == null ? null : { dimension: self.place.dimension, position: self.place.position };
+	}
+
+	async readRecord(ref: Ref): Promise<DomainRecord> {
+		const row = await this.history.readRecord({
+			world: this.binding.world,
+			worldRevision: this.binding.worldRevision,
+			ref,
+		});
+		if (row == null) throw recordFailure("NOT_FOUND", `record does not exist in the current world partition: ${ref}`);
+		// schema 在写入时按合同的 ExactRef 校验过；wire 层放宽为 string，只在此处收窄。
+		return row as DomainRecord;
+	}
+
+	async writeRecord(change: Parameters<WorldPort["writeRecord"]>[0]): Promise<DomainRecord> {
+		// §10.1：分区由 World 拥有——变更的分区必须匹配当前绑定，不静默改写调用方值。
+		if (change.world !== this.binding.world || change.worldRevision !== this.binding.worldRevision) {
+			throw recordFailure(
+				"INVALID_INPUT",
+				`record partition (${change.world}, ${change.worldRevision}) does not match the current binding (${this.binding.world}, ${this.binding.worldRevision})`,
+				"writeRecord binds to the current world partition; take world/worldRevision from self@1",
+			);
+		}
+		// wire 上 schema 是 ExactRef（调用方按合同传入）；存储层放宽为 string，只在此处收窄。
+		return (await this.history.writeRecord({
+			...change,
+			world: this.binding.world,
+			worldRevision: this.binding.worldRevision,
+		})) as DomainRecord;
+	}
+
+	async removeRecord(ref: Ref): Promise<{ removed: boolean }> {
+		const removed = await this.history.removeRecord({
+			world: this.binding.world,
+			worldRevision: this.binding.worldRevision,
+			ref,
+		});
+		return { removed };
 	}
 
 	/** Trusted record owners only; these operations never enter the guest API. */

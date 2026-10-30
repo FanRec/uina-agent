@@ -16,6 +16,7 @@
 import { createRequire } from "node:module";
 import type { MineflayerBot } from "./adapter.js";
 import { toMineflayerVec3 } from "./adapter.js";
+import type { RoutePlanAction } from "../../contracts/world.js";
 import type { Vec3 } from "../../contracts/values.js";
 
 /**
@@ -63,7 +64,7 @@ interface PathfinderAssembly {
 		start: unknown,
 		goal: unknown,
 		options: object,
-	): IterableIterator<{ result: { status: string; path: Vec3[] } }>;
+	): IterableIterator<{ result: { status: string; cost: number; path: PlanMove[] } }>;
 	movements?: unknown;
 	goal?: unknown;
 	setMovements(movements: unknown): void;
@@ -186,4 +187,93 @@ export async function planEscape(
 export function canBreathe(bot: MineflayerBot, position: Vec3): boolean | null {
 	const head = bot.blockAt(toMineflayerVec3({ ...position, y: position.y + 1.62 }), false);
 	return head == null ? null : head.boundingBox === "empty" && !/water|lava|bubble_column/.test(head.name);
+}
+
+// ---- route.plan@1：只读试算（capabilities.md §3 route.plan、§2.11） ----
+
+export interface PlannedStep {
+	x: number;
+	y: number;
+	z: number;
+	action: RoutePlanAction;
+}
+
+export interface PlannedPath {
+	status: "success" | "noPath" | "timeout";
+	/** 上游 a* 代价合计（移动代价单位，近似穿越+挖掘/垫块的秒数量级）。 */
+	cost: number;
+	steps: PlannedStep[];
+	needs: { dig: number; place: number };
+}
+
+/** 上游 Move 的最小面（optimizePath=false 保留原始节点）；导出供确定性测试构造。 */
+export interface PlanMove {
+	x: number;
+	y: number;
+	z: number;
+	toBreak: unknown[];
+	toPlace: unknown[];
+	parkour: boolean;
+}
+
+/** 逐格动作（固定推导，写入适配文件不扩散）：垫块 > 挖掘 > 跳跃（上升/跑酷） > 行走。 */
+function stepAction(move: PlanMove, previous: PlanMove | null): RoutePlanAction {
+	if (move.toPlace.length > 0) return "place";
+	if (move.toBreak.length > 0) return "dig";
+	if (move.parkour || (previous != null && move.y > previous.y)) return "jump";
+	return "walk";
+}
+
+/** Move 链 → 动作步与需求计数（首节点是起点 Move，无动作，跳过但参与上升判定）。 */
+export function deriveSteps(moves: PlanMove[]): { steps: PlannedStep[]; needs: { dig: number; place: number } } {
+	const body = moves.length > 0 ? moves.slice(1) : [];
+	const steps: PlannedStep[] = [];
+	let dig = 0;
+	let place = 0;
+	let previous: PlanMove | null = moves.length > 0 ? moves[0]! : null;
+	for (const move of body) {
+		dig += move.toBreak.length;
+		place += move.toPlace.length;
+		steps.push({ x: move.x, y: move.y, z: move.z, action: stepAction(move, previous) });
+		previous = move;
+	}
+	return { steps, needs: { dig, place } };
+}
+
+/**
+ * 只读试算到 GoalNear 的路径：局部 Movements（不触碰活动导航的共享配置）、
+ * never setGoal、optimizePath=false 保留上游 Move 的 toBreak/toPlace。
+ * 每次 compute 受 tickTimeout 约束，并在迭代间 setImmediate 让出事件循环——
+ * a* 最多跑满上游 think 超时（5s），同步排水会让心跳饿死（owner 过期）。
+ * status 收敛为 success/noPath/timeout（partial 只是中间产出）。
+ */
+export async function planPath(
+	bot: MineflayerBot,
+	at: Vec3,
+	tolerance: number,
+	config: PathfinderMovementsConfig,
+): Promise<PlannedPath> {
+	loadPathfinderPlugin(bot);
+	const assembly = (bot as BotWithAssembly).pathfinder;
+	if (assembly == null) throw new Error("pathfinder plugin is not loaded");
+	const movements = new Movements(bot);
+	movements.allowSprinting = config.sprint;
+	movements.canDig = config.digThrough;
+	movements.allow1by1towers = config.placeToReach;
+	movements.scafoldingBlocks = config.placeToReach
+		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
+		: [];
+	const goal = new GoalNear(at.x, at.y, at.z, tolerance);
+	const iterator = assembly.getPathFromTo(movements, bot.entity.position, goal, { optimizePath: false });
+	for (;;) {
+		const step = iterator.next();
+		if (step.done) break;
+		const { result } = step.value;
+		if (result.status === "success" || result.status === "noPath" || result.status === "timeout") {
+			return { status: result.status, cost: result.cost, ...deriveSteps(result.path) };
+		}
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	// 生成器在非 partial 终态收尾；兜底按无路径收敛（不发生即不出口）。
+	return { status: "noPath", cost: 0, steps: [], needs: { dig: 0, place: 0 } };
 }

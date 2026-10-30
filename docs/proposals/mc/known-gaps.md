@@ -16,13 +16,14 @@
 
 ## 2. P0 阻断项
 
-### G1 · World 领域记录未实现
+### G1 · World 领域记录未实现（✅ 已于 2026-10-30 批11 关闭）
 
 - **现象**：`readRecord` / `writeRecord` 直接抛错，领域记录完全不存在。
 - **证据**：`world/index.ts:249-255`（`throw unimplementedRecords(...)`）；`contracts/world.ts:28,41,53` 只定义了类型。
 - **影响**：`places` / `remember` / `forget` 无法开工；"记住基地、重开读回"这条路为零。
 - **修法**：`world/sqlite-worker.ts` 增领域记录表（record ref、revision、world/worldRevision/dimension 分区、schema、author、evidence 引用）；`world/index.ts` 实现 read/write + revision CAS；`capabilities/queries/places.ts`、`capabilities/actions/{remember,forget}.ts` 走现有 `capabilities/index.ts` 装配。
 - **验收**：临时 SQLite Worker 关闭重开读回一致；同名覆盖只作用于对应世界记录；真服记住点 → 重启 → 读回并使用。
+- **关闭事实**：records 表落地（SCHEMA v3→v4，`meta.record_version` 独立推进）、`removeRecord` 增补进 WorldPort 合同；`mc-world-records.test.ts` 覆盖 CAS/分区/悬空证据/重开/旧库拒绝；真服 `pnpm dev:mc:places` 源码与产物各 9/9（含"记住基地 → 关闭重开 → 读回 → goto 使用"，落点 gap 0.71）。author 列未建（合同无 author 字段，不预建）。
 
 ### G2 · Driver 窗口只有 4 类
 
@@ -50,11 +51,10 @@
 
 ## 3. 能力面缺口（G5）
 
-实到 **10 查询 + 15 动作 = 25/51**。`grep` 确认下列名字在 `capabilities/`、`world/` 零命中。
+实到 **12 查询 + 18 动作 = 30/51**（2026-10-30 批11 落地 `places` `route.plan` `remember` `forget` `explore`）。
 
 | 工作包 | 前置 | 缺的条目 |
 |---|---|---|
-| 地点与探索 | G1 | `places` `remember` `forget` `route.plan` `explore` |
 | 移动鲁棒性 | G3 | `follow` `flee` `surface` |
 | 完整战斗 | 无 | `fight` |
 | 地形与空间作业 | Section 采样 + G3 + G4 | `region` `tunnel` `excavate` |
@@ -107,7 +107,7 @@
 |---|---|---|
 | G18 | 无 policy 层（`development-guide §3.5` 明确反对） | 偏好每次调用都要重传（如 `mine@1` 的 `tool`） |
 | G19 | 无断言器 | 模型要自己 `read` 拼判断，没有"只回不成立条款"的入口 |
-| G20 | 无 dry-run | `route.plan`/`build.plan` 落地前，验证"能不能建"只能真跑 |
+| G20 | 无 dry-run | `route.plan` 已落地（2026-10-30 批11），移动目标可试算；`build.plan` 未做，"能不能建"仍只能真跑 |
 
 ## 附：不要照抄的部分
 

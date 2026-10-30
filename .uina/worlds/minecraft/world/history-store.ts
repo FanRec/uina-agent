@@ -14,6 +14,13 @@ import { Worker } from "node:worker_threads";
 import type { ClientFactNotice, ClientFactsPort, ClientFactsSubscription } from "../contracts/client-facts.js";
 import { callFailure } from "../contracts/values.js";
 import type { AppendItem, WorkerRequest, WorkerResponse } from "./sqlite-worker.js";
+import type {
+	RecordReadParams,
+	RecordWrite,
+	RecordsListParams,
+	RecordsListResult,
+	StoredRecordRow,
+} from "./sqlite-worker.js";
 import type { EventQueryParams, EventQueryResult } from "./events.js";
 import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
 import type { WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
@@ -47,7 +54,10 @@ export class HistoryIngest {
 	private readonly receiver: string;
 	private storage = "";
 	private version = 0;
+	private recordVersion = 0;
 	private readonly watches = new Map<ObservationWatch, string>();
+	/** places@1 记录观察：按 record_version 失效，与 events 的提交版本分开。 */
+	private readonly recordWatches = new Map<ObservationWatch, string>();
 	private settle!: (result: "ready" | "unavailable") => void;
 	/** 提交屏障与历史读取的往返登记（worker 串行处理，回执即此前消息已提交）。 */
 	private barrierSeq = 0;
@@ -65,6 +75,13 @@ export class HistoryIngest {
 		number,
 		{
 			resolve: (result: WorldHistoryPruneResult | null) => void;
+			reject: (err: Error) => void;
+		}
+	>();
+	private readonly recordWaiters = new Map<
+		number,
+		{
+			resolve: (result: StoredRecordRow | null | boolean | RecordsListResult) => void;
 			reject: (err: Error) => void;
 		}
 	>();
@@ -171,6 +188,7 @@ export class HistoryIngest {
 		if (msg.type === "opened") {
 			this.storage = msg.storage;
 			this.version = msg.version;
+			this.recordVersion = msg.recordVersion;
 			this._state = { state: "ready" };
 			this.settle("ready");
 			this.scheduleFlush();
@@ -200,9 +218,14 @@ export class HistoryIngest {
 			return;
 		}
 		if (msg.type === "queryFailed") {
-			const waiter = this.readWaiters.get(msg.id) ?? this.mutationWaiters.get(msg.id);
+			const waiter =
+				this.readWaiters.get(msg.id) ??
+				this.mutationWaiters.get(msg.id) ??
+				this.recordWaiters.get(msg.id) ??
+				this.containerWaiters.get(msg.id);
 			this.readWaiters.delete(msg.id);
 			this.mutationWaiters.delete(msg.id);
+			this.recordWaiters.delete(msg.id);
 			waiter?.reject(
 				callFailure({
 					code: msg.code,
@@ -231,6 +254,21 @@ export class HistoryIngest {
 			waiter?.resolve(msg.result);
 			return;
 		}
+		if (msg.type === "recordWritten" || msg.type === "recordRemoved") {
+			this.recordVersion = Math.max(this.recordVersion, msg.recordVersion);
+			for (const [watch, stream] of this.recordWatches) watch.update(this.placesCursor(stream));
+			const waiter = this.recordWaiters.get(msg.id);
+			this.recordWaiters.delete(msg.id);
+			if (msg.type === "recordWritten") waiter?.resolve(msg.record);
+			else waiter?.resolve(msg.removed);
+			return;
+		}
+		if (msg.type === "recordResult" || msg.type === "recordsPage") {
+			const waiter = this.recordWaiters.get(msg.id);
+			this.recordWaiters.delete(msg.id);
+			waiter?.resolve(msg.type === "recordResult" ? msg.record : msg.result);
+			return;
+		}
 		if (msg.type === "conflict") {
 			this.fail(`source protocol conflict: ${msg.message}`);
 			return;
@@ -248,6 +286,7 @@ export class HistoryIngest {
 		this._state = { state: "unavailable", reason };
 		this.queue = [];
 		for (const watch of this.watches.keys()) void watch.close();
+		for (const watch of this.recordWatches.keys()) void watch.close();
 		this.settle("unavailable");
 	}
 
@@ -260,6 +299,8 @@ export class HistoryIngest {
 		this.containerWaiters.clear();
 		for (const waiter of this.mutationWaiters.values()) waiter.reject(storeUnavailable({ reason }));
 		this.mutationWaiters.clear();
+		for (const waiter of this.recordWaiters.values()) waiter.reject(storeUnavailable({ reason }));
+		this.recordWaiters.clear();
 	}
 
 	/** 提交屏障：先把已接收材料发车，再等 worker 处理到这条消息为止（§6.2）。 */
@@ -306,6 +347,53 @@ export class HistoryIngest {
 			this.containerWaiters.set(id, { resolve, reject });
 			this.post({ type: "readContainer", id, params });
 		});
+	}
+
+	// ---- 领域记录（public-api §5；屏障后单消息，CAS 在 worker 单事务内） ----
+
+	private async recordMessage(
+		request:
+			| { type: "writeRecord"; change: RecordWrite }
+			| { type: "readRecord"; params: RecordReadParams }
+			| { type: "readRecords"; params: RecordsListParams }
+			| { type: "removeRecord"; params: RecordReadParams },
+	): Promise<StoredRecordRow | null | boolean | RecordsListResult> {
+		await this.barrier();
+		if (this._state.state === "unavailable") throw storeUnavailable(this._state);
+		const id = ++this.readSeq;
+		return await new Promise((resolve, reject) => {
+			this.recordWaiters.set(id, { resolve, reject });
+			this.post({ ...request, id });
+		});
+	}
+
+	writeRecord(change: RecordWrite): Promise<StoredRecordRow> {
+		return this.recordMessage({ type: "writeRecord", change }) as Promise<StoredRecordRow>;
+	}
+
+	readRecord(params: RecordReadParams): Promise<StoredRecordRow | null> {
+		return this.recordMessage({ type: "readRecord", params }) as Promise<StoredRecordRow | null>;
+	}
+
+	readRecords(params: RecordsListParams): Promise<RecordsListResult> {
+		return this.recordMessage({ type: "readRecords", params }) as Promise<RecordsListResult>;
+	}
+
+	removeRecord(params: RecordReadParams): Promise<boolean> {
+		return this.recordMessage({ type: "removeRecord", params }) as Promise<boolean>;
+	}
+
+	placesCursor(stream: string): ObservationCursor {
+		return { stream: JSON.stringify([this.storage, stream]), epoch: this.receiver, sequence: this.recordVersion };
+	}
+
+	watchRecords(stream: string): ObservationWatch {
+		if (this.closed || this._state.state !== "ready") throw storeUnavailable({ reason: "record watch unavailable" });
+		const watch = new ObservationWatch(this.placesCursor(stream), () => {
+			this.recordWatches.delete(watch);
+		});
+		this.recordWatches.set(watch, stream);
+		return watch;
 	}
 
 	async retain(owner: string, evidence: string[]): Promise<void> {

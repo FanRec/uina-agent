@@ -572,6 +572,7 @@ interface WorldPort extends WorldReadPort {
     ref?: Ref; schema: ExactRef; world: Ref; worldRevision: Ref; expectedRevision: number | null;
     value: JsonValue; evidence: Ref[];
   }): Promise<DomainRecord>;
+  removeRecord(ref: Ref): Promise<{ removed: boolean }>;
 }
 interface WorldEvidencePort {
   retain(owner: Ref, evidence: Ref[]): Promise<void>;
@@ -601,7 +602,9 @@ interface EventPage { events: GameEventRecord[]; gaps: EventGap[]; next?: string
 
 read 的切面、cursor/分页、当前与历史降级由 [World §6–§9/§13](modules/world.md) 定义。顺序为 read → 原样交出 cursor → watch → next；changed 后重读，reset 后旧游标失效。Watch 是复查提示，不是事件日志或主动游戏操作。
 
-writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持久性与清理协调，由 [World §10](modules/world.md#retention) 定义。WorldEvidencePort 只给实际持有跨库强引用的可信记录所有者，不注入 guest。Runtime 发布强引用的次序见其 §7.2。
+writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持久性与清理协调，由 [World §10](modules/world.md#retention) 定义。WorldEvidencePort 只给实际持有跨库强引用的可信记录所有者，不注入 guest。Runtime 发布强引用的次序见其 §7.2。removeRecord 是显式删除（`forget@1` 用）：按当前绑定分区删除，记录不存在返回 `removed:false`（由能力转成 NOT_FOUND），删除同样推进记录版本。
+
+`route.plan@1` 是试算，不属于 current/static/history 三类读取：World 按 ref 分派给组合根注入的窄计划端口（`WorldRoutePlanner`，类型见 contracts/world.ts；组合根用 Driver 受控寻路实现），结果 cursor=null 不可等待。World 不依赖 Driver。
 
 程序 waitUntil 由 [Program §2.4/§7](modules/program.md) 定义；每个 target 保留自己的观察版本，不伪造全局水位。
 

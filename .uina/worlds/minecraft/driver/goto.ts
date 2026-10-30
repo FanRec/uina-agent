@@ -16,6 +16,7 @@
 import type { ControlRetirement, DriverExecutionSink } from "../contracts/runtime.js";
 import type { CallFailure, EffectReceipt, JsonValue, Ref, Vec3 } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
+import type { RoutePlanResult } from "../contracts/world.js";
 import type { HostView } from "./body/session.js";
 import type { DriverControlArbiter } from "./control-arbiter.js";
 import type { MineflayerBot } from "./mineflayer/adapter.js";
@@ -28,6 +29,7 @@ import {
 	loadPathfinderPlugin,
 	pathfinderGoalActive,
 	pathfinderMoving,
+	planPath,
 } from "./mineflayer/pathfinder.js";
 
 export interface GotoDeps {
@@ -508,5 +510,124 @@ export class GotoDirector {
 			});
 		}
 		return bot;
+	}
+
+	// ---- route.plan@1：只读试算（capabilities.md §3 route.plan、§2.11） ----
+
+	/** 试算串行链：plan 是短操作，并发调用顺延而不是拒绝；不占 arbiter 控制槽。 */
+	private planQueue: Promise<unknown> = Promise.resolve();
+
+	/**
+	 * 只读试算：GoalNear + movements 配置与 goto 共用（§2.11 计划与执行复用目标语义）；
+	 * 局部 Movements 不触碰活动导航的共享配置，never setGoal、无写入、无效果记录。
+	 * 输入是 World 校验后的 route.plan@1 参数；Pos 解析在驱动侧镜像 capability §2.2
+	 * 语义（显式维度参与核验，rel 相对当前站位）。
+	 */
+	async plan(input: {
+		at: unknown;
+		tolerance?: number;
+		digThrough?: boolean;
+		placeToReach?: boolean;
+		sprint?: boolean;
+	}): Promise<RoutePlanResult> {
+		this.deps.assertActionAllowed();
+		const run = this.planQueue.then(() => this.planOnce(input));
+		this.planQueue = run.catch(() => undefined);
+		return run;
+	}
+
+	private async planOnce(input: {
+		at: unknown;
+		tolerance?: number;
+		digThrough?: boolean;
+		placeToReach?: boolean;
+		sprint?: boolean;
+	}): Promise<RoutePlanResult> {
+		const bot = this.botForWrite();
+		const current = fromMineflayerVec3(bot.entity.position);
+		if (current == null) {
+			throw fail({
+				code: "DISCONNECTED",
+				source: "environment",
+				message: "client entity position is unavailable",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		const raw = input.at as { x: number; y: number; z: number } | { position: Vec3; dimension: string } | { rel: Vec3 };
+		let at: Vec3;
+		let dimension: string = bot.game.dimension;
+		if ("rel" in raw) {
+			at = { x: current.x + raw.rel.x, y: current.y + raw.rel.y, z: current.z + raw.rel.z };
+		} else if ("position" in raw) {
+			at = raw.position;
+			dimension = raw.dimension;
+		} else {
+			at = raw;
+		}
+		if (!Number.isFinite(at.x) || !Number.isFinite(at.y) || !Number.isFinite(at.z)) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "route.plan target must be finite coordinates",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		if (dimension !== bot.game.dimension) {
+			throw fail({
+				code: "WRONG_STATE",
+				source: "world",
+				message: `target is in dimension ${dimension}, current dimension is ${bot.game.dimension}`,
+				hint: "route.plan stays inside the current dimension; transit@1 will handle portals",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		const tolerance = input.tolerance ?? 2;
+		if (!Number.isInteger(tolerance) || tolerance < 1 || tolerance > 8) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `tolerance must be an integer in [1,8], got ${tolerance}`,
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		const planned = await planPath(bot, at, tolerance, {
+			sprint: input.sprint ?? true,
+			digThrough: input.digThrough ?? false,
+			placeToReach: input.placeToReach ?? true,
+		});
+		const distance = Math.round(Math.hypot(at.x - current.x, at.y - current.y, at.z - current.z) * 100) / 100;
+		const ok = planned.status === "success";
+		const blockers =
+			ok || planned.steps.length === 0
+				? ok
+					? []
+					: [
+							{
+								at: { x: Math.floor(at.x), y: Math.floor(at.y), z: Math.floor(at.z) },
+								reason: "pathfinder found no route to the goal",
+							},
+						]
+				: [
+						{
+							at: {
+								x: planned.steps[planned.steps.length - 1]!.x,
+								y: planned.steps[planned.steps.length - 1]!.y,
+								z: planned.steps[planned.steps.length - 1]!.z,
+							},
+							reason: "pathfinding stopped short of the goal within its think budget",
+						},
+					];
+		return {
+			ok,
+			distance,
+			steps: planned.steps.map((step) => ({ at: { x: step.x, y: step.y, z: step.z }, action: step.action })),
+			needs: planned.needs,
+			blockers,
+			estTimeSec: ok ? Math.round(planned.cost * 10) / 10 : null,
+		};
 	}
 }

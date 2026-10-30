@@ -64,6 +64,8 @@ export async function openHarness(
 		binding?: { world: Ref; worldRevision: Ref };
 		callables?: NativeCallable<JsonValue, JsonValue>[];
 		dataRoot?: string;
+		/** 重开同一数据根时复用上次的 ns：runtime.db 的 world_owner 与历史库身份都绑定它。 */
+		ns?: string;
 	} = {},
 ): Promise<DevHarness> {
 	const log = (message: string): void => console.log(`[mc-${label}] ${message}`);
@@ -72,7 +74,7 @@ export async function openHarness(
 		options.dataRoot ?? process.env.MC_DEV_DATA_DIR ?? join(repoRoot, ".uina", "world-data", "minecraft"),
 	);
 	await mkdir(dataRoot, { recursive: true });
-	const ns = `${label}-${randomUUID()}`;
+	const ns = options.ns ?? `${label}-${randomUUID()}`;
 	const worldOwner = `owner:${ns}`;
 	const activation = `activation:${ns}`;
 	const side = await openExecutionSide(

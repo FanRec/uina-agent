@@ -5,7 +5,7 @@
  * Runtime/能力经 read/watch/writeRecord 使用；Watch 是复查提示不是事件日志。
  */
 
-import type { ExactRef, JsonValue, Observation, ObservationCursor, Ref } from "./values.js";
+import type { ExactRef, JsonValue, Observation, ObservationCursor, Ref, Vec3 } from "./values.js";
 
 export interface WorldQuery {
 	ref: ExactRef;
@@ -51,12 +51,46 @@ export interface WorldPort extends WorldReadPort {
 		value: JsonValue;
 		evidence: Ref[];
 	}): Promise<DomainRecord>;
+	/** 显式删除（forget@1）：按当前绑定分区；不存在返回 removed:false，能力据此转 NOT_FOUND。 */
+	removeRecord(ref: Ref): Promise<{ removed: boolean }>;
 }
 
 /** 只给实际持有跨库强引用的可信记录所有者；不注入 guest。 */
 export interface WorldEvidencePort {
 	retain(owner: Ref, evidence: Ref[]): Promise<void>;
 	release(owner: Ref): Promise<void>;
+}
+
+// ---- route.plan@1（试算；public-api §5） ----
+
+export type RoutePlanAction = "walk" | "dig" | "place" | "jump";
+
+export interface RoutePlanStep {
+	at: Vec3;
+	action: RoutePlanAction;
+}
+
+export interface RoutePlanBlocker {
+	at: Vec3;
+	reason: string;
+}
+
+export interface RoutePlanResult {
+	ok: boolean;
+	distance: number;
+	steps: RoutePlanStep[];
+	needs: { dig: number; place: number };
+	blockers: RoutePlanBlocker[];
+	/** 由寻路代价折算的估计值；上游不提供代价时如实 null。 */
+	estTimeSec: number | null;
+}
+
+/**
+ * route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现后注入 World；
+ * World 只按 ref 分派，不依赖 Driver。计划是只读试算，不占控制、不产生效果。
+ */
+export interface WorldRoutePlanner {
+	plan(query: WorldQuery): Promise<RoutePlanResult>;
 }
 
 /** Trusted maintenance only: exact capture partition and exclusive local storage cutoff. */
