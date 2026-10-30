@@ -18,9 +18,11 @@ import { fitLine, wrapLine } from "../src/ui/layout/fit.js";
 import { UIHost } from "../src/ui/ui-host.js";
 
 import {
+	assistantNode,
 	createSilentTerminal,
 	dispatchUIHostInput,
 	isHeartbeatActive,
+	thinkingNode,
 	toolDoneNode,
 	toolStartNode,
 	turnNode,
@@ -762,8 +764,14 @@ describe("UIHost: 流式增量的帧时钟归属", () => {
 
 			const framesBefore = terminal.frames.length;
 			const renderSpy = vi.spyOn(host, "requestRender");
-			host.appendThinkingStream("思考");
-			for (let i = 0; i < 40; i++) host.appendAssistantStream("正文");
+			const thinking = thinkingNode(1, 1, "");
+			host.appendThinkingNode(thinking, "思考");
+			thinking.text = "思考";
+			const assistant = assistantNode(1, 1, "");
+			for (let i = 0; i < 40; i++) {
+				assistant.text += "正文";
+				host.appendAssistantNode(assistant, "正文");
+			}
 
 			expect(renderSpy).not.toHaveBeenCalled();
 			expect(terminal.frames.length).toBe(framesBefore);

@@ -13,7 +13,8 @@ import type {
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
 import { createSlotRegistry, type SlotAck } from "../presentation/composition/slots.js";
-import type { PresentationNode, ToolNode, TurnNode } from "../presentation/projection.js";
+import { toReadableError } from "../presentation/copy.js";
+import type { AssistantNode, PresentationNode, ThinkingNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import type { SessionEntry } from "../session/types.js";
 import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
@@ -47,14 +48,13 @@ import { type InteractiveTarget, MouseSelectionTracker, type SelectableRegion } 
 import { OverlayStack } from "./core/overlay.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { ScrollController } from "./core/scroll-controller.js";
-import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
+import { WidgetSlots } from "./core/slots.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import { toReadableError } from "../presentation/copy.js";
 import {
 	C,
-	countGraphemes,
 	copyToClipboardUnified,
+	countGraphemes,
 	normalizeFrameLine,
 	stripAnsi,
 	visibleWidth,
@@ -717,10 +717,11 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** thinking 增量：思考 token 也是生成，必须进活动行解码区间。 */
-	appendThinkingStream(text: string): void {
-		this.transcript.appendThinking(text);
-		this.activityLine.addStreamText(text);
+	/** thinking 增量（节点驱动）：文本真相在投影 ThinkingNode，容器按节点 id 同步；
+	 * 活动行只消费 delta 计速（瞬态仪表）。 */
+	appendThinkingNode(node: ThinkingNode | undefined, delta: string): void {
+		if (node) this.transcript.syncThinkingNode(node);
+		this.activityLine.addStreamText(delta);
 		this.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 		// 流式增量只写状态，不驱动帧：帧由统一心跳（50ms）产出，与模型交付速率解耦；
 		// 回合期间 setBusy(true) 保证心跳在跑。
@@ -753,13 +754,15 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** 正文增量。 */
-	appendAssistantStream(text: string): void {
-		this.transcript.appendToken(text);
-		this.activityLine.addStreamText(text);
+	/** 正文增量（节点驱动）：文本真相在投影 AssistantNode，容器按节点 id 同步；
+	 * 活动行只消费 delta 计速（瞬态仪表）。 */
+	appendAssistantNode(node: AssistantNode | undefined, delta: string): void {
+		if (!node) return;
+		this.transcript.syncAssistantNode(node);
+		this.activityLine.addStreamText(delta);
 		this.activityLine.update("streaming", "正在输出回复...");
 		// 同上：smoothReveal 只在心跳 tick 推进，delta 之间重绘得到同一前缀。
-		// 首个游标由 appendToken → feed → onTick 唤醒心跳，不会漏帧。
+		// 首个游标由 syncAssistantNode → feed → onTick 唤醒心跳，不会漏帧。
 	}
 
 	/** usage_update 的服务端 output：活动行按 step 结算。 */

@@ -173,6 +173,9 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 			case "thinking":
 				this.upsert(thinkingEntry(node));
 				return;
+			case "assistant":
+				// 正文段属于转录内容，不是活动事实：轨迹只记回合/思考/工具/模型流。
+				return;
 			case "tool":
 				this.upsert(toolEntry(node));
 				return;

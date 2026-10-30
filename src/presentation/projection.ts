@@ -41,6 +41,23 @@ export interface ThinkingNode {
 	readonly startedAt?: number;
 	endedAt?: number;
 	durationMs?: number;
+	/** journal 恢复时所属 assistant message 的 entry seq（仅回放事实携带）。 */
+	readonly sourceSeq?: number;
+}
+
+/** 一段连续的 assistant 正文。工具/思考边界天然把一轮正文切成多段，段序即展示序。 */
+export interface AssistantNode {
+	readonly kind: "assistant";
+	readonly id: string;
+	readonly turn: number;
+	text: string;
+	/** `running` 是进行态；关闭时只可能是 completed 或 cancelled。 */
+	status: "running" | "completed" | "cancelled";
+	readonly startedAt?: number;
+	endedAt?: number;
+	durationMs?: number;
+	/** journal 恢复时所属 assistant message 的 entry seq（仅回放事实携带）。 */
+	readonly sourceSeq?: number;
 }
 
 export interface ToolNode {
@@ -60,7 +77,7 @@ export interface ToolNode {
 	images?: readonly ImageContent[];
 }
 
-export type PresentationNode = TurnNode | ThinkingNode | ToolNode;
+export type PresentationNode = TurnNode | ThinkingNode | AssistantNode | ToolNode;
 
 /** 投影只消费载荷与时刻；序号与来源属于事实流，不参与归并。 */
 export type ProjectionInput = FactPayload & { readonly at?: number };
@@ -71,6 +88,10 @@ export function turnNodeId(turn: number): string {
 
 export function thinkingNodeId(turn: number, index: number): string {
 	return `turn:${turn}:thinking:${index}`;
+}
+
+export function assistantNodeId(turn: number, index: number): string {
+	return `turn:${turn}:assistant:${index}`;
 }
 
 export function toolNodeId(turn: number, callId: string): string {
@@ -88,7 +109,9 @@ export class PresentationProjection {
 	private readonly turns = new Map<number, TurnNode>();
 	private readonly tools = new Map<string, ToolNode>();
 	private readonly thinkingCounters = new Map<number, number>();
+	private readonly assistantCounters = new Map<number, number>();
 	private openThinking?: ThinkingNode;
+	private openAssistant?: AssistantNode;
 	private currentTurn = 0;
 
 	reset(): void {
@@ -96,7 +119,9 @@ export class PresentationProjection {
 		this.turns.clear();
 		this.tools.clear();
 		this.thinkingCounters.clear();
+		this.assistantCounters.clear();
 		this.openThinking = undefined;
+		this.openAssistant = undefined;
 		this.currentTurn = 0;
 	}
 
@@ -134,8 +159,10 @@ export class PresentationProjection {
 				if (!node) return [];
 				const closing = fact.kind === "turn.ended" ? "completed" : "cancelled";
 				const thinking = this.closeThinking(closing, at);
+				const assistant = this.closeAssistant(closing, at);
 				const changed: PresentationNode[] = [];
 				if (thinking) changed.push(thinking);
+				if (assistant) changed.push(assistant);
 				node.status = fact.kind === "turn.ended" ? "completed" : "aborted";
 				node.endedAt = at;
 				if (fact.kind === "turn.ended") node.usage = fact.usage;
@@ -153,7 +180,11 @@ export class PresentationProjection {
 					open.text += fact.text;
 					return [open];
 				}
-				const closed = this.closeThinking("cancelled", at);
+				const changed: PresentationNode[] = [];
+				const closedThinking = this.closeThinking("cancelled", at);
+				const closedAssistant = this.closeAssistant("completed", at);
+				if (closedThinking) changed.push(closedThinking);
+				if (closedAssistant) changed.push(closedAssistant);
 				const index = (this.thinkingCounters.get(this.currentTurn) ?? 0) + 1;
 				this.thinkingCounters.set(this.currentTurn, index);
 				const node: ThinkingNode = {
@@ -163,19 +194,53 @@ export class PresentationProjection {
 					text: fact.text,
 					status: "running",
 					startedAt: at,
+					...(fact.sourceSeq === undefined ? {} : { sourceSeq: fact.sourceSeq }),
 				};
 				this.nodes.push(node);
 				this.openThinking = node;
-				return closed ? [closed, node] : [node];
+				changed.push(node);
+				return changed;
 			}
 
 			case "assistant.delta": {
-				const closed = this.closeThinking("completed", at);
-				return closed ? [closed] : [];
+				// 空文本不建段也不追加（与回放 content.length>0 守卫同口径），只结算悬挂的思考块。
+				if (fact.text.length === 0) {
+					const closed = this.closeThinking("completed", at);
+					return closed ? [closed] : [];
+				}
+				const open = this.openAssistant;
+				if (open && open.turn === this.currentTurn) {
+					open.text += fact.text;
+					return [open];
+				}
+				const changed: PresentationNode[] = [];
+				const closedThinking = this.closeThinking("completed", at);
+				const closedAssistant = this.closeAssistant("cancelled", at);
+				if (closedThinking) changed.push(closedThinking);
+				if (closedAssistant) changed.push(closedAssistant);
+				const index = (this.assistantCounters.get(this.currentTurn) ?? 0) + 1;
+				this.assistantCounters.set(this.currentTurn, index);
+				const node: AssistantNode = {
+					kind: "assistant",
+					id: assistantNodeId(this.currentTurn, index),
+					turn: this.currentTurn,
+					text: fact.text,
+					status: "running",
+					startedAt: at,
+					...(fact.sourceSeq === undefined ? {} : { sourceSeq: fact.sourceSeq }),
+				};
+				this.nodes.push(node);
+				this.openAssistant = node;
+				changed.push(node);
+				return changed;
 			}
 
 			case "tool.started": {
-				const closed = this.closeThinking("completed", at);
+				const changed: PresentationNode[] = [];
+				const closedThinking = this.closeThinking("completed", at);
+				const closedAssistant = this.closeAssistant("completed", at);
+				if (closedThinking) changed.push(closedThinking);
+				if (closedAssistant) changed.push(closedAssistant);
 				const node: ToolNode = {
 					kind: "tool",
 					id: toolNodeId(this.currentTurn, fact.callId),
@@ -188,11 +253,16 @@ export class PresentationProjection {
 				};
 				this.tools.set(fact.callId, node);
 				this.nodes.push(node);
-				return closed ? [closed, node] : [node];
+				changed.push(node);
+				return changed;
 			}
 
 			case "tool.finished": {
-				const closed = this.closeThinking("completed", at);
+				const changed: PresentationNode[] = [];
+				const closedThinking = this.closeThinking("completed", at);
+				const closedAssistant = this.closeAssistant("completed", at);
+				if (closedThinking) changed.push(closedThinking);
+				if (closedAssistant) changed.push(closedAssistant);
 				const existing = this.tools.get(fact.callId);
 				let node: ToolNode;
 				if (existing) {
@@ -223,12 +293,17 @@ export class PresentationProjection {
 					this.tools.set(fact.callId, node);
 					this.nodes.push(node);
 				}
-				return closed ? [closed, node] : [node];
+				changed.push(node);
+				return changed;
 			}
 
 			case "error": {
-				const closed = this.closeThinking("cancelled", at);
-				return closed ? [closed] : [];
+				const changed: PresentationNode[] = [];
+				const closedThinking = this.closeThinking("cancelled", at);
+				const closedAssistant = this.closeAssistant("cancelled", at);
+				if (closedThinking) changed.push(closedThinking);
+				if (closedAssistant) changed.push(closedAssistant);
+				return changed;
 			}
 
 			// ── 这些 Fact 不产生展示节点：由域专属表面（状态行、卡片、面板）表达。 ──
@@ -260,6 +335,16 @@ export class PresentationProjection {
 		const node = this.openThinking;
 		if (!node) return undefined;
 		this.openThinking = undefined;
+		node.status = status;
+		node.endedAt = at;
+		node.durationMs = durationBetween(node.startedAt, at);
+		return node;
+	}
+
+	private closeAssistant(status: "completed" | "cancelled", at: number | undefined): AssistantNode | undefined {
+		const node = this.openAssistant;
+		if (!node) return undefined;
+		this.openAssistant = undefined;
 		node.status = status;
 		node.endedAt = at;
 		node.durationMs = durationBetween(node.startedAt, at);

@@ -149,11 +149,12 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 					break;
 				}
 				if (message.role === "assistant") {
+					const sourceSeq = entry.seq === undefined ? {} : { sourceSeq: entry.seq };
 					if (message.thinking !== undefined && message.thinking.length > 0) {
-						facts.push(replay({ kind: "thinking.delta", text: sanitizeExternal(message.thinking) }, at));
+						facts.push(replay({ kind: "thinking.delta", text: sanitizeExternal(message.thinking), ...sourceSeq }, at));
 					}
 					if (message.content.length > 0) {
-						facts.push(replay({ kind: "assistant.delta", text: sanitizeExternal(message.content) }, at));
+						facts.push(replay({ kind: "assistant.delta", text: sanitizeExternal(message.content), ...sourceSeq }, at));
 					}
 					for (const call of message.tool_calls ?? []) {
 						const journal = tools.get(call.id);

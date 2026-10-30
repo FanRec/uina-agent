@@ -7,7 +7,7 @@ import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventRecord, HostSnapshot } from "../host/events.js";
 import type { PresentationIntent } from "../presentation/actions.js";
 import { PresentationController } from "../presentation/controller.js";
-import type { ToolNode, TurnNode } from "../presentation/projection.js";
+import type { AssistantNode, ThinkingNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import { sanitizeExternal } from "../presentation/sanitize.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
@@ -260,15 +260,20 @@ export class InteractiveTUI {
 				this.host.notify(`${m.provider} 已恢复连接，继续当前请求`, "info", 2000);
 				break;
 
-			case "output_update":
+			case "output_update": {
 				if (m.channel === "thinking") {
 					// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
-					this.host.appendThinkingStream(sanitizeExternal(m.text));
+					const node = nodes.find(
+						(candidate): candidate is ThinkingNode => candidate.kind === "thinking" && candidate.status === "running",
+					);
+					this.host.appendThinkingNode(node, sanitizeExternal(m.text));
 					break;
 				}
 				if (m.channel !== "content") break;
-				this.host.appendAssistantStream(sanitizeExternal(m.text));
+				const node = nodes.find((candidate): candidate is AssistantNode => candidate.kind === "assistant");
+				this.host.appendAssistantNode(node, sanitizeExternal(m.text));
 				break;
+			}
 
 			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。

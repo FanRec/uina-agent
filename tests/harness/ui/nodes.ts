@@ -5,7 +5,7 @@
 import type { ImageContent } from "../../../src/core/content.js";
 import type { ToolResultStatus } from "../../../src/core/types.js";
 import type { HostEvent, HostEventRecord } from "../../../src/host/events.js";
-import type { ToolNode, TurnNode } from "../../../src/presentation/projection.js";
+import type { AssistantNode, ThinkingNode, ToolNode, TurnNode } from "../../../src/presentation/projection.js";
 
 /** 事件记录：`at` 是 UI 唯一允许的时间来源，测试显式给定。 */
 export function record(event: HostEvent, at = Date.now()): HostEventRecord {
@@ -14,6 +14,28 @@ export function record(event: HostEvent, at = Date.now()): HostEventRecord {
 
 export function turnNode(turn: number, userText: string, images?: readonly ImageContent[]): TurnNode {
 	return { kind: "turn", id: `turn:${turn}`, turn, userText, images, status: "running" };
+}
+
+export function thinkingNode(turn: number, index: number, text: string, startedAt?: number): ThinkingNode {
+	return {
+		kind: "thinking",
+		id: `turn:${turn}:thinking:${index}`,
+		turn,
+		text,
+		status: "running",
+		startedAt,
+	};
+}
+
+export function assistantNode(turn: number, index: number, text: string, startedAt?: number): AssistantNode {
+	return {
+		kind: "assistant",
+		id: `turn:${turn}:assistant:${index}`,
+		turn,
+		text,
+		status: "running",
+		startedAt,
+	};
 }
 
 export function toolStartNode(name: string, args: unknown, callId: string, startedAt?: number): ToolNode {

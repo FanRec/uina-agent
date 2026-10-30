@@ -38,8 +38,18 @@ export type FactPayload =
 	  }
 	| { readonly kind: "turn.ended"; readonly turn: number; readonly usage?: RequestUsage }
 	| { readonly kind: "turn.aborted"; readonly turn: number }
-	| { readonly kind: "thinking.delta"; readonly text: string }
-	| { readonly kind: "assistant.delta"; readonly text: string }
+	| {
+			readonly kind: "thinking.delta";
+			readonly text: string;
+			/** journal 恢复时所属 message entry 的 seq（仅回放路径携带，供 Surface 精确配对）。 */
+			readonly sourceSeq?: number;
+	  }
+	| {
+			readonly kind: "assistant.delta";
+			readonly text: string;
+			/** journal 恢复时所属 message entry 的 seq（仅回放路径携带，供 Surface 精确配对）。 */
+			readonly sourceSeq?: number;
+	  }
 	| {
 			readonly kind: "tool.started";
 			readonly callId: string;

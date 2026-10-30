@@ -15,7 +15,13 @@ import type {
 	ToolRenderer,
 } from "../../../extensions/ui-contract.js";
 import { toReadableError } from "../../../presentation/copy.js";
-import type { PresentationNode, ToolNode, TurnNode } from "../../../presentation/projection.js";
+import type {
+	AssistantNode,
+	PresentationNode,
+	ThinkingNode,
+	ToolNode,
+	TurnNode,
+} from "../../../presentation/projection.js";
 import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
 import { projectInputMessage } from "../../../session/recovery.js";
 import type { SessionEntry } from "../../../session/types.js";
@@ -62,8 +68,10 @@ export type TurnItem =
 			/** 块级身份。一个轮次可以有多个思考块（thinking → 工具 → thinking），
 			 * 折叠状态与 hover 必须落在块上；落在轮次上会让整轮的思考一起亮、一起展开。 */
 			uid: number;
+			/** 所属投影节点 id；节点驱动的流式同步与揭示键以此为身份。 */
+			nodeId?: string;
 	  }
-	| { kind: "text"; text: string }
+	| { kind: "text"; text: string /** 所属 AssistantNode id；节点驱动的流式同步与揭示键以此为身份。 */; nodeId?: string }
 	| {
 			kind: "tool";
 			name: string;
@@ -557,6 +565,30 @@ export class TranscriptContainer implements Component {
 		this.currentTurn.userImages = images;
 	}
 
+	/** 正文节点同步：文本真相在投影 AssistantNode，item 只是其渲染投影（按节点 id 就地更新）。 */
+	syncAssistantNode(node: AssistantNode): void {
+		if (!this.currentTurn) return;
+		const existing = this.currentTurn.items.find((it) => it.kind === "text" && it.nodeId === node.id);
+		if (existing && existing.kind === "text") {
+			existing.text = node.text;
+		} else {
+			this.currentTurn.items.push({ kind: "text", text: node.text, nodeId: node.id });
+		}
+		this.smoothReveal.feed(node.id, node.text);
+	}
+
+	/** 思考节点同步：同上，按节点 id 合并思考块。 */
+	syncThinkingNode(node: ThinkingNode): void {
+		if (!this.currentTurn) return;
+		const existing = this.currentTurn.items.find((it) => it.kind === "thinking" && it.nodeId === node.id);
+		if (existing && existing.kind === "thinking") {
+			existing.text = node.text;
+		} else {
+			this.currentTurn.items.push({ kind: "thinking", text: node.text, uid: ++this.uidSeq, nodeId: node.id });
+		}
+	}
+
+	/** 容器底层变异原语（无节点身份）：布局/揭示测试与临时注入用；生产流式路径走 sync*Node。 */
 	appendToken(token: string): void {
 		if (!this.currentTurn) return;
 		const last = this.currentTurn.items.at(-1);
@@ -569,6 +601,7 @@ export class TranscriptContainer implements Component {
 		}
 	}
 
+	/** 同上：无节点身份的思考块原语。 */
 	appendThinking(text: string): void {
 		if (!this.currentTurn) return;
 		const last = this.currentTurn.items.at(-1);
@@ -796,9 +829,15 @@ export class TranscriptContainer implements Component {
 		this.clear();
 		const toolNodes = new Map<string, ToolNode>();
 		const turnNodes: TurnNode[] = [];
+		/** 正文/思考真相在投影节点：回放事实携带 sourceSeq（= assistant message entry 序），
+		 * 按它精确配对；节点缺失（异常 journal）才回退 entry 文本。 */
+		const thinkingNodesBySeq = new Map<number, ThinkingNode>();
+		const assistantNodesBySeq = new Map<number, AssistantNode>();
 		for (const node of nodes) {
 			if (node.kind === "tool") toolNodes.set(node.callId, node);
 			else if (node.kind === "turn") turnNodes.push(node);
+			else if (node.kind === "thinking" && node.sourceSeq !== undefined) thinkingNodesBySeq.set(node.sourceSeq, node);
+			else if (node.kind === "assistant" && node.sourceSeq !== undefined) assistantNodesBySeq.set(node.sourceSeq, node);
 		}
 		// 遇 user 消息按序消费一个 TurnNode；辅助轮（无 user 的恢复缺口）沿用最近轮号。
 		let turnCursor = 0;
@@ -927,11 +966,17 @@ export class TranscriptContainer implements Component {
 				current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
 				current ??= createTurn(lastTurnNumber);
+				const thinkingNode = entry.seq === undefined ? undefined : thinkingNodesBySeq.get(entry.seq);
+				const textNode = entry.seq === undefined ? undefined : assistantNodesBySeq.get(entry.seq);
 				if (msg.thinking) {
-					current.items.push({ kind: "thinking", text: msg.thinking, uid: ++this.uidSeq });
+					current.items.push({
+						kind: "thinking",
+						text: thinkingNode?.text ?? msg.thinking,
+						uid: ++this.uidSeq,
+					});
 				}
 				if (msg.content) {
-					current.items.push({ kind: "text", text: msg.content });
+					current.items.push({ kind: "text", text: textNode?.text ?? msg.content });
 				}
 				// 中止是结构化事实（status），不再靠正文包含“已打断”猜测。
 				if (msg.status === "aborted") {
@@ -1309,9 +1354,9 @@ export class TranscriptContainer implements Component {
 				sink.thinking.push({ turnN: turn.n, lineIndex: out.length, lineCount: lines.length, turn, item });
 				out.push(...lines);
 			} else if (item.kind === "text") {
-				const textToRender = isCurrent
-					? this.smoothReveal.getRevealedText(`turn-${turn.uid}-text`, item.text, true)
-					: item.text;
+				// 揭示键跟节点身份走：节点驱动的段各自独立揭示；无节点身份的原语注入沿用轮级键。
+				const revealKey = item.nodeId ?? `turn-${turn.uid}-text`;
+				const textToRender = isCurrent ? this.smoothReveal.getRevealedText(revealKey, item.text, true) : item.text;
 				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText, isCurrent));
 				hasRenderedText = true;
 			} else if (item.kind === "tool") {

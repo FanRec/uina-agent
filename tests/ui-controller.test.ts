@@ -71,7 +71,7 @@ describe("PresentationController 契约", () => {
 			{ kind: "message", timestamp: "2026-10-29T10:00:01.000Z", message: { role: "assistant", content: "新回答" } },
 		];
 		const view = controller.replaceAll(entries, []);
-		expect(view.transcript.map((node) => node.id)).toEqual(["turn:1"]);
+		expect(view.transcript.map((node) => node.id)).toEqual(["turn:1", "turn:1:assistant:1"]);
 		expect(view.trajectory.map((node) => node.kind)).toEqual(["turn_start", "model_stream"]);
 		expect(changes).toHaveLength(1);
 		expect(changes[0]).toMatchObject({ kind: "replace", view });

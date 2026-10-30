@@ -50,7 +50,6 @@ import { Container } from "../src/ui/core/container.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
-import { WidgetSlots } from "../src/ui/core/slots.js";
 import { C, countGraphemes, stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
 import { EffortSlider, HelpMenu, ModelPicker, TrajectoryScene } from "../src/ui/features/overlays/index.js";
@@ -176,7 +175,6 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		expect(stack.hasVisible).toBe(false);
 		expect(baseComp.focused).toBe(true);
 	});
-
 	it("WidgetSlots 小部件插槽：placement 分离与优先级排序", () => {
 		const renderSpy = vi.fn();
 		const slots = new WidgetSlots(renderSpy);
@@ -292,6 +290,33 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual([...positions].sort((a, b) => a - b));
 		expect(rendered).not.toContain("MUST_NOT_RENDER");
+	});
+
+	it("恢复正文/思考由投影节点供文（sourceSeq 配对），而非 entry 直读", () => {
+		const T1 = "2026-10-29T10:00:02.000Z";
+		const entries: SessionEntry[] = [
+			{ kind: "message", id: "u1", seq: 1, timestamp: T1, message: { role: "user", content: "问题" } },
+			{
+				kind: "message",
+				id: "a1",
+				seq: 2,
+				timestamp: T1,
+				message: { role: "assistant", thinking: "推理", content: "回答正文", status: "complete" },
+			},
+		];
+		const projection = new PresentationProjection();
+		projection.applyAll(ingestReplay({ entries }));
+		// 证明 item 文本来自节点而非 entry：改写节点文本，渲染应跟随节点。
+		for (const node of projection.list()) {
+			if (node.kind === "assistant") node.text = "NODE_SOURCE_PROSE";
+			if (node.kind === "thinking") node.text = "NODE_SOURCE_THINKING";
+		}
+		const transcript = new TranscriptContainer();
+		transcript.loadSession(entries, projection.list());
+		const rendered = stripAnsi(transcript.render(80).join("\n"));
+		expect(rendered).toContain("NODE_SOURCE_PROSE");
+		expect(rendered).toContain("NODE_SOURCE_THINKING");
+		expect(rendered).not.toContain("回答正文");
 	});
 
 	it("恢复转录只消费展示节点：工具状态与耗时取自 journal 投影，容器不再自行解析", () => {

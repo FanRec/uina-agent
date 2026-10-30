@@ -226,8 +226,11 @@ describe("思考块与回合结算", () => {
 		});
 
 		const closed = projection.apply({ kind: "assistant.delta", text: "回复", at: T0 + 30 });
-		expect(closed).toHaveLength(1);
+		expect(closed).toHaveLength(2);
 		expect(closed[0]).toMatchObject({ kind: "thinking", status: "completed", durationMs: 20 });
+		// 正文不再被丢弃：assistant.delta 产出累积正文节点（双轨收口）。
+		expect(closed[1]).toMatchObject({ kind: "assistant", id: "turn:1:assistant:1", text: "回复", status: "running" });
+		expect(projection.list().at(-1)).toMatchObject({ kind: "assistant", text: "回复" });
 	});
 
 	it("回合中止把在途工具结算为 cancelled，正常结束缺完成事实标为 unknown", () => {
@@ -454,5 +457,78 @@ describe("live 与 replay 投影等价", () => {
 		expect(node?.startedAt).toBeUndefined();
 		expect(node?.endedAt).toBeUndefined();
 		expect(node?.durationMs).toBeUndefined();
+	});
+});
+
+describe("AssistantNode：正文进入投影（双轨收口）", () => {
+	it("正文增量累积进同一段，工具边界把正文切段", () => {
+		const projection = new PresentationProjection();
+		projection.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		const d1 = projection.apply({ kind: "assistant.delta", text: "先说明：", at: T0 + 10 });
+		expect(d1).toHaveLength(1);
+		expect(d1[0]).toMatchObject({ kind: "assistant", id: "turn:1:assistant:1", text: "先说明：", status: "running" });
+
+		const d2 = projection.apply({ kind: "assistant.delta", text: "现在执行工具", at: T0 + 20 });
+		expect(d2).toHaveLength(1);
+		expect(d2[0]).toMatchObject({ id: "turn:1:assistant:1", text: "先说明：现在执行工具" });
+
+		const toolNodes = projection.apply({ kind: "tool.started", callId: "c1", name: "exec", at: T0 + 30 });
+		expect(toolNodes.map((n) => n.kind)).toEqual(["assistant", "tool"]);
+		expect(toolNodes[0]).toMatchObject({ kind: "assistant", status: "completed", endedAt: T0 + 30, durationMs: 20 });
+
+		const d3 = projection.apply({ kind: "assistant.delta", text: "工具完成后的收尾", at: T0 + 40 });
+		expect(d3).toHaveLength(1);
+		expect(d3[0]).toMatchObject({ kind: "assistant", id: "turn:1:assistant:2", status: "running" });
+	});
+
+	it("思考边界互相关闭：正文开始关思考，思考开始关正文", () => {
+		const projection = new PresentationProjection();
+		projection.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		projection.apply({ kind: "assistant.delta", text: "半句话", at: T0 + 10 });
+		const reopened = projection.apply({ kind: "thinking.delta", text: "重新想", at: T0 + 20 });
+		expect(reopened.map((n) => n.kind)).toEqual(["assistant", "thinking"]);
+		expect(reopened[0]).toMatchObject({ kind: "assistant", status: "completed" });
+
+		const back = projection.apply({ kind: "assistant.delta", text: "继续说", at: T0 + 30 });
+		expect(back.map((n) => n.kind)).toEqual(["thinking", "assistant"]);
+		expect(back[0]).toMatchObject({ kind: "thinking", status: "completed" });
+	});
+
+	it("回合终态关段：正常结束 completed，中止 cancelled；空正文不建段", () => {
+		const ended = new PresentationProjection();
+		ended.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		ended.apply({ kind: "assistant.delta", text: "答案", at: T0 + 10 });
+		const closedNodes = ended.apply({ kind: "turn.ended", turn: 1, at: T0 + 50 });
+		expect(closedNodes.map((n) => n.kind)).toEqual(["assistant", "turn"]);
+		expect(closedNodes[0]).toMatchObject({ kind: "assistant", status: "completed", durationMs: 40 });
+
+		const aborted = new PresentationProjection();
+		aborted.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		aborted.apply({ kind: "assistant.delta", text: "被打断的", at: T0 + 10 });
+		const abortedNodes = aborted.apply({ kind: "turn.aborted", turn: 1, at: T0 + 50 });
+		expect(abortedNodes[0]).toMatchObject({ kind: "assistant", status: "cancelled" });
+
+		const empty = new PresentationProjection();
+		empty.apply({ kind: "turn.started", turn: 1, userText: "任务", at: T0 });
+		const emptyDelta = empty.apply({ kind: "assistant.delta", text: "", at: T0 + 10 });
+		expect(emptyDelta).toHaveLength(0);
+		expect(empty.list().some((n) => n.kind === "assistant")).toBe(false);
+	});
+
+	it("replay 为正文段携带 sourceSeq，live 不携带；视图包含正文", () => {
+		const entries: readonly SessionEntry[] = [
+			{ kind: "message", message: { role: "user", content: "任务" } },
+			{
+				kind: "message",
+				message: { role: "assistant", thinking: "想一想", content: "恢复出来的正文", status: "completed" },
+			},
+		].map((entry, index) => ({ ...entry, id: `e${index}`, seq: index + 1 })) as readonly SessionEntry[];
+		const facts = ingestReplay({ entries });
+		const projection = project(facts);
+		const assistant = projection.list().filter((n) => n.kind === "assistant");
+		expect(assistant).toHaveLength(1);
+		expect(assistant[0]).toMatchObject({ text: "恢复出来的正文", sourceSeq: 2 });
+		const thinking = projection.list().find((n) => n.kind === "thinking");
+		expect(thinking).toMatchObject({ sourceSeq: 2 });
 	});
 });

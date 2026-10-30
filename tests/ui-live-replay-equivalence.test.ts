@@ -112,7 +112,13 @@ function record(iso: string, event: HostEvent): HostEventRecord {
 
 /** 等价比较只认语义：序号、来源与时刻由路径决定，不参与比较。 */
 function semantic(fact: FactDraft | PresentationFact): Record<string, unknown> {
-	const { seq: _seq, origin: _origin, at: _at, ...rest } = fact as PresentationFact;
+	const {
+		seq: _seq,
+		origin: _origin,
+		at: _at,
+		sourceSeq: _sourceSeq,
+		...rest
+	} = fact as PresentationFact & { sourceSeq?: number };
 	return rest as unknown as Record<string, unknown>;
 }
 

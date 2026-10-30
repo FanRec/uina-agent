@@ -33,7 +33,7 @@ export { assertDAGInvariants, assertNoResourceLeaks } from "./matchers/invariant
 export { createScenario, mockModel, Scenario } from "./provider/scenario.js";
 export { StreamBuilder, stream } from "./provider/stream-builder.js";
 export { rewindTo, seedSession } from "./session/session-helpers.js";
-export { record, toolDoneNode, toolStartNode, turnNode } from "./ui/nodes.js";
+export { assistantNode, record, thinkingNode, toolDoneNode, toolStartNode, turnNode } from "./ui/nodes.js";
 export type { TestTUIOptions } from "./ui/ui-harness.js";
 export {
 	createTestTUI,
