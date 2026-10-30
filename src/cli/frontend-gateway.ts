@@ -98,6 +98,8 @@ export class FrontendGatewayCore {
 			client.label = sanitizeExternal(message.client).slice(0, 40) || "remote";
 			client.joined = true;
 			// 快照与缓冲排空之间无 await：单线程派发保证割界原子（先到缓冲、后进扇出）。
+			// session 是 join 时刻的会话状态基线；此后由各 Surface 经状态事实自行维护。
+			this.controller.applySnapshot(this.host.snapshot());
 			this.send(client, { v: SYNC_PROTOCOL_VERSION, kind: "snapshot", view: this.controller.view() });
 			for (const record of client.buffer.splice(0)) this.dispatchFact(client, record);
 			return;

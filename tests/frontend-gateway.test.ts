@@ -6,11 +6,11 @@
  * 2. 意图归属：转发给宿主时携带 source.channel/actor（网关身份，不由客户端自报）；
  * 3. 策略在网关：斜杠命令与队列撤回明确拒绝（远程面没有这些本地语义）。
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { FrontendGatewayCore } from "../src/cli/frontend-gateway.js";
 import type { HostEvent, HostEventRecord } from "../src/host/events.js";
 import type { UinaHost } from "../src/host/host.js";
-import { encodeClientMessage, SYNC_PROTOCOL_VERSION } from "../src/presentation/sync.js";
+import { SYNC_PROTOCOL_VERSION } from "../src/presentation/sync.js";
 import type { SessionEntry } from "../src/session/types.js";
 
 interface FakeHostCalls {

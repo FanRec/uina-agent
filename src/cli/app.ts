@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -164,12 +165,16 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let gateway: FrontendGatewayServer | undefined;
 	if (args.gateway) {
 		try {
+			// 静态页产物：dist 态在 dist/web（../../web）；tsx 源码态回退 <root>/dist/web。
+			const staticRoot = [join(import.meta.dirname, "../../web"), join(import.meta.dirname, "../../dist/web")].find(
+				(candidate) => existsSync(candidate),
+			);
 			gateway = await startFrontendGateway({
 				host,
 				port: args.gatewayPort,
 				hostname: args.gatewayHost,
 				dataDir: join(process.env.UINA_HOME ?? homedir(), ".uina"),
-				staticRoot: join(import.meta.dirname, "../../web"),
+				staticRoot,
 				onError: (text) => process.stderr.write(`[网关] ${text}\n`),
 			});
 			process.stdout.write(

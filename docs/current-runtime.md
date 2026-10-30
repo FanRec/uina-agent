@@ -44,14 +44,16 @@
 
 `src/presentation/` 是平台中立展示核心：事实（facts/ingest-live/ingest-replay/sanitize，外部文本在事实入口经 sanitizeExternal 清洗一次）、控制器（controller，视图/订阅/意图的唯一协调者）、投影（projection、tool-status、trajectory、projection/tools 的 ToolModel）、组合（composition/slots 的 SlotRegistry 与 SlotAck 回执）、动作（actions）、文案（copy）与能力（surface）。它不 import `src/ui`、`src/cli`、`src/extensions`、`src/ai`，也不使用终端/进程/文件模块（check:boundaries 强制）。
 
-`src/ui/` 是第一个 Surface Adapter（TUI）：布局原语 `layout/fit.ts`（唯一截断/折行入口）、`layout/frame.ts`（computeFrame 帧几何纯函数）、`layout/panel.ts`（renderPanel 与面板部件，行宽精确守卫）；键位 `keys/keymap.ts`（浮层页脚提示由绑定生成）；工具文本渲染 `render-text.ts` 的 `renderToolBlock` 为 TUI 与 print/stdio 共用；槽位行渲染 `composition/render.ts`。第二个文本面是 `src/cli/stdio-render.ts`；无头面是 `createPrintUI`。TUI 与 print/stdio 均通过 `PresentationController.ingest()` 获得工具/回合/思考事实：工具耗时由 controller 按事实两端的时刻统一结算，stdio 不再自行记录开始时刻，两种消费者的状态与耗时因此同源。扩展契约中 `terminal` 是可选 facet，`capabilities()` 声明能力，`notify`/`setWorking` 返回 SlotAck。NO_COLOR/TERM=dumb 下着色 SGR 退化（C 常量与 sgr 门）。
+`src/ui/` 是第一个 Surface Adapter（TUI）：布局原语 `layout/fit.ts`（唯一截断/折行入口）、`layout/frame.ts`（computeFrame 帧几何纯函数）、`layout/panel.ts`（renderPanel 与面板部件，行宽精确守卫）；键位 `keys/keymap.ts`（浮层页脚提示由绑定生成）；工具文本渲染 `render-text.ts` 的 `renderToolBlock` 为 TUI 与 print/stdio 共用；槽位行渲染 `composition/render.ts`。第二个文本面是 `src/cli/stdio-render.ts`；无头面是 `createPrintUI`。TUI 与 print/stdio 均通过 `PresentationController.ingest()` 获得工具/回合/思考/正文事实：工具耗时由 controller 按事实两端的时刻统一结算，stdio 不再自行记录开始时刻，两种消费者的状态与耗时因此同源。投影节点含完整 assistant 正文（`AssistantNode`，像思考块一样按连续段累积，工具/思考边界切段）；恢复路径按回放事实的 `sourceSeq`（message entry 序）精确配对，容器正文不再直读 journal。扩展契约中 `terminal` 是可选 facet，`capabilities()` 声明能力，`notify`/`setWorking` 返回 SlotAck。NO_COLOR/TERM=dumb 下着色 SGR 退化（C 常量与 sgr 门）。
+
+多前端同步（v1 已实施）：协议与客户端在 `src/presentation/sync.ts`（`{v:1}` 信封，`hello`/`intent` → `snapshot`/`fact`/`error` 五个消息 kind；连接生命周期 = 同步生命周期，快照是唯一修复原语，重连即快照，无游标）；`PresentationController.restore(view)` 是视图空间重建接缝（快照中 running 的段落恢复为开启段，流中 join 无缝续流）。网关是组合根应用模块 `src/cli/frontend-gateway.ts`（`--gateway`，默认 127.0.0.1，token 每次启用重生成）：自有 controller 吃同一条事实流，hello 即快照（握手期事实进有界缓冲），意图经穷尽校验与网关归属（`InputSource.channel`/`actor`）转发宿主；斜杠命令与队列撤回在远程面明确拒绝。浏览器薄面 `src/web-client/` 是 `SurfaceAdapter` 的第一个实现者（`pnpm build:web` 产出 dist/web 原生 ESM，零 bundler）。一致性测试（`tests/frontend-sync-consistency.test.ts`）钉住"直连 controller 与 网关+SyncClient 产出逐字段相同的视图"，含流中 join。
 ## TUI 消费者与扩展接缝
 
 交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/trajectory 的平台中立投影集中在 `PresentationController.ingest()`（`src/presentation/controller.ts`），TUI 只消费投影节点并翻译成宿主渲染调用；CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。
 
 TUI 向 CLI 发出的动作是 `PresentationIntent` 联合（命名空间化：`input.submit`、`turn.cancel`、`turn.interruptAndDeliver`、`queue.pullBack`、`thinking.cycle`、`ui.interaction`）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作。应用 UI 动作使用判别联合请求 `{ name, payload?, signal? }`；扩展的作用域信号与调用者信号合并，作用域结束会关闭该调用打开的面板。模型选择回调纳入 ResourceScope 在途工作结算。
 
-扩展的 `pi.ui` 只提供通知、确认/选择/输入、状态和类型化应用动作；ANSI 组件、overlay、widget、编辑器控制、页眉页脚、gutter 与组件渲染器注册位于 `pi.ui.terminal`。renderer 注册由扩展 `ResourceScope` 管理，终端未接入时也注册到共享 renderer registry。没有预建 Web/GUI 布局层。
+扩展的 `pi.ui` 只提供通知、确认/选择/输入、状态和类型化应用动作；ANSI 组件、overlay、编辑器控制、页眉页脚、gutter 与组件渲染器注册位于 `pi.ui.terminal`（组件挂载走中立槽位，`setWidget` 已删除）。renderer 注册由扩展 `ResourceScope` 管理，终端未接入时也注册到共享 renderer registry。没有预建 Web/GUI 布局层。
 
 `@` 文件路径联想使用异步目录遍历，候选加载时显示“扫描中”；输入查询变化后，迟到的搜索结果不会覆盖当前输入或候选。
 
