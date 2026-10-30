@@ -14,6 +14,12 @@ export interface ParsedArgs {
 	readonly profile?: string;
 	/** 是否启用纯内存会话（不加载历史、不持久化落盘） */
 	readonly noSession: boolean;
+	/** 是否启动多前端网关（observe/intent 两动词；默认关闭，绑定 127.0.0.1） */
+	readonly gateway: boolean;
+	/** 网关端口（默认 8787） */
+	readonly gatewayPort: number;
+	/** 网关绑定地址（默认 127.0.0.1；出本机是显式行为） */
+	readonly gatewayHost: string;
 	/** 是否请求显示帮助文档 */
 	readonly help: boolean;
 	/** 是否请求显示版本号 */
@@ -34,6 +40,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 	let model: string | undefined;
 	let noSession = false;
 	let profile: string | undefined;
+	let gateway = false;
+	let gatewayPort = 8787;
+	let gatewayHost = "127.0.0.1";
 	let help = false;
 	let version = false;
 
@@ -78,6 +87,36 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 			continue;
 		}
 
+		if (arg === "--gateway") {
+			gateway = true;
+			continue;
+		}
+		if (arg === "--gateway-port") {
+			const value = argv[++i];
+			const port = value === undefined ? Number.NaN : Number(value);
+			if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--gateway-port 需要 1-65535 的整数");
+			gatewayPort = port;
+			continue;
+		}
+		if (arg.startsWith("--gateway-port=")) {
+			const port = Number(arg.slice("--gateway-port=".length));
+			if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--gateway-port 需要 1-65535 的整数");
+			gatewayPort = port;
+			continue;
+		}
+		if (arg === "--gateway-host") {
+			const value = argv[++i];
+			if (!value) throw new Error("--gateway-host 需要绑定地址");
+			gatewayHost = value;
+			continue;
+		}
+		if (arg.startsWith("--gateway-host=")) {
+			const value = arg.slice("--gateway-host=".length);
+			if (!value) throw new Error("--gateway-host 需要绑定地址");
+			gatewayHost = value;
+			continue;
+		}
+
 		if (arg === "--profile") {
 			if (i + 1 < argv.length) {
 				profile = argv[++i]!.trim() || undefined;
@@ -113,6 +152,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 		print,
 		model: model?.trim() || undefined,
 		noSession,
+		gateway,
+		gatewayPort,
+		gatewayHost,
 		help,
 		version,
 		rawPositionals: positionals,
@@ -139,6 +181,9 @@ export function formatHelp(): string {
 		"  -m, --model <provider/model>  临时覆盖本次会话使用的模型（例如 openai/gpt-4o、deepseek-r1）。",
 		"  -e, --extension <path>        加载扩展文件或目录；可重复。",
 		"  --no-session                  纯内存临时模式（不加载历史、不写盘、不留痕迹）。",
+		"  --gateway                     启动多前端网关（浏览器/手机薄面；默认 127.0.0.1:8787）。",
+		"  --gateway-port <1-65535>      网关端口（默认 8787）。",
+		"  --gateway-host <addr>         网关绑定地址（默认 127.0.0.1；非回环绑定会打印安全提示）。",
 		"  -v, --version                 显示当前版本号并退出。",
 		"  -h, --help                    显示命令行帮助信息并退出。",
 		"",

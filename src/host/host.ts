@@ -399,8 +399,13 @@ export class UinaHost {
 	 * 提交一行用户文本（交互行）。两段规则的划分（P2-C 单点化）：
 	 * - 此处只表达交互契约"空闲时用户输入必须立即开跑"→ 空闲统一按 direct 提交；
 	 * - direct 的忙时升级（→steer）等投递规则唯一归属 Subject.pushInput。
+	 * `source` 供远端消费者（多前端网关）标注归属通道；缺省是本机操作者。
 	 */
-	async submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
+	async submitText(
+		text: string,
+		mode: "direct" | "steer" | "followUp" = "followUp",
+		source?: import("../core/types.js").InputSource,
+	): Promise<void> {
 		// 装配未收口时排队等待而不是拒绝：第 1 回合必须看到最终系统提示词。
 		await this.startCompletion;
 		this.assertAccepting();
@@ -410,7 +415,7 @@ export class UinaHost {
 		// 据此区分操作者指令与环境快照的响应权重，不靠内容猜测。
 		return this.subject.pushInput(text, {
 			mode: effective,
-			source: { kind: "user", type: "operator", origin: "external" },
+			source: source ?? { kind: "user", type: "operator", origin: "external" },
 		});
 	}
 

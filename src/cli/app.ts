@@ -1,19 +1,22 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { errorMessage } from "../core/errors.js";
 import { compactionDecorations } from "../extensions/compaction/index.js";
 import type { HostEventRecord } from "../host/events.js";
 import { UinaHost } from "../host/host.js";
-import { PresentationController } from "../presentation/controller.js";
-import type { ToolNode } from "../presentation/projection.js";
 import { releaseProfileLock, resolveProfile } from "../host/profile.js";
+import { PresentationController } from "../presentation/controller.js";
+import type { ToolModel } from "../presentation/projection/tools.js";
+import type { ToolNode } from "../presentation/projection.js";
 import { listPromptSnapshots } from "../session/prompt-snapshots.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
 import { renderToolBlock } from "../ui/render-text.js";
-import type { ToolModel } from "../presentation/projection/tools.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
 import { canEditQueuedDraft, combineQueuedDraft } from "./draft.js";
+import { type FrontendGatewayServer, startFrontendGateway } from "./frontend-gateway.js";
 import { routePresentationIntent } from "./presentation-intents.js";
 import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
 import { resolveSessionPath } from "./session-path.js";
@@ -155,6 +158,30 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	}
 	unsubscribe = host.onEventRecord(render);
 
+	// —— 多前端网关：显式启用（--gateway），默认只绑回环。 ——
+	// 它是第二个消费者：自己的 PresentationController 吃同一条事实流，
+	// 意图经校验与归属标注回流宿主；宿主不感知"远端"概念。
+	let gateway: FrontendGatewayServer | undefined;
+	if (args.gateway) {
+		try {
+			gateway = await startFrontendGateway({
+				host,
+				port: args.gatewayPort,
+				hostname: args.gatewayHost,
+				dataDir: join(process.env.UINA_HOME ?? homedir(), ".uina"),
+				staticRoot: join(import.meta.dirname, "../../web"),
+				onError: (text) => process.stderr.write(`[网关] ${text}\n`),
+			});
+			process.stdout.write(
+				`多前端网关：${gateway.url}ws\n` +
+					`  token（已落 ${gateway.tokenPath}，每次启用重新生成）：${gateway.token}\n` +
+					`  浏览器打开 ${gateway.url}#token=<token> 即可接入\n`,
+			);
+		} catch (error) {
+			process.stderr.write(`[网关启动失败] ${errorMessage(error)}\n`);
+		}
+	}
+
 	process.stdout.write(formatStartupBanner(host.snapshot().modelName, host.historyCount(), shouldRunTUI, isPrintMode));
 
 	// —— 进程级守卫：信号与 stdout/stderr 归属进程，不属于任何 UI。 ——
@@ -169,6 +196,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	/** 释放所有宿主资源（存储刷新、扩展销毁、锁释放、信号守护注销） */
 	const cleanupResources = async (): Promise<void> => {
 		unsubscribe();
+		if (gateway) await gateway.dispose().catch(() => {});
 		if (host.isBusy()) host.interrupt();
 		if (execRunning) execAbort?.abort();
 		await host.dispose();
