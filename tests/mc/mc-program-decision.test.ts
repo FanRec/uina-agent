@@ -28,6 +28,7 @@ async function setup() {
 function host(overrides: Partial<ProgramHostApi> = {}): ProgramHostApi {
 	return {
 		call: async ({ args }) => args,
+		verify: async ({ effect }) => ({ effect, dispatch: "sent", completion: "met", evidence: [] }),
 		read: async () => ({ values: {}, versions: {}, unknown: {} }),
 		watch: async () => ({ status: "timeout" }),
 		sleep: async () => null,

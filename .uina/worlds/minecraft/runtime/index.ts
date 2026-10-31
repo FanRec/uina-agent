@@ -46,6 +46,8 @@ import type { AdmissionCommand, RecoveredRows, WorkerRequest, WorkerResponse } f
 export interface MinecraftRuntimeOptions {
 	evidence?: import("../contracts/world.js").WorldEvidencePort;
 	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
+	/** ctx.verify 注册表（G4）：领域核验器随能力工作包注入。 */
+	verifiers?: ReadonlyMap<import("../contracts/values.js").ExactRef, import("../contracts/runtime.js").EffectVerifier>;
 	/** runtime.db 绝对路径（<worldDataDir>/runtime.db，runtime.md §5.3）。 */
 	dbPath: string;
 	/** 存储身份：与库内 meta.storage_id 核对，不符即打开失败。 */
@@ -199,6 +201,7 @@ export class MinecraftRuntime {
 		const engine = new RuntimeEngine({
 			evidence: opts.evidence,
 			onSafetyChanged: opts.onSafetyChanged,
+			verifiers: opts.verifiers,
 			refs,
 			queue,
 			commitAdmission: (command) => runtime.admit(command),

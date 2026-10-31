@@ -374,7 +374,7 @@ export function liveEffectValueOf(
 /** 恢复的效果记录值（只有行；缺字段按 unknown 如实补）。 */
 export function recoveredEffectValueOf(
 	effect: Ref,
-	recovered: { factsJson: string; ownerJson: string | null; record: Ref },
+	recovered: { factsJson: string; ownerJson: string | null; record: Ref; verificationsJson?: string },
 ): Record<string, JsonValue> {
 	const facts = JSON.parse(recovered.factsJson) as DriverExecutionFact[];
 	const last = facts.length > 0 ? facts[facts.length - 1] : null;
@@ -384,7 +384,7 @@ export function recoveredEffectValueOf(
 		operation: facts[0]?.operation ?? "unknown",
 		record: recovered.record,
 		facts: plain(facts),
-		verifications: [],
+		verifications: plain(JSON.parse(recovered.verificationsJson ?? "[]")),
 		latest: {
 			effect,
 			dispatch: last?.dispatch ?? "unknown",

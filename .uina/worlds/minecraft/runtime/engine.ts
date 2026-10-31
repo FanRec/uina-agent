@@ -19,6 +19,8 @@ import type {
 	Acceptance,
 	ContinueRequest,
 	ControlRetirement,
+	EffectVerification,
+	EffectVerifier,
 	Origin,
 	RunRequest,
 	RunSummary,
@@ -129,6 +131,8 @@ export interface EngineOptions {
 	evidence?: import("../contracts/world.js").WorldEvidencePort;
 	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
 	commitAdmission?: (command: import("./runtime-db-worker.js").AdmissionCommand) => Promise<void>;
+	/** ctx.verify 注册表（G4）：组合根随能力工作包注入，不预建框架。 */
+	verifiers?: ReadonlyMap<import("../contracts/values.js").ExactRef, EffectVerifier>;
 	refs: RuntimeRefs;
 	queue: RecordQueue;
 	world: WorldPort;
@@ -278,6 +282,8 @@ export class RuntimeEngine {
 		}
 		for (const row of rows.runs) this.recoveredRuns.set(row.run, row);
 		for (const row of rows.segments) this.recoveredSegments.set(row.segment, row);
+		// 既往会话的效果行：facts/verifications 都是已提交事实，装入队列供 ctx.verify 复查（G4）。
+		for (const row of rows.effects) this.queue.restoreEffect(row);
 		// §4.4 恢复表（I1 子集）：未终结 Run——有停止意图 → cancelled；否则 unknown；
 		// 旧控制退役不明 → control unknown。追加为新的不可变截面。
 		const unfinished = rows.runs.filter((r) => r.phase !== "finished" && r.phase !== "awaiting_decision");
@@ -1682,21 +1688,64 @@ export class RuntimeEngine {
 			call: async (selector: string, input: JsonValue) => this.invokeChild(callState, state, lease, selector, input),
 			withBody: async <T>(work: (scope: BodyCallScope) => Promise<T>) =>
 				this.runWithBody(callState, state, lease, work),
-			verify: async (effect: Ref, verifier: Ref): Promise<EffectReceipt> => {
-				// I1 无核验器注册表：如实 NOT_FOUND，不追加伪造判断（§5.6）
-				throw callFailure({
-					code: "NOT_FOUND",
-					source: "capability",
-					message: `verifier ${verifier} is not registered`,
-					hint: "effect verifiers arrive with the capability work packages (K2+)",
-					dispatch: "not_sent",
-					effects: [effect],
-					recoverable: false,
-				});
-			},
+			verify: async (effect: Ref, verifier: Ref, input: JsonValue): Promise<EffectReceipt> =>
+				this.verifyEffect(effect, verifier, input),
 			...(lease != null ? { player: lease.session } : {}),
 		} as CallContext & Partial<BodyCallScope>;
 		return ctx;
+	}
+
+	/**
+	 * ctx.verify（G4）：已注册核验器按效果事实 + 当前世界状态给出追加判断。
+	 * append-only：EffectVerification 追加到原 Effect，原 completion 与历史报告不改写；
+	 * 返回 receipt 是"该效果当前最新判断"（dispatch 沿用原事实，completion 取核验结论）。
+	 */
+	private async verifyEffect(effect: Ref, verifier: Ref, input: JsonValue): Promise<EffectReceipt> {
+		const attribution = this.queue.effectRecord(effect);
+		if (attribution == null) {
+			throw callFailure({
+				code: "NOT_FOUND",
+				source: "capability",
+				message: `effect ${effect} has no recorded facts in this runtime`,
+				hint: "verify applies to effects this runtime has recorded (this session or restored from runtime.db)",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: false,
+			});
+		}
+		const impl = this.opts.verifiers?.get(verifier as import("../contracts/values.js").ExactRef);
+		if (impl == null) {
+			const known = [...(this.opts.verifiers?.keys() ?? [])].join(", ");
+			throw callFailure({
+				code: "NOT_FOUND",
+				source: "capability",
+				message: `verifier ${verifier} is not registered`,
+				hint: known.length > 0 ? `registered verifiers: ${known}` : "no verifiers registered",
+				dispatch: "not_sent",
+				effects: [effect],
+				recoverable: false,
+			});
+		}
+		const verdict = await impl.check(
+			{ effect, operation: attribution.operation, facts: attribution.facts },
+			this.opts.world,
+			input,
+		);
+		const verification: EffectVerification = {
+			record: this.refs.record(),
+			observedAt: nowIso(),
+			verifier: verifier as import("../contracts/values.js").ExactRef,
+			completion: verdict.completion,
+			evidence: verdict.evidence,
+			...(verdict.reason != null ? { reason: verdict.reason } : {}),
+		};
+		this.queue.appendVerification(effect, verification);
+		return {
+			effect,
+			dispatch: attribution.latest.dispatch,
+			completion: verdict.completion,
+			evidence: verdict.evidence,
+		};
 	}
 
 	// ---- 身体申请（§3.3.1 三种情况） ----

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describeDirectory, type DescribeParams } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
+import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
 import { planEscape, canBreathe } from "../driver/mineflayer/pathfinder.js";
 import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
@@ -182,6 +183,7 @@ export async function openExecutionSide(
 						}),
 					});
 			},
+			verifiers: buildVerifiers(),
 			dbPath: join(init.worldDataDir, "runtime.db"),
 			storageId: init.storageId,
 			namespace,

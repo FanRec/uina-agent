@@ -99,6 +99,10 @@ export function createProgramHost(
 			}
 			return ctx.call(selector, args);
 		},
+		verify: async ({ effect, verifier, args }) => {
+			live();
+			return plain(await ctx.verify(effect, verifier as import("../contracts/values.js").ExactRef, args));
+		},
 		read: async ({ targets, after }) => {
 			live();
 			const values: Record<string, JsonValue> = {},

@@ -1,6 +1,6 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25（批12 更新 2026-10-31）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **12 查询 + 22 动作（34/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25（批12 更新 2026-10-31）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **13 查询 + 24 动作（37/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](archive/native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -295,7 +295,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ### 10.3 玩法就绪队列（默认优先级，可据校准调整）
 
-以下不是“前一行全部完成才能开始下一行”的串行表。**批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；接下来先做空间作业与施工（region → tunnel/excavate → 蓝图与施工）**；其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
+以下不是“前一行全部完成才能开始下一行”的串行表。**批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；接下来先做蓝图与施工（build.plan/build）**；其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
 
 | 工作包 | 交付范围 | 直接依赖与边界 | 验收任务 |
 |---|---|---|---|
@@ -305,8 +305,8 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | ~~洞穴/水下脱困（K3）~~ | surface | **批12 已实现**（2026-10-31，G3 关闭：SurfaceProbe 站立/露天判据） | 密封石箱挖出、水井游出，均回露天可站（真服源码/产物 7/7） |
 | ~~完整战斗（K3）~~ | fight | **批12 已实现**（2026-10-31）：stance 决策表、武器/盾装备、击杀只认死亡观察、撤退线与 no_progress | 三僵尸打完或撤退、血量≥6；cautious 接战门撤退；aggressive 4 目标清场；目标失踪不算击杀（真服源码/产物 5/5） |
 | 高频反馈与默认自保（批10已接通，见 archive/feedback-implementation.md） | Driver feedback/loop/背压，Program 控制桥，Runtime safety 介入和效果归属 | 同一 ClientFactsPort、控制资格与停止合同；默认自保是明确交付项，主脑可按玩法调整 | 测完整 sample→guest→apply 时延和过期输入撤销；移动/挖掘等动作被介入后进度、控制与未知效果保留，禁止旧写源复活 |
-| 地形切片（K4） | region | Driver 实际已加载区块、World 当前/历史来源与编码；不依赖 fight | 解码与真实区域一致；未加载/历史格明确标注；大小上限与切片提示符合合同 |
-| 空间作业（K4） | tunnel、excavate | 必要导航、挖掘/支撑与目标差异核验，region 可供现场读取；不依赖完整战斗 | 阶梯矿道连通可走、清空目标计数正确，落沙/液体/冲突、缺工具与取消保留进度 |
+| ~~地形切片（K4）~~ | region | **批13 已实现**（2026-10-31，G4 关闭：ctx.verify 注册表 + verify/dig@1 首个消费者） | 跨区块结构对拍一致；未加载格 -1 计 missing；8704 格 INVALID_INPUT（真服 8/8） |
+| ~~空间作业（K4）~~ | tunnel、excavate | **批13 已实现**（2026-10-31）：L 形走廊+台阶 1:1+檐块/跳跃净空+砾石支撑；层序清空+keep+容器先收后挖 | 两条 1:1 阶梯隧道连通可走、砾石支撑先挖、excavate 区域全清+箱子保留+容器内容入包（真服 8/8）；上坡行走楔死登记 G21 |
 | 蓝图与施工（K5） | Library 的 Raw→Target→Project、build.plan、build | 文件库、region/现场差异、挖放与材料；复用空间作业的共同差异逻辑，不为它们另造玩法 Runtime | 5×5 木屋缺料→补料→完成；含门/火把与 preserve/unknown；plan 后改图产生 CONFLICT，修复只做真实差异 |
 | 玩家名单（K6） | players | Driver 实际公告名单和跟踪实体分别投影；可独立提前 | 玩家离开跟踪后名单仍可保留，tracked=null；离线 UUID 不认证正版 |
 | 地图（K6） | map、正式 observe 图片附件 | 真实地图包/局部像素/图标、World 记录与 Executor 图片出口；与 players 分开验收 | 部分矩形其余像素未知，图标更新不抹像素；重连不复活旧覆盖，模型实际收到图片 |

@@ -87,6 +87,7 @@ export type WaitResult = ({ kind: "met" | "timeout" } & ReadValues) | { kind: "i
 export type WatchResult = { status: "changed" | "timeout" } | { status: "invalidated"; reason: string };
 export interface ProgramHostApi {
 	call(input: { selector: string; args: JsonValue; delegateBody?: boolean; handle?: string }): Promise<JsonValue>;
+	verify(input: { effect: string; verifier: string; args: JsonValue }): Promise<JsonValue>;
 	read(input: { targets: Targets; after?: Record<string, string> }): Promise<ReadResult>;
 	watch(input: { targets: Targets; after: Record<string, string>; timeoutMs?: number }): Promise<WatchResult>;
 

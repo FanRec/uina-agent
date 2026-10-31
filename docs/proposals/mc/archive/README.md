@@ -18,6 +18,7 @@
 | [driver-repair-implementation.md](driver-repair-implementation.md) | 修复 · 2026-10-25 | 1.21.11 协议窄口、Body 资格与操作资源、库存/采矿/牌面、取消与受控导航、容器历史 |
 | [production-repair-implementation.md](production-repair-implementation.md) | 修复 · 2026-10-25 | 生产链八项问题：合成/熔炼拆分、实例匹配与跨槽搬运、熔炼等待释放身体 |
 | [executor-platform-implementation.md](executor-platform-implementation.md) | 批 4 · 2026-10-25 | Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份与 launch 账本 |
+| [spatial-implementation.md](spatial-implementation.md) | 批 13 · 2026-10-31 | region/tunnel/excavate、G4 ctx.verify 注册表与 verify/dig@1、上坡行走楔死（G21） |
 | [host-delivery-implementation.md](host-delivery-implementation.md) | 批 5 · 2026-10-25 | Host 持久回执、journal v4、canonical 提交索引、inspect/retire |
 | [native-host-implementation.md](native-host-implementation.md) | 批 6 · 2026-10-25 | 正式 WorldDef、原生模型工具、请求凭证、可靠通知、BodyEndpoint、首次真实模型校准 |
 | [program-implementation.md](program-implementation.md) | 批 7 · 2026-10-25 | QuickJS 0.32.0、共享 worker/独立 guest、`mc` 表面、源码快照、容量与局部取消 |

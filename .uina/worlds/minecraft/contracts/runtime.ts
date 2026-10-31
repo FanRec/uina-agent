@@ -273,6 +273,19 @@ export interface EffectVerification {
 	reason?: string;
 }
 
+/**
+ * ctx.verify 的领域核验器（G4）：按效果已记录事实与当前世界状态给出追加判断，
+ * 不派发任何动作；unknown 必须保留 unknown（读不到就如实说读不到）。
+ * 注册表由组合根随能力工作包注入（known-gaps §G4：不预建框架，来了才注册）。
+ */
+export interface EffectVerifier {
+	check(
+		effect: { effect: Ref; operation: Ref; facts: DriverExecutionFact[] },
+		world: import("./world.js").WorldPort,
+		input: JsonValue,
+	): Promise<{ completion: "met" | "not_met" | "unknown"; evidence: Ref[]; reason?: string }>;
+}
+
 export interface EffectRecord {
 	effect: Ref;
 	owner: ControlOwner;

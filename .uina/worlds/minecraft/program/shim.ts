@@ -99,6 +99,12 @@ export const SHIM = String.raw`(() => {
   };
   const mc = Object.freeze({
     call: (selector,input={}) => rpc('call',{selector,args:input}),
+    verify: (effect,verifier,input={}) => {
+      if(typeof effect!=='string'||!effect) throw error('PROGRAM_INPUT_INVALID','verify requires an effect ref');
+      if(typeof verifier!=='string'||!verifier) throw error('PROGRAM_INPUT_INVALID','verify requires a verifier ref');
+      if(input===null||typeof input!=='object'||Array.isArray(input)) throw error('PROGRAM_INPUT_INVALID','verify input must be an object');
+      return rpc('verify',{effect,verifier,args:input});
+    },
     read: async (selector,input={}) => {
       const r = await rpc('read',{targets:{target:{ref:selector,input}}});
       return {value:r.values.target,version:r.versions.target,unknown:r.unknown.target};

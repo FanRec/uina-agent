@@ -1,6 +1,6 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-10-31（批12 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-10-31（批13 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
 证据口径：**[源码]** = 本次逐行核实；**[记录]** = 来自实施记录，本轮未复跑。本文是只读审查产出，未施工、未改代码、未起服务端、未复跑测试。
 
@@ -50,14 +50,21 @@
 
 ## 3. 能力面缺口（G5）
 
-实到 **12 查询 + 22 动作 = 34/51**（2026-10-31 批12 落地 `follow` `flee` `surface` `fight`）。
+实到 **13 查询 + 24 动作 = 37/51**（2026-10-31 批13 落地 `region` `tunnel` `excavate`，并关闭 G4）。
 
 | 工作包 | 前置 | 缺的条目 |
 |---|---|---|
-| 地形与空间作业 | Section 采样 + G4（ctx.verify） | `region` `tunnel` `excavate` |
-| 蓝图与施工 | Library 蓝图解释 + G4 | `build.plan` `build` |
+| 蓝图与施工 | Library 蓝图解释 | `build.plan` `build` |
 | 社交与地图 | G11 + 地图包读取 | `players` `map` |
 | 工作站与载具 | G2 + 载具/拴绳/鱼漂/床交互 | `brew` `enchant` `anvil` `grindstone` `trade` `ride` `lead` `fish` `sleep` `transit` |
+
+### G21 · 上坡台阶行走楔死（批13 登记）
+
+- **现象**：`tunnel@1` 的上行走廊几何正确（规划器挖出踏步块与跳跃净空、挖除全部服务端确认），但机器人无法走上去：goto 的寻路与 drive 的 stepTo 都在台阶面楔死——贴面起跳的横向速度被面碰撞清零，起跳后原地升落（y 恒定），寻路则在 GoalNear 邻域（含"目标正下方一格"）满足后不爬台阶。
+- **证据**：`dev:mc:spatial` 批13 真服记录——同一场景两条下行 1:1 隧道 8/8 通过，上行版本 stuck path 全程 y=200.00 恒定；探针（tp 后 drive{forward,jump} 对 1 格台阶）final y 仅 +0.26。
+- **影响**：上行走廊能挖成、走不进去（UNREACHABLE 如实上报，保留 dug/path 进度）；`goto@1` 攀爬与此同源。
+- **修法方向**：跳跃助跑时序（提前起跳/背向助跑重试）、pathfinder 攀爬移动的运动参数复核，或 `placeToReach` 垫块路线；需要专门的真服调参轮。
+- **验收**：上行 1:1 台阶走廊（≥3 格高差）从起点走到终点。
 
 ## 4. P1 已实现部分的缺口
 

@@ -839,6 +839,18 @@ interface RuntimeRecordBarrier {
 
 DomainCheckpoint 的 schema 由领域模块普通导出，组合根校验同 ref 唯一；descriptor.checkpoints 只声明可消费的领域 schema，不声明则不接收领域检查点。ProgramCheckpoint 不进入这个注册表；续段根程序只读 value，来源在记录中保留，子程序须显式传参。两类不隐式转换；原生入口不能因程序 checkpoint 而跳过自己的输入/领域验证。能力在自身实现中核验目标；Runtime 不注入通用目标 verifier。`ctx.verify` 只调用 effect 原要求指定的领域核验者并追加效果判断。
 
+**效果核验器（批13，G4 关闭）**：核验器由组合根随能力工作包注入 `EngineOptions.verifiers`（`ReadonlyMap<ExactRef, EffectVerifier>`），不预建通用框架：
+
+```typescript
+interface EffectVerifier {
+  check(effect: { effect: Ref; operation: Ref; facts: DriverExecutionFact[] },
+        world: WorldPort, input: JsonValue):
+    Promise<{ completion: "met" | "not_met" | "unknown"; evidence: Ref[]; reason?: string }>;
+}
+```
+
+`ctx.verify(effect, verifier, input)` 与程序桥 `mc.verify(effect, verifier, input)` 走同一注册表：未注册/效果无记录 → NOT_FOUND；核验器不派发动作，只按已记录事实 + 当前世界读数给出追加判断（读不到保持 unknown，不冒充 met/not_met）；结果以 `EffectVerification` append-only 追加到原 Effect（新 record ref 的新不可变截面），原 completion 与历史报告不改写，返回 receipt 的 completion 取核验结论、dispatch 沿用原事实。首个注册者：`verify/dig@1`（body.dig@1 效果的目标格现在是空气吗），运行事实 detail 自批13 起携带 `target`。
+
 DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 safety）；EffectRecord.owner 来自该绑定，不接受 guest 自填。安全介入只补齐已有 safety 所有者的记录，不生成虚构 Call/Segment。DriverExecutionSink 的行为：`record` 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket，不代表持久或服务端 ACK；无法接收时返回 null、锁存 recorder fault 并封闭新副作用，Driver 的撤销/清理不等磁盘。`RuntimeRecordBarrier.capture` 固定已收到前缀 H，`flushThrough(H)` 保证 ≤H 材料已提交，否则明确失败；材料丢失的故障不得返回成功。ticket 不跨实例或重启比较，H 之后的材料不纳入原终结。Driver 关闭 Promise 完成前，已产生的清理派发与可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime 详细设计](modules/runtime.md)。
 
 ## 8. 模块独立验证的最小要求

@@ -29,6 +29,7 @@ export const registry: RegistryLike = {
 		grass_block: { id: 3, name: "grass_block", stackSize: 64 },
 		oak_log: { id: 17, name: "oak_log", stackSize: 64 },
 		cobblestone: { id: 35, name: "cobblestone", stackSize: 64 },
+		gravel: { id: 213, name: "gravel", stackSize: 64 },
 		bread: { id: 892, name: "bread", stackSize: 64 },
 		apple: { id: 893, name: "apple", stackSize: 64 },
 		wooden_pickaxe: { id: 913, name: "wooden_pickaxe", stackSize: 1, maxDurability: 59 },
@@ -50,6 +51,7 @@ export const registry: RegistryLike = {
 		grass_block: { id: 3, name: "grass_block" },
 		oak_log: { id: 17, name: "oak_log" },
 		cobblestone: { id: 35, name: "cobblestone" },
+		gravel: { id: 213, name: "gravel" },
 	},
 	foodsByName: { apple: { foodPoints: 4, saturation: 19.2 } },
 	blockLoot: {
@@ -57,6 +59,7 @@ export const registry: RegistryLike = {
 		dirt: { block: "dirt", drops: [{ item: "dirt" }] },
 		grass_block: { block: "grass_block", drops: [{ item: "dirt" }] },
 		oak_log: { block: "oak_log", drops: [{ item: "oak_log" }] },
+		gravel: { block: "gravel", drops: [{ item: "gravel" }] },
 	},
 	entitiesByName: {
 		zombie: { type: "hostile", category: "Hostile mobs" },
@@ -231,9 +234,23 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			calls.push("interact");
 			return { effect: "eff:t:3", dispatch: "sent", completion: "met", evidence: [] };
 		},
-		async drive(_input: unknown, ticks: number) {
+		async drive(input: { lookAt?: unknown }, ticks: number) {
 			calls.push("drive");
 			hooks.onDrive?.(ticks);
+			// lookAt 为点目标时按"走过去了"建模（spatial 的近距步进依赖它）；
+			// 实体 lookAt（fight 的持盾瞄准）不移动。
+			const lookAt = input?.lookAt as { x?: unknown; y?: unknown; z?: unknown } | undefined;
+			if (
+				lookAt != null &&
+				typeof lookAt.x === "number" &&
+				typeof lookAt.y === "number" &&
+				typeof lookAt.z === "number"
+			) {
+				selfState.place = {
+					...selfState.place,
+					position: { x: Math.floor(lookAt.x) + 0.5, y: Math.floor(lookAt.y), z: Math.floor(lookAt.z) + 0.5 },
+				};
+			}
 			return {
 				receipt: { effect: "eff:t:4", dispatch: "sent", completion: "met", evidence: [] },
 				actualTicks: 40,

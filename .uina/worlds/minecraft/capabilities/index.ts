@@ -21,6 +21,8 @@ import { smeltCallable } from "./actions/smelt.js";
 import { equipCallable, eatCallable } from "./actions/items.js";
 import { gotoCallable, followCallable, fleeCallable } from "./actions/navigation.js";
 import { surfaceCallable } from "./actions/surface.js";
+import { excavateCallable } from "./actions/excavate.js";
+import { tunnelCallable } from "./actions/tunnel.js";
 import { placeCallable } from "./actions/building.js";
 import { mineCallable } from "./actions/mining.js";
 import { useCallable } from "./actions/interaction.js";
@@ -34,6 +36,7 @@ import { environmentQueries } from "./queries/environment.js";
 import { eventsQuery } from "./queries/events.js";
 import { knowledgeQueries } from "./queries/knowledge.js";
 import { placesQuery } from "./queries/places.js";
+import { regionQuery } from "./queries/region.js";
 import { routePlanQuery } from "./queries/route-plan.js";
 import { terrainQueries } from "./queries/terrain.js";
 import type { QuerySpec } from "./shared/query.js";
@@ -62,6 +65,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 	const specs: QuerySpec[] = [
 		...bodyQueries(),
 		...terrainQueries({ knowledge: deps.knowledge }),
+		regionQuery,
 		...environmentQueries({ knowledge: deps.knowledge }),
 		...knowledgeQueries({ knowledge: deps.knowledge }),
 		eventsQuery,
@@ -116,6 +120,8 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		fleeCallable(deps),
 		surfaceCallable(deps),
 		fightCallable(deps),
+		tunnelCallable(deps),
+		excavateCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {

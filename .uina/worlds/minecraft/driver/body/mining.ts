@@ -38,6 +38,7 @@ export async function runMining(
 				deps.recorder.record(effect, operation, "body.dig@1", "receipt", dispatch, completion, {
 					completionContract: "only a matching server block update confirms the target state",
 					finished: finishSent,
+					target: { x: target.block.x, y: target.block.y, z: target.block.z },
 				});
 			if (error !== undefined) reject(error);
 			else resolve({ effect, dispatch, completion, evidence: [] });
@@ -144,6 +145,7 @@ export async function runMining(
 				deps.recorder.record(effect, operation, "body.dig@1", "dispatch", "sent", "unknown", {
 					predictedMs: waitMs,
 					aim: options?.aim ?? "target",
+					target: { x: target.block.x, y: target.block.y, z: target.block.z },
 				});
 				if (done) return;
 				deps.guard();

@@ -131,7 +131,17 @@ export interface ApplyItem {
 		| { kind: "run"; row: RunRow }
 		| { kind: "segment"; row: SegmentRow }
 		| { kind: "call"; row: CallRow }
-		| { kind: "effect_fact"; row: EffectRow; fact: DriverExecutionFact };
+		| { kind: "effect_fact"; row: EffectRow; fact: DriverExecutionFact }
+		| {
+				kind: "effect_verification";
+				row: {
+					effect: string;
+					record: string;
+					owner: string;
+					facts: string;
+					verifications: import("../contracts/runtime.js").EffectVerification[];
+				};
+		  };
 }
 
 export type WorkerRequest =
@@ -626,6 +636,32 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): false
 			facts.push(fact);
 			db.prepare("UPDATE effects SET facts = ?, record = ? WHERE effect = ?").run(
 				JSON.stringify(facts),
+				r.record,
+				r.effect,
+			);
+			return;
+		}
+		case "effect_verification": {
+			const r = mutation.row;
+			db.prepare(
+				"INSERT OR IGNORE INTO effects (effect, owner, operation, record, facts, verifications) VALUES (?, ?, ?, ?, ?, '[]')",
+			).run(
+				r.effect,
+				r.owner,
+				(JSON.parse(r.facts) as DriverExecutionFact[])[0]?.operation ?? "unknown",
+				r.record,
+				r.facts,
+			);
+			const row = db.prepare("SELECT owner, verifications FROM effects WHERE effect = ?").get(r.effect) as Row;
+			if (String(row.owner) !== r.owner) {
+				throw new StorageConflict(`effect ${r.effect} 已存在且身份不同：owner=${String(row.owner)} ≠ ${r.owner}`);
+			}
+			const verifications = JSON.parse(
+				String(row.verifications),
+			) as import("../contracts/runtime.js").EffectVerification[];
+			verifications.push(...r.verifications.slice(verifications.length));
+			db.prepare("UPDATE effects SET verifications = ?, record = ? WHERE effect = ?").run(
+				JSON.stringify(verifications),
 				r.record,
 				r.effect,
 			);

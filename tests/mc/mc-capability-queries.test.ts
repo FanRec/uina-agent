@@ -346,7 +346,7 @@ describe("item@1 / recipe@1", () => {
 });
 
 describe("目录完整性", () => {
-	test("12 个查询声明齐全；历史/记录由 World 读取（无 reader）", () => {
+	test("13 个查询声明齐全；历史/记录由 World 读取（无 reader）", () => {
 		expect(capabilities.queries.map((query) => query.ref).sort()).toEqual([
 			"block@1",
 			"blocks@1",
@@ -357,6 +357,7 @@ describe("目录完整性", () => {
 			"item@1",
 			"places@1",
 			"recipe@1",
+			"region@1",
 			"route.plan@1",
 			"self@1",
 			"world@1",
@@ -367,7 +368,7 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("route.plan@1")).toBe(false);
 	});
 
-	test("22 个动作齐备，ref 不重复", () => {
+	test("24 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"attack@1",
 			"chat@1",
@@ -377,6 +378,7 @@ describe("目录完整性", () => {
 			"drop@1",
 			"eat@1",
 			"equip@1",
+			"excavate@1",
 			"explore@1",
 			"fight@1",
 			"flee@1",
@@ -390,6 +392,7 @@ describe("目录完整性", () => {
 			"smelt@1",
 			"surface@1",
 			"transfer@1",
+			"tunnel@1",
 			"use@1",
 		]);
 	});

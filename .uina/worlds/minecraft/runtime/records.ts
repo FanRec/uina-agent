@@ -13,6 +13,7 @@
 import type {
 	DriverExecutionFact,
 	DriverExecutionSink,
+	EffectVerification,
 	RecordTicket,
 	RuntimeRecordBarrier,
 } from "../contracts/runtime.js";
@@ -42,6 +43,8 @@ export interface EffectAttribution {
 	record: Ref;
 	/** 本 writer 已收到的完整事实序列（按到达序，不重排）。 */
 	facts: DriverExecutionFact[];
+	/** ctx.verify 的追加判断（append-only；原 completion 不改写，G4）。 */
+	verifications: EffectVerification[];
 	latest: { dispatch: EffectReceipt["dispatch"]; completion: EffectReceipt["completion"]; evidence: Ref[] };
 }
 
@@ -99,6 +102,7 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 				operation: fact.operation,
 				record: this.mintRecord(),
 				facts: [fact],
+				verifications: [],
 				latest: { dispatch: fact.dispatch, completion: fact.completion, evidence: fact.evidence },
 			};
 			this.effectOwner.set(fact.effect, attribution);
@@ -115,7 +119,7 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 				operation: fact.operation,
 				record: attribution.record,
 				facts: JSON.stringify(attribution.facts),
-				verifications: "[]",
+				verifications: JSON.stringify(attribution.verifications),
 			},
 			fact,
 		});
@@ -213,6 +217,46 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 			if (attribution.record === record) return effect;
 		}
 		return null;
+	}
+
+	/**
+	 * ctx.verify 的追加路径（G4）：核验判断 append-only 入 attribution 并落库为新的
+	 * 不可变截面；原 completion 与既有 facts 不改写。
+	 */
+	appendVerification(effect: Ref, verification: EffectVerification): void {
+		const attribution = this.effectOwner.get(effect);
+		if (attribution == null) throw new Error(`cannot verify unknown effect ${effect}`);
+		attribution.verifications.push(verification);
+		attribution.record = this.mintRecord();
+		this.enqueue({
+			kind: "effect_verification",
+			row: {
+				effect,
+				record: attribution.record,
+				owner: JSON.stringify(attribution.owner),
+				facts: JSON.stringify(attribution.facts),
+				verifications: attribution.verifications,
+			},
+		});
+	}
+
+	/** 恢复注入：既往会话的效果行（facts/verifications 都是已提交事实）只读装载。 */
+	restoreEffect(row: import("./runtime-db-worker.js").EffectRow): void {
+		if (this.effectOwner.has(row.effect)) return;
+		const facts = JSON.parse(row.facts) as DriverExecutionFact[];
+		const last = facts.length > 0 ? facts[facts.length - 1] : null;
+		this.effectOwner.set(row.effect, {
+			owner: JSON.parse(row.owner ?? "null") as ControlOwner | null,
+			operation: row.operation,
+			record: row.record,
+			facts,
+			verifications: JSON.parse(row.verifications) as EffectVerification[],
+			latest: {
+				dispatch: last?.dispatch ?? "unknown",
+				completion: last?.completion ?? "unknown",
+				evidence: last?.evidence ?? [],
+			},
+		});
 	}
 
 	// ---- 引擎突变入队 ----

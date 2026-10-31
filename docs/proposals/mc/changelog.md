@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-10-31 · 批13 地形切片与空间作业
+
+- 能力面 +3：`region@1`（闭区间/at+size 双形态，palette 第 0 项恒 air、order 固定 xzy、未加载格 -1 计 missing、体素 ≤8192 否则 INVALID_INPUT 带切片建议；逐格事实视图有界同步采样，48 格实测 ~3ms）、`tunnel@1`（L 形两轴走廊 + 台阶 1:1 + 段尾竖井；下坡列挖檐块、上坡列在前一位列挖跳跃净空；support 探测檐上重力方块先挖后挖 profile）、`excavate@1`（层自上而下、层内就近序、keep 保留、容器先 transfer@1 收内容再挖、drops 聚合背包正增量、收尾以世界读数复核 remaining）。
+- G4 关闭：`ctx.verify` 注册表落地——`EffectVerifier` 合同（contracts/runtime.ts）+ `EngineOptions.verifiers` + `verify/dig@1`（capabilities/shared/verify.ts：按 effect facts 的 BlockTarget 读当前方块，air→met、原方块→not_met、未加载→unknown）；`ctx.verify` append-only 追加 `EffectVerification`（原 completion 不改写），`effect_verification` 突变落库为新的不可变截面，效果行跨重启恢复后仍可复查。程序桥补 `mc.verify(effect, verifier)`（shim + ProgramHostApi + program-host），runMining 的 dispatch/receipt 事实 detail 补 `target`。
+- 能力纯函数收敛到 `capabilities/shared/spatial.ts`（planCorridor/expandProfile/planExcavation/orderNear/normalizeBox/方块分类，确定性可测）；tunnel 用"挖 reach 内数列 ↔ goto 走到最远已挖列"的挖走节拍（digThrough:true 兜底 + 实际落点复核 + stepTo 近距步进），excavate 用"goto 腿（失败按实际站位复核射程）+ withBody digCell"。
+- 裁决登记：tunnel 走廊遇流体 → UNREACHABLE；当前库存无法采收（基岩/缺工具）→ 返回 `stopped:"unbreakable"` 保留已挖前缀；`path` = 已挖格 + 原方块名；stairs:"never" = 水平段恒高、高差段尾竖井衔接；excavate drops = 挖后短窗背包正增量（不承诺拾取完整）；excavate not_met 以世界读数复核（回执确认窗边界竞态时方块其实已开）；region watchable:true / feedback:false。
+- Runtime/Host/历史持久格式不变（effects.verifications 列批 6 已预留）。能力 **37/51**（13 查询 + 24 动作）；下一包按 §10.3 为蓝图与施工（build.plan/build）。真服验收（Paper 1.21.11：`dev:mc:spatial` 8/8——region 对拍/未加载 missing、下坡隧道 ×2 连通可走、砾石支撑、excavate 保留+收集+清空、G4 met/not_met/未注册 NOT_FOUND）与已知缺口（上坡行走楔死，G21）见 dev/MC-WORLD.md 批13 节。
+
 ## 2026-10-31 · 批12 移动鲁棒性与完整战斗
 
 - 能力面 +4：`follow@1`（跟踪跟随，ended=target_lost/timeout 如实）、`flee@1`（背向威胁 8 向轮换，威胁失联按最后已知差距结算）、`surface@1`（两相水中脱困 + 竖井上升，`escapeToSurface` 供 fight 复用）、`fight@1`（stance 决策表、武器/盾装备、击杀只认死亡观察、撤退线与 no_progress、ranged=useItem hold/release + awaitEvidence）。

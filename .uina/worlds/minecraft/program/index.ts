@@ -168,6 +168,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 				if (a.retiring || a.signal.aborted) return;
 				const allowed = [
 					"call",
+					"verify",
 					"read",
 					"watch",
 					"sleep",

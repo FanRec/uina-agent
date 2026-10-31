@@ -106,7 +106,30 @@ export function snapshotMutation(db: DatabaseSync, mutation: ApplyItem["mutation
 				{
 					kind: "effect",
 					record: r.record,
-					value: recoveredEffectValueOf(r.effect, { factsJson: r.facts, ownerJson: r.owner, record: r.record }),
+					value: recoveredEffectValueOf(r.effect, {
+						factsJson: r.facts,
+						ownerJson: r.owner,
+						record: r.record,
+						verificationsJson: r.verifications,
+					}),
+				},
+				r.effect,
+			);
+			return;
+		}
+		case "effect_verification": {
+			const r = mutation.row;
+			save(
+				db,
+				{
+					kind: "effect",
+					record: r.record,
+					value: recoveredEffectValueOf(r.effect, {
+						factsJson: r.facts,
+						ownerJson: r.owner,
+						record: r.record,
+						verificationsJson: JSON.stringify(r.verifications),
+					}),
 				},
 				r.effect,
 			);
