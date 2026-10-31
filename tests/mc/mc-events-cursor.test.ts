@@ -21,6 +21,7 @@ import {
 
 const scope = eventScopeOf("bind:t", "wld:t", "wldrev:t");
 const validate = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	runtime: () => {
 		throw new Error("unused");

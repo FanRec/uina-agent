@@ -1,6 +1,6 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-10-27。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-10-31（批12 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
 证据口径：**[源码]** = 本次逐行核实；**[记录]** = 来自实施记录，本轮未复跑。本文是只读审查产出，未施工、未改代码、未起服务端、未复跑测试。
 
@@ -33,13 +33,12 @@
 - **修法**：`window/layout.ts` 扩表，`protocol.ts` 的玩家快照继续复用同一张表；每个新窗口先只接"开窗 + 快照 + 关窗"，专用选择协议留给各自能力包。
 - **验收**：各工作站开窗后 `slots[].region` 与真实客户端一致；不支持的类型仍明确失败。
 
-### G3 · goto 缺站姿/可站立判据
+### G3 · goto 缺站姿/可站立判据（✅ 已于 2026-10-31 批12 关闭）
 
 - **现象**：完成判据是 GoalNear 的整数格 nodeGap，没有"站得住"这一层。
 - **证据**：`development-plan §10.6` 登记为未做；`driver/goto.ts` 无 `standable` 之类判定。
 - **影响**：`surface`（洞穴/水下脱困）、`tunnel`、`excavate`、`build`、`transit` 共同前置缺失。
-- **修法**：在 `driver/goto.ts` 落判据（脚下实心 + 上方两格非固体 + `onGround`），只作为**完成判据**，不改 GoalNear 的节点语义。
-- **验收**：真服从洞穴与水下分别回到满足判据的位置；不可达/超时如实报。
+- **关闭事实**：`SurfaceProbe` 窄端口（contracts/world.ts，public-api §5）+ `driver/mineflayer/world-scan.ts`：`standableAt`（脚下实心 + 上两格非固体非液体）、`skyOpenAt`（头顶之上无实体块，液体不遮天）、`findSkyAccess`（螺旋早退 + 限高列扫描 + 候选 skyOpen 复核）。goto@1 的 GoalNear 节点语义未改（§10.6 要求），判据经端口供 surface/fight 消费；未加载区块 null 不猜。真服：石箱挖出/水井游出均回露天可站（源码/产物 7/7）。tunnel/excavate/build/transit 沿用此端口，无需再建。
 
 ### G4 · `ctx.verify` 注册表为空
 
@@ -51,13 +50,11 @@
 
 ## 3. 能力面缺口（G5）
 
-实到 **12 查询 + 18 动作 = 30/51**（2026-10-30 批11 落地 `places` `route.plan` `remember` `forget` `explore`）。
+实到 **12 查询 + 22 动作 = 34/51**（2026-10-31 批12 落地 `follow` `flee` `surface` `fight`）。
 
 | 工作包 | 前置 | 缺的条目 |
 |---|---|---|
-| 移动鲁棒性 | G3 | `follow` `flee` `surface` |
-| 完整战斗 | 无 | `fight` |
-| 地形与空间作业 | Section 采样 + G3 + G4 | `region` `tunnel` `excavate` |
+| 地形与空间作业 | Section 采样 + G4（ctx.verify） | `region` `tunnel` `excavate` |
 | 蓝图与施工 | Library 蓝图解释 + G4 | `build.plan` `build` |
 | 社交与地图 | G11 + 地图包读取 | `players` `map` |
 | 工作站与载具 | G2 + 载具/拴绳/鱼漂/床交互 | `brew` `enchant` `anvil` `grindstone` `trade` `ride` `lead` `fish` `sleep` `transit` |

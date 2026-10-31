@@ -6,6 +6,7 @@ import { buildCapabilities } from "../capabilities/index.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { startSurvival } from "../capabilities/survival.js";
 import { planEscape, canBreathe } from "../driver/mineflayer/pathfinder.js";
+import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
 import type {
@@ -126,7 +127,12 @@ export async function openExecutionSide(
 				options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
 		}
 	});
-	const capabilities = buildCapabilities({ runtime: getRuntime, gotoDirector, knowledge: () => facts.knowledge() });
+	const capabilities = buildCapabilities({
+		runtime: getRuntime,
+		gotoDirector,
+		knowledge: () => facts.knowledge(),
+		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
+	});
 	capabilities.callables.push(...(options.callables ?? []));
 	const world = new MinecraftWorld({
 		facts,

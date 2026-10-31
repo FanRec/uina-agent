@@ -47,6 +47,7 @@ const registry: RegistryLike = {
 
 const knowledge = buildRegistryKnowledge(registry);
 const capabilities = buildCapabilities({
+	surface: () => null,
 	runtime: () => {
 		throw new Error("runtime is not used by query readers");
 	},
@@ -366,7 +367,7 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("route.plan@1")).toBe(false);
 	});
 
-	test("18 个动作齐备，ref 不重复", () => {
+	test("22 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"attack@1",
 			"chat@1",
@@ -377,6 +378,9 @@ describe("目录完整性", () => {
 			"eat@1",
 			"equip@1",
 			"explore@1",
+			"fight@1",
+			"flee@1",
+			"follow@1",
 			"forget@1",
 			"goto@1",
 			"mine@1",
@@ -384,6 +388,7 @@ describe("目录完整性", () => {
 			"place@1",
 			"remember@1",
 			"smelt@1",
+			"surface@1",
 			"transfer@1",
 			"use@1",
 		]);

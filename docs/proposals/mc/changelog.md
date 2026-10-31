@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-10-31 · 批12 移动鲁棒性与完整战斗
+
+- 能力面 +4：`follow@1`（跟踪跟随，ended=target_lost/timeout 如实）、`flee@1`（背向威胁 8 向轮换，威胁失联按最后已知差距结算）、`surface@1`（两相水中脱困 + 竖井上升，`escapeToSurface` 供 fight 复用）、`fight@1`（stance 决策表、武器/盾装备、击杀只认死亡观察、撤退线与 no_progress、ranged=useItem hold/release + awaitEvidence）。
+- G3 关闭：`SurfaceProbe` 窄端口（contracts/world.ts + public-api §5）与 `driver/mineflayer/world-scan.ts`——站立/露天判据与螺旋露天出口查找；goto@1 的 GoalNear 节点语义不变。
+- Driver 证据窗口扩为 `{hit, dead}`（dead 只由 entityDead 置位），新增 `BodyOps.awaitEvidence`（纯证据窗口，不派发动作）；public-api §4 更新。击杀掉落=死亡位置附近新出现 item 实体差集，目标失踪不算击杀。
+- 能力层纯决策收敛到 `capabilities/shared/mobility.ts`（matchFollowTarget/fleeLegTarget/stanceParams/effectiveRetreatHealth/MELEE_DAMAGE 等，确定性可测）；fight 用 withBody↔navigate 顶层交替拍，不嵌套租赁。
+- Runtime/Host/历史持久格式不变。能力 **34/51**（12 查询 + 22 动作）；下一包按 §10.3 为空间作业与施工（region 先行）。真服验收（Paper 1.21.11：mobility 源码/产物 7/7、combat 5/5）、版本事实（1.21.11 gamerule 拆分为 spawn_mobs 等）与证据边界见 dev/MC-WORLD.md 批12 节。
+
 ## 2026-10-30 · 批11 领域记录与地点、路径探索
 
 - World 领域记录（known-gaps G1）落地：world-history.db 增 records 表，SCHEMA v3→v4（旧库明确拒绝、不迁移）；`WorldPort` 增 `removeRecord`，CAS/分区校验在存储 Worker 单事务内，非空 evidence 同事务核验存在性；`meta.record_version` 只随记录写推进，驱动 places 观察，不复用提交版本。

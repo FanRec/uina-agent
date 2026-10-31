@@ -7,6 +7,7 @@
 
 import type { GotoDirector } from "../driver/goto.js";
 import type { RegistryKnowledge } from "../contracts/knowledge.js";
+import type { SurfaceProbe } from "../contracts/world.js";
 import type { CapabilityRuntime } from "./shared/runtime.js";
 
 export interface CapabilityDeps {
@@ -14,4 +15,6 @@ export interface CapabilityDeps {
 	gotoDirector: GotoDirector;
 	/** 静态知识：未连接时为 null（item/recipe 明确失败，不返回空表冒充）。 */
 	knowledge: () => RegistryKnowledge | null;
+	/** 站立/露天探测（G3）：未连接时为 null，surface@1 明确失败。 */
+	surface: () => SurfaceProbe | null;
 }

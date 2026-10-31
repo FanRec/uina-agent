@@ -65,6 +65,7 @@ function makeExplore(state: FakeState, behavior: string[]) {
 		},
 	};
 	const capabilities = buildCapabilities({
+		surface: () => null,
 		runtime: () =>
 			({
 				chat: async () => {

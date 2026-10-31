@@ -196,10 +196,19 @@ export interface WindowSession {
 /**
  * 一次攻击的派发事实与命中证据。hit=null 表示证据窗口内没有可归属的受击观察，
  * 不等于没打中（driver §7.4：低层只承诺派发，更强效果必须有证据来源）。
+ * dead 只由 entityDead 观察置 true（批 12：fight 的击杀记账只认死亡观察，
+ * 不把"受击后消失"冒认成击杀）。
  */
 export interface AttackOutcome {
 	receipt: EffectReceipt;
 	hit: boolean | null;
+	dead: boolean | null;
+}
+
+/** 证据窗口观察（不派发任何动作）：同一受击/死亡事件通道，供远程命中与击杀确认。 */
+export interface EvidenceOutcome {
+	hit: boolean | null;
+	dead: boolean | null;
 }
 
 /**
@@ -217,6 +226,8 @@ export interface BodyOps {
 	}>;
 	dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;
 	attack(target: EntityRef, options?: { evidenceMs?: number }): Promise<AttackOutcome>;
+	/** 证据窗口：不派发动作，等待该实体在窗口内的受击/死亡观察（批 12）。 */
+	awaitEvidence(target: EntityRef, options?: { evidenceMs?: number }): Promise<EvidenceOutcome>;
 	/** 一次激活；持续使用由 drive/feedback 的 hold 表达。 */
 	useItem(hand: Hand): Promise<EffectReceipt>;
 	/** 结束所属的原生使用状态，可能释放蓄力效果；对已结束状态幂等。 */

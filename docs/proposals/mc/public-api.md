@@ -272,11 +272,15 @@ interface AttackOutcome {
   receipt: EffectReceipt;
   // true=窗口内观察到受击/死亡；false=窗口走完但没有证据；null=窗口未走完（中止/断线）
   hit: boolean | null;
+  // 批 12：只由 entityDead 观察置 true；fight 的击杀记账只认死亡观察，不把"受击后消失"冒认成击杀
+  dead: boolean | null;
 }
 interface BodyOps {
   drive(input: ControlInput, ticks: number): Promise<{ receipt: EffectReceipt; actualTicks: number; end: Fact<SelfState> }>;
   dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;
   attack(target: EntityRef, options?: {evidenceMs?: number}): Promise<AttackOutcome>;
+  // 批 12：证据窗口——不派发动作，等待该实体在窗口内的受击/死亡观察（远程命中与击杀确认）
+  awaitEvidence(target: EntityRef, options?: {evidenceMs?: number}): Promise<{hit: boolean | null; dead: boolean | null}>;
   useItem(hand: Hand): Promise<EffectReceipt>; // 一次激活，持续使用由 drive/feedback 的 hold 表达
   endUse(): Promise<EffectReceipt>; // 结束所属的原生使用状态，可能释放蓄力效果
   interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;
@@ -605,6 +609,8 @@ read 的切面、cursor/分页、当前与历史降级由 [World §6–§9/§13]
 writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持久性与清理协调，由 [World §10](modules/world.md#retention) 定义。WorldEvidencePort 只给实际持有跨库强引用的可信记录所有者，不注入 guest。Runtime 发布强引用的次序见其 §7.2。removeRecord 是显式删除（`forget@1` 用）：按当前绑定分区删除，记录不存在返回 `removed:false`（由能力转成 NOT_FOUND），删除同样推进记录版本。
 
 `route.plan@1` 是试算，不属于 current/static/history 三类读取：World 按 ref 分派给组合根注入的窄计划端口（`WorldRoutePlanner`，类型见 contracts/world.ts；组合根用 Driver 受控寻路实现），结果 cursor=null 不可等待。World 不依赖 Driver。
+
+批 12：`surface@1` 消费组合根注入的窄探测端口 `SurfaceProbe`（类型见 contracts/world.ts；组合根用 Driver 客户端本地区块实现站立/露天判据与露天出口查找，G3）。能力层不触碰客户端对象；未加载区块返回 null（未知），由动作按未知处理，不猜空气。
 
 程序 waitUntil 由 [Program §2.4/§7](modules/program.md) 定义；每个 target 保留自己的观察版本，不伪造全局水位。
 

@@ -20,6 +20,7 @@ import type {
 	ControlInput,
 	EntityRef,
 	EquipSlot,
+	EvidenceOutcome,
 	FeedbackStream,
 	Hand,
 	ItemSelector,
@@ -713,9 +714,9 @@ export class BodySessionImpl implements BodySession {
 			const entity = this.resolveEntity(bot, target);
 			const evidenceMs = Math.max(100, Math.min(options?.evidenceMs ?? 600, 5000));
 			// 先登记证据监听再派发：受击包可能在 dispatch 之后极早到达。
-			const hurt = this.awaitHurt(bot, target.networkId, evidenceMs);
+			const evidence = this.awaitHurtEvidence(bot, target.networkId, evidenceMs);
 			bot.attack(entity);
-			const hit = await hurt;
+			const { hit, dead } = await evidence;
 			// 派发已发生：hit 只是证据，不改变 dispatch 事实。
 			this.recorder.record(
 				eff,
@@ -737,7 +738,21 @@ export class BodySessionImpl implements BodySession {
 			return {
 				receipt: { effect: eff, dispatch: "sent", completion: hit === true ? "met" : "unknown", evidence: [] },
 				hit,
+				dead,
 			};
+		} finally {
+			this.exitOp();
+		}
+	}
+
+	/** 证据窗口：不派发动作，只等待该实体的受击/死亡观察（批 12 fight 的远程与击杀确认）。 */
+	async awaitEvidence(target: EntityRef, options?: { evidenceMs?: number }): Promise<EvidenceOutcome> {
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			this.resolveEntity(bot, target);
+			const evidenceMs = Math.max(100, Math.min(options?.evidenceMs ?? 600, 5000));
+			return await this.awaitHurtEvidence(bot, target.networkId, evidenceMs);
 		} finally {
 			this.exitOp();
 		}
@@ -745,21 +760,34 @@ export class BodySessionImpl implements BodySession {
 
 	/**
 	 * 受击证据窗口：entityHurt/entityDead 只按 networkId 归属，不把附近伤害当命中。
-	 * 窗口内无观察 = false（看过但没有）；中止/断线 = null（没看完，不得宣称未命中）。
+	 * hit=true 见受击或死亡；dead=true 只由死亡观察置位。窗口自然走完仍无观察 = false
+	 * （看过但没有）；中止/断线 = null（没看完，不得宣称未命中或已击杀），
+	 * 但窗口内已见到的证据照实保留（中止前已受击 → hit=true）。
 	 */
-	private awaitHurt(bot: MineflayerBot, networkId: number, windowMs: number): Promise<boolean | null> {
+	private awaitHurtEvidence(bot: MineflayerBot, networkId: number, windowMs: number): Promise<EvidenceOutcome> {
 		const signal = this.signal;
-		return new Promise<boolean | null>((resolve) => {
+		return new Promise<EvidenceOutcome>((resolve) => {
 			let done = false;
+			let hit: boolean | null = null;
+			let dead: boolean | null = null;
 			const onHurt = (entity: MFEntity | null) => {
-				if (entity?.id === networkId) finish(true);
+				if (entity?.id === networkId) hit = true;
 			};
 			const onDead = (entity: MFEntity | null) => {
-				if (entity?.id === networkId) finish(true);
+				if (entity?.id === networkId) {
+					hit = true;
+					dead = true;
+					finish();
+				}
 			};
-			const onAbort = () => finish(null);
-			const onEnd = () => finish(null);
-			const timer = setTimeout(() => finish(false), windowMs);
+			const onAbort = () => finish();
+			const onEnd = () => finish();
+			const timer = setTimeout(() => {
+				// 窗口走完：没有观察就是明确的 false，不是 null（null 只属于未走完）。
+				hit ??= false;
+				dead ??= false;
+				finish();
+			}, windowMs);
 			const cleanup = () => {
 				clearTimeout(timer);
 				bot.removeListener("entityHurt", onHurt as never);
@@ -767,11 +795,11 @@ export class BodySessionImpl implements BodySession {
 				bot.removeListener("end", onEnd as never);
 				signal.removeEventListener("abort", onAbort);
 			};
-			function finish(value: boolean | null) {
+			function finish() {
 				if (done) return;
 				done = true;
 				cleanup();
-				resolve(value);
+				resolve({ hit, dead });
 			}
 			bot.on("entityHurt", onHurt as never);
 			bot.on("entityDead", onDead as never);

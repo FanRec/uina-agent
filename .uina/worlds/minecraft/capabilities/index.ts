@@ -13,13 +13,14 @@ import type { NativeCallable, QueryDescriptor, QueryReader, QueryValidator } fro
 import type { ExactRef, JsonValue, Ref } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
 import type { CapabilityDeps } from "./deps.js";
-import { attackCallable } from "./actions/combat.js";
+import { attackCallable, fightCallable } from "./actions/combat.js";
 import { chatCallable } from "./actions/chat.js";
 import { collectCallable, dropCallable, pickupCallable } from "./actions/carrying.js";
 import { craftCallable } from "./actions/craft.js";
 import { smeltCallable } from "./actions/smelt.js";
 import { equipCallable, eatCallable } from "./actions/items.js";
-import { gotoCallable } from "./actions/navigation.js";
+import { gotoCallable, followCallable, fleeCallable } from "./actions/navigation.js";
+import { surfaceCallable } from "./actions/surface.js";
 import { placeCallable } from "./actions/building.js";
 import { mineCallable } from "./actions/mining.js";
 import { useCallable } from "./actions/interaction.js";
@@ -111,6 +112,10 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		rememberCallable(deps),
 		forgetCallable(deps),
 		exploreCallable(deps),
+		followCallable(deps),
+		fleeCallable(deps),
+		surfaceCallable(deps),
+		fightCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {

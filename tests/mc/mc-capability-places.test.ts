@@ -18,6 +18,7 @@ import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
 const capabilities = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,
 	runtime: () => {

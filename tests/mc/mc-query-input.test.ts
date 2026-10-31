@@ -8,6 +8,7 @@ import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts
 import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 
 const capabilities = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,
 	runtime: () => {

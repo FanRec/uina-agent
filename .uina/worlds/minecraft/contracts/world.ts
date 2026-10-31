@@ -93,6 +93,25 @@ export interface WorldRoutePlanner {
 	plan(query: WorldQuery): Promise<RoutePlanResult>;
 }
 
+// ---- surface@1 的窄探测端口（G3 站立/露天判据；public-api §5） ----
+
+/**
+ * surface@1 的窄探测端口：组合根用 Driver 客户端本地区块实现后注入能力层；
+ * 能力只拿布尔/坐标结论，不触碰客户端对象。判据回答"能不能站/是否露天"，
+ * 不替代 goto 的 GoalNear 完成语义（development-plan §10.6）。
+ * 断线或未加载区块 → null（未知，不猜）；这不是失败，由调用方按未知处理。
+ * 方法是异步的：本地列扫描可能上万次 blockAt，实现必须在列间让出事件循环，
+ * 不能把心跳饿死（批11 经验 2 的翻版）。
+ */
+export interface SurfaceProbe {
+	/** 站立判据：脚下实心、脚/头两格非固体且非液体。 */
+	standable(at: Vec3): Promise<boolean | null>;
+	/** 露天判据：所在柱自世界顶向下第一个实体块在头顶之上（天空可见，液体不遮天）。 */
+	skyOpen(at: Vec3): Promise<boolean | null>;
+	/** 半径内最近的露天可站整数格（脚位），螺旋就近早退；无 → null。 */
+	findSkyAccess(center: Vec3, radius: number): Promise<Vec3 | null>;
+}
+
 /** Trusted maintenance only: exact capture partition and exclusive local storage cutoff. */
 export interface WorldHistoryPrune {
 	partition: { binding: Ref; world: Ref; worldRevision: Ref };

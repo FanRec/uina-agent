@@ -45,8 +45,17 @@ export interface EntityView {
 	item: { name: string; count: number } | null;
 }
 
+export interface SpawnedCall {
+	run: string;
+	requestId: string;
+}
+
 export interface Scenario {
 	call: (ref: string, input: JsonValue, timeoutMs?: number) => Promise<CallResult>;
+	/** 后台派发：submit 后立即返回 run 引用（follow/fight 的"会话期间操作世界"用）。 */
+	spawn: (ref: string, input: JsonValue) => Promise<SpawnedCall>;
+	/** 等待 spawn 的 run 结束并结算为 CallResult；超时显式停自己的 Run。 */
+	waitCall: (spawned: SpawnedCall, timeoutMs?: number) => Promise<CallResult>;
 	readSelf: () => Promise<SelfState>;
 	readBlock: (at: Vec3) => Promise<BlockView | null>;
 	readInventory: () => Promise<InventoryView>;
@@ -66,20 +75,22 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 	const results: { step: string; ok: boolean; detail: string }[] = [];
 	let seq = 0;
 
-	const call = async (ref: string, input: JsonValue, timeoutMs = 30000): Promise<CallResult> => {
+	const spawn = async (ref: string, input: JsonValue): Promise<SpawnedCall> => {
 		const requestId = `req:${ns}:${label}-${++seq}`;
 		const acceptance = await rt.submit(
 			{ worldOwner, activation },
 			{ requestId, entry: { kind: "call", selector: ref, input }, schedule: { kind: "enqueue" } },
 		);
-		if (acceptance.kind !== "accepted") {
-			return { ok: false, code: "REJECTED", message: JSON.stringify(acceptance) };
-		}
-		const reply = await rt.wait(acceptance.snapshot.run, { timeoutMs });
+		if (acceptance.kind !== "accepted") throw new Error(`${ref} rejected: ${JSON.stringify(acceptance)}`);
+		return { run: acceptance.snapshot.run, requestId };
+	};
+
+	const waitCall = async (spawned: SpawnedCall, timeoutMs = 30000): Promise<CallResult> => {
+		const reply = await rt.wait(spawned.run, { timeoutMs });
 		if (reply.kind !== "result" || reply.snapshot.phase !== "finished") {
 			// 验收脚本放弃这个步骤时显式停自己的 Run，避免它在后续步骤继续改世界。
 			// 这不是产品工具的等待取消语义；正式工具仍不因等待结束而停止任务。
-			await rt.stop({ requestId: `stop:${requestId}`, target: { run: acceptance.snapshot.run } });
+			await rt.stop({ requestId: `stop:${spawned.requestId}`, target: { run: spawned.run } });
 			return { ok: false, code: "TIMEOUT", message: reply.kind };
 		}
 		if (reply.snapshot.outcome !== "succeeded") {
@@ -96,6 +107,9 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		const record = full.record.value as { value?: JsonValue };
 		return { ok: true, value: record.value };
 	};
+
+	const call = async (ref: string, input: JsonValue, timeoutMs = 30000): Promise<CallResult> =>
+		await waitCall(await spawn(ref, input), timeoutMs);
 
 	const readSelf = async (): Promise<SelfState> => {
 		const observation = await world.read<SelfState>({ ref: "self@1", input: {} });
@@ -160,5 +174,18 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		return failed.length;
 	};
 
-	return { call, readSelf, readBlock, readInventory, readEntities, readBlocks, command, step, finish, log };
+	return {
+		call,
+		spawn,
+		waitCall,
+		readSelf,
+		readBlock,
+		readInventory,
+		readEntities,
+		readBlocks,
+		command,
+		step,
+		finish,
+		log,
+	};
 }

@@ -17,7 +17,7 @@ import type {
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../.uina/worlds/minecraft/contracts/knowledge.js";
 import type { CallFailure, JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
-import type { WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
+import type { SurfaceProbe, WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 
 export const registry: RegistryLike = {
@@ -137,6 +137,12 @@ export interface HarnessHooks {
 	self?: Partial<SelfState>;
 	/** 覆盖静态知识：配方类测试要自己的注册表。 */
 	knowledge?: RegistryKnowledge;
+	/** fight 测试：attack 派发时的世界副作用（目标消失、掉落出现等）。 */
+	onAttack?: () => void;
+	/** attack 替身返回的死亡证据（默认 true）。 */
+	attackDead?: boolean;
+	/** SurfaceProbe 注入（surface/fight 测试）；缺省 null。 */
+	surface?: () => SurfaceProbe | null;
 	/** openContainer 打开的窗口（工作台/熔炉）；不提供则调用即失败。 */
 	openWindow?: () => WindowSession;
 	/** withInventory 拿到的玩家窗口；不提供则调用即失败。 */
@@ -191,7 +197,15 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 				}) as Observation<T>;
 			}
 			if (query.ref === "entities@1") {
-				return fact({ entities: state.entities ?? [], scanned: { radius: 16 } }) as Observation<T>;
+				// 与真实读取器同口径：kind 过滤（all/hostile/passive/player）。
+				const kind = (query.input as { kind?: string }).kind;
+				const entities = (state.entities ?? []).filter(
+					(entity) => kind == null || kind === "all" || entity.kind === kind,
+				);
+				return fact({
+					entities,
+					scanned: { radius: (query.input as { radius?: number }).radius ?? 16 },
+				}) as Observation<T>;
 			}
 			throw new Error(`unexpected query ${query.ref}`);
 		},
@@ -232,7 +246,16 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		},
 		async attack() {
 			calls.push("attack");
-			return { receipt: { effect: "eff:t:6", dispatch: "sent", completion: "met", evidence: [] }, hit: true };
+			hooks.onAttack?.();
+			return {
+				receipt: { effect: "eff:t:6", dispatch: "sent", completion: "met", evidence: [] },
+				hit: true,
+				dead: hooks.attackDead ?? true,
+			};
+		},
+		async awaitEvidence() {
+			calls.push("awaitEvidence");
+			return { hit: true, dead: true };
 		},
 		async useItem() {
 			calls.push("useItem");
@@ -300,6 +323,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		},
 	} as unknown as CallContext;
 	const capabilities = buildCapabilities({
+		surface: hooks.surface ?? (() => null),
 		runtime: () => ({ chat: async () => fact(0) as never, navigate: async (_owner, fn) => fn() }),
 		gotoDirector: {
 			async goto(request: { at: { x: number; y: number; z: number }; tolerance: number }) {

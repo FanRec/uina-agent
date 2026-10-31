@@ -38,6 +38,7 @@ function observation(count = 3): ClientWindowObservation {
 }
 
 const validators = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	runtime: () => {
 		throw new Error("unused");

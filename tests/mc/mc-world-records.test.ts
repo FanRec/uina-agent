@@ -20,6 +20,7 @@ import { PLACE_SCHEMA, placeRef, type PlaceValue } from "../../.uina/worlds/mine
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
 const capabilities = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,
 	runtime: () => {

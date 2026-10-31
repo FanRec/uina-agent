@@ -24,6 +24,7 @@ test("Runtime world waiting preserves body ownership and stop closes its guest w
 		}),
 	});
 	const caps = buildCapabilities({
+		surface: () => null,
 		knowledge: () => null,
 		gotoDirector: {} as never,
 		runtime: () => {

@@ -17,6 +17,7 @@ import { makeBot, makeFactsHarness } from "./mc-fake.js";
 const partition = { binding: "bind:t:1", world: "world:t:1", worldRevision: "wrev:t:1" };
 const prune = { partition, beforeStoreSeq: Number.MAX_SAFE_INTEGER };
 const capabilities = buildCapabilities({
+	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,
 	runtime: () => {
