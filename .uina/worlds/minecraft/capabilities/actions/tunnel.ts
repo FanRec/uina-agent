@@ -282,12 +282,10 @@ export function tunnelCallable(deps: CapabilityDeps): NativeCallable<JsonValue, 
 				const arrived = await (async (): Promise<boolean> => {
 					const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 					const here = selfNow.place.position;
-					const gap = Math.hypot(
-						Math.floor(here.x) - legTo.x,
-						Math.floor(here.y) - legTo.y,
-						Math.floor(here.z) - legTo.z,
-					);
-					if (gap <= 1) return true;
+					// 到位 = 站在目标列且脚在目标层；GoalNear 的邻域含"正下方一格"，
+					// 3D 距离会把"贴在走廊底下"误判为到达（上坡腿的假到达陷阱）。
+					const flat = Math.hypot(Math.floor(here.x) - legTo.x, Math.floor(here.z) - legTo.z);
+					if (flat <= 1 && Math.floor(here.y) === legTo.y) return true;
 					return await ctx.withBody((scope) => stepTo(ctx, scope, legTo, { maxMs: STEP_MAX_MS, trace }));
 				})();
 				if (!arrived) {

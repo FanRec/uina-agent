@@ -119,6 +119,8 @@ Minecraft 批 9B 已接 `mc.decide(reason, checkpoint?)`、根程序只读 check
 
 Minecraft 批10接通 body.feedback/loop、真实物理步应用回执、过期撤销与默认 lava/drowning/low_health_damage 自保；同一 Runtime 身体队列授予 safety，强制退役不等待 guest 合作。Runtime schema v6，旧v5拒绝自动迁移；history v3、ledger v3和Host journal v4不变。入口 `pnpm dev:mc:feedback`，实现与验证边界见 [批10实施记录](proposals/mc/archive/feedback-implementation.md)。
 
+Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭）与 `places`/`remember`/`forget`/`route.plan`/`explore`（真服 9/9）；批12 `follow`/`flee`/`surface`/`fight`（G3 关闭：SurfaceProbe 站立/露天判据；真服 7/7 + 5/5）；批13 `region`/`tunnel`/`excavate` 与 G4 关闭（`ctx.verify` 注册表 + `verify/dig@1` + 程序桥 `mc.verify`，核验 append-only、跨重启可复查；真服 `dev:mc:spatial` 8/8）。当前能力面 **13 查询 + 24 动作（37/51）**，以 `buildCapabilities()` 装配为准；上坡台阶行走楔死登记为 G21（能挖成、走不进去，UNREACHABLE 如实上报）。入口 `pnpm dev:mc:places`、`dev:mc:mobility`、`dev:mc:combat`、`dev:mc:spatial`；逐批证据与裁决见 [MC 开发报告](../dev/MC-WORLD.md) 与 [批13实施记录](proposals/mc/archive/spatial-implementation.md)。下一组为蓝图与施工（build.plan/build）。
+
 ## QQ World
 
 

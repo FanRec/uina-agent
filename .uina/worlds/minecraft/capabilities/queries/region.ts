@@ -20,7 +20,7 @@ import { resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js"
 import type { QuerySpec } from "../shared/query.js";
 
 /** 单次体素上限（capabilities §2 体积表）；超过在派发前拒绝。 */
-export const REGION_MAX_VOXELS = 8192;
+const REGION_MAX_VOXELS = 8192;
 
 const REGION_INPUT: JsonSchema = {
 	oneOf: [

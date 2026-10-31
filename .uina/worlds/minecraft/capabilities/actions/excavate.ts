@@ -3,7 +3,7 @@
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §4 excavate。
  * keep（默认 bedrock/chest/furnace/spawner）命中的格子保留；不在 keep 的容器先
- * container@1 + transfer@1 收内容再挖（collect 的子调用模式）。dug 只计服务端
+ * transfer@1 {from,all} 收内容再挖。dug 只计服务端
  * 确认的破坏格，drops 聚合每次挖后短窗观察到的背包正增量；未能清理的目标留在
  * remaining 并抛 TARGET_NOT_MET（progress 不回滚）。
  * 裁决（changelog 批13）：层内按与当前位置就近排序；单格行走失败记入 remaining
@@ -15,9 +15,8 @@ import type { CallContext, CallableDescriptor, NativeCallable } from "../../cont
 import { plain } from "../../contracts/values.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { fail, resolveGrid } from "../shared/targets.js";
-import { readValue } from "../shared/observe.js";
-import { pollUntil } from "../shared/observe.js";
+import { fail, resolveGrid, resolvePoint } from "../shared/targets.js";
+import { pollUntil, readValue } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import {
 	DEFAULT_EXCAVATE_KEEP,
@@ -158,6 +157,15 @@ export function excavateCallable(deps: CapabilityDeps): NativeCallable<JsonValue
 			const raw = input as unknown as ExcavateInput;
 			const deadline = Date.now() + (raw.maxTimeMs ?? 300000);
 			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+			// 异维度区域如实拒绝（resolveGrid 会丢掉 dimension，必须在解析后核对）。
+			const fromTarget = resolvePoint(raw.region.from, self);
+			const toTarget = resolvePoint(raw.region.to, self);
+			if (fromTarget.dimension !== self.place.dimension || toTarget.dimension !== self.place.dimension) {
+				fail(
+					"WRONG_STATE",
+					`region is in ${fromTarget.dimension}/${toTarget.dimension}, current is ${self.place.dimension}`,
+				);
+			}
 			const from = resolveGrid(raw.region.from, self);
 			const to = resolveGrid(raw.region.to, self);
 			const box = normalizeBox(from, to);
@@ -168,7 +176,7 @@ export function excavateCallable(deps: CapabilityDeps): NativeCallable<JsonValue
 					recoverable: true,
 				});
 			}
-			const keep = new Set((raw.keep ?? DEFAULT_EXCAVATE_KEEP).map((name) => name));
+			const keep = new Set(raw.keep ?? DEFAULT_EXCAVATE_KEEP);
 			const layers = planExcavation(box.min, box.max);
 			const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
 			const progress: ExcavateProgress = { dug: 0, drops: {} };

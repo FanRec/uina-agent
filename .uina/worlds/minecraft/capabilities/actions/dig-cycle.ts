@@ -6,9 +6,8 @@
  * 这里只收敛"一格怎么挖、一站怎么走"的公共序列；失败映射由动作按合同执行。
  */
 
-import type { ItemSelector, SelfState } from "../../contracts/body.js";
+import type { ControlOwner, ItemSelector, SelfState } from "../../contracts/body.js";
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
-import type { ControlOwner } from "../../contracts/body.js";
 import type { EffectReceipt, Ref, Vec3 } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { blockReach, round2, BLOCK_REACH } from "../shared/reach.js";
@@ -112,7 +111,8 @@ const STEP_BURST_TICKS = 4;
  * lookAt 目标脚位中心 + drive 前进（上坡档自动带跳），直到站上目标格。
  * 已在目标格水平范围内但未落定时松开键位等重力结算——贴墙死推会触发服务端
  * 位置回弹，把客户端物理状态（onGround）打坏，之后 drive 完全失效（真服实测）。
- * 不用 sprint：1 格距离用不上，还放大回弹。必须在 withBody 内使用（drive 是身体操作）。
+ * 上坡用退步助跑 + sprint-jump（贴脸起跳会楔进台阶面，经验 27）。
+ * 必须在 withBody 内使用（drive 是身体操作）。
  */
 export async function stepTo(
 	ctx: CallContext,
