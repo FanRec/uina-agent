@@ -8,5 +8,5 @@
     "sourceMap": true
   },
   "include": ["examples", "src", ".uina/worlds/minecraft"],
-  "exclude": ["tests", "node_modules", "dist"]
+  "exclude": ["tests", "node_modules", "dist", "src/web-client"]
 }
