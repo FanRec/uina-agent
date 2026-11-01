@@ -84,6 +84,28 @@ test("observation versions bind query parameters and descriptor watchability", a
 	}
 });
 
+test("players@1 roster announcements wake current watches", async () => {
+	const { h, open } = await setup();
+	const w = open("players");
+	const q = { ref: "players@1" as const, input: {} };
+	try {
+		const a = await w.read(q);
+		// 名单公告在 read 与 watch 之间到达：current watch 必须补上这个 gap。
+		h.bot().emit("playerJoined", {
+			username: "Kite",
+			uuid: "uuid-kite",
+			displayName: { toString: () => "Kite" },
+			gamemode: 0,
+			ping: 42,
+		});
+		const watch = await w.watch(q, a.cursor!, signal());
+		expect(await watch.next(a.cursor!, signal())).toMatchObject({ kind: "changed" });
+		await watch.close();
+	} finally {
+		await w.close();
+	}
+});
+
 test("current watches catch the read/subscribe gap, reset sources and close with World", async () => {
 	const { h, open } = await setup();
 	const w = open("current");
