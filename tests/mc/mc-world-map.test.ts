@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
-import type { ClientFactView, ClientInventoryValue, ClientMapValue } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
+import type {
+	ClientFactView,
+	ClientInventoryValue,
+	ClientMapValue,
+} from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { MAP_CELLS, MAP_IMAGE_SIZE } from "../../.uina/worlds/minecraft/world/png.js";
 import { MAP_REF, readExportedImage } from "../../.uina/worlds/minecraft/world/map.js";
@@ -97,7 +101,7 @@ function fakeFacts(view: Partial<ClientFactView>) {
 			close() {},
 		}),
 	};
-	return facts as Parameters<typeof MinecraftWorld>[0] extends never ? never : NonNullable<ConstructorParameters<typeof MinecraftWorld>[0]>["facts"];
+	return facts as ConstructorParameters<typeof MinecraftWorld>[0]["facts"];
 }
 
 function makeWorld(facts: ReturnType<typeof fakeFacts>, imageDir?: string): MinecraftWorld {
@@ -148,8 +152,16 @@ function decodePng(bytes: Buffer): DecodedPng {
 	};
 }
 
-async function readMap(world: MinecraftWorld, input: Record<string, unknown>) {
-	return await world.read<{ id: number; receivedPixels: number; paintedPixels: number; totalPixels: number; image: unknown; scale: number | null; icons: unknown }>({
+async function readMap(world: MinecraftWorld, input: { id?: number; image?: boolean }) {
+	return await world.read<{
+		id: number;
+		receivedPixels: number;
+		paintedPixels: number;
+		totalPixels: number;
+		image: unknown;
+		scale: number | null;
+		icons: unknown;
+	}>({
 		ref: MAP_REF,
 		input,
 	});
@@ -159,13 +171,14 @@ describe("map@1 读取材料", () => {
 	test("自动选图按 主手→副手→热键栏→背包；计数与图片导出", async () => {
 		const imageDir = tempDir("uina-map-export-");
 		const facts = fakeFacts({
-			inventory: () => factOf(
-				inventory([
-					{ slot: 20, item: filledMap(9) },
-					{ slot: 38, item: filledMap(7) },
-					{ slot: 45, item: filledMap(8) },
-				]),
-			),
+			inventory: () =>
+				factOf(
+					inventory([
+						{ slot: 20, item: filledMap(9) },
+						{ slot: 38, item: filledMap(7) },
+						{ slot: 45, item: filledMap(8) },
+					]),
+				),
 			map: (id: number) => factOf(mapValue(id, id === 7 ? mapColors() : new Array(MAP_CELLS).fill(null))),
 		});
 		const world = makeWorld(facts, imageDir);
@@ -175,7 +188,13 @@ describe("map@1 读取材料", () => {
 		expect(observation.value.paintedPixels).toBe(1); // byte 6 算涂色，byte 0 是透明
 		expect(observation.value.totalPixels).toBe(MAP_CELLS);
 		expect(observation.cursor).toBeNull();
-		const image = observation.value.image as { path: string; sha256: string; bytes: number; width: number; height: number };
+		const image = observation.value.image as {
+			path: string;
+			sha256: string;
+			bytes: number;
+			width: number;
+			height: number;
+		};
 		expect(image).not.toBeNull();
 		expect(image.width).toBe(MAP_IMAGE_SIZE);
 		expect(image.height).toBe(MAP_IMAGE_SIZE);
@@ -248,21 +267,17 @@ describe("map@1 读取材料", () => {
 		const outside = tempDir("uina-map-outside-");
 		const outsideFile = join(outside, "b.png");
 		writeFileSync(outsideFile, png);
+		await expect(readExportedImage(imageDir, { ...ref, path: outsideFile })).rejects.toThrow(
+			/outside the export directory/,
+		);
+		await expect(readExportedImage(imageDir, { ...ref, sha256: "0".repeat(64) })).rejects.toThrow(/digest mismatch/);
+		await expect(readExportedImage(imageDir, { ...ref, bytes: png.length + 1 })).rejects.toThrow(/size mismatch/);
 		await expect(
-			readExportedImage(imageDir, { ...ref, path: outsideFile }),
-		).rejects.toThrow(/outside the export directory/);
-		await expect(
-			readExportedImage(imageDir, { ...ref, sha256: "0".repeat(64) }),
-		).rejects.toThrow(/digest mismatch/);
-		await expect(
-			readExportedImage(imageDir, { ...ref, bytes: png.length + 1 }),
-		).rejects.toThrow(/size mismatch/);
-		await expect(
-			readExportedImage(imageDir, { ...ref, mimeType: "image/gif" }),
+			readExportedImage(imageDir, { ...ref, mimeType: "image/gif" as unknown as "image/png" }),
 		).rejects.toThrow(/mime type/);
-		await expect(
-			readExportedImage(imageDir, { ...ref, path: join(imageDir, "missing.png") }),
-		).rejects.toThrow(/does not exist/);
+		await expect(readExportedImage(imageDir, { ...ref, path: join(imageDir, "missing.png") })).rejects.toThrow(
+			/does not exist/,
+		);
 	});
 });
 

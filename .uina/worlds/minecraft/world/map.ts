@@ -192,7 +192,8 @@ export async function readExportedImage(
 		throw new Error(`image path is outside the export directory: ${ref.path}`);
 	}
 	const bytes = await readFile(realPath);
-	if (bytes.length !== ref.bytes) throw new Error(`image size mismatch: file has ${bytes.length}, ref claims ${ref.bytes}`);
+	if (bytes.length !== ref.bytes)
+		throw new Error(`image size mismatch: file has ${bytes.length}, ref claims ${ref.bytes}`);
 	const digest = createHash("sha256").update(bytes).digest("hex");
 	if (digest !== ref.sha256) throw new Error(`image digest mismatch: file is ${digest}, ref claims ${ref.sha256}`);
 	return { mimeType: "image/png", data: bytes.toString("base64") };

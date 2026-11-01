@@ -14,7 +14,9 @@ interface RpcCall {
 }
 
 function makeFacade(rpc: (call: RpcCall) => unknown) {
-	const executor = { rpc: async (method: string, payload: Record<string, unknown>) => rpc({ method, payload }) } as unknown as MinecraftExecutor;
+	const executor = {
+		rpc: async (method: string, payload: Record<string, unknown>) => rpc({ method, payload }),
+	} as unknown as MinecraftExecutor;
 	const ctx = { signal: new AbortController().signal } as never;
 	return new MinecraftFacade(executor, ctx, {});
 }
@@ -57,7 +59,11 @@ describe("facade observe 图片出口", () => {
 			if (method === "read_image") return { mimeType: "image/png", data: "aGVsbG8=" };
 			throw new Error(`unexpected rpc ${method}`);
 		});
-		const result = await facade.execute("observe", { selector: "map@1", input: { id: 3 } }, new AbortController().signal);
+		const result = await facade.execute(
+			"observe",
+			{ selector: "map@1", input: { id: 3 } },
+			new AbortController().signal,
+		);
 		expect(result.status).toBe("succeeded");
 		expect(result.images).toHaveLength(1);
 		expect(result.images![0]).toMatchObject({ type: "image", mimeType: "image/png", data: "aGVsbG8=" });

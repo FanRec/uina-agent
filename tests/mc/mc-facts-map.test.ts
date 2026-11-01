@@ -110,12 +110,13 @@ describe("FactsSource 的 map 事实", () => {
 		clientOf(h).emit("map", packet({ columns: 2, rows: 1, x: 5, y: 6, data: Uint8Array.from([0, 46]) }));
 		const fact = h.facts.sample((view) => view.map(3)).value;
 		expect(fact.value).not.toBeNull();
-		expect(fact.value.colors).toHaveLength(MAP_CELLS);
-		expect(fact.value.colors[6 * MAP_SIZE + 5]).toBe(0); // 收到的透明色，不是 null
-		expect(fact.value.colors[6 * MAP_SIZE + 6]).toBe(46);
-		expect(fact.value.colors[0]).toBeNull(); // 未收到
-		expect(fact.value.center).toBeNull();
-		expect(fact.value.dimension).toBeNull();
+		const value = fact.value!;
+		expect(value.colors).toHaveLength(MAP_CELLS);
+		expect(value.colors[6 * MAP_SIZE + 5]).toBe(0); // 收到的透明色，不是 null
+		expect(value.colors[6 * MAP_SIZE + 6]).toBe(46);
+		expect(value.colors[0]).toBeNull(); // 未收到
+		expect(value.center).toBeNull();
+		expect(value.dimension).toBeNull();
 	});
 
 	test("icons 解码：类型名经 registry、displayName NBT → label；字段缺席保留旧值", () => {
@@ -136,15 +137,16 @@ describe("FactsSource 的 map 事实", () => {
 			}),
 		);
 		const first = h.facts.sample((view) => view.map(3)).value;
-		expect(first.value.icons).toEqual([
+		expect(first.value).not.toBeNull();
+		expect(first.value!.icons).toEqual([
 			{ type: "player", pixel: { x: 64, z: 64 }, direction: 8, label: "wp" },
 			{ type: "frame", pixel: { x: 10, z: 20 }, direction: 0, label: null },
 		]);
 		clientOf(h).emit("map", packet({}));
 		const kept = h.facts.sample((view) => view.map(3)).value;
-		expect(kept.value.icons).toHaveLength(2);
+		expect(kept.value!.icons).toHaveLength(2);
 		clientOf(h).emit("map", packet({ icons: [] }));
-		expect(h.facts.sample((view) => view.map(3)).value.value.icons).toEqual([]);
+		expect(h.facts.sample((view) => view.map(3)).value.value!.icons).toEqual([]);
 	});
 
 	test("map 包推进观察版本；重连清空当前覆盖", () => {

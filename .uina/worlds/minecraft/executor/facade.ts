@@ -142,7 +142,11 @@ export class MinecraftFacade {
 				...base,
 				details: {
 					...(base.details as Record<string, unknown> | null),
-					imageDelivery: { delivered: false, path: image.path, reason: error instanceof Error ? error.message : String(error) },
+					imageDelivery: {
+						delivered: false,
+						path: image.path,
+						reason: error instanceof Error ? error.message : String(error),
+					},
 				},
 			};
 		}
