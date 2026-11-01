@@ -1,8 +1,8 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25（批16 更新 2026-11-01）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **15 查询 + 30 动作（45/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正、“13+24”在批14 更正、“14+25”在批15 更正、“15+30”在批16 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25（批17 更新 2026-11-01）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **16 查询 + 30 动作（46/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正、“13+24”在批14 更正、“14+25”在批15 更正、“15+30”在批16 更正、“16+30”在批17 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
 
-批 14 落地 K5 蓝图与施工（`build.plan@1`/`build@1`、`construction/` 模块与 `.schem` 解码），见 [实施记录](archive/construction-implementation.md)；批 15 落地 K7 专用工作站五动作并关闭 G2，见 [实施记录](archive/stations-implementation.md)；批 16 落地玩家名单 `players@1` 与 entities 玩家名投影，见 dev/MC-WORLD.md 批16 节。
+批 14 落地 K5 蓝图与施工（`build.plan@1`/`build@1`、`construction/` 模块与 `.schem` 解码），见 [实施记录](archive/construction-implementation.md)；批 15 落地 K7 专用工作站五动作并关闭 G2，见 [实施记录](archive/stations-implementation.md)；批 16 落地玩家名单 `players@1` 与 entities 玩家名投影；批 17 落地地图 `map@1` 与 G11 图片出口，K6 收口，见 dev/MC-WORLD.md 批17 节。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](archive/native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -204,7 +204,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | K3 导航与战斗 | route.plan（**2026-10-30 实现**） | follow flee surface explore（**2026-10-30 实现**） fight（**2026-10-31 实现**） | K1/K2 的移动、挖掘、装备/输入和实体事实。复用路径/攻击算法，补实体探索、战斗结束原因与默认 safety |
 | K4 空间与记录 | places（**2026-10-30 实现**） | remember forget（**2026-10-30 实现**） tunnel excavate | 地点只依赖 W 领域记录和当前位置，可先做；地形切片及空间作业各自消费 K1 挖放与必要导航，不等待整组 K3 |
 | K5 施工与蓝图 | build.plan | build | K2 供料、K4 地形/挖放、Library 蓝图文件。完成 Raw→Target→Project、同目标计划/执行、差异修复与局部改图 |
-| K6 玩家与地图 | players（**2026-11-01 实现**） map | — | 当前名单/实体、地图包、现有图片附件；可与 K2–K5 并行。名单不造实体，地图不造中心或像素 |
+| K6 玩家与地图（**2026-11-01 批17 收口**） | players（**2026-11-01 实现**） map（**2026-11-01 实现**） | — | 当前名单/实体、地图包、现有图片附件；players 与 map 分开验收。名单不造实体，地图不造中心或像素 |
 | K7 专用工作站（**2026-11-01 实现**） | — | brew enchant anvil grindstone trade | K2 窗口、装备/物品与材料；经验/效果当前值。按真实协议补选择、改名等受控操作及完成口径 |
 | K8 旅行与活动 | — | transit ride lead fish sleep | K1/K3 的移动/交互/反馈；transit 另需挖放建门。完成骑乘/牵引/捕鱼/睡眠与跨维度，明确等待和身体归属 |
 <!-- capability-coverage:end -->
@@ -255,7 +255,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](archive/native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **下一工作包为地图**（map，K6 收口）：批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站五动作（G2 关闭），批16 已接玩家名单（players，能力面 **45/51**）；见 dev/MC-WORLD.md 批13–批16 各节。map 需正式 observe 图片附件出口（G11）与地图包读取，与 players 分开验收（players 已验收）。
+3. **下一工作包为睡眠（sleep，K8 起步）**：批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站五动作（G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口，能力面 **46/51**）；见 dev/MC-WORLD.md 批13–批17 各节。剩余 K8 五动作（sleep/fish/ride/lead/transit）按 §10.3 顺序各自验收。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -297,7 +297,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ### 10.3 玩法就绪队列（默认优先级，可据校准调整）
 
-以下不是“前一行全部完成才能开始下一行”的串行表。批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭），批16 已接玩家名单（players）；**接下来做地图（map）**，需要正式 observe 图片出口（G11）与地图包读取。其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
+以下不是“前一行全部完成才能开始下一行”的串行表。批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口）；**接下来做睡眠（sleep）**，随后捕鱼/骑乘/牵引/跨维度按直接依赖进入。其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
 
 | 工作包 | 交付范围 | 直接依赖与边界 | 验收任务 |
 |---|---|---|---|
@@ -311,7 +311,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | ~~空间作业（K4）~~ | tunnel、excavate | **批13 已实现**（2026-10-31）：L 形走廊+台阶 1:1+檐块/跳跃净空+砾石支撑；层序清空+keep+容器先收后挖 | 两条 1:1 阶梯隧道连通可走、砾石支撑先挖、excavate 区域全清+箱子保留+容器内容入包（真服 8/8）；上坡行走楔死登记 G21 |
 | ~~蓝图与施工（K5）~~ | Library 的 Raw→Target→Project、build.plan、build | **批14 已实现**（2026-11-01）：`construction/` 模块（Target 语义/`.schem` 解码/差异计划）、`place-cell` 抽取、`build.plan` 派生查询 + `ConstructionPlanner` 窄端口 | 5×5 木屋缺料→补料→完成；含门/火把与 preserve/unknown；plan 后改图产生 CONFLICT，修复只做真实差异（真服源码/产物各 12/12） |
 | ~~玩家名单（K6）~~ | players | **批16 已实现**（2026-11-01）：名单=服务器 player_info 花名册（`bot.players` 投影），关联实体按采样时刻重新解析；entities@1 玩家名覆写为用户名（修 follow/explore 按玩家名目标） | 玩家离开跟踪后名单仍可保留，tracked=null；离线 UUID 不认证正版（真服源码/产物 11/11） |
-| 地图（K6） | map、正式 observe 图片附件 | 真实地图包/局部像素/图标、World 记录与 Executor 图片出口；与 players 分开验收 | 部分矩形其余像素未知，图标更新不抹像素；重连不复活旧覆盖，模型实际收到图片 |
+| ~~地图（K6）~~ | map、正式 observe 图片附件 | **批17 已实现**（2026-11-01，G11 关闭）：协议窄口 `map` 包捕获（1.21.11 包名 `map`，列主序增量）、per-connection MapCache、色板从 Paper 运行时 jar 提取（62 材质×4 明暗）、world/map.ts 一次 sample 固定切面 + 512×512 PNG 原子缓存、facade observe 经 read_image rpc 产 ToolExecutionResult.images | 自动选图/显式 id/NOT_FOUND、色板对拍（水/草/材质 RGB 与 jar 提取表一致）、图标更新不抹像素、重连不复活旧覆盖、PNG sha256/bytes 对拍；受控 wire 5/5 + 真模型 deepseek-flash 4/4（模型真实描述画面内容）（源码/产物各 10/10） |
 | 睡眠（K8） | sleep | 床/位置交互、游戏时间与中断；无完整战斗前置 | 真服睡到天亮；怪物/占床/非夜间失败和取消如实 |
 | 捕鱼（K8） | fish | 受控使用、鱼漂/咬钩反馈与收竿归属 | 真服抛竿→实际捕获入包；超时/取消不留持续使用 |
 | 骑乘（K8） | ride | 实体交互、载具输入、上下车与停止 | 实际上车/移动/下车；载具消失、取消和急停有真实结论 |
@@ -323,7 +323,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | ~~交易（K7）~~ | trade | **批15 已实现**：trade_list 报价 + select_trade；取货前把付款收敛成正好一份（否则回执 unknown 会污染 run 结算） | 产物/扣款按库存增量复核；报价耗尽 WRONG_STATE、材料不足不派发 |
 | 跨维度旅行（K8） | transit | 导航、必要挖放/建门、维度/化身代次与原控制退役 | 真服建/找/进入门并在目标维度落位；堵门/缺料按阶段报错，不自动恢复旧控制 |
 
-该表尚缺 **1 查询 + 5 动作**（map 查询，K8 五项动作），与已实现的 15 查询 + 30 动作合计 16 + 35。feedback、自保、程序和文件等基础设施另计，不能由能力数量代替。
+该表尚缺 **5 动作**（K8：sleep/fish/ride/lead/transit），与已实现的 16 查询 + 30 动作合计 16 + 35。feedback、自保、程序和文件等基础设施另计，不能由能力数量代替。
 
 ### 10.4 本次顺序裁决与取舍
 

@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-01 · 批17 K6 地图（map@1，G11 关闭）
+
+- 能力面 +1：`map@1`（不可等待、非 feedback）——输入 `{id?, image?=true}`，缺省按主手→副手→热键栏→背包选一张携带的 filled_map；返回像素计数（receivedPixels/paintedPixels/totalPixels:16384）+ 图标 + 可选 ImageFileRef；center/dimension 协议不下发恒 null，不读服务器存档推断。无已开地图 NOT_FOUND，不自动开图或装备。
+- **Driver**：协议窄口捕获 1.21.11 的 `map` 包（线上包名 `map`，类型 packet_map；像素矩形列主序，icons 字段缺席=保留旧值、空数组=清空）；`driver/facts/map-cache.ts` per-connection 缓存（错误包整包丢弃不污染其他图，重连清空当前覆盖）；`view.map(id)` 从占位改为真实投影（null=未收到，0=收到的透明色）。
+- **色板**：`world/map-colors.ts` 256 项常量表，从 dev-env 的 Paper 1.21.11 运行时 jar（Mojang 映射）`MapColor` 静态初始化提取（62 材质×4 明暗=248 项 + 8 项服务端不产出；byte=materialId*4+brightnessId，亮度 180/220/255/135，每通道 trunc(channel*modifier/255)）。
+- **World**：`world/map.ts` 一次纯当前 sample 同时固定库存选择与切面；`world/png.ts` 纯函数 PNG 编码器（512×512=128×128 的 4× 最近邻；未收到=品红棋盘、已收到的透明=地图纸底色）；PNG 原子写 `<worldDataDir>/exports/images/<sha256>.png`（临时文件 rename）；全未收到或编码失败 image=null+unknown。
+- **G11 关闭**：`companion/side.ts` 增 `read_image` rpc（realpath 授权校验在 exports/images 内 + bytes/sha256 对账）；`executor/facade.ts` observe 值带 ImageFileRef 时经 read_image 产 `ToolExecutionResult.images`（读取失败给 imageDelivery 原因，元数据不冒充图片）；world-tool 本就 `...result` 透传，零改动。
+- 真服协议事实：`/give filled_map[map_id=N]` 引用从未渲染过的 map N 时不推任何包（map 包只在数据更新时下发）；真玩法路径是空白地图（minecraft:map）手持 use 展开→服务端分配 id 并立即推全量 128×128；`map_scale_direction` 组件使 give 静默失败。
+- 能力 **46/51**（16 查询 + 30 动作），K6 收口；下一包按 §10.3 为 sleep（K8 起步）。验收：MC 73 文件全绿、`dev:mc:map` 源码/产物各 10/10、受控 wire 5/5、真模型 deepseek-flash 4/4（模型真实描述了地图画面：水面深蓝/灰色地块/棕米色方格）。
+
 ## 2026-11-01 · 批16 K6 玩家名单（players@1）
 
 - 能力面 +1：`players@1`（可等待、非 feedback）——名单=服务器 player_info 花名册（`bot.players` 采样时刻同步投影，`rosterSeen` 区分"名单未到"与"收到但为空"）；`tracked:{ref,position,distance}` 由能力层与 entities 事实按跟踪代次 join，离开跟踪范围名单仍在、tracked=null；输入 `{name?, limit?:1..256=64}`，listedCount 不受 limit 截断。

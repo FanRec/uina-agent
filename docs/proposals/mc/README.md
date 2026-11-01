@@ -10,7 +10,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|---|
 | Driver（受控玩家）、World（观察与记录） | K1 + 批 2 + 批 3 + 修复：连接级 1.21.11 协议适配、玩家/容器/工作站共享确认、独立库存/采矿/牌面操作、统一查询校验；窗口含普通容器、工作台与熔炉（高炉/烟熏炉仍拒），`revision` 只随槽位与光标推进；批10已接feedback/默认自保；通用领域记录仍缺 | 2026-10-25 |
 | Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，批 6 固定记录与交付处置已接通，库 schema v6（批10），批 9B 已接程序决策、显式续段、替换/抢占与决策报告有效性 | 2026-10-25 |
-| 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器、批 3 生产链、批11 领域记录与地点/路径探索、批12 移动鲁棒性与完整战斗、批13 地形切片与空间作业（region/tunnel/excavate，G4 关闭）、批14 蓝图与施工（build.plan/build，K5 关闭）、批15 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）、批16 玩家名单（players，entities 玩家名覆写）已实现：**15 查询 + 30 动作（45/51）**，按真实目录计数；其余 map/K8 待实现 | 2026-11-01 |
+| 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器、批 3 生产链、批11 领域记录与地点/路径探索、批12 移动鲁棒性与完整战斗、批13 地形切片与空间作业（region/tunnel/excavate，G4 关闭）、批14 蓝图与施工（build.plan/build，K5 关闭）、批15 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）、批16 玩家名单（players，entities 玩家名覆写）、批17 地图与 G11 图片出口（map，K6 收口）已实现：**16 查询 + 30 动作（46/51）**，按真实目录计数；其余 K8 五动作待实现 | 2026-11-01 |
 | Library（程序、蓝图与经验） | 批 8 已实现三类文件 CRUD、来源保存与统一发现；蓝图解释/施工留 Construction，见 [实施记录](archive/library-implementation.md) | 2026-10-25 |
 | Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；批 6 正式 WorldDef、原生工具、请求凭证、可靠通知与 BodyEndpoint 已接线。见 [原生接入实施](archive/native-host-implementation.md) | 2026-10-25 |
 | Host 持久交付接缝 | **批 5 已实现**：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定；见 [实施记录](archive/host-delivery-implementation.md) | 2026-10-25 |
@@ -23,7 +23,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
-**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](archive/native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保；批11已接领域记录（G1 关闭）、地点与路径探索；批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；批14已接蓝图与施工（build.plan/build，K5 关闭）；批15已接专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭），下一组为玩家与地图（players/map，`map` 另需 G11 图片出口）。现有 44 项能力不等于全部 51 项设计完成。
+**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](archive/native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保；批11已接领域记录（G1 关闭）、地点与路径探索；批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；批14已接蓝图与施工（build.plan/build，K5 关闭）；批15已接专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）；批16已接玩家名单（players，entities 玩家名覆写）；批17已接地图与 G11 图片出口（map，K6 收口），下一组为 K8 活动（sleep/fish/ride/lead/transit）。现有 46 项能力不等于全部 51 项设计完成。
 
 批 2 设计、取舍与任务记录见 [窗口与容器实施](archive/window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 

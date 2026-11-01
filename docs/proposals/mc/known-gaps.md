@@ -11,7 +11,7 @@
 | 1 | G1 领域记录 | ~~下一工作包的唯一前置~~（已关闭） |
 | 2 | G6 节流推送 | 同时修掉"模型不 read 就瞎"和"轮询成本"，是面向观众这条线的前置 |
 | 3 | G8 按调用的短窗 | 演出节奏的唯一硬阻塞，改动面最小 |
-| 4 | G5 剩余能力 | 按 §4 的工作包推进，不平铺（批16 后剩 map + K8 五项） |
+| 4 | G5 剩余能力 | 按 §4 的工作包推进，不平铺（批17 后剩 K8 五项） |
 | 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞 |
 
 ## 2. P0 阻断项
@@ -58,7 +58,7 @@
 | ~~蓝图与施工~~ | — | **批14 已实现** `build.plan` `build` |
 | ~~专用工作站~~ | G2 | **批15 已实现** `brew` `enchant` `anvil` `grindstone` `trade` |
 | ~~玩家名单~~ | — | **批16 已实现** `players`（名单/跟踪实体分别投影；entities@1 玩家名覆写） |
-| 地图 | G11 + 地图包读取 | `map` |
+| ~~地图~~ | G11 + 地图包读取 | **批17 已实现** `map`（协议捕获/色板/PNG 缓存/图片出口，G11 同批关闭） |
 | 载具与活动 | 载具/拴绳/鱼漂/床交互 | `ride` `lead` `fish` `sleep` `transit` |
 
 ### G21 · 上坡台阶行走楔死（批13 登记，批14 补充实测）
@@ -78,7 +78,7 @@
 | G8 | **`run` 短窗全局固定 3000ms**，不能按调用选择不等 | `executor/facade.ts:200-215`；`worlddef/index.ts:15` 只有世界级 `deliveryPolicy` | `worlddef/schema.ts` 的 `run` 增 `wait` 或 `shortWindowMs` 覆盖，落到 `facade.ts:204` |
 | G9 | **普通 Run 之间无优先级**，长任务可挡紧急任务 | `runtime/engine.ts` 单槽队列 + `preempt_current` 需 `expectedRun` | 先只做"显式插入"一档，不建多级调度；safety 已独立 |
 | G10 | **两个计算预算不统一** | `driver/body/feedback.ts:84,205`（`FRAME_EXPIRED`, 250ms）vs `program/worker.ts:107`（`PROGRAM_TIMEOUT`, burst + `mc.sleep(0)`） | 最小改动：`FRAME_EXPIRED` 的 hint 指向 burst 预算；能力面与 Program 指南各补一句 |
-| G11 | **Host 无图片出口**，`map@1` 缺最后一跳 | `src/extensions/world-framework/world-tool.ts` 不产 `images`；`src/core/types.ts:104` 契约已有 `ImageContent` | 依赖 `map@1` 本身；接线时让 WorldDef 的 action 返回 `images` |
+| ~~G11~~ | **Host 无图片出口**（✅ 已于 2026-11-01 批17 关闭） | 关闭方式：`world/map.ts` 产 ImageFileRef + `companion/side.ts` read_image rpc + `executor/facade.ts` observe 产 `ToolExecutionResult.images`；world-tool 本就透传 | 真实 wire：受控 5/5 + 真模型 4/4（模型实际描述画面） |
 
 ## 5. P1 兼容与认证
 
