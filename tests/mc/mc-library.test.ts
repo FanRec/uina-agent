@@ -188,6 +188,39 @@ test("updates and deletion leave segment-fixed program material intact; new segm
 	}
 });
 
+test("readDesign hands over raw bytes and both digests; missing entries return null", async () => {
+	const { root, library } = await setup();
+	expect(await library.readDesign("hut")).toBeNull();
+	await mkdir(join(root, "blueprints/hut"), { recursive: true });
+	const bytes = Buffer.from([0x1f, 0x8b, 0x08, 0x00]);
+	await writeFile(join(root, "blueprints/hut/design.schem"), bytes);
+	const raw = await library.readDesign("hut");
+	expect(raw?.formatHint).toBe("schem");
+	expect(raw?.bytes.equals(bytes)).toBe(true);
+	expect(raw?.digest).toMatch(/^[0-9a-f]{64}$/);
+	expect(raw?.targetBytes).toBeNull();
+	expect(raw?.targetDigest).toBeNull();
+
+	const target = Buffer.from('{"schema":"minecraft:construction.target@1"}', "utf8");
+	await writeFile(join(root, "blueprints/hut/target.json"), target);
+	const withTarget = await library.readDesign("hut");
+	expect(withTarget?.targetBytes?.equals(target)).toBe(true);
+	expect(withTarget?.targetDigest).toMatch(/^[0-9a-f]{64}$/);
+	// 原件摘要不因为 target.json 的存在而改变：两个口径是分开的。
+	expect(withTarget?.digest).toBe(raw?.digest);
+});
+
+test("readDesign reports the library's own diagnostics instead of empty bytes", async () => {
+	const { root, library } = await setup();
+	await mkdir(join(root, "blueprints/empty"), { recursive: true });
+	await expect(library.readDesign("empty")).rejects.toMatchObject({ code: "BLUEPRINT_SOURCE_MISSING" });
+
+	await mkdir(join(root, "blueprints/two"), { recursive: true });
+	await writeFile(join(root, "blueprints/two/design.schem"), Buffer.from([1]));
+	await writeFile(join(root, "blueprints/two/design.nbt"), Buffer.from([1]));
+	await expect(library.readDesign("two")).rejects.toMatchObject({ code: "BLUEPRINT_AMBIGUOUS" });
+});
+
 test("blueprint registration rejects a directory pretending to be a design file", async () => {
 	const { library, root } = await setup();
 	const path = join(root, "blueprints", "invalid");

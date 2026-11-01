@@ -3,8 +3,8 @@
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §4.2、§8、§10、§13.1。
  * 读取按 §8.2 分派：current（facts.sample）/ static（版本知识，不建连接依赖）
- * / history（events@1、places@1，走历史存储与提交屏障）/ derived（route.plan@1，
- * 组合根注入的窄计划端口，World 不依赖 Driver）。cur=null 只出现在没有观察源的查询。
+ * / history（events@1、places@1，走历史存储与提交屏障）/ derived（route.plan@1 与
+ * build.plan@1，组合根注入的窄计划端口，World 不依赖 Driver 或 Construction）。cur=null 只出现在没有观察源的查询。
  * 绑定由 World 拥有（组合根注入当前绑定投影，Driver 据此标注捕获 scope）；
  * 历史侧两段启动（§13.1）：句柄立即可用，historyReady 结算 ready/unavailable。
  * 领域记录经 HistoryIngest 的记录消息落地（CAS 在 worker 单事务内）；
@@ -31,12 +31,14 @@ import type {
 	WorldEvidencePort,
 	WorldHistoryPrune,
 	WorldHistoryPruneResult,
+	ConstructionPlanner,
 	WorldQuery,
 	WorldRoutePlanner,
 	WorldWatch,
 } from "../contracts/world.js";
 import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
 import { PLACES_REF, PLACE_SCHEMA, placesObservation, resolvePlacesQuery, type PlacesOrigin } from "./places.js";
+import { BUILD_PLAN_REF, buildPlanObservation } from "./build-plan.js";
 import { ROUTE_PLAN_REF, routePlanObservation } from "./route-plan.js";
 import { checkCursor, queryStream, watchFailure } from "./watch.js";
 import { CurrentReads } from "./current.js";
@@ -57,6 +59,8 @@ export interface MinecraftWorldOptions {
 	namespace: string;
 	/** route.plan@1 的窄计划端口（组合根用 Driver 受控寻路实现）；缺省时该查询明确失败。 */
 	routePlanner?: WorldRoutePlanner;
+	/** build.plan@1 的窄计划端口（组合根用 Construction 装配）；缺省时该查询明确失败。 */
+	buildPlanner?: ConstructionPlanner;
 }
 
 function recordFailure(code: string, message: string, hint?: string): CallFailure {
@@ -128,6 +132,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly readers: ReadonlyMap<ExactRef, QueryReader>;
 	private readonly validators: ReadonlyMap<ExactRef, QueryValidator>;
 	private readonly routePlanner: WorldRoutePlanner | null;
+	private readonly buildPlanner: ConstructionPlanner | null;
 	private readonly eventScope: EventScope;
 	/** places 记录观察的分区键：换分区后旧游标失效（与 events 同形）。 */
 	private readonly placesPartition: string;
@@ -143,6 +148,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		this.readers = options.readers;
 		this.validators = options.validators;
 		this.routePlanner = options.routePlanner ?? null;
+		this.buildPlanner = options.buildPlanner ?? null;
 		this.watchable = new Set(options.queries.filter((q) => q.watchable).map((q) => q.ref));
 		const queryRefs: ExactRef[] = [
 			...options.readers.keys(),
@@ -150,6 +156,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			CONTAINER_LAST_REF,
 			PLACES_REF,
 			ROUTE_PLAN_REF,
+			BUILD_PLAN_REF,
 		];
 		for (const ref of queryRefs) {
 			if (typeof options.validators?.get(ref) !== "function") throw new Error(`query validator is missing: ${ref}`);
@@ -204,6 +211,11 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			if (this.routePlanner == null)
 				throw watchFailure("INTERNAL", "route.plan planner is not wired in this composition");
 			return routePlanObservation<T>(await this.routePlanner.plan({ ref: query.ref, input }));
+		}
+		if (query.ref === BUILD_PLAN_REF) {
+			if (this.buildPlanner == null)
+				throw watchFailure("INTERNAL", "build.plan planner is not wired in this composition");
+			return buildPlanObservation<T>(await this.buildPlanner.plan({ ref: query.ref, input }));
 		}
 		throw unknownQuery(query.ref, this.readers);
 	}

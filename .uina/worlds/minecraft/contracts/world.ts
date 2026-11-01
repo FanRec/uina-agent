@@ -5,6 +5,7 @@
  * Runtime/能力经 read/watch/writeRecord 使用；Watch 是复查提示不是事件日志。
  */
 
+import type { BlockSpec } from "./body.js";
 import type { ExactRef, JsonValue, Observation, ObservationCursor, Ref, Vec3 } from "./values.js";
 
 export interface WorldQuery {
@@ -91,6 +92,50 @@ export interface RoutePlanResult {
  */
 export interface WorldRoutePlanner {
 	plan(query: WorldQuery): Promise<RoutePlanResult>;
+}
+
+// ---- build.plan@1（施工计划；public-api §5、capabilities §3–§4） ----
+
+export type ConstructionTargetKind = "set" | "clear" | "preserve" | "unknown";
+
+/** 规范化后的施工目标格：绝对整数格 + 四分类 + 声明/未知原因。 */
+export interface ConstructionTargetCell {
+	at: Vec3;
+	kind: ConstructionTargetKind;
+	/** kind==="set" 时必有：只约束名字与显式属性。 */
+	block?: BlockSpec;
+	/** kind==="unknown" 的来源说明。 */
+	reason?: string;
+}
+
+export interface BuildPlanBlocked {
+	at: Vec3;
+	/** 现场占住该格的方块名。 */
+	by: string;
+}
+
+/**
+ * 计划结果。`targets` 是全量规范化目标（含已匹配格与 preserve/unknown），
+ * 不是待办清单；`need` 只算尚未匹配的 set 格；`missing` 只减背包直接可用量；
+ * `blocked` 是现场冲突（replace=false 时不可替换），`unreachable` 是结构缺支撑
+ * （不是寻路判决）；`estTicks` 是排期粗估。
+ */
+export interface BuildPlanValue {
+	blueprint?: { ref: string; digest: string };
+	targets: ConstructionTargetCell[];
+	need: Record<string, number>;
+	missing: Record<string, number>;
+	blocked: BuildPlanBlocked[];
+	unreachable: { at: Vec3 }[];
+	estTicks: number;
+}
+
+/**
+ * build.plan@1 的窄计划端口：组合根用 Construction（Library 字节 + region 读数）实现后注入；
+ * World 只按 ref 分派，不依赖 Construction、Library 或 Driver。
+ */
+export interface ConstructionPlanner {
+	plan(query: WorldQuery): Promise<BuildPlanValue>;
 }
 
 // ---- surface@1 的窄探测端口（G3 站立/露天判据；public-api §5） ----

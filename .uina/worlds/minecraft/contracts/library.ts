@@ -113,3 +113,19 @@ export interface LibraryPort {
 	update(request: LibraryUpdateRequest): Promise<LibrarySummary>;
 	delete(kind: LibraryKind, name: string): Promise<void>;
 }
+
+/**
+ * 蓝图原件字节：施工是唯一消费者，因此不进 `LibraryPort` 公共面
+ * （与 `loadProgram` 同级，落在 `FileLibrary` 上）。
+ *
+ * `digest` 恒为 `design.*` 的摘要（library.get 报的也是它）；`targetDigest` 是
+ * `target.json` 的摘要。施工用"实际被解释的那份"作为 `blueprint.digest`，
+ * 口径差异见 docs/proposals/mc/modules/library.md §3.3。
+ */
+export interface BlueprintBytes {
+	bytes: Buffer;
+	formatHint: string;
+	digest: string;
+	targetBytes: Buffer | null;
+	targetDigest: string | null;
+}

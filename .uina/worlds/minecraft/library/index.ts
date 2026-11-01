@@ -11,6 +11,7 @@ import type {
 	LibrarySaveRequest,
 	LibraryUpdateRequest,
 	LibraryListQuery,
+	BlueprintBytes,
 	ProgramHeader,
 	TextMetadata,
 	ProgramOrigin,
@@ -28,6 +29,8 @@ export interface LibraryOptions {
 }
 export interface FileLibrary extends LibraryPort {
 	loadProgram(name: string): Promise<ResolvedProgram>;
+	/** 蓝图原件字节（施工是唯一消费者；见 contracts/library.ts BlueprintBytes）。 */
+	readDesign(name: string): Promise<BlueprintBytes | null>;
 }
 function summaryOf(d: LibraryDetail): LibrarySummary {
 	if (d.kind === "program") {
@@ -227,6 +230,41 @@ export function createLibrary(options: LibraryOptions): FileLibrary {
 				if (d.headerError) programError("PROGRAM_INVALID", d.headerError);
 				return parseProgramSource(d.source, name);
 			}).catch(executionError),
+		// 施工读原件：Library 只交字节与摘要，解释（Raw→Target）归 Construction。
+		// 缺件/多件/非普通文件仍按库自己的错误码如实报，不返回空建筑。
+		readDesign: (name) =>
+			io(async () => {
+				const path = await files.locate("blueprint", name);
+				if (path == null) return null;
+				const root = (await files.root("blueprint"))!;
+				const entries = await readdir(path);
+				const designs = entries.filter((entry) => /^design\.[^.]+$/i.test(entry)).sort();
+				if (designs.length === 0) libraryError("BLUEPRINT_SOURCE_MISSING", `no design file in ${path}`);
+				if (designs.length > 1)
+					libraryError("BLUEPRINT_AMBIGUOUS", `multiple design files in ${path}: ${designs.join(", ")}`);
+				const design = join(path, designs[0]!);
+				await files.contained(root, design);
+				const info = await stat(design);
+				if (!info.isFile()) libraryError("BLUEPRINT_CORRUPT", "design entry is not a regular file");
+				const bytes = await readFile(design);
+				let targetBytes: Buffer | null = null;
+				try {
+					await files.contained(root, join(path, "target.json"));
+					targetBytes = await readFile(join(path, "target.json"));
+				} catch (error) {
+					if (!missing(error)) {
+						if ((error as { code?: string }).code === "ACCESS_DENIED") throw error;
+						libraryError("TARGET_INVALID", String(error));
+					}
+				}
+				return {
+					bytes,
+					formatHint: extname(design).slice(1),
+					digest: digest(bytes),
+					targetBytes,
+					targetDigest: targetBytes == null ? null : digest(targetBytes),
+				};
+			}),
 		save: (request) =>
 			io(() =>
 				files.serial(request.kind ?? "program", request.name, async () => {
