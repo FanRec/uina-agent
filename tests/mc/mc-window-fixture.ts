@@ -8,12 +8,13 @@
 
 import type {
 	ItemSelector,
+	MerchantOfferValue,
 	StackExpectation,
 	WindowClickReceipt,
 	WindowSession,
 	WindowSnapshot,
 } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { EffectReceipt, Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 
 export interface FixtureStack {
 	name: string;
@@ -78,6 +79,8 @@ export interface WindowFixtureHooks {
 	afterClick?: (fixture: WindowFixture, slot: number, button: number) => void;
 	/** 每次 snapshot 之前：熔炉按轮询推进时间。 */
 	beforeSnapshot?: (fixture: WindowFixture) => void;
+	/** 工作站专用提交：替身按 hook 决定服务端结果（附魔生效、铁砧出结果、付款槽被填）。 */
+	afterSelect?: (fixture: WindowFixture, kind: "enchant" | "rename" | "trade", value: number | string) => void;
 }
 
 export class WindowFixture implements WindowSession {
@@ -88,6 +91,10 @@ export class WindowFixture implements WindowSession {
 	closed = 0;
 	/** 从第 N 次点击起返回 unknown（模拟服务端不回话）；undefined = 永不知晓。 */
 	unknownFrom: number | undefined;
+	/** 本窗口的商人报价；null = 还没收到 trade_list。 */
+	offersValue: MerchantOfferValue[] | null = null;
+	/** 记录专用提交的调用顺序，供测试断言"有没有派发"。 */
+	readonly selections: { kind: "enchant" | "rename" | "trade"; value: number | string }[] = [];
 
 	constructor(
 		readonly type: string,
@@ -164,6 +171,37 @@ export class WindowFixture implements WindowSession {
 
 	async close(): Promise<void> {
 		this.closed++;
+	}
+
+	/** 专用提交：只记调用、按 hook 改窗口内容，语义与真会话一致（只派发，不判定生效）。 */
+	private select(kind: "enchant" | "rename" | "trade", value: number | string, windowType: string): EffectReceipt {
+		if (this.type !== windowType) throw fail("WRONG_STATE", `${kind} needs ${windowType}, this window is ${this.type}`);
+		this.selections.push({ kind, value });
+		this.hooks.afterSelect?.(this, kind, value);
+		return { effect: "eff:fixture", dispatch: "sent", completion: "met", evidence: [] };
+	}
+
+	async selectEnchant(offer: 1 | 2 | 3): Promise<EffectReceipt> {
+		return this.select("enchant", offer, "minecraft:enchantment");
+	}
+
+	async renameItem(name: string): Promise<EffectReceipt> {
+		return this.select("rename", name, "minecraft:anvil");
+	}
+
+	async selectTrade(index: number): Promise<EffectReceipt> {
+		return this.select("trade", index, "minecraft:merchant");
+	}
+
+	async offers(): Promise<Fact<MerchantOfferValue[] | null>> {
+		return {
+			value: clone(this.offersValue),
+			observedAt: "2026-01-01T00:00:00.000Z",
+			source: "server",
+			coverage: this.offersValue === null ? "partial" : "complete",
+			unknown: this.offersValue === null ? ["no trade_list received for this window"] : [],
+			evidence: [],
+		};
 	}
 }
 

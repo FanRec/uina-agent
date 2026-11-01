@@ -54,7 +54,42 @@ describe("window layout", () => {
 	});
 
 	test("未知窗口类型与残缺玩家区都拒绝", () => {
-		expect("reason" in windowLayout("minecraft:enchantment", 38, 2, 37)).toBe(true);
+		// 真实存在但本批未接的窗口（beacon/stonecutter 等）必须显式失败，不猜布局。
+		expect("reason" in windowLayout("minecraft:beacon", 38, 2, 37)).toBe(true);
 		expect("reason" in windowLayout("minecraft:generic_9x3", 62, 27, 62)).toBe(true);
+	});
+
+	test("工作站五类：业务槽各自命名，且都不产出 container", () => {
+		const stand = windowLayout("minecraft:brewing_stand", 41, 5, 40);
+		if (!("layout" in stand)) throw new Error(stand.reason);
+		expect(stand.layout.regions).toEqual([
+			{ name: "bottle", slots: [0, 1, 2] },
+			{ name: "ingredient", slots: [3] },
+			{ name: "fuel", slots: [4] },
+			{ name: "player", slots: Array.from({ length: 36 }, (_, i) => 5 + i) },
+		]);
+
+		const enchant = windowLayout("minecraft:enchantment", 38, 2, 37);
+		if (!("layout" in enchant)) throw new Error(enchant.reason);
+		expect(enchant.layout.regions).toEqual([
+			{ name: "input", slots: [0] },
+			{ name: "lapis", slots: [1] },
+			{ name: "player", slots: Array.from({ length: 36 }, (_, i) => 2 + i) },
+		]);
+
+		for (const type of ["minecraft:anvil", "minecraft:grindstone", "minecraft:merchant"]) {
+			const result = windowLayout(type, 39, 3, 38);
+			if (!("layout" in result)) throw new Error(`${type}: ${result.reason}`);
+			expect(result.layout.regions).toEqual([
+				{ name: "input", slots: [0, 1] },
+				{ name: "result", slots: [2] },
+				{ name: "player", slots: Array.from({ length: 36 }, (_, i) => 3 + i) },
+			]);
+			expect(result.layout.regions.some((region) => region.name === "container")).toBe(false);
+		}
+
+		// 槽数不符仍按固定表拒绝（自诊断报出实际槽数）。
+		const wrong = windowLayout("minecraft:merchant", 38, 2, 37);
+		expect("reason" in wrong && wrong.reason).toContain("39");
 	});
 });

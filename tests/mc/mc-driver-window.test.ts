@@ -325,9 +325,11 @@ describe("Driver window lifetime and server confirmation", () => {
 		expect(h.observations).toEqual([null]);
 	});
 
-	test("unsupported workstation targets are rejected before activation", async () => {
+	test("unsupported blocks are rejected before activation", async () => {
 		const h = harness();
-		h.bot.blockAt = () => ({ name: "enchanting_table", position: target.block });
+		// 批 15：附魔台/铁砧/砂轮/酿造台已经是受支持的窗口（layout.ts 的 opensWindow），
+		// 真正该在派发前失败的是根本开不出窗口的方块。
+		h.bot.blockAt = () => ({ name: "stone", position: target.block });
 		expect((await captureFailure(h.session.openContainer(target))).code).toBe("UNSUPPORTED_WINDOW");
 		expect(h.writes).toHaveLength(0);
 		await h.session.close();

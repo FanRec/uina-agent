@@ -370,9 +370,11 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("build.plan@1")).toBe(false);
 	});
 
-	test("25 个动作齐备，ref 不重复", () => {
+	test("30 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
+			"anvil@1",
 			"attack@1",
+			"brew@1",
 			"build@1",
 			"chat@1",
 			"collect@1",
@@ -380,6 +382,7 @@ describe("目录完整性", () => {
 			"craft@1",
 			"drop@1",
 			"eat@1",
+			"enchant@1",
 			"equip@1",
 			"excavate@1",
 			"explore@1",
@@ -388,12 +391,14 @@ describe("目录完整性", () => {
 			"follow@1",
 			"forget@1",
 			"goto@1",
+			"grindstone@1",
 			"mine@1",
 			"pickup@1",
 			"place@1",
 			"remember@1",
 			"smelt@1",
 			"surface@1",
+			"trade@1",
 			"transfer@1",
 			"tunnel@1",
 			"use@1",

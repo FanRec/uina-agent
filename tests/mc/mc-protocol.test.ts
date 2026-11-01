@@ -87,3 +87,90 @@ test("current item components override registry stack and durability defaults", 
 	expect(p.decode(wire("iron_pickaxe", [], ["max_damage"]))).toMatchObject({ durability: null });
 	b.emit("end", "test complete");
 });
+test("trade_list resolves item ids to registry names and keeps both payment items", () => {
+	const b = bot();
+	const p = protocolFor(b);
+	const notices: { kind: string; offers?: unknown[] }[] = [];
+	p.subscribe((notice) => notices.push(notice as never));
+	const id = (name: string) => b.registry.itemsByName[name].id;
+	b._client.emit("trade_list", {
+		windowId: 9,
+		trades: [
+			{
+				inputItem1: { itemId: id("emerald"), itemCount: 3 },
+				outputItem: { itemCount: 6, itemId: id("bread") },
+				tradeDisabled: false,
+				nbTradeUses: 1,
+				maximumNbTradeUses: 12,
+				xp: 2,
+			},
+			{
+				inputItem1: { itemId: id("emerald"), itemCount: 1 },
+				inputItem2: { itemId: id("dirt"), itemCount: 4 },
+				outputItem: { itemCount: 1, itemId: id("apple") },
+				tradeDisabled: true,
+				nbTradeUses: 0,
+				maximumNbTradeUses: 0,
+				xp: 0,
+			},
+			// 空产物槽：itemCount=0 即空，不编造物品名。
+			{ inputItem1: { itemId: id("emerald"), itemCount: 1 }, outputItem: { itemCount: 0 } },
+		],
+	});
+	const trades = notices.find((notice) => notice.kind === "trades") as unknown as {
+		windowId: number;
+		offers: unknown[];
+	};
+	expect(trades.windowId).toBe(9);
+	expect(trades.offers).toEqual([
+		{
+			index: 0,
+			cost: [{ item: "emerald", count: 3 }],
+			output: { item: "bread", count: 6 },
+			disabled: false,
+			uses: 1,
+			maxUses: 12,
+			xp: 2,
+		},
+		{
+			index: 1,
+			cost: [
+				{ item: "emerald", count: 1 },
+				{ item: "dirt", count: 4 },
+			],
+			output: { item: "apple", count: 1 },
+			disabled: true,
+			uses: 0,
+			maxUses: 0,
+			xp: 0,
+		},
+		{
+			index: 2,
+			cost: [{ item: "emerald", count: 1 }],
+			output: { item: "unknown", count: 0 },
+			disabled: false,
+			uses: 0,
+			maxUses: 0,
+			xp: 0,
+		},
+	]);
+	b.emit("end", "test complete");
+});
+test("workstation selects write their own packets and reject nothing locally", () => {
+	const b = bot();
+	const p = protocolFor(b);
+	const windows = mf("prismarine-windows")("1.21.11");
+	const window = windows.createWindow(9, "minecraft:merchant", "Villager");
+	const writes: [string, unknown][] = [];
+	b._client.write = (name: string, payload: unknown) => writes.push([name, payload]);
+	// enchant_item 的 enchantment 是 0..2 的档位下标；name_item 不带 windowId；select_trade 的 slot 是报价下标。
+	p.selectEnchant(window, 2);
+	p.renameItem("Excalibur");
+	p.selectTrade(1);
+	expect(writes).toEqual([
+		["enchant_item", { windowId: 9, enchantment: 1 }],
+		["name_item", { name: "Excalibur" }],
+		["select_trade", { slot: 1 }],
+	]);
+	b.emit("end", "test complete");
+});

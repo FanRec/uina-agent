@@ -33,6 +33,14 @@ export const registry: RegistryLike = {
 		bread: { id: 892, name: "bread", stackSize: 64 },
 		apple: { id: 893, name: "apple", stackSize: 64 },
 		wooden_pickaxe: { id: 913, name: "wooden_pickaxe", stackSize: 1, maxDurability: 59 },
+		// 批 15 工作站测试用（brew / enchant / anvil / grindstone / trade）
+		potion: { id: 900, name: "potion", stackSize: 1 },
+		glass_bottle: { id: 901, name: "glass_bottle", stackSize: 64 },
+		nether_wart: { id: 902, name: "nether_wart", stackSize: 64 },
+		blaze_powder: { id: 903, name: "blaze_powder", stackSize: 64 },
+		lapis_lazuli: { id: 904, name: "lapis_lazuli", stackSize: 64 },
+		diamond_sword: { id: 905, name: "diamond_sword", stackSize: 1, maxDurability: 1561 },
+		emerald: { id: 906, name: "emerald", stackSize: 64 },
 	},
 	items: {
 		0: { id: 0, name: "air" },
@@ -44,6 +52,13 @@ export const registry: RegistryLike = {
 		892: { id: 892, name: "bread" },
 		893: { id: 893, name: "apple" },
 		913: { id: 913, name: "wooden_pickaxe" },
+		900: { id: 900, name: "potion" },
+		901: { id: 901, name: "glass_bottle" },
+		902: { id: 902, name: "nether_wart" },
+		903: { id: 903, name: "blaze_powder" },
+		904: { id: 904, name: "lapis_lazuli" },
+		905: { id: 905, name: "diamond_sword" },
+		906: { id: 906, name: "emerald" },
 	},
 	blocksByName: {
 		stone: { id: 1, name: "stone", harvestTools: { "913": true } },
@@ -52,6 +67,11 @@ export const registry: RegistryLike = {
 		oak_log: { id: 17, name: "oak_log" },
 		cobblestone: { id: 35, name: "cobblestone" },
 		gravel: { id: 213, name: "gravel" },
+		// 工作站方块（批 15）：findStation/readBlockAt 都按名字匹配。
+		brewing_stand: { id: 1182, name: "brewing_stand" },
+		enchanting_table: { id: 1183, name: "enchanting_table" },
+		anvil: { id: 1184, name: "anvil" },
+		grindstone: { id: 1185, name: "grindstone" },
 	},
 	foodsByName: { apple: { foodPoints: 4, saturation: 19.2 } },
 	blockLoot: {
@@ -64,7 +84,14 @@ export const registry: RegistryLike = {
 	entitiesByName: {
 		zombie: { type: "hostile", category: "Hostile mobs" },
 		item: { type: "other", category: "UNKNOWN" },
+		villager: { type: "passive", category: "Passive mobs" },
+		wandering_trader: { type: "passive", category: "Passive mobs" },
 	},
+	// 服务器下发的附魔注册表与 minecraft-data 同序；能力层只按编号取名。
+	enchantmentsArray: [
+		{ id: 13, name: "fortune", maxLevel: 3 },
+		{ id: 33, name: "sharpness", maxLevel: 5 },
+	],
 	recipes: {},
 };
 

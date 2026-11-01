@@ -71,6 +71,25 @@ function windowFixture(container: (ItemValue | null)[], player: (ItemValue | nul
 				confirmed: structuredClone(value()),
 			};
 		},
+		async selectEnchant() {
+			throw new Error("not used by transfer tests");
+		},
+		async renameItem() {
+			throw new Error("not used by transfer tests");
+		},
+		async selectTrade() {
+			throw new Error("not used by transfer tests");
+		},
+		async offers() {
+			return {
+				value: null,
+				source: "server",
+				observedAt: new Date().toISOString(),
+				coverage: "partial",
+				unknown: ["no merchant"],
+				evidence: [],
+			};
+		},
 		async close() {},
 	};
 	return {
