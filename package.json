@@ -35,6 +35,7 @@
     "dev:mc:feedback": "tsx .uina/worlds/minecraft/dev/feedback.ts",
     "dev:mc:library": "tsx .uina/worlds/minecraft/dev/library.ts",
     "dev:mc:build": "tsx .uina/worlds/minecraft/dev/build.ts",
+    "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",
     "build:web": "tsc -p tsconfig.web.json && node scripts/copy-web-static.mjs",
     "test": "vitest run",

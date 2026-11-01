@@ -45,6 +45,22 @@ export interface EntityView {
 	item: { name: string; count: number } | null;
 }
 
+export interface PlayerRowView {
+	name: string;
+	uuid: string | null;
+	displayName: string | null;
+	latencyMs: number | null;
+	gameMode: string | null;
+	tracked: { ref: { networkId: number }; position: Vec3; distance: number } | null;
+}
+
+export interface PlayersView {
+	extent: "server_listed";
+	players: PlayerRowView[];
+	listedCount: number;
+	truncated: boolean;
+}
+
 export interface SpawnedCall {
 	run: string;
 	requestId: string;
@@ -60,6 +76,7 @@ export interface Scenario {
 	readBlock: (at: Vec3) => Promise<BlockView | null>;
 	readInventory: () => Promise<InventoryView>;
 	readEntities: (radius?: number) => Promise<EntityView[]>;
+	readPlayers: (input?: { name?: string; limit?: number }) => Promise<PlayersView>;
 	readBlocks: (name: string, radius?: number) => Promise<{ position: Vec3; name: string }[]>;
 	/** op 指令：走 chat@1 发 /命令，与服务端同一通道。 */
 	command: (text: string) => Promise<void>;
@@ -139,6 +156,12 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		return observation.value?.entities ?? [];
 	};
 
+	const readPlayers = async (input: { name?: string; limit?: number } = {}): Promise<PlayersView> => {
+		const observation = await world.read<PlayersView>({ ref: "players@1", input });
+		if (observation.value == null) throw new Error("players@1 returned null");
+		return observation.value;
+	};
+
 	const readBlocks = async (name: string, radius = 32): Promise<{ position: Vec3; name: string }[]> => {
 		const observation = await world.read<{ blocks: { position: Vec3; name: string }[] }>({
 			ref: "blocks@1",
@@ -182,6 +205,7 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		readBlock,
 		readInventory,
 		readEntities,
+		readPlayers,
 		readBlocks,
 		command,
 		step,
