@@ -26,12 +26,27 @@ export interface FakeBot {
 export function makeBot(overrides: Record<string, unknown> = {}): FakeBot {
 	const handlers = new Map<string, Set<Handler>>();
 	const invHandlers = new Set<() => void>();
+	const clientHandlers = new Map<string, Set<Handler>>();
 	const bot: FakeBot = {
 		username: "uina",
 		inventory: {
 			slots: [],
 			on: (_event, fn) => invHandlers.add(fn),
 			removeListener: (_event, fn) => invHandlers.delete(fn),
+		},
+		// 协议窄口挂在 _client 上：替身默认无事件（未实现即缺失），map 等测试显式 emit。
+		_client: {
+			on: (event: string, fn: Handler) => {
+				const set = clientHandlers.get(event) ?? new Set<Handler>();
+				set.add(fn);
+				clientHandlers.set(event, set);
+			},
+			removeListener: (event: string, fn: Handler) => {
+				clientHandlers.get(event)?.delete(fn);
+			},
+			emit: (event: string, ...args: unknown[]) => {
+				for (const fn of [...(clientHandlers.get(event) ?? [])]) fn(...args);
+			},
 		},
 		on: (event, fn) => {
 			const set = handlers.get(event) ?? new Set<Handler>();

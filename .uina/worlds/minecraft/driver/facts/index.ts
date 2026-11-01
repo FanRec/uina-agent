@@ -2,8 +2,9 @@
  * Client Facts：Driver → World 的当前事实入口（I1 子集）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
- * sample() 同步读取同一本地提交边界的只读纯值；不造值：map 返回 null + unknown，
- * players 在未收到名单公告前同样如此，实体 metadata/components 未捕获如实为 null。
+ * sample() 同步读取同一本地提交边界的只读纯值；不造值：map 只投影本连接实际收到的
+ * 地图包（map-cache），players 在未收到名单公告前同样 null + unknown，
+ * 实体 metadata/components 未捕获如实为 null。
  * sections() 经 bot.blockAt 逐格构建 palette+indices（与 mineflayer findBlocks
  * 同一扫描策略；代价随加载体量线性增长，I1 场景用小半径）。
  * 选定证据（I1：chat/connection 事件）在流内 mark 从 1 起；evidence_gap 如实发，
@@ -29,9 +30,11 @@ import { plain } from "../../contracts/values.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import type { ClientHost } from "../client-host.js";
 import { createView } from "./view.js";
+import { MapCache } from "./map-cache.js";
 import { trackVitals } from "./vitals.js";
 import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
 import { fromMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
+import { protocolFor } from "../mineflayer/protocol.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 
 export interface FactsBinding {
@@ -104,6 +107,8 @@ export class FactsSource implements ClientFactsPort {
 	private windowFact: Fact<WindowSnapshot> | null = null;
 	/** 本连接是否已收到至少一条玩家名单公告；换连接清零，名单未到不冒充空服。 */
 	private rosterSeen = false;
+	/** 本连接收到的地图增量包缓存；换连接（resetSource）清空当前覆盖（§11.8）。 */
+	private readonly maps = new MapCache();
 	private detachFns: (() => void)[] = [];
 	/** 按当前连接版本构建的静态知识缓存；换 bot 即失效。 */
 	private knowledgeCache: { bot: MineflayerBot; value: RegistryKnowledge } | null = null;
@@ -325,6 +330,7 @@ export class FactsSource implements ClientFactsPort {
 			this.deliverNotice({ kind: "evidence_end", through });
 		}
 		this.windowFact = null;
+		this.maps.clear();
 		this.evidenceStream = this.openEvidenceStream();
 		this.evidenceSeq = refIssuerFrom(0);
 		this._evidenceThrough = { stream: this.evidenceStream, sequence: 0 };
@@ -447,6 +453,14 @@ export class FactsSource implements ClientFactsPort {
 			this.rosterSeen = true;
 			this.commit();
 		});
+		// 地图：协议窄口解码 map 包，这里校验矩形后一次提交（driver.md §11.8）。
+		this.detachFns.push(
+			protocolFor(bot).subscribe((notice) => {
+				if (notice.kind !== "map") return;
+				this.maps.apply(notice);
+				this.commit();
+			}),
+		);
 		// 自身受伤：只认本客户端玩家的实体，不把附近实体受伤记成自己的。
 		const onHurt = (entity: { id?: number } | null, source: { id?: number } | null) => {
 			// 只认本客户端玩家：实体缺失或不是自己不记（不把附近伤害记成自身事件）。
@@ -574,6 +588,7 @@ export class FactsSource implements ClientFactsPort {
 			stamp: { ...this.stamp },
 			window: this.windowFact,
 			rosterSeen: this.rosterSeen,
+			maps: this.maps,
 		});
 	}
 }

@@ -54,6 +54,10 @@ describe("query descriptor validation at the World boundary", () => {
 				["players@1", { limit: 257 }],
 				["players@1", { name: "" }],
 				["players@1", { name: "kite", extra: true }],
+				["map@1", { id: -1 }],
+				["map@1", { id: 1.5 }],
+				["map@1", { image: "yes" }],
+				["map@1", { extra: true }],
 			] as [ExactRef, JsonValue][]) {
 				await expect(world.read({ ref, input })).rejects.toMatchObject({
 					code: "INVALID_INPUT",

@@ -196,6 +196,12 @@ const definitions = {
 		}),
 		cancellable: true,
 	},
+	// G11 图片出口：只按 map@1 已产出的 ImageFileRef 读取，伴生进程核验目录/摘要后回 base64。
+	read_image: {
+		input: object({ path: ref, sha256: ref, bytes: integer, mimeType: ref }),
+		output: object({ mimeType: ref, data: { type: "string", minLength: 1 } }),
+		cancellable: true,
+	},
 } satisfies Record<string, { input: object; output: object; cancellable?: boolean }>;
 
 export type RpcMethod = keyof typeof definitions;

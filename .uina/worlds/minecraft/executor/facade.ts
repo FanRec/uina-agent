@@ -12,6 +12,22 @@ import type { RequestIntent } from "./ledger-worker.js";
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
 	return { status, result: JSON.stringify(value), details: value };
 }
+
+/** observe(map@1) 值里的图片引用（capabilities.md §map；G11 出口只认这个形状）。 */
+interface ObservedImageRef {
+	path: string;
+	sha256: string;
+	bytes: number;
+	mimeType: string;
+}
+
+interface ObservedValue {
+	id?: number;
+	receivedPixels?: number;
+	totalPixels?: number;
+	paintedPixels?: number;
+	image?: ObservedImageRef | null;
+}
 function cancelled<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new RpcError("REQUEST_CANCELLED", "tool waiting cancelled", "unknown"));
 	return new Promise((resolve, reject) => {
@@ -51,8 +67,9 @@ export class MinecraftFacade {
 				case "describe":
 					return response(await this.executor.rpc("describe", params, signal));
 				case "observe":
-					return response(
+					return await this.observeResult(
 						await this.executor.rpc("observe", { selector: params.selector, input: params.input ?? {} }, signal),
+						signal,
 					);
 				case "library":
 					return response(await cancelled(this.executor.rpc("library", params, signal), signal));
@@ -98,6 +115,39 @@ export class MinecraftFacade {
 			);
 		}
 	}
+	/**
+	 * observe 的图片出口（executor.md §2.1.1，G11）：值里带 map@1 产出的 ImageFileRef
+	 * 时，经受信任伴生进程核验 realpath/摘要并读出字节，填进已有 ToolExecutionResult.images；
+	 * 读取失败给明确原因和原路径，元数据不冒充图片。路径不是授权——授权校验在伴生侧。
+	 */
+	private async observeResult(value: unknown, signal: AbortSignal): Promise<ToolExecutionResult> {
+		const base = response(value);
+		const image = (value as { value?: ObservedValue | null } | null)?.value?.image;
+		if (image == null) return base;
+		try {
+			const bytes = await this.executor.rpc<{ mimeType: "image/png"; data: string }>(
+				"read_image",
+				{ path: image.path, sha256: image.sha256, bytes: image.bytes, mimeType: image.mimeType },
+				signal,
+			);
+			const observed = (value as { value?: ObservedValue | null }).value ?? {};
+			const alt = `minecraft map ${observed.id ?? "?"}: ${observed.receivedPixels ?? "?"}/${observed.totalPixels ?? 16384} pixels received, ${observed.paintedPixels ?? "?"} painted; magenta checkerboard = unknown, parchment = received transparent`;
+			return {
+				...base,
+				images: [{ type: "image", mimeType: bytes.mimeType, data: bytes.data, alt }],
+			};
+		} catch (error) {
+			if (error instanceof RpcError && error.code === "REQUEST_CANCELLED") throw error;
+			return {
+				...base,
+				details: {
+					...(base.details as Record<string, unknown> | null),
+					imageDelivery: { delivered: false, path: image.path, reason: error instanceof Error ? error.message : String(error) },
+				},
+			};
+		}
+	}
+
 	private entry(params: Record<string, unknown>): Entry {
 		if ((typeof params.code === "string") === (typeof params.selector === "string"))
 			throw new RpcError("INVALID_INPUT", "provide exactly one code or selector");

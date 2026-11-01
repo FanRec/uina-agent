@@ -40,6 +40,8 @@ import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from 
 import { PLACES_REF, PLACE_SCHEMA, placesObservation, resolvePlacesQuery, type PlacesOrigin } from "./places.js";
 import { BUILD_PLAN_REF, buildPlanObservation } from "./build-plan.js";
 import { ROUTE_PLAN_REF, routePlanObservation } from "./route-plan.js";
+import { MAP_REF, exportMapImage, mapValueOf, resolveMapInput, sampleMap } from "./map.js";
+import type { ImageFileRef } from "../contracts/values.js";
 import { checkCursor, queryStream, watchFailure } from "./watch.js";
 import { CurrentReads } from "./current.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
@@ -61,6 +63,8 @@ export interface MinecraftWorldOptions {
 	routePlanner?: WorldRoutePlanner;
 	/** build.plan@1 的窄计划端口（组合根用 Construction 装配）；缺省时该查询明确失败。 */
 	buildPlanner?: ConstructionPlanner;
+	/** map@1 的 PNG 缓存目录（`<worldDataDir>/exports/images`）；缺省时 image=true 如实 unknown。 */
+	imageDir?: string;
 }
 
 function recordFailure(code: string, message: string, hint?: string): CallFailure {
@@ -81,7 +85,7 @@ function unknownQuery(ref: string, readers: ReadonlyMap<ExactRef, QueryReader>):
 		code: "INVALID_INPUT",
 		source: "world",
 		message: `unknown world query: ${ref}`,
-		hint: `available queries: ${available}, ${EVENTS_REF}, ${CONTAINER_LAST_REF}`,
+		hint: `available queries: ${available}, ${EVENTS_REF}, ${CONTAINER_LAST_REF}, ${MAP_REF}`,
 		dispatch: "not_sent",
 		effects: [],
 		recoverable: false,
@@ -133,6 +137,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly validators: ReadonlyMap<ExactRef, QueryValidator>;
 	private readonly routePlanner: WorldRoutePlanner | null;
 	private readonly buildPlanner: ConstructionPlanner | null;
+	private readonly imageDir: string | null;
 	private readonly eventScope: EventScope;
 	/** places 记录观察的分区键：换分区后旧游标失效（与 events 同形）。 */
 	private readonly placesPartition: string;
@@ -149,6 +154,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		this.validators = options.validators;
 		this.routePlanner = options.routePlanner ?? null;
 		this.buildPlanner = options.buildPlanner ?? null;
+		this.imageDir = options.imageDir ?? null;
 		this.watchable = new Set(options.queries.filter((q) => q.watchable).map((q) => q.ref));
 		const queryRefs: ExactRef[] = [
 			...options.readers.keys(),
@@ -157,6 +163,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			PLACES_REF,
 			ROUTE_PLAN_REF,
 			BUILD_PLAN_REF,
+			MAP_REF,
 		];
 		for (const ref of queryRefs) {
 			if (typeof options.validators?.get(ref) !== "function") throw new Error(`query validator is missing: ${ref}`);
@@ -217,6 +224,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 				throw watchFailure("INTERNAL", "build.plan planner is not wired in this composition");
 			return buildPlanObservation<T>(await this.buildPlanner.plan({ ref: query.ref, input }));
 		}
+		if (query.ref === MAP_REF) return await this.readMap<T>(input);
 		throw unknownQuery(query.ref, this.readers);
 	}
 
@@ -302,6 +310,39 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			evidence: result.rows.map((row) => row.ref),
 			cursor: this.history.placesCursor(queryStream(PLACES_REF, input, this.placesPartition)),
 		});
+	}
+
+	/**
+	 * map@1（§8.6）：一次纯当前 sample 固定选图与切面；image=true 才在关键循环外
+	 * 编码 PNG 并原子写缓存。不可等待：cursor 恒 null。
+	 */
+	private async readMap<T>(input: JsonValue): Promise<Observation<T>> {
+		const params = resolveMapInput(input);
+		const sample = sampleMap(this.facts, params);
+		const unknown = [...sample.unknown];
+		let image: ImageFileRef | null = null;
+		if (params.image) {
+			if (sample.receivedPixels === 0) {
+				unknown.push(`image omitted: no map pixels have arrived for id ${sample.id} on this connection yet`);
+			} else if (this.imageDir == null) {
+				unknown.push("image omitted: no image export directory is configured for this world");
+			} else {
+				try {
+					image = (await exportMapImage(this.imageDir, sample)).ref;
+				} catch (error) {
+					unknown.push(`image encoding failed: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+		}
+		return {
+			value: mapValueOf(sample, image) as T,
+			observedAt: sample.observedAt,
+			source: "server",
+			coverage: unknown.length > 0 ? "partial" : "complete",
+			unknown,
+			evidence: [],
+			cursor: null,
+		};
 	}
 
 	private placesOrigin(): PlacesOrigin | null {

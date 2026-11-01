@@ -3,7 +3,8 @@
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
  * 这里只做"读 + 成形"：不造值——读不到就 null + unknown 条目，不猜默认值。
- * map 在 I1 明确未实现，一律 null + unknown；players 投影服务器实际公告的
+ * map 只投影本连接实际收到的地图包（map-cache），未收到该 id 的任何包即 null + unknown；
+ * players 投影服务器实际公告的
  * 名单（bot.players），未收到任何名单事件前同样 null + unknown；库存来自
  * 协议捕获的服务端快照，物品组件/耐久按统一 ItemValue 保留，未捕获字段如实未知。
  * 全部构建发生在 sample() 的同一同步边界内，闭包不外泄。
@@ -36,6 +37,7 @@ import type {
 } from "../../contracts/body.js";
 import type { Fact, FactSource, Vec3 } from "../../contracts/values.js";
 import { protocolFor } from "../mineflayer/protocol.js";
+import { MAP_CELLS, MapCache, MAP_SIZE } from "./map-cache.js";
 import { effectiveAttribute, trackVitals } from "./vitals.js";
 import { fromMineflayerVec3, toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 
@@ -46,6 +48,8 @@ export interface FactViewContext {
 	window?: Fact<WindowSnapshot> | null;
 	/** 本连接是否已收到至少一条玩家名单公告（player_info 事件）。 */
 	rosterSeen: boolean;
+	/** 本连接的地图增量包缓存（ FactsSource 持有；投影只读）。 */
+	maps: MapCache;
 }
 
 /** 一次采样的只读视图；每个方法都是一次独立读取，不共享中间状态。 */
@@ -60,7 +64,7 @@ export function createView(ctx: FactViewContext): ClientFactView {
 		world: () => worldFact(ctx),
 		searchBlocks: (request) => searchBlocksFact(ctx, request),
 		players: () => playersFact(ctx),
-		map: (_id) => absent<ClientMapValue>("map data not implemented in I1"),
+		map: (id) => mapFact(ctx, id),
 		window: () =>
 			ctx.window == null
 				? absent<WindowSnapshot>("no authoritative open window snapshot")
@@ -448,6 +452,41 @@ function playersFact(ctx: FactViewContext): Fact<ClientPlayersValue | null> {
 		connection: stamp.connection ?? undefined,
 		incarnation: stamp.incarnation ?? undefined,
 	} as Fact<ClientPlayersValue | null>;
+}
+
+// ---- map（本连接收到的地图包覆盖） ----
+
+/**
+ * 投影一张地图的当前覆盖（public-api §4 ClientMapValue）。
+ * colors 按 z 行 x 列展开为 (number|null)[]：null=未收到，0=实际收到的透明色。
+ * center/dimension 协议不下发，恒 null（合同明示不由玩家位置或地图编号推断）。
+ */
+function mapFact(ctx: FactViewContext, id: number): Fact<ClientMapValue | null> {
+	const { stamp } = ctx;
+	const entry = ctx.maps.get(id);
+	if (entry == null) return absent<ClientMapValue>(`no map data received for id ${id} on this connection`);
+	const colors: (number | null)[] = new Array(MAP_CELLS);
+	for (let z = 0; z < MAP_SIZE; z++) {
+		for (let x = 0; x < MAP_SIZE; x++) {
+			const index = z * MAP_SIZE + x;
+			colors[index] = entry.received[index] === 1 ? entry.colors[index] : null;
+		}
+	}
+	const value: ClientMapValue = {
+		id,
+		scale: entry.scale,
+		locked: entry.locked,
+		colors,
+		icons: entry.icons == null ? null : entry.icons.map((icon) => ({ ...icon, pixel: { ...icon.pixel } })),
+		center: null,
+		dimension: null,
+	};
+	return {
+		value,
+		...factBase([]),
+		connection: stamp.connection ?? undefined,
+		incarnation: stamp.incarnation ?? undefined,
+	} as Fact<ClientMapValue | null>;
 }
 
 /** ChatMessage 纯文本化；形状不符时如实 null（mineflayer 恒给 ChatMessage，此处只防形变）。 */

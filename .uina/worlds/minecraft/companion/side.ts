@@ -30,6 +30,7 @@ import type { RpcMethod } from "../executor/protocol.js";
 import { RpcError } from "../executor/ipc.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
+import { readExportedImage } from "../world/map.js";
 import { createProgram } from "../program/index.js";
 import type { ProgramPort } from "../contracts/program.js";
 import { createLibrary } from "../library/index.js";
@@ -149,6 +150,8 @@ export async function openExecutionSide(
 				readSnapshot: (request) => program!.readSnapshot(request),
 			}),
 	});
+	// map@1 的 PNG 缓存目录：查询产出与 read_image 读取共用这一份派生（world.md §8.6）。
+	const imageDir = join(init.worldDataDir, "exports", "images");
 	let world: MinecraftWorld;
 	const construction = createConstruction({ blueprints: library, world: () => world });
 	world = new MinecraftWorld({
@@ -159,6 +162,7 @@ export async function openExecutionSide(
 		dbPath: join(init.worldDataDir, "world-history.db"),
 		binding,
 		namespace,
+		imageDir,
 		// route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现，World 不依赖 Driver。
 		routePlanner: { plan: (query) => gotoDirector.plan(query.input as Parameters<GotoDirector["plan"]>[0]) },
 		// build.plan@1 的窄计划端口：组合根用 Construction 装配，World 不依赖 Construction。
@@ -433,6 +437,16 @@ export async function openExecutionSide(
 				case "observe":
 					value = await world.read({ ref: p.selector as ExactRef, input: p.input ?? {} });
 					break;
+				case "read_image": {
+					// G11：只接受 map@1 实际产出的 ImageFileRef；核验 realpath/摘要后回 base64。
+					const ref = payload as unknown as Parameters<typeof readExportedImage>[1];
+					try {
+						value = await readExportedImage(imageDir, ref);
+					} catch (error) {
+						throw new RpcError("INVALID_INPUT", error instanceof Error ? error.message : String(error));
+					}
+					break;
+				}
 				default:
 					throw new RpcError("PROTOCOL_ERROR", `${method} is not available after initialization`);
 			}

@@ -346,7 +346,7 @@ describe("item@1 / recipe@1", () => {
 });
 
 describe("目录完整性", () => {
-	test("15 个查询声明齐全；历史/记录/派生计划由 World 读取（无 reader）", () => {
+	test("16 个查询声明齐全；历史/记录/派生计划/地图由 World 读取（无 reader）", () => {
 		expect(capabilities.queries.map((query) => query.ref).sort()).toEqual([
 			"block@1",
 			"blocks@1",
@@ -356,6 +356,7 @@ describe("目录完整性", () => {
 			"events@1",
 			"inventory@1",
 			"item@1",
+			"map@1",
 			"places@1",
 			"players@1",
 			"recipe@1",
@@ -369,6 +370,7 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("places@1")).toBe(false);
 		expect(capabilities.readers.has("route.plan@1")).toBe(false);
 		expect(capabilities.readers.has("build.plan@1")).toBe(false);
+		expect(capabilities.readers.has("map@1")).toBe(false);
 	});
 
 	test("30 个动作齐备，ref 不重复", () => {

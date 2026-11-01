@@ -1,6 +1,7 @@
 /** Connection-bound protocol seam. Other Driver modules consume decoded facts, never wire packets. */
 import { createRequire } from "node:module";
 import type { ItemValue, MerchantOfferValue, SignText, WindowSnapshot } from "../../contracts/body.js";
+import type { MapIconValue } from "../../contracts/client-facts.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "../execution.js";
@@ -23,6 +24,20 @@ export type ProtocolNotice =
 	| { kind: "block"; position: Vec3; stateId: number; air: boolean }
 	| { kind: "sign_editor"; position: Vec3; front: boolean }
 	| { kind: "sign_update"; position: Vec3 }
+	/** 1.21.11 的 packet_map（线上包名 map）：像素矩形未校验，由事实层校验后一次提交。 */
+	| {
+			kind: "map";
+			id: number;
+			scale: number;
+			locked: boolean;
+			/** 字段缺席=undefined（保留旧图标）；数组=明确替换（空数组=清空）。 */
+			icons: MapIconValue[] | undefined;
+			columns: number;
+			rows: number | undefined;
+			x: number | undefined;
+			y: number | undefined;
+			data: Uint8Array | undefined;
+	  }
 	| { kind: "end" };
 
 interface NativeItem {
@@ -64,6 +79,17 @@ interface RawPackets {
 	multi_block_change: { chunkCoordinates: Vec3; records: number[] };
 	open_sign_entity: { location: Vec3; isFrontText: boolean };
 	tile_entity_data: { location?: Vec3 };
+	map: {
+		itemDamage: number;
+		scale: number;
+		locked: boolean;
+		icons?: { type: number; x: number; z: number; direction: number; displayName?: unknown }[] | null;
+		columns: number;
+		rows?: number;
+		x?: number;
+		y?: number;
+		data?: Buffer;
+	};
 }
 /** registry 只暴露到这里的字段；不引第二份物品表。 */
 interface ItemRegistry {
@@ -97,6 +123,17 @@ function json(value: unknown): JsonValue {
 	return JSON.parse(
 		JSON.stringify(value, (_key, part) => (typeof part === "bigint" ? part.toString() : part)),
 	) as JsonValue;
+}
+
+/** 地图图标 displayName 匿名 NBT → 纯文本；解不出如实 null，不编造。 */
+function nbtLabel(value: unknown): string | null {
+	if (typeof value === "string") return value;
+	if (value == null || typeof value !== "object") return null;
+	const rec = value as { text?: unknown; value?: unknown };
+	if (typeof rec.text === "string") return rec.text;
+	if (rec.text != null && typeof rec.text === "object") return nbtLabel(rec.text);
+	if (rec.value !== undefined) return nbtLabel(rec.value);
+	return null;
 }
 
 /** The only implemented version. A future adapter implements this same narrow port. */
@@ -232,6 +269,29 @@ class Protocol12111 implements DriverProtocol {
 		raw("tile_entity_data", (p) => {
 			if (p.location) this.emit({ kind: "sign_update", position: p.location });
 		});
+		raw("map", (p) => {
+			const icons =
+				p.icons == null
+					? undefined
+					: p.icons.map((icon) => ({
+							type: this.mapIconName(icon.type),
+							pixel: { x: icon.x, z: icon.z },
+							direction: icon.direction,
+							label: icon.displayName == null ? null : nbtLabel(icon.displayName),
+						}));
+			this.emit({
+				kind: "map",
+				id: p.itemDamage,
+				scale: p.scale,
+				locked: p.locked === true,
+				icons,
+				columns: p.columns,
+				rows: p.rows,
+				x: p.x,
+				y: p.y,
+				data: p.data,
+			});
+		});
 		native("windowOpen", (window: NativeWindow) => this.emit({ kind: "window_open", window }));
 		native("windowClose", (window: NativeWindow | null) => {
 			if (window && window.id !== 0) this.lastClosedWindow = window;
@@ -337,6 +397,12 @@ class Protocol12111 implements DriverProtocol {
 			return map;
 		})();
 		return this.itemNames.get(id) ?? "unknown";
+	}
+	/** 地图图标类型 id → 名字（minecraft-data mapIcons，1.21.11 取 pc/1.20.2 数据）；查不到按数字如实。 */
+	private mapIconName(id: number): string {
+		const registry = this.bot.registry as unknown as { mapIcons?: Record<string, { name?: string }> };
+		const name = registry.mapIcons?.[id]?.name;
+		return typeof name === "string" ? name : String(id);
 	}
 	/** 付款项只在 itemCount>0 时算存在；产物为 Slot（itemCount=0 即空）。 */
 	private cost(raw: RawTradeCost | undefined): { item: string; count: number }[] {
