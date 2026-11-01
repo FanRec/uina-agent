@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { describeDirectory, type DescribeParams } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
+import { createConstruction } from "../construction/index.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
@@ -135,7 +136,22 @@ export async function openExecutionSide(
 		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
 	});
 	capabilities.callables.push(...(options.callables ?? []));
-	const world = new MinecraftWorld({
+	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
+	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
+	// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
+	const library = createLibrary({
+		dataRoot: init.worldDataDir,
+		compile: (material) => program!.validate(material),
+		readSource: (origin) =>
+			readCallSource(origin, {
+				readRun: (run) => getRuntime().read(run),
+				readRecord: (ref) => getRuntime().readRecord(ref),
+				readSnapshot: (request) => program!.readSnapshot(request),
+			}),
+	});
+	let world: MinecraftWorld;
+	const construction = createConstruction({ blueprints: library, world: () => world });
+	world = new MinecraftWorld({
 		facts,
 		readers: capabilities.readers,
 		validators: capabilities.validators,
@@ -145,18 +161,10 @@ export async function openExecutionSide(
 		namespace,
 		// route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现，World 不依赖 Driver。
 		routePlanner: { plan: (query) => gotoDirector.plan(query.input as Parameters<GotoDirector["plan"]>[0]) },
+		// build.plan@1 的窄计划端口：组合根用 Construction 装配，World 不依赖 Construction。
+		buildPlanner: construction,
 	});
 	try {
-		const library = createLibrary({
-			dataRoot: init.worldDataDir,
-			compile: (material) => program!.validate(material),
-			readSource: (origin) =>
-				readCallSource(origin, {
-					readRun: (run) => getRuntime().read(run),
-					readRecord: (ref) => getRuntime().readRecord(ref),
-					readSnapshot: (request) => program!.readSnapshot(request),
-				}),
-		});
 		program = await createProgram({
 			dataRoot: init.worldDataDir,
 			loadProgram: (name) => library.loadProgram(name),

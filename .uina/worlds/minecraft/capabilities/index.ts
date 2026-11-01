@@ -24,6 +24,7 @@ import { surfaceCallable } from "./actions/surface.js";
 import { excavateCallable } from "./actions/excavate.js";
 import { tunnelCallable } from "./actions/tunnel.js";
 import { placeCallable } from "./actions/building.js";
+import { buildCallable } from "./actions/build.js";
 import { mineCallable } from "./actions/mining.js";
 import { useCallable } from "./actions/interaction.js";
 import { forgetCallable } from "./actions/forget.js";
@@ -37,6 +38,7 @@ import { eventsQuery } from "./queries/events.js";
 import { knowledgeQueries } from "./queries/knowledge.js";
 import { placesQuery } from "./queries/places.js";
 import { regionQuery } from "./queries/region.js";
+import { buildPlanQuery } from "./queries/build-plan.js";
 import { routePlanQuery } from "./queries/route-plan.js";
 import { terrainQueries } from "./queries/terrain.js";
 import type { QuerySpec } from "./shared/query.js";
@@ -72,6 +74,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		containerLastQuery,
 		placesQuery,
 		routePlanQuery,
+		buildPlanQuery,
 	];
 	const readers = new Map<ExactRef, QueryReader>();
 	const validators = new Map<ExactRef, QueryValidator>();
@@ -122,6 +125,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		fightCallable(deps),
 		tunnelCallable(deps),
 		excavateCallable(deps),
+		buildCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {

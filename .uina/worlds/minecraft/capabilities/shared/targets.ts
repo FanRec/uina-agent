@@ -9,6 +9,30 @@
 import type { BlockSpec, BlockStateValue, ItemSelector, SelfState } from "../../contracts/body.js";
 import { callFailure } from "../../contracts/values.js";
 import type { Vec3 } from "../../contracts/values.js";
+import {
+	matchesDeclared,
+	type PointTargetValue,
+	resolveGrid,
+	resolvePoint,
+	specBlockName,
+	stripNamespace,
+} from "../../construction/target.js";
+
+/**
+ * 坐标/名字/声明匹配的唯一定义在 `construction/target.ts`（施工与查询共用同一份判定）；
+ * 能力层只按历史名字再导出，不复制实现。
+ */
+export { stripNamespace, resolveGrid, resolvePoint };
+export type { PointTargetValue };
+
+export function specName(spec: BlockSpec): string {
+	return specBlockName(spec);
+}
+
+/** 声明 → 匹配：只比较显式声明的属性，未声明的状态不纳入目标（§4 place）。 */
+export function matchBlockSpec(spec: BlockSpec, state: BlockStateValue | null): boolean {
+	return matchesDeclared(spec, state);
+}
 
 export interface FailureOptions {
 	hint?: string;
@@ -32,56 +56,6 @@ export function fail(code: string, message: string, options: FailureOptions = {}
 	});
 }
 
-export function stripNamespace(name: string): string {
-	return name.replace(/^minecraft:/, "");
-}
-
-export interface PointTargetValue {
-	position: Vec3;
-	dimension: string;
-}
-
-type RawPos = { x: number; y: number; z: number } | { position: Vec3; dimension: string } | { rel: Vec3 };
-
-function isRel(raw: RawPos): raw is { rel: Vec3 } {
-	return "rel" in raw;
-}
-
-/** 连续坐标：rel 相对当前站位，{position,dimension} 保留显式维度。 */
-export function resolvePoint(raw: unknown, self: SelfState): PointTargetValue {
-	const value = raw as RawPos;
-	if (isRel(value)) {
-		return {
-			dimension: self.place.dimension,
-			position: {
-				x: self.place.position.x + value.rel.x,
-				y: self.place.position.y + value.rel.y,
-				z: self.place.position.z + value.rel.z,
-			},
-		};
-	}
-	if ("position" in value) return { position: value.position, dimension: value.dimension };
-	return { position: { x: value.x, y: value.y, z: value.z }, dimension: self.place.dimension };
-}
-
-/** 整数格：rel 相对脚下格（当前位置向下取整），结果保证整数。 */
-export function resolveGrid(raw: unknown, self: SelfState): Vec3 {
-	const value = raw as RawPos;
-	if (isRel(value)) {
-		return {
-			x: Math.floor(self.place.position.x) + value.rel.x,
-			y: Math.floor(self.place.position.y) + value.rel.y,
-			z: Math.floor(self.place.position.z) + value.rel.z,
-		};
-	}
-	const point = resolvePoint(raw, self);
-	return {
-		x: Math.round(point.position.x),
-		y: Math.round(point.position.y),
-		z: Math.round(point.position.z),
-	};
-}
-
 /** 显式维度与当前维度不一致：K1 不做跨维度动作。 */
 export function assertSameDimension(target: PointTargetValue, self: SelfState, what: string): void {
 	if (target.dimension !== self.place.dimension) {
@@ -90,21 +64,6 @@ export function assertSameDimension(target: PointTargetValue, self: SelfState, w
 			recoverable: true,
 		});
 	}
-}
-
-export function specName(spec: BlockSpec): string {
-	return stripNamespace(typeof spec === "string" ? spec : spec.name);
-}
-
-/** 声明 → 匹配：只比较显式声明的属性，未声明的状态不纳入目标（§4 place）。 */
-export function matchBlockSpec(spec: BlockSpec, state: BlockStateValue | null): boolean {
-	if (state == null) return false;
-	if (stripNamespace(state.name) !== specName(spec)) return false;
-	if (typeof spec === "string" || spec.properties == null) return true;
-	for (const [key, value] of Object.entries(spec.properties)) {
-		if (state.properties[key] !== value) return false;
-	}
-	return true;
 }
 
 export function selectorNames(selector: string | ItemSelector): string[] {

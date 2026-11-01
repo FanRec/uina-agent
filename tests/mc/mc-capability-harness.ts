@@ -150,6 +150,13 @@ export interface HarnessHooks {
 	openWindow?: () => WindowSession;
 	/** withInventory 拿到的玩家窗口；不提供则调用即失败。 */
 	inventoryWindow?: () => WindowSession;
+	/** interact 派发时的世界副作用（place/build 用：把方块真的放上去）。 */
+	onInteract?: (
+		target: { place: { x: number; y: number; z: number }; block: { x: number; y: number; z: number } },
+		face: { x: number; y: number; z: number },
+	) => void;
+	/** build.plan@1 的替身：build@1 只读一次计划，测试直接给出计划结果。 */
+	buildPlan?: (input: JsonValue) => unknown;
 }
 
 export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
@@ -199,6 +206,10 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 					scanned: { radius: raw.radius ?? 32 },
 				}) as Observation<T>;
 			}
+			if (query.ref === "build.plan@1") {
+				if (hooks.buildPlan == null) throw new Error("this harness has no build plan");
+				return fact(hooks.buildPlan(query.input)) as Observation<T>;
+			}
 			if (query.ref === "entities@1") {
 				// 与真实读取器同口径：kind 过滤（all/hostile/passive/player）。
 				const kind = (query.input as { kind?: string }).kind;
@@ -230,8 +241,12 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			hooks.onEquip?.(slot, item);
 			return { effect: "eff:t:2", dispatch: "sent", completion: "met", evidence: [] };
 		},
-		async interact() {
+		async interact(request: {
+			target: { place: { x: number; y: number; z: number }; block: { x: number; y: number; z: number } };
+			face: { x: number; y: number; z: number };
+		}) {
 			calls.push("interact");
+			hooks.onInteract?.(request.target, request.face);
 			return { effect: "eff:t:3", dispatch: "sent", completion: "met", evidence: [] };
 		},
 		async drive(input: { lookAt?: unknown }, ticks: number) {

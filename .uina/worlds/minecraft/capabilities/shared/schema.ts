@@ -93,3 +93,66 @@ export const FACE_SCHEMA: JsonSchema = {
 
 /** 查询/动作通用的空输入。 */
 export const EMPTY_INPUT: JsonSchema = { type: "object", properties: {}, additionalProperties: false };
+
+/**
+ * BuildTargetRequest（capabilities §2.2）：cells 与 from 两种形态互斥。
+ *
+ * 两条分支各自声明全部允许字段并 `additionalProperties: false`，
+ * 于是"cells 又带 from"或"from 不带 at"在派发前就被 schema 拒绝，
+ * 不需要另写一套互斥校验。
+ */
+export function buildTargetSchema(extra: Record<string, JsonSchema> = {}): JsonSchema {
+	const blueprint: JsonSchema = {
+		type: "object",
+		properties: { kind: { type: "string", enum: ["blueprint"] }, name: { type: "string", minLength: 1 } },
+		required: ["kind", "name"],
+		additionalProperties: false,
+	};
+	const replace: JsonSchema = {
+		type: "boolean",
+		description: "allow clearing a non-replaceable block that conflicts with a set target (default false)",
+	};
+	return {
+		oneOf: [
+			{
+				type: "object",
+				properties: {
+					cells: {
+						type: "array",
+						minItems: 1,
+						maxItems: 512,
+						items: {
+							type: "object",
+							properties: { at: GRID_POS_SCHEMA, block: BLOCK_SPEC_SCHEMA },
+							required: ["at", "block"],
+							additionalProperties: false,
+						},
+					},
+					replace,
+					...extra,
+				},
+				required: ["cells"],
+				additionalProperties: false,
+			},
+			{
+				type: "object",
+				properties: {
+					from: blueprint,
+					at: GRID_POS_SCHEMA,
+					mirror: { type: "string", enum: ["none", "x", "z"], description: "mirror inside the design box" },
+					rotate: { type: "integer", enum: [0, 90, 180, 270], description: "clockwise around Y" },
+					airPolicy: {
+						type: "string",
+						enum: ["set_air", "preserve"],
+						description: "what known-air cells mean while interpreting a raw blueprint",
+					},
+					expectDigest: { type: "string", minLength: 1, description: "refuse to build if the design changed" },
+					replace,
+					...extra,
+				},
+				required: ["from", "at"],
+				additionalProperties: false,
+			},
+		],
+	};
+}
