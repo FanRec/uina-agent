@@ -47,17 +47,20 @@ async function main(): Promise<void> {
 			);
 			// 远处落脚台：目标区块未加载时 /fill 会静默失败——先过去加载区块，填完再回来，
 			// 否则第二玩家会被摔死重生到世界出生点，tracked 恒 null（批16 首跑踩过）。
+			// 填完立即用 block@1 复核（此刻区块仍在加载态，回到主平台后就读不到了）。
 			await s.command(`/tp ${USER} ${FAR.x + 0.5} ${CENTER.y} ${FAR.z + 0.5}`);
 			await sleep(1600);
 			await s.command(
 				`/fill ${FAR.x - 2} ${CENTER.y - 1} ${FAR.z - 2} ${FAR.x + 2} ${CENTER.y - 1} ${FAR.z + 2} minecraft:stone`,
 			);
+			const pad = await s.readBlock({ x: FAR.x, y: CENTER.y - 1, z: FAR.z });
+			if (pad?.name !== "stone") throw new Error(`far pad missing after fill: ${pad?.name ?? "null"}`);
 			await s.command(`/kill @e[type=!player]`);
 			await s.command(`/tp ${USER} ${CENTER.x + 0.5} ${CENTER.y} ${CENTER.z + 0.5}`);
 			await s.command("/gamemode survival");
 			await sleep(900);
 			await waitForStill(bot, s.log);
-			return `platform ready at ${CENTER.x},${CENTER.y},${CENTER.z}; far pad at ${FAR.x},${CENTER.y - 1},${FAR.z}`;
+			return `platform ready at ${CENTER.x},${CENTER.y},${CENTER.z}; far pad at ${FAR.x},${CENTER.y - 1},${FAR.z} verified stone`;
 		});
 
 		await s.step("初始名单：服务器公告含自己，字段成形", async () => {

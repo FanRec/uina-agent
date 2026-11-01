@@ -35,6 +35,7 @@
     "dev:mc:feedback": "tsx .uina/worlds/minecraft/dev/feedback.ts",
     "dev:mc:library": "tsx .uina/worlds/minecraft/dev/library.ts",
     "dev:mc:build": "tsx .uina/worlds/minecraft/dev/build.ts",
+    "dev:mc:stations": "tsx .uina/worlds/minecraft/dev/stations.ts",
     "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",
     "build:web": "tsc -p tsconfig.web.json && node scripts/copy-web-static.mjs",
@@ -49,8 +50,7 @@
     "verify:gateway": "tsx scripts/verify-gateway.mts",
     "verify:file-events": "tsx scripts/verify-file-events.mts",
     "bench:ui": "tsx scripts/ui-frame-bench.ts",
-    "diagnose:frames": "tsx scripts/diagnose-frame-log.mts",
-    "dev:mc:stations": "tsx .uina/worlds/minecraft/dev/stations.ts"
+    "diagnose:frames": "tsx scripts/diagnose-frame-log.mts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
