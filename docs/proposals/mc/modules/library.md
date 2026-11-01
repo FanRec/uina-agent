@@ -54,10 +54,23 @@ Target 的 set/clear/preserve/unknown 及共用施工流程由 [Construction 能
 
 导入时，来源已知为空气的格必须明确 AirPolicy：set_air 映射为 clear，preserve 映射为 preserve；未指定报 AIR_POLICY_REQUIRED。来源未知的格保持 unknown，任何空气策略都不能把它变成可拆除目标。解码、DataVersion、状态/NBT 变换、旋转/镜像、材料与顺序归 Construction；无验证器报 SCHEMA_UNAVAILABLE。
 
+`target.json` 的实际 schema 是 `minecraft:construction.target@1`，字段与两种写法见 [Construction 能力合同](capabilities.md#construction-target)。库只认它的 `schema` 身份字段，不解释 `palette`/`cells`（语义验证归 Construction）。
+
 ### 3.3 完整性与损坏
 
 - `library.get` 流式计算本次读取的 `design.*` 字节摘要与长度，返回 `{digest, size, formatHint, about, target?: {schema, digest, validation:"unavailable"}}`。当前只读取 Target 的 JSON/schema 身份，不执行 Construction 语义认证。
 - 原件字节读取失败 → BLUEPRINT_CORRUPT；target.json 的 JSON 或 schema 身份不合法 → TARGET_INVALID。原件文件可读不证明格式可解码：截断/版本/语义损坏由 Construction 解码时判定，Library 不把 Raw 解码为空 cells。需要 Target 语义验证而无验证器时明确 SCHEMA_UNAVAILABLE。Library 报告本次实际摘要；施工的 expectDigest 比较由 Construction 完成。损坏不返回空建筑。
+
+**两个摘要口径必须分清**（2026-11-01 批14）：
+
+| 摘要 | 谁算 | 是什么 |
+|---|---|---|
+| `library.get().digest` | Library | `design.*` 原件字节的 sha256，恒指原件 |
+| `build.plan` 的 `blueprint.digest` | Construction | **实际被解释的那份来源**的 sha256：有 `target.json` 就是它，否则是 `design.*` |
+
+`expectDigest` 保护的是"真正被施工的那份内容"，所以用后者。修改 `target.json` 而不动 `design.*` 时，只有后者会变。
+
+**原件的解释范围（批14 实际支持）**：只为 Sponge `.schem` v2/v3（root `Schematic`）提供解码；`.litematic` 与 `.snbt` 明确报 `WRONG_STATE` 并指出支持范围，不返回空建筑。方块实体只保留方块状态，箱子内容与告示牌文字不进入 Target；原件自带 `Offset` 不自动生效——落点由调用的 `at` 决定。
 - 同一目录出现多个 `design.*` → `BLUEPRINT_AMBIGUOUS`，要求作者删掉其余。
 - `about.json` 非法不阻止读取字节：`list` 里标 `aboutError`，`get` 仍返回文件事实。
 

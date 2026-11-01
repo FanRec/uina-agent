@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-01 · 批14 蓝图与施工（K5 关闭）
+
+- 能力面 +2：`build.plan@1`（派生只读：规范化 targets + need/missing/blocked/unreachable/estTicks；不可等待，组合根注入 `ConstructionPlanner` 窄端口，World 不依赖 Construction/Library）、`build@1`（开局读一次计划 → 派发前判 CONFLICT/MISSING_MATERIAL → 先清后放、按列自下而上、多轮 → 收尾逐格复读世界复核 remaining）。`build` 的 progress 必须总量守恒：`placed + cleared + skipped + remainingCount` 恒等于设计格数，超时或中断时队列里没轮到的格以 `reason: "not attempted yet"` 补进 `remaining`（真服先报出 `remainingCount: 0` 而实际还剩 67 格）。
+- 新模块 `construction/`：Target 四分类与规范化/镜像/旋转（`target.ts`）、最小 NBT 读取（`nbt.ts`）、Sponge `.schem` v2/v3 解码（`schem.ts`）、`target.json` 两种写法（`target-json.ts`）、唯一差异实现（`plan.ts`）、组合端口（`index.ts`）。
+- Library 增 `readDesign(name)`（原件 + target 字节与两个摘要，不进 `LibraryPort` 公共面）；`companion/side.ts` 把 Library 上移到 World 之前并用惰性 getter 注入施工端口。
+- 共享原语抽取：`place-cell.ts` 的 `inspectPlacement`/`commitPlacement` 由 `place@1` 与 `build@1` 共用（`place@1` 行为逐字等价，原测试零改动通过）；`no-support` 与 `out-of-reach` 分开（前者延后重试，后者走位一次）；支撑面按候选轮换（服务端会拒绝门顶这类面）。
+- 裁决登记（capabilities.md §3/§4 已写回）：`target.json` schema = `minecraft:construction.target@1`（密集 palette+cells / 稀疏 cells 列表）；`blueprint.digest` = **实际被解释来源**的 sha256（与 `library.get` 的原件摘要分开）；`.schem` 只支持 Sponge v2/v3，其余 `WRONG_STATE`；mirror 在包围盒内翻转、rotate 绕 Y 顺时针，状态只变换 facing/axis/rotation/hinge/shape；`targets` 上限 2048、`cells` 512；`blocked.by` = 现场方块名；`unreachable` = 结构支撑缺失（非寻路判决）；`estTicks` 常量模型；`scaffoldsUsed` 恒 0。
+- Runtime/Host/历史持久格式不变。能力 **39/51**（14 查询 + 25 动作）；下一包按 §10.3 为玩家名单与地图（K6）。
+- 已知缺口：G20 关闭（`build.plan` 落地）；新增 G22（施工不搭脚手架、不绕行）；G21 补批14 实测（平坦地面 goto 5 格 0.6s vs 跨 1 格石台 40s 超时，直接决定了按列自下而上的施工顺序）。真服验收（Paper 1.21.11：`dev:mc:build` 源码/产物各 12/12）与踩到的真实行为见 dev/MC-WORLD.md 批14 节、[实施记录](archive/construction-implementation.md)。
+
 ## 2026-10-31 · 批13 地形切片与空间作业
 
 - 能力面 +3：`region@1`（闭区间/at+size 双形态，palette 第 0 项恒 air、order 固定 xzy、未加载格 -1 计 missing、体素 ≤8192 否则 INVALID_INPUT 带切片建议；逐格事实视图有界同步采样，48 格实测 ~3ms）、`tunnel@1`（L 形两轴走廊 + 台阶 1:1 + 段尾竖井；下坡列挖檐块、上坡列在前一位列挖跳跃净空；support 探测檐上重力方块先挖后挖 profile）、`excavate@1`（层自上而下、层内就近序、keep 保留、容器先 transfer@1 收内容再挖、drops 聚合背包正增量、收尾以世界读数复核 remaining）。

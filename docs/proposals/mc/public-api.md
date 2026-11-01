@@ -610,6 +610,21 @@ writeRecord 的 schema 所有权、分区与 CAS，以及 retain/release 的持�
 
 `route.plan@1` 是试算，不属于 current/static/history 三类读取：World 按 ref 分派给组合根注入的窄计划端口（`WorldRoutePlanner`，类型见 contracts/world.ts；组合根用 Driver 受控寻路实现），结果 cursor=null 不可等待。World 不依赖 Driver。
 
+`build.plan@1` 同理：不属于三类读取，World 按 ref 分派给组合根注入的窄计划端口 `ConstructionPlanner { plan(query): Promise<BuildPlanValue> }`（类型见 contracts/world.ts；组合根用 Construction 实现——读 Library 的原件字节、经 `region@1` 读现场、复用同一份差异算法），结果 `source:"derived"`、cursor=null、不可等待。**World 不依赖 Construction 或 Library**，Construction 也不依赖 World（用 `world: () => WorldReadPort` 惰性取值，与 `CapabilityDeps.runtime` 同一手法）。
+
+```ts
+interface ConstructionTargetCell { at: Vec3; kind: "set"|"clear"|"preserve"|"unknown"; block?: BlockSpec; reason?: string }
+interface BuildPlanValue {
+  blueprint?: { ref: string; digest: string };
+  targets: ConstructionTargetCell[];        // 已加锚点、已变换的绝对格，按 (y,z,x) 排序
+  need: Record<string, number>;
+  missing: Record<string, number>;
+  blocked: { at: Vec3; by: string }[];
+  unreachable: { at: Vec3 }[];
+  estTicks: number;
+}
+```
+
 批 12：`surface@1` 消费组合根注入的窄探测端口 `SurfaceProbe`（类型见 contracts/world.ts；组合根用 Driver 客户端本地区块实现站立/露天判据与露天出口查找，G3）。能力层不触碰客户端对象；未加载区块返回 null（未知），由动作按未知处理，不猜空气。
 
 程序 waitUntil 由 [Program §2.4/§7](modules/program.md) 定义；每个 target 保留自己的观察版本，不伪造全局水位。

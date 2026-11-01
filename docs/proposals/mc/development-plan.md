@@ -1,6 +1,8 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-25（批12 更新 2026-10-31）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **13 查询 + 24 动作（37/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+日期：2026-10-25（批14 更新 2026-11-01）。状态：施工规划；批 0–3 的 I1/K1、采集、窗口容器和生产链已实现，后续按本次重排执行。当前能力目录实际为 **14 查询 + 25 动作（39/51）**，以 `buildCapabilities()` 的装配结果为准；此前“12 查询 + 18 动作”的计数在批12 更正、“13+24”在批14 更正。批 4–5 底座与批 6 正式原生入口已实现并完成首次真实模型校准；最终审查/验收见 [实施记录](archive/native-host-implementation.md)，批 7 程序执行闭环已实现，详见 [实施记录](archive/program-implementation.md)；批 8 Library 文件与发现复用已实现，见 [实施记录](archive/library-implementation.md)；批 9A 可等待查询与程序等待已实现，见 [实施记录](archive/wait-implementation.md)；批 9B 的决策、调度、现有历史引用清理与 I2 已实现，实现与验收边界见 [实施记录](archive/decision-implementation.md)。完整程序闭环 I2 在批 9，详见 §10。
+
+批 14 落地 K5 蓝图与施工（`build.plan@1`/`build@1`、`construction/` 模块与 `.schem` 解码），见 [实施记录](archive/construction-implementation.md)。
 
 K1/采集/容器落在 `d77d20f`，Driver 修复在 `6157834`；本次核查的分支为 `codex/phase0-baseline`，批 6 开工 HEAD 为 `9ac9cbd`，已包含批 4–5；批 6 在 `58f1ba0` 接通正式原生模型入口，见 [实施记录](archive/native-host-implementation.md)，不迁移真实数据。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
@@ -253,7 +255,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](archive/native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **下一工作包为空间作业与施工**（region/tunnel/excavate、build.plan/build）：批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭），能力面 **34/51**；脱困/站立判据与地点记录已可用，见 dev/MC-WORLD.md 批12 节。region 先行（G4 ctx.verify 的首个真实消费者）。
+3. **下一工作包为玩家名单与地图**（players/map，K6）：批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），能力面 **39/51**；见 dev/MC-WORLD.md 批13、批14 两节。players 与 map 分开验收，map 另需正式 observe 图片附件出口。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -295,7 +297,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ### 10.3 玩法就绪队列（默认优先级，可据校准调整）
 
-以下不是“前一行全部完成才能开始下一行”的串行表。**批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；接下来先做蓝图与施工（build.plan/build）**；其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
+以下不是“前一行全部完成才能开始下一行”的串行表。批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭）；**接下来先做玩家名单（players）**，地图另起一批（需要正式 observe 图片出口）。其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
 
 | 工作包 | 交付范围 | 直接依赖与边界 | 验收任务 |
 |---|---|---|---|
@@ -307,7 +309,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | 高频反馈与默认自保（批10已接通，见 archive/feedback-implementation.md） | Driver feedback/loop/背压，Program 控制桥，Runtime safety 介入和效果归属 | 同一 ClientFactsPort、控制资格与停止合同；默认自保是明确交付项，主脑可按玩法调整 | 测完整 sample→guest→apply 时延和过期输入撤销；移动/挖掘等动作被介入后进度、控制与未知效果保留，禁止旧写源复活 |
 | ~~地形切片（K4）~~ | region | **批13 已实现**（2026-10-31，G4 关闭：ctx.verify 注册表 + verify/dig@1 首个消费者） | 跨区块结构对拍一致；未加载格 -1 计 missing；8704 格 INVALID_INPUT（真服 8/8） |
 | ~~空间作业（K4）~~ | tunnel、excavate | **批13 已实现**（2026-10-31）：L 形走廊+台阶 1:1+檐块/跳跃净空+砾石支撑；层序清空+keep+容器先收后挖 | 两条 1:1 阶梯隧道连通可走、砾石支撑先挖、excavate 区域全清+箱子保留+容器内容入包（真服 8/8）；上坡行走楔死登记 G21 |
-| 蓝图与施工（K5） | Library 的 Raw→Target→Project、build.plan、build | 文件库、region/现场差异、挖放与材料；复用空间作业的共同差异逻辑，不为它们另造玩法 Runtime | 5×5 木屋缺料→补料→完成；含门/火把与 preserve/unknown；plan 后改图产生 CONFLICT，修复只做真实差异 |
+| ~~蓝图与施工（K5）~~ | Library 的 Raw→Target→Project、build.plan、build | **批14 已实现**（2026-11-01）：`construction/` 模块（Target 语义/`.schem` 解码/差异计划）、`place-cell` 抽取、`build.plan` 派生查询 + `ConstructionPlanner` 窄端口 | 5×5 木屋缺料→补料→完成；含门/火把与 preserve/unknown；plan 后改图产生 CONFLICT，修复只做真实差异（真服源码/产物各 12/12） |
 | 玩家名单（K6） | players | Driver 实际公告名单和跟踪实体分别投影；可独立提前 | 玩家离开跟踪后名单仍可保留，tracked=null；离线 UUID 不认证正版 |
 | 地图（K6） | map、正式 observe 图片附件 | 真实地图包/局部像素/图标、World 记录与 Executor 图片出口；与 players 分开验收 | 部分矩形其余像素未知，图标更新不抹像素；重连不复活旧覆盖，模型实际收到图片 |
 | 睡眠（K8） | sleep | 床/位置交互、游戏时间与中断；无完整战斗前置 | 真服睡到天亮；怪物/占床/非夜间失败和取消如实 |
@@ -321,7 +323,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | 交易（K7） | trade | 商人报价、专用选择/确认、材料与费用 | 实际报价/限额/产物/消耗；缺报价数据不猜交易成功 |
 | 跨维度旅行（K8） | transit | 导航、必要挖放/建门、维度/化身代次与原控制退役 | 真服建/找/进入门并在目标维度落位；堵门/缺料按阶段报错，不自动恢复旧控制 |
 
-该表尚缺 **4 查询 + 13 动作**，与已实现的 12 查询 + 22 动作合计 16 + 35。feedback、自保、程序和文件等基础设施另计，不能由能力数量代替。
+该表尚缺 **2 查询 + 10 动作**（players/map 两个查询，K7 五项 + K8 五项动作），与已实现的 14 查询 + 25 动作合计 16 + 35。feedback、自保、程序和文件等基础设施另计，不能由能力数量代替。
 
 ### 10.4 本次顺序裁决与取舍
 
@@ -359,7 +361,7 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 | Runtime 交付记录、Owner 门、恢复与独立 Run 生命周期 | 批 4–6 随 E/H 正式接入落实；不得只包装 submit/wait 就称接入完成 |
 | replace_pending/preempt_current、decide/continue/checkpoint | 批 9B 由 Runtime/Program/World 各自实现并集成，不把受理/决策状态复制到 Executor |
 | World 事件等待、历史保留、Runtime 引用保护 | 可等待查询已在 9A 接齐；持续运行所需清理/精确引用保护由 9B 在 I2 收口，不能永久只增不清 |
-| ctx.verify 与后续效果核验 | 首个需要显式复查 unknown 的真实能力工作包落地对应 verifier（默认空间/施工包），同步 Runtime 接缝；最终验收关闭缺口，不先建无人消费的注册框架 |
+| ~~ctx.verify 与后续效果核验~~ | 批13 已关闭（`verify/dig@1` + 注册表 + 程序桥 `mc.verify`）；批14 的施工用"收尾逐格复读"复核，未新增 verifier——build 的完成判据本来就是世界读数，不需要第二套核验器 |
 | feedback、过期输入、默认自保与 safety 记录 | 批10已接通；完整 fight 随后实现。当前含真实 guest 控制桥、控制撤销与 safety 持久记录，见 archive/feedback-implementation.md |
 | goto 站姿/空间完成判据 | 路径/脱困工作包落实实际可站立判据，保留现有 GoalNear 的真实节点语义，不用欧氏距离误拒 |
 | Microsoft 认证与账号身份核验 | 正式原生入口后可独立开工；有授权账号时验收客户端认证、profile/账号独占，未验收前仅声明 offline 范围。最终完整交付仍须支持两条认证路径 |

@@ -422,6 +422,21 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 - `missing` 是当前可直接施工的物料差额，不把“背包有原木”当作“已有木板”；可合成缺口由 recipe 查询另行说明。blocked 表示当前冲突；build 开始及每次操作前仍重新核验。
 - `blueprint.ref`/`digest` 说明"规划的是哪一份内容"。把 `digest` 传给 `build` 的 `expectDigest`，就能在施工前发现蓝图被改过（`CONFLICT`），而不是默默盖出另一个房子。
 
+实现口径（2026-11-01 批14，本节是这些字段的唯一定义处）：
+
+| 字段 | 形状与含义 |
+|---|---|
+| `targets` | `{at:{x,y,z}, kind, block?, reason?}[]`，`at` 是**已加锚点、已变换**的绝对整数格，按 `(y,z,x)` 固定排序。全量目标（含已匹配格与 preserve/unknown），不是待办清单。上限 2048 格，超限 `INVALID_INPUT` 并给切分建议。 |
+| `kind` | `set` 必有 `block`（只约束名字与显式属性）；`clear` 目标为空；`preserve` 不产生修改也不算未达成；`unknown` 带 `reason`，任何空气策略都不能把它变成可拆除目标。 |
+| `need` | 只统计**现场尚未匹配**的 set 格，按方块名计数（已匹配的格不需要材料）。 |
+| `missing` | `max(0, need − 背包里直接可用的同名方块数)`。不做合成展开。 |
+| `blocked` | `{at, by}`，`by` 是现场占住该格的**方块名**；只对 set 格、且 `replace !== true` 时报告。build 在派发前据此提前 `CONFLICT`。 |
+| `unreachable` | `{at}[]`，**结构**支撑缺失的 set 格：六邻居既非现场实心、也不在同一计划的 set 目标里（且只认同层或更低的计划格——施工自下而上，还没放上去的格当不了点击面）。这不是寻路判决。 |
+| `estTicks` | 排期粗估：`ceil((place+clear)/8)*40 + clear*15 + place*8`。常量集中定义，不是执行承诺。 |
+| `blueprint.digest` | **实际被解释的那份来源**字节的 sha256：有 `target.json` 就是它，否则是 `design.*`。`library.get` 报的 `digest` 仍是原件摘要，两者口径不同。 |
+
+`airPolicy` 缺失且有已知空气时，计划与执行同报 `INVALID_INPUT`（计划不能执行，缺策略就是输入不完整）。设计来源无法解码（未知扩展名、非 Sponge 蓝图）报 `WRONG_STATE`，hint 指出支持范围。
+
 ## 4. 动作（35 个）
 
 每个动作块给：签名、做什么、完成条件、返回、失败码。`P0/P1/P2` 是实施层级。
@@ -527,6 +542,24 @@ Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、cl
 
 共用流程为：固定目标 → 读取现场 → 求差异/材料/冲突 → 排定操作 → 挖掘或放置 → 核验剩余差异。build.plan 只执行前半段，build 执行全部；place 保留单格默认落点/交互面约束，excavate 保留清空顺序与容器处理。它们复用普通函数，不建通用规划服务。tunnel 的连通、台阶与支撑算法仍独立，只复用实际挖放操作。
 
+Target 的机器可读形态（`target.json`，schema `minecraft:construction.target@1`，由 Construction 定义并版本化）有两种写法，二选一：
+
+```json
+{"schema":"minecraft:construction.target@1","size":[5,4,5],"order":"xzy",
+ "palette":[{"kind":"set","block":"oak_planks"},{"kind":"clear"},{"kind":"preserve"},
+            {"kind":"unknown","reason":"来源不明"}],
+ "cells":[0,1,0,2, ...]}
+```
+
+```json
+{"schema":"minecraft:construction.target@1",
+ "cells":[{"at":[100,64,100],"kind":"set","block":"glass"},
+          {"at":[101,64,100],"kind":"clear"},
+          {"at":[100,64,101],"kind":"preserve"}]}
+```
+
+密集形态的索引顺序与 `region@1` 相同（`x` 最快、其次 `z`、最后 `y`），`cells` 长度必须等于 `size` 三量之积；稀疏形态的包围盒由实际格推导，是给人手写的形态（库没有 `target.json` 的写入方）。同一格不能出现两次。
+
 只有所有 set/clear 目标经实际核验才完成。preserve 不产生修改，unknown 不能变为拆除或被计为目标满足；未知设计需要澄清时在派发前失败，现场未知则保留缺口。修复就是同一目标对新现场重新求差异，不按旧完成量跳格。
 
 #### place · `place@1` · act · P0
@@ -545,6 +578,17 @@ Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、cl
 - 完成：所有声明的 set/clear 目标匹配；成功返回 `{placed, cleared, skipped, remaining:[], scaffoldsUsed, blueprint?:{ref,digest}}`。
 - 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{placed, cleared, skipped, remaining:[{at,target,reason}], missing?, scaffoldsUsed, blueprint?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
 - 当前已匹配格跳过；重新调用时依实际现场差异计算，不把旧完成量当新现场真相。
+
+实现口径（2026-11-01 批14）：
+
+- **开局只读一次计划**：用同一份输入（去掉 `maxTimeMs`）读 `build.plan@1`，拿到规范化目标、材料缺口与冲突，之后不再读盘。这样"在途使用本次固定设计字节"与"计划与执行算同一份目标"同时成立；蓝图缺失、`expectDigest` 不符、现场冲突、缺料都在**派发前**判掉。
+- **先清后放，按列自下而上，多轮**。放完一列再放下一列，列按"到设计盒中心的水平距离"升序。理由是实测的：按层铺会把 1 格高的成品面连成一片，寻路会尝试跨上去，而 1 格上坡在本机是已知未修的 Driver 缺口（G21 贴面起跳楔死），整批走位都会 TIMEOUT；按列自下而上，任何已完成的列都是 ≥3 高的墙，寻路只能绕行。多轮是必要的：屋顶内圈、悬挑这类格要等邻居先放好才有可点的面——一轮到底必然漏格。某一轮毫无进展即停，剩下的进 `remaining`。
+- **可预判的拒绝在取身体之前**：冲突、缺料、没有可点的支撑面都先判。`no-support`（还没有可点面）不算失败，留到下一轮；`out-of-reach`（有面但太远）走一次再判，同一格只走一次。
+- **支撑面按候选轮换**：服务端会拒绝某些面（真服实测：门顶放不上，门不是完整方块）。`commitPlacement` 依次试每个可点面，每个面给一次确认窗；只认第一个面会把"有支撑但被拒"变成假失败。
+- **完成口径**：`placed + skipped` 覆盖全部目标，`remaining` 为空。门的上下半是两格，放好下半时服务端自动补上半，于是上半被正确计入 `skipped` 而不是 `placed`——所以断言不能用 `placed === set 数`。
+- **可达性归调用方**：build 只为"够不着"做一次朝向设计盒的走位（盒中心 → 盒外同侧地面），不做绕行寻路，也不搭脚手架。站在封闭结构里或需要登高才能到的格如实进 `remaining`（`scaffoldsUsed` 恒 0）。这与 §4 总则一致：站位是调用方的责任。
+- `remaining` 与 progress 明细截断到 128 条并附 `remainingCount`（progress 超 2048 字节会被 runtime 清空）。
+- **`remaining` 要覆盖"还没轮到"的格**：预算耗尽或被打断时队列可能只走了一小段，只把"试过但没成"的格列进去会报出 `remainingCount: 0`（真服实测：建了 6 格超时，却声称什么都不剩）。未轮到的格以 `reason: "not attempted yet"` 补进清单。判据是总量守恒：`placed + cleared + skipped + remainingCount` 等于设计的目标格数，任何时候都成立。
 
 ### 容器
 
