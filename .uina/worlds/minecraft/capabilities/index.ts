@@ -38,6 +38,7 @@ import { environmentQueries } from "./queries/environment.js";
 import { eventsQuery } from "./queries/events.js";
 import { knowledgeQueries } from "./queries/knowledge.js";
 import { placesQuery } from "./queries/places.js";
+import { playerQueries } from "./queries/players.js";
 import { regionQuery } from "./queries/region.js";
 import { buildPlanQuery } from "./queries/build-plan.js";
 import { routePlanQuery } from "./queries/route-plan.js";
@@ -74,6 +75,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		eventsQuery,
 		containerLastQuery,
 		placesQuery,
+		...playerQueries(),
 		routePlanQuery,
 		buildPlanQuery,
 	];

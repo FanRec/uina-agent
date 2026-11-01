@@ -4,6 +4,8 @@
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §3 world/entities。
  * entities 的 extent 只保证当前 tracked 集合：没找到不等于不存在（§3 entities 注释）。
  * 实体名/分类来自当前版本的静态知识；未知类型如实标 other/null。
+ * 玩家实体：kind 按底层 type="player" 判定；输出 name 用名单 join 出的用户名
+ * （批16），名单不可用时保持 "player"，不加 unknown——entities 的覆盖语义不含名单。
  */
 
 import type { ClientFactView } from "../../contracts/client-facts.js";
@@ -100,14 +102,25 @@ const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
 			const knowledge = deps.knowledge();
 			const unknown = [...entities.unknown];
 			if (knowledge == null) unknown.push("entity categories unavailable: knowledge source not ready");
+			// 玩家名覆写：driver 的实体 type 恒为 "player"；用户名从名单事实按跟踪代次 ref join。
+			// 名单未到（players 事实为 null）时不覆写，实体名保持 "player"。
+			const roster = view.players();
+			const playerNamesByNetworkId = new Map<number, string>();
+			if (roster.value != null) {
+				for (const listed of roster.value.players) {
+					if (listed.entity != null) playerNamesByNetworkId.set(listed.entity.networkId, listed.name);
+				}
+			}
 			const origin = self.value.place.position;
 			const selfId = entities.value.selfRef?.networkId ?? null;
 			const matched: EntityEntry[] = [];
 			for (const entity of entities.value.entities) {
 				if (selfId != null && entity.ref.networkId === selfId) continue;
 				if (entity.position == null) continue;
-				const name = entity.type ?? "unknown";
-				const kind: EntityKind = knowledge?.entityKind(name) ?? (name === "player" ? "player" : "other");
+				const baseType = entity.type ?? "unknown";
+				// kind 先按底层 type 判定，再覆写输出名：按覆写后的名字查分类会把玩家标成 other。
+				const kind: EntityKind = knowledge?.entityKind(baseType) ?? (baseType === "player" ? "player" : "other");
+				const name = baseType === "player" ? (playerNamesByNetworkId.get(entity.ref.networkId) ?? baseType) : baseType;
 				if (wanted !== "all" && kind !== wanted) continue;
 				const dist = distance(entity.position, origin);
 				if (dist > radius) continue;

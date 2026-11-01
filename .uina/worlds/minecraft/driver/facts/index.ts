@@ -2,8 +2,8 @@
  * Client Facts：Driver → World 的当前事实入口（I1 子集）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
- * sample() 同步读取同一本地提交边界的只读纯值；不造值：players/map 返回
- * null + unknown，实体 metadata/components 未捕获如实为 null。
+ * sample() 同步读取同一本地提交边界的只读纯值；不造值：map 返回 null + unknown，
+ * players 在未收到名单公告前同样如此，实体 metadata/components 未捕获如实为 null。
  * sections() 经 bot.blockAt 逐格构建 palette+indices（与 mineflayer findBlocks
  * 同一扫描策略；代价随加载体量线性增长，I1 场景用小半径）。
  * 选定证据（I1：chat/connection 事件）在流内 mark 从 1 起；evidence_gap 如实发，
@@ -102,6 +102,8 @@ export class FactsSource implements ClientFactsPort {
 	private changedScheduled = false;
 	private attachedBot: MineflayerBot | null = null;
 	private windowFact: Fact<WindowSnapshot> | null = null;
+	/** 本连接是否已收到至少一条玩家名单公告；换连接清零，名单未到不冒充空服。 */
+	private rosterSeen = false;
 	private detachFns: (() => void)[] = [];
 	/** 按当前连接版本构建的静态知识缓存；换 bot 即失效。 */
 	private knowledgeCache: { bot: MineflayerBot; value: RegistryKnowledge } | null = null;
@@ -432,6 +434,19 @@ export class FactsSource implements ClientFactsPort {
 		on("entityDespawn", () => this.commit());
 		on("chunkColumnLoad", () => this.commit());
 		on("chunkColumnUnload", () => this.commit());
+		// 玩家名单：首个公告事件起名单可用；三类事件都推进版本（capabilities.md §players 可等待口径）。
+		on("playerJoined", () => {
+			this.rosterSeen = true;
+			this.commit();
+		});
+		on("playerUpdated", () => {
+			this.rosterSeen = true;
+			this.commit();
+		});
+		on("playerLeft", () => {
+			this.rosterSeen = true;
+			this.commit();
+		});
 		// 自身受伤：只认本客户端玩家的实体，不把附近实体受伤记成自己的。
 		const onHurt = (entity: { id?: number } | null, source: { id?: number } | null) => {
 			// 只认本客户端玩家：实体缺失或不是自己不记（不把附近伤害记成自身事件）。
@@ -536,6 +551,7 @@ export class FactsSource implements ClientFactsPort {
 		this.detachFns = [];
 		this.attachedBot = null;
 		this.knowledgeCache = null;
+		this.rosterSeen = false;
 	}
 
 	private currentScope(): ClientFactScope {
@@ -552,6 +568,12 @@ export class FactsSource implements ClientFactsPort {
 	private buildView(): ClientFactView {
 		const bot = this.attachedBot;
 		if (bot == null) throw new Error("facts view requires live bot");
-		return createView({ bot, scope: this.currentScope(), stamp: { ...this.stamp }, window: this.windowFact });
+		return createView({
+			bot,
+			scope: this.currentScope(),
+			stamp: { ...this.stamp },
+			window: this.windowFact,
+			rosterSeen: this.rosterSeen,
+		});
 	}
 }

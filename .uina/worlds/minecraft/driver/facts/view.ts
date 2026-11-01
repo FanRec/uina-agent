@@ -3,8 +3,9 @@
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4.1、modules/driver.md §11。
  * 这里只做"读 + 成形"：不造值——读不到就 null + unknown 条目，不猜默认值。
- * players/map 在 I1 明确未实现，一律 null + unknown；库存来自协议捕获的
- * 服务端快照，物品组件/耐久按统一 ItemValue 保留，未捕获字段如实未知。
+ * map 在 I1 明确未实现，一律 null + unknown；players 投影服务器实际公告的
+ * 名单（bot.players），未收到任何名单事件前同样 null + unknown；库存来自
+ * 协议捕获的服务端快照，物品组件/耐久按统一 ItemValue 保留，未捕获字段如实未知。
  * 全部构建发生在 sample() 的同一同步边界内，闭包不外泄。
  */
 
@@ -17,6 +18,7 @@ import type {
 	ClientFactStamp,
 	ClientFactView,
 	ClientInventoryValue,
+	ClientListedPlayer,
 	ClientMapValue,
 	ClientPlayersValue,
 	ClientSectionsValue,
@@ -42,6 +44,8 @@ export interface FactViewContext {
 	scope: ClientFactScope;
 	stamp: ClientFactStamp;
 	window?: Fact<WindowSnapshot> | null;
+	/** 本连接是否已收到至少一条玩家名单公告（player_info 事件）。 */
+	rosterSeen: boolean;
 }
 
 /** 一次采样的只读视图；每个方法都是一次独立读取，不共享中间状态。 */
@@ -55,7 +59,7 @@ export function createView(ctx: FactViewContext): ClientFactView {
 		entities: () => entitiesFact(ctx),
 		world: () => worldFact(ctx),
 		searchBlocks: (request) => searchBlocksFact(ctx, request),
-		players: () => absent<ClientPlayersValue>("players list not implemented in I1"),
+		players: () => playersFact(ctx),
 		map: (_id) => absent<ClientMapValue>("map data not implemented in I1"),
 		window: () =>
 			ctx.window == null
@@ -337,6 +341,16 @@ function droppedItemOf(entity: unknown): { name: string; count: number } | null 
 	}
 }
 
+/** 实体引用方案（§5.1）：连接 + 化身 + 外观代次 + 网络 id。 */
+function entityRefOf(id: number, stamp: ClientFactStamp): EntityRef {
+	return {
+		connection: stamp.connection ?? "unknown",
+		incarnation: stamp.incarnation ?? "unknown",
+		appearance: `ap:${id}`,
+		networkId: id,
+	};
+}
+
 function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 	const { bot, stamp } = ctx;
 	const entities: ClientEntitiesValue["entities"] = [];
@@ -353,12 +367,7 @@ function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 			velocity?: { x: number; y: number; z: number };
 		};
 		if (e?.id == null) continue;
-		const ref: EntityRef = {
-			connection: stamp.connection ?? "unknown",
-			incarnation: stamp.incarnation ?? "unknown",
-			appearance: `ap:${e.id}`,
-			networkId: e.id,
-		};
+		const ref: EntityRef = entityRefOf(e.id, stamp);
 		const item = droppedItemOf(entity);
 		if (item == null && (e.name === "item" || e.type === "item")) unresolved.push(e.id);
 		entities.push({
@@ -375,21 +384,84 @@ function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 		unknown.push(`dropped item stack not parsed yet for network ids: ${unresolved.slice(0, 8).join(",")}`);
 	}
 	const selfId = (bot.entity as unknown as { id?: number } | undefined)?.id;
-	const selfRef: import("../../contracts/body.js").EntityRef | null =
-		selfId == null
-			? null
-			: {
-					connection: stamp.connection ?? "unknown",
-					incarnation: stamp.incarnation ?? "unknown",
-					appearance: `ap:${selfId}`,
-					networkId: selfId,
-				};
+	const selfRef: EntityRef | null = selfId == null ? null : entityRefOf(selfId, stamp);
 	return {
 		value: { extent: "tracked", entities, selfRef },
 		...factBase(unknown),
 		connection: stamp.connection ?? undefined,
 		incarnation: stamp.incarnation ?? undefined,
 	} as Fact<ClientEntitiesValue>;
+}
+
+// ---- players（服务器公告名单） ----
+
+const GAME_MODE_NAMES: Record<number, string> = { 0: "survival", 1: "creative", 2: "adventure", 3: "spectator" };
+
+/**
+ * 名单 = 服务器实际公告的 player_info 花名册（bot.players），采样时刻同步投影。
+ * 未收到任何名单事件时 null + unknown（名单未到 ≠ 空服，capabilities.md §players）。
+ * 关联实体按采样时刻重新解析：mineflayer 的 player.entity 只在 player_info 时刷新，
+ * 实体离开跟踪范围后可能滞留旧引用，不能直接信任。
+ */
+function playersFact(ctx: FactViewContext): Fact<ClientPlayersValue | null> {
+	if (!ctx.rosterSeen) return absent<ClientPlayersValue>("server roster has not arrived yet");
+	const { bot, stamp } = ctx;
+	const unknown: string[] = [];
+	const roster = (bot as unknown as { players?: Record<string, unknown> }).players ?? {};
+	const trackedPlayers = new Map<string, number>();
+	for (const entity of Object.values(bot.entities)) {
+		const e = entity as unknown as { id?: number; type?: string; username?: string };
+		if (e?.id == null || e.type !== "player" || typeof e.username !== "string") continue;
+		trackedPlayers.set(e.username, e.id);
+	}
+	const players: ClientListedPlayer[] = [];
+	let someGameModeUnknown = false;
+	for (const raw of Object.values(roster)) {
+		const player = raw as {
+			username?: unknown;
+			uuid?: unknown;
+			displayName?: { toString?: unknown } | null;
+			gamemode?: unknown;
+			ping?: unknown;
+		};
+		// 名单键就是 username；无名条目无法成形，跳过并如实计入 unknown。
+		if (typeof player.username !== "string" || player.username.length === 0) {
+			unknown.push("a listed player entry without username was skipped");
+			continue;
+		}
+		const gameMode = typeof player.gamemode === "number" ? (GAME_MODE_NAMES[player.gamemode] ?? null) : null;
+		if (gameMode == null) someGameModeUnknown = true;
+		const entityId = trackedPlayers.get(player.username) ?? null;
+		players.push({
+			name: player.username,
+			uuid: typeof player.uuid === "string" && player.uuid.length > 0 ? player.uuid : null,
+			displayName: chatTextOf(player.displayName),
+			latencyMs: typeof player.ping === "number" ? player.ping : null,
+			gameMode,
+			entity: entityId == null ? null : entityRefOf(entityId, stamp),
+		});
+	}
+	if (someGameModeUnknown) unknown.push("game mode of some listed players not received yet");
+	return {
+		value: { extent: "server_listed", players },
+		...factBase(unknown),
+		connection: stamp.connection ?? undefined,
+		incarnation: stamp.incarnation ?? undefined,
+	} as Fact<ClientPlayersValue | null>;
+}
+
+/** ChatMessage 纯文本化；形状不符时如实 null（mineflayer 恒给 ChatMessage，此处只防形变）。 */
+function chatTextOf(value: { toString?: unknown } | null | undefined): string | null {
+	if (value == null) return null;
+	const toString = value.toString;
+	// 裸对象会继承 Object.prototype.toString，产出 "[object Object]" 垃圾值——与没有一样。
+	if (typeof toString !== "function" || toString === Object.prototype.toString) return null;
+	try {
+		const text = (toString as () => string).call(value);
+		return typeof text === "string" ? text : null;
+	} catch {
+		return null;
+	}
 }
 
 // ---- world（环境读数） ----
