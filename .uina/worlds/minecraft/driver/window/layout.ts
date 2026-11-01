@@ -11,6 +11,9 @@
  * - 玩家窗口：result(0)、crafting(1..4)、armor(5..8)、player(9..44)、offhand(45)。
  * - 工作台：result(0)、crafting(1..9)、player(10..45)。
  * - 熔炉：input(0)、fuel(1)、result(2)、player(3..38)。
+ * - 酿造台：bottle(0..2)、ingredient(3)、fuel(4)、player(5..40)。
+ * - 附魔台：input(0)、lapis(1)、player(2..37)。
+ * - 铁砧/砂轮/商人：input(0,1)、result(2)、player(3..38)。
  * 工作站窗口**不**产出 container 区域：把 input/fuel/result 当普通格搬会静默错位，
  * 因此让按 container 取格的调用方显式失败。
  */
@@ -60,10 +63,81 @@ const FIXED: Readonly<Record<string, WindowLayout>> = {
 			{ name: "player", slots: range(3, 36) },
 		],
 	},
+	// 酿造台：3 个药水槽 + 原料 + 燃料（烈焰粉），进度走 properties 0=酿造刻数、1=燃料。
+	"minecraft:brewing_stand": {
+		slotCount: 41,
+		regions: [
+			{ name: "bottle", slots: range(0, 3) },
+			{ name: "ingredient", slots: [3] },
+			{ name: "fuel", slots: [4] },
+			{ name: "player", slots: range(5, 36) },
+		],
+	},
+	// 附魔台：物品 + 青金石；三档等级要求走 properties 0..2（3 是随机种子，能力层不用）。
+	"minecraft:enchantment": {
+		slotCount: 38,
+		regions: [
+			{ name: "input", slots: [0] },
+			{ name: "lapis", slots: [1] },
+			{ name: "player", slots: range(2, 36) },
+		],
+	},
+	// 铁砧/砂轮/商人三者的菜单形状相同：两个输入 + 一个结果。费用（铁砧）走 properties 0。
+	"minecraft:anvil": {
+		slotCount: 39,
+		regions: [
+			{ name: "input", slots: [0, 1] },
+			{ name: "result", slots: [2] },
+			{ name: "player", slots: range(3, 36) },
+		],
+	},
+	"minecraft:grindstone": {
+		slotCount: 39,
+		regions: [
+			{ name: "input", slots: [0, 1] },
+			{ name: "result", slots: [2] },
+			{ name: "player", slots: range(3, 36) },
+		],
+	},
+	"minecraft:merchant": {
+		slotCount: 39,
+		regions: [
+			{ name: "input", slots: [0, 1] },
+			{ name: "result", slots: [2] },
+			{ name: "player", slots: range(3, 36) },
+		],
+	},
 };
 
 export function isPlainContainer(type: string): boolean {
 	return PLAIN_CONTAINER.test(type) || PLAIN_CONTAINER_EXTRA.has(type);
+}
+
+/**
+ * 哪些方块真的会开出窗口（打开前的预检，避免对着石头白等 5 秒）。
+ * 与下面的布局表同住一个文件：窗口类型与"能开出窗口的方块"是同一件事的两面。
+ * 注意这不等于"是容器"——`container@1` 能开哪些是能力层自己的策略。
+ */
+const WINDOW_BLOCKS = new Set([
+	"chest",
+	"trapped_chest",
+	"ender_chest",
+	"barrel",
+	"hopper",
+	"dispenser",
+	"dropper",
+	"crafting_table",
+	"furnace",
+	"brewing_stand",
+	"enchanting_table",
+	"anvil",
+	"chipped_anvil",
+	"damaged_anvil",
+	"grindstone",
+]);
+
+export function opensWindow(blockName: string): boolean {
+	return WINDOW_BLOCKS.has(blockName) || /(?:^|_)shulker_box$/.test(blockName);
 }
 
 /** 固定布局（玩家窗口与工作站）；未知类型返回 null。 */

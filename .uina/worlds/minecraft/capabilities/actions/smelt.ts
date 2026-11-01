@@ -1,24 +1,19 @@
 /** Furnace loading and collection use confirmed slot transfers; world waits release this call's body scope. */
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import type { BlockTarget, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
+import type { CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
+import type { WindowSnapshot } from "../../contracts/body.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
-import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
+import type { CallFailure, JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { approachBlock } from "../shared/approach.js";
 import { requireKnowledge } from "../shared/knowledge.js";
+import { checkBudget, waitFor } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
-import { findStation, placeStation } from "../shared/stations.js";
-import { assertSameDimension, fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
-import { readBlockAt, readInventory, type InventorySnapshot } from "../shared/views.js";
+import { fail, stripNamespace } from "../shared/targets.js";
+import { readInventory } from "../shared/views.js";
+import { countInRegion, resolveStation, stackLimit, withStation } from "../shared/workstation.js";
 import { type TransferAmounts, transferWindow, windowRegion, windowSlot } from "../shared/window-transfer.js";
 
 const SMELT_TIMEOUT_MS = 120_000;
-const bare = (name: string): string => name.replace(/^minecraft:/, "");
-
-function interrupted(ctx: CallContext): void {
-	if (ctx.signal.aborted) fail("INTERRUPTED", "smelt action was stopped", { recoverable: false });
-}
 
 /** 熔炼产物计数：结果槽里只认目标名。 */
 function producedIn(snapshot: WindowSnapshot, resultSlot: number, name: string): number {
@@ -65,57 +60,6 @@ function resolveFuel(
 		});
 	}
 	return { item: options[0].name, unitTicks: options[0].unit };
-}
-
-interface Furnace {
-	position: Vec3;
-	target: BlockTarget;
-	connection?: string;
-	incarnation?: string;
-}
-
-async function resolveFurnace(
-	ctx: CallContext,
-	raw: unknown,
-	inventory: InventorySnapshot,
-	deadline: number,
-): Promise<Furnace> {
-	checkBudget(ctx, deadline);
-	const observation = await ctx.world.read<SelfState>({ ref: "self@1", input: {} });
-	const self = observation.value;
-	if (self == null) fail("WRONG_STATE", "self state is not available");
-	checkBudget(ctx, deadline);
-	let position: Vec3;
-	if (raw != null) {
-		const point = resolvePoint(raw, self);
-		assertSameDimension(point, self, "furnace");
-		position = resolveGrid(raw, self);
-	} else {
-		const nearby = await findStation(ctx, "furnace", 8);
-		if (nearby != null) {
-			position = nearby;
-		} else if ((inventory.counts.furnace ?? 0) > 0) {
-			checkBudget(ctx, deadline);
-			position = await placeStation(ctx, "furnace");
-		} else {
-			fail("WRONG_STATE", "no furnace nearby and none in the inventory", {
-				hint: "craft a furnace from 8 cobblestone, place it, or pass at",
-			});
-		}
-	}
-	checkBudget(ctx, deadline);
-	const block = await readBlockAt(ctx.world, position);
-	if (block == null || bare(block.name) !== "furnace") {
-		fail("NOT_FOUND", "target is not an observed furnace", {
-			hint: "smelt@1 supports the furnace only; blast_furnace and smoker are not supported yet",
-		});
-	}
-	return {
-		position,
-		target: { block: position, place: { ...self.place, position } },
-		connection: observation.connection,
-		incarnation: observation.incarnation,
-	};
 }
 
 /** 装料槽里已有的异名物品必须先由人处理：静默混装会让熔炼产出无法归因。 */
@@ -177,93 +121,10 @@ const smeltDescriptor: CallableDescriptor = {
 	],
 };
 
-/** Wait on the world clock with no window and no locally acquired body scope. */
-async function waitForProbe(ctx: CallContext, delay: number): Promise<void> {
-	interrupted(ctx);
-	await new Promise<void>((resolve, reject) => {
-		const onAbort = () => {
-			clearTimeout(timer);
-			try {
-				interrupted(ctx);
-			} catch (error) {
-				reject(error);
-			}
-		};
-		const timer = setTimeout(() => {
-			ctx.signal.removeEventListener("abort", onAbort);
-			resolve();
-		}, delay);
-		ctx.signal.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
-function checkBudget(ctx: CallContext, deadline: number): void {
-	interrupted(ctx);
-	if (Date.now() >= deadline) fail("TIMEOUT", "smelting exceeded maxTimeMs");
-}
-
-async function validateFurnace(ctx: CallContext, furnace: Furnace): Promise<void> {
-	const current = await ctx.world.read<SelfState>({ ref: "self@1", input: {} });
-	const original = furnace.target.place;
-	const place = current.value?.place;
-	if (
-		place == null ||
-		place.world !== original.world ||
-		place.worldRevision !== original.worldRevision ||
-		place.dimension !== original.dimension ||
-		current.connection !== furnace.connection ||
-		current.incarnation !== furnace.incarnation
-	) {
-		fail("REFERENCE_STALE", "the original furnace world or player identity changed");
-	}
-	const block = await readBlockAt(ctx.world, furnace.position);
-	if (block == null || bare(block.name) !== "furnace")
-		fail("REFERENCE_STALE", "the original furnace is no longer present");
-}
-
-async function withFurnace<T>(
-	ctx: CallContext,
-	furnace: Furnace,
-	deadline: number,
-	work: (window: WindowSession) => Promise<T>,
-): Promise<T> {
-	checkBudget(ctx, deadline);
-	await validateFurnace(ctx, furnace);
-	await approachBlock(ctx, furnace.position, "smelt");
-	await validateFurnace(ctx, furnace);
-	checkBudget(ctx, deadline);
-	return await ctx.withBody(async (scope: BodyCallScope) => {
-		checkBudget(ctx, deadline);
-		await validateFurnace(ctx, furnace);
-		const window = await scope.player.openContainer(furnace.target);
-		try {
-			checkBudget(ctx, deadline);
-			return await work(window);
-		} finally {
-			await window.close({ force: true });
-		}
-	});
-}
-
+/** 炉内进度属性：只认服务端报过的数值，没收到就是 0（不猜）。 */
 function ticks(snapshot: WindowSnapshot, property: string): number {
 	const value = snapshot.properties[property];
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function countIn(snapshot: WindowSnapshot, region: string, name: string): number {
-	return windowRegion(snapshot, region).reduce((sum, slot) => {
-		const item = windowSlot(snapshot, slot);
-		return sum + (item?.name === name ? item.count : 0);
-	}, 0);
-}
-
-function stackLimit(knowledge: RegistryKnowledge, snapshot: WindowSnapshot, name: string): number {
-	const observed = snapshot.slots
-		.map((slot) => slot.item as unknown as { name: string; stackSize?: number } | null)
-		.find((item) => item?.name === name && item.stackSize != null)?.stackSize;
-	const limit = observed ?? knowledge.item(name)?.stackSize;
-	if (limit == null || limit < 1) fail("WRONG_STATE", `stack limit for ${name} is unknown`);
-	return limit;
 }
 
 export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
@@ -327,17 +188,26 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 						if (credit) completed += delta;
 					} else if (delta > 0 && kind !== "output") loaded[kind].count += delta;
 					await ctx.progress(progress() as never);
-					checkBudget(ctx, deadline);
+					checkBudget(ctx, deadline, "smelting");
 				};
 			};
 			try {
-				const furnace = await resolveFurnace(ctx, input.at, before, deadline);
+				const furnace = await resolveStation(
+					ctx,
+					{
+						block: "furnace",
+						at: input.at,
+						deadline,
+						hint: "craft a furnace from 8 cobblestone, place it, or pass at; blast_furnace and smoker are not supported yet",
+					},
+					before,
+				);
 				endpoint = plain({ position: furnace.position, dimension: furnace.target.place.dimension });
 				while (completed < wanted) {
-					const batch = await withFurnace(ctx, furnace, deadline, async (window) => {
+					const batch = await withStation(ctx, furnace, "minecraft:furnace", deadline, async (window) => {
 						dispatched = true;
 						let snapshot = (await window.snapshot()).value;
-						checkBudget(ctx, deadline);
+						checkBudget(ctx, deadline, "smelting");
 						const resultSlot = windowRegion(snapshot, "result")[0];
 						const inputSlot = windowRegion(snapshot, "input")[0];
 						const fuelSlot = windowRegion(snapshot, "fuel")[0];
@@ -348,7 +218,7 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 								{ regions: { block: "result", player: "player" }, onProgress: record("output", false) },
 							);
 							snapshot = (await window.snapshot()).value;
-							checkBudget(ctx, deadline);
+							checkBudget(ctx, deadline, "smelting");
 						}
 						assertSlotFree(snapshot, inputSlot, inputItem, "input");
 						const existingFuel = windowSlot(snapshot, fuelSlot);
@@ -369,10 +239,10 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 							loaded.fuel.item = fuel.item;
 						}
 						const existingInput = windowSlot(snapshot, inputSlot)?.count ?? 0;
-						const availableInput = countIn(snapshot, "player", inputItem);
+						const availableInput = countInRegion(snapshot, "player", inputItem);
 						const inputRoom = stackLimit(knowledge, snapshot, inputItem) - existingInput;
 						const outputRoom = Math.floor(stackLimit(knowledge, snapshot, name) / recipe.output.count);
-						const fuelAvailable = fuel == null ? 0 : countIn(snapshot, "player", fuel.item);
+						const fuelAvailable = fuel == null ? 0 : countInRegion(snapshot, "player", fuel.item);
 						const fuelCompatible = existingFuel == null || existingFuel.name === fuel?.item;
 						const fuelRoom =
 							fuel == null || !fuelCompatible
@@ -398,7 +268,7 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 						}
 						if (quantity <= 0)
 							fail("MISSING_MATERIAL", "not enough input, slot room, or confirmed fuel for another smelting batch");
-						checkBudget(ctx, deadline);
+						checkBudget(ctx, deadline, "smelting");
 						await transferWindow(
 							window,
 							{ direction: "to", item: inputItem, count: quantity },
@@ -406,10 +276,10 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 						);
 						// Loading can span server ticks. Re-read actual burn/input before adding fuel.
 						const afterLoad = (await window.snapshot()).value;
-						checkBudget(ctx, deadline);
+						checkBudget(ctx, deadline, "smelting");
 						const remainingTicks = Math.max(
 							0,
-							cookTicks * countIn(afterLoad, "input", inputItem) -
+							cookTicks * countInRegion(afterLoad, "input", inputItem) -
 								ticks(afterLoad, "2") -
 								ticks(afterLoad, "0") -
 								(windowSlot(afterLoad, fuelSlot)?.count ?? 0) *
@@ -419,13 +289,13 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 						if (
 							fuelCount > 0 &&
 							(fuel == null ||
-								fuelCount > countIn(afterLoad, "player", fuel.item) ||
-								fuelCount > stackLimit(knowledge, afterLoad, fuel.item) - countIn(afterLoad, "fuel", fuel.item))
+								fuelCount > countInRegion(afterLoad, "player", fuel.item) ||
+								fuelCount > stackLimit(knowledge, afterLoad, fuel.item) - countInRegion(afterLoad, "fuel", fuel.item))
 						)
 							fail("MISSING_MATERIAL", "confirmed remaining fuel cannot cover the loaded input");
 						if (fuelCount > 0 && fuel != null) {
 							assertSlotFree(afterLoad, fuelSlot, fuel.item, "fuel");
-							checkBudget(ctx, deadline);
+							checkBudget(ctx, deadline, "smelting");
 							await transferWindow(
 								window,
 								{ direction: "to", item: fuel.item, count: fuelCount },
@@ -447,11 +317,11 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 					let estimate = Math.max(1000, (batch.ticks / 20) * 1000);
 					let idle = 0;
 					while (completed < goal) {
-						checkBudget(ctx, deadline);
-						await waitForProbe(ctx, Math.min(estimate, Math.max(0, deadline - Date.now())));
-						await withFurnace(ctx, furnace, deadline, async (window) => {
+						checkBudget(ctx, deadline, "smelting");
+						await waitFor(ctx, Math.min(estimate, Math.max(0, deadline - Date.now())), "smelting");
+						await withStation(ctx, furnace, "minecraft:furnace", deadline, async (window) => {
 							const snapshot = (await window.snapshot()).value;
-							checkBudget(ctx, deadline);
+							checkBudget(ctx, deadline, "smelting");
 							const resultSlot = windowRegion(snapshot, "result")[0];
 							const available = producedIn(snapshot, resultSlot, name);
 							if (available > 0)
@@ -461,7 +331,7 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 									{ regions: { block: "result", player: "player" }, onProgress: record("output", true) },
 								);
 							if (completed >= goal) return;
-							idle = furnaceIdle(snapshot) && countIn(snapshot, "fuel", fuel?.item ?? "") === 0 ? idle + 1 : 0;
+							idle = furnaceIdle(snapshot) && countInRegion(snapshot, "fuel", fuel?.item ?? "") === 0 ? idle + 1 : 0;
 							if (idle >= 2) fail("TARGET_NOT_MET", "furnace stopped before producing the requested output");
 							estimate = Math.max(
 								1000,
@@ -471,7 +341,7 @@ export function smeltCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 						await ctx.progress(progress() as never);
 					}
 				}
-				checkBudget(ctx, deadline);
+				checkBudget(ctx, deadline, "smelting");
 				return plain({ produced, consumed: loaded, at: endpoint });
 			} catch (error) {
 				if (error instanceof Error && error.name === "CallFailure") {

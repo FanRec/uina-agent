@@ -45,6 +45,7 @@ import { runMining } from "./mining.js";
 import { runSign } from "./sign.js";
 import { runEquip, runToss } from "./inventory.js";
 import type { BodyOperationDeps } from "./operation.js";
+import { opensWindow } from "../window/layout.js";
 import { WindowSessionImpl } from "../window/session.js";
 import { FeedbackController } from "./feedback.js";
 
@@ -1237,15 +1238,11 @@ export class BodySessionImpl implements BodySession {
 						recoverable: true,
 					});
 				}
-				if (
-					!/^(chest|trapped_chest|ender_chest|barrel|hopper|dispenser|dropper|crafting_table|furnace|(?:[a-z_]+_)?shulker_box)$/.test(
-						block.name,
-					)
-				) {
+				if (!opensWindow(block.name)) {
 					throw fail({
 						code: "UNSUPPORTED_WINDOW",
 						source: "capability",
-						message: "target has no supported window layout (plain containers, crafting table and furnace only)",
+						message: `${block.name} does not open a supported window`,
 						dispatch: "not_sent",
 						recoverable: false,
 					});

@@ -91,3 +91,32 @@ export async function readValue<T>(
 	}
 	return observation.value;
 }
+
+/**
+ * 整次调用的墙钟预算：中断立刻上抛，超时按 TIMEOUT 结算。
+ * 与 pollUntil 分开是因为调用方在两次观察之间还要做别的派发。
+ */
+export function checkBudget(ctx: { signal: AbortSignal }, deadline: number, what: string): void {
+	if (ctx.signal.aborted) fail("INTERRUPTED", `${what} action was stopped`, { recoverable: false });
+	if (Date.now() >= deadline) fail("TIMEOUT", `${what} exceeded its time budget`);
+}
+
+/** 等待墙钟但不持身体、不开窗口（世界侧等待的唯一写法）。 */
+export async function waitFor(ctx: { signal: AbortSignal }, delayMs: number, what: string): Promise<void> {
+	checkBudget(ctx, Number.POSITIVE_INFINITY, what);
+	await new Promise<void>((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer);
+			try {
+				checkBudget(ctx, Number.POSITIVE_INFINITY, what);
+			} catch (error) {
+				reject(error);
+			}
+		};
+		const timer = setTimeout(() => {
+			ctx.signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, delayMs);
+		ctx.signal.addEventListener("abort", onAbort, { once: true });
+	});
+}

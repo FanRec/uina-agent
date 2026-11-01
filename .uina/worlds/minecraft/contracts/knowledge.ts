@@ -67,4 +67,9 @@ export interface RegistryKnowledge {
 	canonicalItemName(name: string): string | null;
 	/** 实体分类（hostile/passive/player/other）；未知实体返回 null。 */
 	entityKind(name: string): "hostile" | "passive" | "player" | "other" | null;
+	/**
+	 * 附魔注册表编号 → 名字。组件里的附魔是 Holder，线上只有编号；
+	 * 未知编号返回 null（调用方报编号，不编假名字）。
+	 */
+	enchantment(id: number): { name: string; maxLevel: number } | null;
 }

@@ -41,7 +41,7 @@ export function windowSlot(snapshot: WindowSnapshot, slot: number): ItemValue | 
 	return windowItem(entry.item);
 }
 
-function expectation(item: ItemValue | null): StackExpectation {
+export function expectation(item: ItemValue | null): StackExpectation {
 	if (item == null) return { item: null, count: 0 };
 	return {
 		item: {

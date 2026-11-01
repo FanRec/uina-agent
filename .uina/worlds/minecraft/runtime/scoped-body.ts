@@ -38,6 +38,10 @@ export function scopedBody(session: BodySession, scope: { signal: AbortSignal; o
 		return {
 			snapshot: () => run(() => raw.snapshot()),
 			click: (input) => run(() => raw.click(input)),
+			selectEnchant: (offer) => run(() => raw.selectEnchant(offer)),
+			renameItem: (name) => run(() => raw.renameItem(name)),
+			selectTrade: (index) => run(() => raw.selectTrade(index)),
+			offers: () => run(() => raw.offers()),
 			close: async (options) => {
 				await raw.close(options);
 				windows.delete(raw);

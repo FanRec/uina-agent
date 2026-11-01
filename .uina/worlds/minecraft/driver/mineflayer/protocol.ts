@@ -1,6 +1,6 @@
 /** Connection-bound protocol seam. Other Driver modules consume decoded facts, never wire packets. */
 import { createRequire } from "node:module";
-import type { ItemValue, SignText, WindowSnapshot } from "../../contracts/body.js";
+import type { ItemValue, MerchantOfferValue, SignText, WindowSnapshot } from "../../contracts/body.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "../execution.js";
@@ -16,6 +16,7 @@ export type ProtocolNotice =
 	| { kind: "cursor"; item: JsonValue | null }
 	| { kind: "player_slot"; slot: number; item: JsonValue | null }
 	| { kind: "property"; windowId: number; property: number; value: number }
+	| { kind: "trades"; windowId: number; offers: MerchantOfferValue[] }
 	| { kind: "window_open"; window: NativeWindow }
 	| { kind: "window_close"; window: NativeWindow | null }
 	| { kind: "replacement" }
@@ -36,18 +37,38 @@ interface NativeItem {
 interface ItemCodec {
 	fromNotch(value: unknown): NativeItem | null;
 }
+/** 商人报价的线上形态：付款项给 itemId/count，产物是 Slot（count=0 表示空）。 */
+interface RawTradeCost {
+	itemId: number;
+	itemCount: number;
+}
+interface RawTrade {
+	inputItem1?: RawTradeCost;
+	inputItem2?: RawTradeCost;
+	outputItem?: { itemId?: number; itemCount: number };
+	tradeDisabled?: boolean;
+	nbTradeUses?: number;
+	maximumNbTradeUses?: number;
+	xp?: number;
+}
 interface RawPackets {
 	window_items: { windowId: number; items: unknown[]; carriedItem?: unknown };
 	set_slot: { windowId: number; slot: number; item: unknown };
 	set_cursor_item: { contents: unknown };
 	set_player_inventory: { slotId: number; contents: unknown };
 	craft_progress_bar: { windowId: number; property: number; value: number };
+	trade_list: { windowId: number; trades?: RawTrade[] };
 	open_window: unknown;
 	open_horse_window: unknown;
 	block_change: { location: Vec3; type: number };
 	multi_block_change: { chunkCoordinates: Vec3; records: number[] };
 	open_sign_entity: { location: Vec3; isFrontText: boolean };
 	tile_entity_data: { location?: Vec3 };
+}
+/** registry 只暴露到这里的字段；不引第二份物品表。 */
+interface ItemRegistry {
+	itemsArray?: { id: number; name: string }[];
+	items?: Record<string, { id: number; name: string }>;
 }
 export interface DriverProtocol {
 	readonly version: string;
@@ -57,6 +78,10 @@ export interface DriverProtocol {
 	item(value: unknown): ItemValue | null;
 	playerSnapshot(): WindowSnapshot | null;
 	click(window: NativeWindow, slot: number, button: number): void;
+	/** 工作站专用提交（批 15）：只写包，不预测槽位、不判定生效。 */
+	selectEnchant(window: NativeWindow, offer: number): void;
+	renameItem(name: string): void;
+	selectTrade(index: number): void;
 	close(window: NativeWindow): void;
 	activateBlock(position: Vec3, face?: number, hand?: number, cursor?: Vec3): void;
 	activateEntity(networkId: number, hand?: number): void;
@@ -79,6 +104,7 @@ class Protocol12111 implements DriverProtocol {
 	private readonly listeners = new Set<(notice: ProtocolNotice) => void>();
 	private readonly detach: (() => void)[] = [];
 	private codec: ItemCodec | null = null;
+	private itemNames: Map<number, string> | null = null;
 	private player: WindowSnapshot | null = null;
 	private lastClosedWindow: NativeWindow | null = null;
 	private playerSynchronized = false;
@@ -176,6 +202,10 @@ class Protocol12111 implements DriverProtocol {
 		raw("craft_progress_bar", (p) =>
 			this.emit({ kind: "property", windowId: p.windowId, property: p.property, value: p.value }),
 		);
+		raw("trade_list", (packet) => {
+			const offers = (packet.trades ?? []).map((trade, index) => this.offer(trade, index));
+			this.emit({ kind: "trades", windowId: packet.windowId, offers });
+		});
 		raw("open_window", () => {
 			this.lastClosedWindow = null;
 			this.emit({ kind: "replacement" });
@@ -297,6 +327,37 @@ class Protocol12111 implements DriverProtocol {
 		const name = this.bot.registry.blocksByStateId[stateId]?.name;
 		this.emit({ kind: "block", position, stateId, air: name === "air" || name === "cave_air" || name === "void_air" });
 	}
+	/** 线上 itemId → 物品名；registry 与当前版本同源，查不到时不编造名字。 */
+	private itemName(id: number): string {
+		this.itemNames ??= (() => {
+			const registry = this.bot.registry as unknown as ItemRegistry;
+			const map = new Map<number, string>();
+			for (const entry of registry.itemsArray ?? []) map.set(entry.id, entry.name);
+			for (const entry of Object.values(registry.items ?? {})) map.set(entry.id, entry.name);
+			return map;
+		})();
+		return this.itemNames.get(id) ?? "unknown";
+	}
+	/** 付款项只在 itemCount>0 时算存在；产物为 Slot（itemCount=0 即空）。 */
+	private cost(raw: RawTradeCost | undefined): { item: string; count: number }[] {
+		if (raw == null || raw.itemCount <= 0) return [];
+		return [{ item: this.itemName(raw.itemId), count: raw.itemCount }];
+	}
+	private offer(trade: RawTrade, index: number): MerchantOfferValue {
+		const output = trade.outputItem;
+		return {
+			index,
+			cost: [...this.cost(trade.inputItem1), ...this.cost(trade.inputItem2)],
+			output:
+				output == null || output.itemCount <= 0 || output.itemId == null
+					? { item: "unknown", count: 0 }
+					: { item: this.itemName(output.itemId), count: output.itemCount },
+			disabled: trade.tradeDisabled === true,
+			uses: trade.nbTradeUses ?? 0,
+			maxUses: trade.maximumNbTradeUses ?? 0,
+			xp: trade.xp ?? 0,
+		};
+	}
 	private write(name: string, input: Record<string, unknown>): void {
 		this.check();
 		this.bot._client.write(name, input);
@@ -317,6 +378,18 @@ class Protocol12111 implements DriverProtocol {
 	close(window: NativeWindow): void {
 		this.check();
 		this.bot.closeWindow(window);
+	}
+	/** enchant_item 的 enchantment 是 0..2 的档位下标（服务端 clickMenuButton）。 */
+	selectEnchant(window: NativeWindow, offer: number): void {
+		this.write("enchant_item", { windowId: window.id, enchantment: offer - 1 });
+	}
+	/** name_item 在 1.21.11 不带 windowId：只能作用于当前打开的铁砧菜单。 */
+	renameItem(name: string): void {
+		this.write("name_item", { name });
+	}
+	/** select_trade 的 slot 是报价下标（0 基）。 */
+	selectTrade(index: number): void {
+		this.write("select_trade", { slot: index });
 	}
 	activateBlock(position: Vec3, face = 1, hand = 0, cursor: Vec3 = { x: 0.5, y: 0.5, z: 0.5 }): void {
 		this.write("block_place", {

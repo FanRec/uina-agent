@@ -2,13 +2,14 @@
 import type {
 	BlockTarget,
 	EntityRef,
+	MerchantOfferValue,
 	StackExpectation,
 	WindowClickReceipt,
 	WindowSession,
 	WindowSnapshot,
 } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
-import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
+import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { EffectRecorder, fail, nowIso } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
 import { type NativeWindow, type DriverProtocol, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
@@ -113,6 +114,8 @@ export class WindowSessionImpl implements WindowSession {
 	private readonly wake = new Set<() => void>();
 	private readonly earlyFull = new Map<number, Extract<ProtocolNotice, { kind: "full" }>>();
 	private readonly detach: (() => void)[] = [];
+	/** 本窗口收到的商人报价；换窗/关闭即作废，不跨窗口复用。 */
+	private offerList: MerchantOfferValue[] | null = null;
 
 	constructor(private readonly deps: WindowSessionDeps) {
 		this.wire = protocolFor(deps.bot);
@@ -152,6 +155,9 @@ export class WindowSessionImpl implements WindowSession {
 						break;
 					case "property":
 						this.onProperty(notice);
+						break;
+					case "trades":
+						this.onTrades(notice);
 						break;
 				}
 			}),
@@ -194,6 +200,7 @@ export class WindowSessionImpl implements WindowSession {
 			return;
 		}
 		this.native = window;
+		this.offerList = null;
 		const early = this.earlyFull.get(window.id);
 		this.earlyFull.clear();
 		if (early !== undefined) this.onFull(early);
@@ -269,6 +276,12 @@ export class WindowSessionImpl implements WindowSession {
 	private readonly onProperty = (packet: { windowId: number; property: number; value: number }): void => {
 		if (!this.live() || this.value === null || this.native?.id !== packet.windowId) return;
 		this.update({ ...this.value, properties: { ...this.value.properties, [packet.property]: packet.value } });
+	};
+	/** trade_list 只属于它报的那个窗口；先到后到都按 id 对齐，不跨窗口保留。 */
+	private readonly onTrades = (packet: Extract<ProtocolNotice, { kind: "trades" }>): void => {
+		if (this.retired || this.native?.id !== packet.windowId) return;
+		this.offerList = packet.offers.map((offer) => ({ ...offer }));
+		this.notify();
 	};
 
 	private update(next: WindowSnapshot): void {
@@ -534,12 +547,87 @@ export class WindowSessionImpl implements WindowSession {
 		return { effect, dispatch: "sent", completion: "unknown", evidence: [], needsSnapshot: true };
 	}
 
+	/**
+	 * 工作站专用提交（批 15）：只写包，不改 revision、不做槽位预测、不置 uncertain。
+	 * 完成合同与 chat 同口径——"包已进入当前连接的协议发送边界"，
+	 * 由此产生的窗口状态是另一次观察，由能力层按证据判定。
+	 */
+	private commit(
+		contract: `${string}@${string}`,
+		expect: string[],
+		detail: Record<string, JsonValue>,
+		write: (native: NativeWindow) => void,
+	): EffectReceipt {
+		this.check();
+		const native = this.native;
+		if (native === null || this.value === null) throw failure("WRONG_STATE", "window is not ready");
+		const type = String(native.type);
+		if (!expect.includes(type))
+			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${type}`);
+		const operation = this.deps.operation;
+		const effect = this.deps.mintEff();
+		try {
+			write(native);
+		} catch (error) {
+			this.deps.recorder.record(effect, operation, contract, "dispatch", "not_sent", "unknown", detail);
+			if ((error as { name?: string }).name === "CallFailure") throw error;
+			throw fail({
+				code: "INTERNAL",
+				source: "environment",
+				message: error instanceof Error ? error.message : String(error),
+				dispatch: "not_sent",
+				recoverable: false,
+			});
+		}
+		this.deps.recorder.record(effect, operation, contract, "dispatch", "sent", "unknown", detail);
+		this.deps.recorder.record(effect, operation, contract, "receipt", "sent", "met", {
+			completionContract:
+				"selection packet written into the protocol send boundary; the resulting window state is a separate observation",
+		});
+		return { effect, dispatch: "sent", completion: "met", evidence: [] };
+	}
+
+	async selectEnchant(offer: 1 | 2 | 3): Promise<EffectReceipt> {
+		if (![1, 2, 3].includes(offer)) throw failure("INVALID_INPUT", "enchantment offer must be 1, 2 or 3");
+		return this.commit("body.window.selectEnchant@1", ["minecraft:enchantment"], { offer }, (native) =>
+			this.wire.selectEnchant(native, offer),
+		);
+	}
+
+	async renameItem(name: string): Promise<EffectReceipt> {
+		return this.commit("body.window.renameItem@1", ["minecraft:anvil"], { name }, () => this.wire.renameItem(name));
+	}
+
+	async selectTrade(index: number): Promise<EffectReceipt> {
+		if (!Number.isInteger(index) || index < 0)
+			throw failure("INVALID_INPUT", "trade index must be a nonnegative integer");
+		return this.commit("body.window.selectTrade@1", ["minecraft:merchant"], { index }, () =>
+			this.wire.selectTrade(index),
+		);
+	}
+
+	async offers(): Promise<Fact<MerchantOfferValue[] | null>> {
+		this.check();
+		if (this.value === null) throw failure("WRONG_STATE", "window content has not arrived");
+		return {
+			value: this.offerList === null ? null : structuredClone(this.offerList),
+			observedAt: this.observedAt,
+			connection: this.deps.connection,
+			incarnation: this.deps.incarnation,
+			source: "server",
+			coverage: this.offerList === null ? "partial" : "complete",
+			unknown: this.offerList === null ? ["no trade_list received for this window"] : [],
+			evidence: [],
+		};
+	}
+
 	/** Synchronous retirement: no old callback can publish, click or close a replacement window. */
 	retire(closeNative: boolean): void {
 		if (this.retired) return;
 		this.retired = true;
 		for (const detach of this.detach.splice(0)) detach();
 		this.earlyFull.clear();
+		this.offerList = null;
 		this.notify();
 		const native = this.native;
 		if (

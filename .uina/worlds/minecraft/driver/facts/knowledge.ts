@@ -65,6 +65,8 @@ export interface RegistryLike {
 	entityLoot?: Record<string, LootEntry>;
 	entitiesByName?: Record<string, { type?: string; category?: string }>;
 	recipes?: Record<string, RawRecipe[]>;
+	/** 附魔注册表（prismarine-registry 已从 minecraft-data 载入）；线上组件只给编号。 */
+	enchantmentsArray?: { id: number; name: string; displayName?: string; maxLevel?: number }[];
 }
 
 /** 工具类型/材质表：只覆盖原版工具命名，不匹配就如实 null。 */
@@ -199,6 +201,11 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 	// 类别覆盖：合成/熔炼/方块/实体都有，缺交易。
 	const categoriesComplete = false;
 
+	const enchantmentsById = new Map<number, { name: string; maxLevel: number }>();
+	for (const entry of registry.enchantmentsArray ?? []) {
+		enchantmentsById.set(entry.id, { name: stripNamespace(entry.name), maxLevel: entry.maxLevel ?? 1 });
+	}
+
 	const itemCache = new Map<string, KnowledgeItem | null>();
 
 	const itemOf = (rawName: string): KnowledgeItem | null => {
@@ -260,9 +267,17 @@ export function buildRegistryKnowledge(registry: RegistryLike): RegistryKnowledg
 			if (entity == null) return null;
 			const category = entity.category ?? "";
 			if (entity.type === "hostile" || /hostile/i.test(category)) return "hostile";
-			if (/passive|animal|ambient|water|tameable/i.test(category) || entity.type === "animal") return "passive";
+			// villagers/动物在数据里的 category 常是 UNKNOWN，靠 type 判：漏掉这一支会让
+			// entities@1 {kind:"passive"} 看不见村民（trade 的无目标路径就找不到商人）。
+			if (
+				entity.type === "passive" ||
+				entity.type === "animal" ||
+				/passive|animal|ambient|water|tameable/i.test(category)
+			)
+				return "passive";
 			return "other";
 		},
+		enchantment: (id) => enchantmentsById.get(id) ?? null,
 	};
 }
 

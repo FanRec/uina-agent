@@ -18,7 +18,7 @@ export interface CallResult {
 }
 
 export interface InventoryView {
-	slots: { slot: number; name: string; count: number }[];
+	slots: { slot: number; name: string; count: number; components?: JsonValue; durability?: number | null }[];
 	counts: Record<string, number>;
 	held?: { name: string; count: number };
 	usedSlots?: number;

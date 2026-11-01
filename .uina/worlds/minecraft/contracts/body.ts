@@ -179,6 +179,21 @@ export interface WindowClickReceipt extends EffectReceipt {
 	needsSnapshot: boolean;
 }
 
+/**
+ * 商人报价：服务端 `trade_list` 的真实载荷。index 是 0 基报价序号
+ * （对应 selectTrade 的参数），付款项按协议实际给 1 或 2 项，不补齐。
+ */
+export interface MerchantOfferValue {
+	index: number;
+	cost: { item: string; count: number }[];
+	output: { item: string; count: number };
+	/** 该报价当前不可交易（等级不足/已下架）。 */
+	disabled: boolean;
+	uses: number;
+	maxUses: number;
+	xp: number;
+}
+
 export interface WindowSession {
 	snapshot(): Promise<Fact<WindowSnapshot>>;
 	click(input: {
@@ -189,6 +204,17 @@ export interface WindowSession {
 		expectedSlots: { slot: number; stack: StackExpectation }[];
 		expectedCursor: StackExpectation;
 	}): Promise<WindowClickReceipt>;
+	/**
+	 * 工作站专用提交（批 15）：只承诺"包已进入当前连接"，生效与否由能力层按证据判定。
+	 * 三者都不改 revision、不做槽位预测；非对应窗口类型在派发前报 WRONG_STATE。
+	 */
+	selectEnchant(offer: 1 | 2 | 3): Promise<EffectReceipt>;
+	/** 铁砧改名；协议包不带 windowId，只能作用于当前打开的铁砧窗口。 */
+	renameItem(name: string): Promise<EffectReceipt>;
+	/** 商人第 index 个报价（0 基）。 */
+	selectTrade(index: number): Promise<EffectReceipt>;
+	/** 商人报价；未收到 trade_list 时为 null，不冒充空报价。 */
+	offers(): Promise<Fact<MerchantOfferValue[] | null>>;
 	/** 普通关闭要求光标为空；失败/取消清理须显式 force，保留未知归还/丢弃后果。 */
 	close(options?: { force?: boolean }): Promise<void>;
 }
