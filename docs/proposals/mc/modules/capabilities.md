@@ -310,6 +310,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 输入 `{ radius?: 32, kind?: "hostile"|"passive"|"player"|"all", limit?: 32 }`
 - 返回 `{ entities:[{ ref, name, kind, position, distance, health?, held? }], scanned:{ radius } }`
 - `ref` 是稳定引用（连接+世代+网络 id），可直接传给 `attack`/`fight`/`follow`。
+- **批16 起玩家实体 name 输出用户名**：kind 仍按底层 type 判定；从名单事实（players@1）按跟踪代次 ref join 出用户名，名单未到或关联不上时保持 `"player"`，不加 unknown。
 - 例：`{ kind:"hostile", radius:16 } → { entities:[{ref:"s3:7:1042",name:"zombie",kind:"hostile",position:{x:124,y:64,z:-25},distance:6.4}] }`
 
 ### players · `players@1`
@@ -318,6 +319,8 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 只读取服务器实际公告的名单。离开实体跟踪范围仍可在名单里，但 tracked=null；未公告不证明离线，服务器插件隐藏的人也不凭空出现。尚未收到名单时返回部分覆盖和 unknown，不冒充空服。
 - UUID 可为 null；offline 服务端提供的 UUID 仍不证明正版身份。tracked.ref 必须关联当前 EntityRef；不能将名单项直接传给 attack/follow。
 - **可等待，非 feedback**：名单、关联实体出现/失效、位置及覆盖变化推进版本；不读历史或为名单主动发送 `/list`。
+
+实现说明（2026-11-01 批16）：名单=服务器 player_info 花名册（mineflayer `bot.players` 采样时刻同步投影）；首个玩家公告事件前 null + unknown，收到空名单如实空表。关联实体在采样时刻从当前跟踪集合重新解析（不信任 mineflayer 只在 player_info 时刷新的 `player.entity` 缓存），tracked 位置/距离由能力层与 entities 事实 join，join 不中如实 unknown。gamemode 数值映射 survival/creative/adventure/spectator，未收到或未知映射为 null + unknown。displayName 为客户端纯文本化结果，服务端未发独立 displayName 时与用户名相同（mineflayer 以用户名兜底，无法区分）。玩家实体名覆写见 entities@1 注记。
 
 ### item · `item@1`
 - 输入 `{ name: Name }`

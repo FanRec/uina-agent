@@ -1,5 +1,12 @@
 # 设计变更记录
 
+## 2026-11-01 · 批16 K6 玩家名单（players@1）
+
+- 能力面 +1：`players@1`（可等待、非 feedback）——名单=服务器 player_info 花名册（`bot.players` 采样时刻同步投影，`rosterSeen` 区分"名单未到"与"收到但为空"）；`tracked:{ref,position,distance}` 由能力层与 entities 事实按跟踪代次 join，离开跟踪范围名单仍在、tracked=null；输入 `{name?, limit?:1..256=64}`，listedCount 不受 limit 截断。
+- **entities@1 玩家名覆写**：玩家实体 kind 先按底层 type 判定，name 从名单 join 出用户名（修掉 follow/explore 按玩家名目标 NOT_FOUND）；名单不可用回退 `"player"`，不加 unknown。
+- driver facts：`playerJoined/playerUpdated/playerLeft` 推进事实版本；关联实体按采样时刻重新解析，不信任 mineflayer 的 `player.entity` 缓存；`entityRefOf` 收敛实体引用方案一份；displayName 纯文本化排除 `Object.prototype.toString` 继承。
+- Runtime/Host/历史持久格式不变，public-api.md 零改动（合同早已定型）。能力 **45/51**（15 查询 + 30 动作）；下一包按 §10.3 为 map（K6 收口，需 G11 图片出口 + `map_item_data` 捕获/色板）。真服验收（Paper 1.21.11：`dev:mc:players` 源码/构建产物各 11/11，第二玩家 ClientHost 真连接）与踩坑见 dev/MC-WORLD.md 批16 节。
+
 ## 2026-11-01 · 批15 K7 专用工作站（G2 关闭）
 
 - 能力面 +5：`brew@1`（一批 ≤3 瓶，完成只认瓶子 `potion_contents` 变号）、`enchant@1`（三档等级要求来自 `properties[0..2]`，缺省取最高可负担档，完成后读物品 `enchantments` 组件）、`anvil@1`（rename 走 `name_item` 包，费用读属性 0；原版只在"真的有变化"时给结果）、`grindstone@1`（`xp` 恒 null：经验球无法归因）、`trade@1`（`trade_list` 报价 + `select_trade`，付款先收敛成"正好一份"再取货）。
