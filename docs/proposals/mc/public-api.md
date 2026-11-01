@@ -259,6 +259,15 @@ interface WindowClickReceipt extends EffectReceipt {
   confirmed?: WindowSnapshot; // 确认时的服务端完整快照；本次点击只归因被点击槽与光标的转换
   needsSnapshot: boolean;
 }
+// 商人报价：来自服务端 trade_list 的真实载荷；index 是 0 基报价序号（对应 select_trade 的 slot）。
+interface MerchantOfferValue {
+  index: number;
+  cost: {item: string; count: number}[]; // 1 或 2 项，按协议实际给出的付款项
+  output: {item: string; count: number};
+  disabled: boolean;
+  uses: number; maxUses: number;
+  xp: number;
+}
 interface WindowSession {
   snapshot(): Promise<Fact<WindowSnapshot>>;
   click(input: {
@@ -266,6 +275,13 @@ interface WindowSession {
     expectedSlots: { slot: number; stack: StackExpectation }[];
     expectedCursor: StackExpectation;
   }): Promise<WindowClickReceipt>;
+  // 批 15 专用提交：只派发、只承诺"包已进入连接"，生效与否由能力层按证据判定。
+  // 三者都不改 revision、不做槽位预测；非对应窗口类型在派发前报 WRONG_STATE。
+  selectEnchant(offer: 1 | 2 | 3): Promise<EffectReceipt>; // 附魔台第 offer 档（enchant_item）
+  renameItem(name: string): Promise<EffectReceipt>; // 铁砧改名（name_item，协议不带 windowId）
+  selectTrade(index: number): Promise<EffectReceipt>; // 商人第 index 个报价（select_trade，0 基）
+  // 商人报价；未收到 trade_list 时为 null（不冒充空报价，也不为此主动发 /list）。
+  offers(): Promise<Fact<MerchantOfferValue[] | null>>;
   close(options?: {force?: boolean}): Promise<void>;
 }
 interface AttackOutcome {
@@ -337,9 +353,9 @@ dig 的 aim 默认 target，可调整视角；preserve 不自动瞄准，供同�
 
 click 的 confirmed 是确认时的完整服务端快照，供消费者直接推进内容 revision 与观察值。只有被点击槽与光标的 mode-0 转换归因于本次点击，其他槽位只是同次观察。相关后态无法确认时 needsSnapshot=true；当前实现封闭该窗口的后续业务点击并要求关闭，不用另一次读取洗白未知或重放业务点击。
 
-窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 覆盖类型、布局、槽位与光标的变化，**不随 `properties` 推进**（炉子进度每秒数次；revision 是点击的 CAS 前置条件，只约束点击真正依赖的内容），也不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。区域名由布局表统一定义：普通容器 `container`+`player`；玩家窗口 `result`/`crafting`/`armor`/`player`/`offhand`；工作台 `result`/`crafting`+`player`；熔炉 `input`/`fuel`/`result`+`player`。工作站窗口**不产出 `container` 区域**，按 `container` 取格的调用方必须显式失败而不是把 input 当普通格。
+窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 覆盖类型、布局、槽位与光标的变化，**不随 `properties` 推进**（炉子进度每秒数次；revision 是点击的 CAS 前置条件，只约束点击真正依赖的内容），也不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。区域名由布局表统一定义：普通容器 `container`+`player`；玩家窗口 `result`/`crafting`/`armor`/`player`/`offhand`；工作台 `result`/`crafting`+`player`；熔炉 `input`/`fuel`/`result`+`player`；酿造台 `bottle`/`ingredient`/`fuel`+`player`；附魔台 `input`/`lapis`+`player`；铁砧、砂轮与商人 `input`/`result`+`player`。工作站窗口**不产出 `container` 区域**，按 `container` 取格的调用方必须显式失败而不是把 input 当普通格。
 
-普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；失败清理显式 close({force:true})，作用域退出/停机同样强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择并非现有 click 的别名；对应能力设计须在此补确切受控操作合同，经同一窗口适配执行，不向玩法公开 Bot，也不另建窗口能力目录。
+普通 close 要求光标为空且没有未结束手势，否则报 CURSOR_NOT_EMPTY/WINDOW_GESTURE_ACTIVE，不隐式丢弃或搬槽；失败清理显式 close({force:true})，作用域退出/停机同样强制关闭并保存可能的协议后果、故障及未知。snapshot 纯读；主动重同步需当前窗口资格、串行派发、独立取消与故障期限。专用附魔/改名/交易选择不是现有 click 的别名，由上方 `selectEnchant`/`renameItem`/`selectTrade` 三个受控操作承接：它们经同一窗口适配派发、不改 revision、不承诺生效，完成口径归调用它的能力（批 15）。不向玩法公开 Bot，也不另建窗口能力目录。
 
 当前受控协议实现为 Java 1.21.11。版本差异集中在按连接创建、随连接退役的 DriverProtocol；未来版本实现相同窄端口，不让能力/World/Runtime 添加协议分支。其他版本的相关写入明确报 UNSUPPORTED_PROTOCOL。
 

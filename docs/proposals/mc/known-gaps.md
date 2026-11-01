@@ -8,10 +8,10 @@
 
 | 顺序 | 条目 | 理由 |
 |---|---|---|
-| 1 | G1 领域记录 | 下一工作包（地点/探索）的唯一前置；纯确定性、可单测，不依赖真服 |
+| 1 | G1 领域记录 | ~~下一工作包的唯一前置~~（已关闭） |
 | 2 | G6 节流推送 | 同时修掉"模型不 read 就瞎"和"轮询成本"，是面向观众这条线的前置 |
 | 3 | G8 按调用的短窗 | 演出节奏的唯一硬阻塞，改动面最小 |
-| 4 | G5 剩余 26 项能力 | 按 §4 的 7 个工作包推进，不平铺 |
+| 4 | G5 剩余 12 项能力 | 按 §4 的工作包推进，不平铺（批15 后剩 players/map + K8 五项） |
 | 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞 |
 
 ## 2. P0 阻断项
@@ -25,13 +25,14 @@
 - **验收**：临时 SQLite Worker 关闭重开读回一致；同名覆盖只作用于对应世界记录；真服记住点 → 重启 → 读回并使用。
 - **关闭事实**：records 表落地（SCHEMA v3→v4，`meta.record_version` 独立推进）、`removeRecord` 增补进 WorldPort 合同；`mc-world-records.test.ts` 覆盖 CAS/分区/悬空证据/重开/旧库拒绝；真服 `pnpm dev:mc:places` 源码与产物各 9/9（含"记住基地 → 关闭重开 → 读回 → goto 使用"，落点 gap 0.71）。author 列未建（合同无 author 字段，不预建）。
 
-### G2 · Driver 窗口只有 4 类
+### G2 · Driver 窗口只有 4 类（✅ 已于 2026-11-01 批15 关闭）
 
 - **现象**：布局表只有玩家窗口、工作台、熔炉、普通容器（`generic_9x1-6`、`generic_3x3`、`hopper`、`shulker_box`）。
 - **证据**：`driver/window/layout.ts:31-54`；`crafting`/`furnace` 之外的 `blast_furnace`、`smoker`、`brewing_stand`、`enchanting_table`、`anvil`、`grindstone` 均无条目。
 - **影响**：K7 五项（`brew` `enchant` `anvil` `grindstone` `trade`）全部卡死在这里，能力层无法绕开。
 - **修法**：`window/layout.ts` 扩表，`protocol.ts` 的玩家快照继续复用同一张表；每个新窗口先只接"开窗 + 快照 + 关窗"，专用选择协议留给各自能力包。
 - **验收**：各工作站开窗后 `slots[].region` 与真实客户端一致；不支持的类型仍明确失败。
+- **关闭事实**：布局表增 5 条（brewing_stand 41 / enchantment 38 / anvil·grindstone·merchant 39，槽号真服实测核对），同文件新增 `opensWindow()` 替换 `body/session.ts` 里那份把附魔台/铁砧全拒掉的硬编码正则——那才是比布局表更早的卡点。K7 五项真服验收 14/14（源码与构建产物各一次），见 [实施记录](archive/stations-implementation.md)。`blast_furnace`/`smoker` 未加（`smelt@1` 的烹饪刻数与站别检索都要跟着改，没有消费者时不制造"看起来支持"的假象）。
 
 ### G3 · goto 缺站姿/可站立判据（✅ 已于 2026-10-31 批12 关闭）
 
@@ -50,13 +51,14 @@
 
 ## 3. 能力面缺口（G5）
 
-实到 **14 查询 + 25 动作 = 39/51**（2026-10-31 批13 落地 `region` `tunnel` `excavate` 并关闭 G4；2026-11-01 批14 落地 `build.plan` `build`，K5 关闭）。
+实到 **14 查询 + 30 动作 = 44/51**（2026-10-31 批13 落地 `region` `tunnel` `excavate` 并关闭 G4；2026-11-01 批14 落地 `build.plan` `build`，K5 关闭；2026-11-01 批15 落地 `brew` `enchant` `anvil` `grindstone` `trade` 并关闭 G2）。
 
 | 工作包 | 前置 | 缺的条目 |
 |---|---|---|
 | ~~蓝图与施工~~ | — | **批14 已实现** `build.plan` `build` |
+| ~~专用工作站~~ | G2 | **批15 已实现** `brew` `enchant` `anvil` `grindstone` `trade` |
 | 社交与地图 | G11 + 地图包读取 | `players` `map` |
-| 工作站与载具 | G2 + 载具/拴绳/鱼漂/床交互 | `brew` `enchant` `anvil` `grindstone` `trade` `ride` `lead` `fish` `sleep` `transit` |
+| 载具与活动 | 载具/拴绳/鱼漂/床交互 | `ride` `lead` `fish` `sleep` `transit` |
 
 ### G21 · 上坡台阶行走楔死（批13 登记，批14 补充实测）
 

@@ -678,18 +678,26 @@ type EquipInput =
 - 做：酿造台放水瓶/原料，等 20 秒，取出。返回 `{ produced, consumed, at }`
 - 失败 `MISSING_MATERIAL`、`WRONG_STATE`、`TIMEOUT`
 
+实现说明（2026-11-01 批15，冻结）：一次调用只做一批 ≤3 瓶（`bottle`/`ingredient`/`fuel` 区域，`count` 上限 3，`schema.maximum` 拒绝更大值，要多批就多次调用）。**完成只认瓶子的 `potion_contents` 组件变号**——`properties["0"]` 归零也可能只是"本来就没在酿"，不作为证据。燃料槽为空且背包没有烈焰粉时 `MISSING_MATERIAL`（台上是否已有燃料只能开窗后知道，所以不能在取身体之前判全）；原料/水瓶不足仍在取身体之前拒绝。成品名字**按入参**：服务端不下发 `minecraft:potion` 注册表（configuration 的 `registry_data` 实测只送 22 个注册表、无 potion），`observedPotionIds` 是唯一可核实的证据，不符时不冒充。已在台上的异名成品按 `WRONG_STATE` 拒绝，不混装。
+
 #### enchant · `enchant@1` · act · P2
 - 输入 `{ item: Name|ItemSelector, slot?: 1|2|3, at?: Pos }`
 - 做：附魔台放物品与青金石，选第 `slot` 项。返回 `{ enchantments:[{ name, level }], cost, at }`
 - 不指定具体附魔：附魔是随机的，能力只负责"执行这次选择"。定向附魔用 `anvil` 合并附魔书。
 - 失败 `MISSING_MATERIAL`（青金石/等级不够）、`WRONG_STATE`（没有附魔台/书架不足）、`TIMEOUT`
 
+实现说明（2026-11-01 批15，冻结）：三档等级要求来自 `properties[0..2]`，**只有放了物品之后服务端才算出来**（真服无书架实测 1/6/0，第三档 0 = 该档不可用，同一档两次开窗数值可能不同，`cost` 以本次为准）。`slot` 缺省取"等级+青金石都够的最高档"。附魔编号经知识层解名（`registry.enchantmentsArray` 与服务端注册表同序，双向印证过 33=sharpness），查不到报 `#<id>`。完成 = 槽内物品的 `enchantments` 组件非空。**已附魔物品在附魔台三档全 0**，因此优先挑没附魔的那一件（`moveExact` 按具体槽搬，避免同名已附魔副本被搬进去），全都有附魔时 `WRONG_STATE` 并指向 `anvil@1` + 附魔书；`item` 的 `ItemSelector` 形态合同允许、schema 暂未开放。
+
 #### anvil · `anvil@1` · act · P2
 - 输入 `{ operation: "combine"|"repair"|"rename", base: Name, material?: Name, name?: string, at?: Pos }`
 - 返回 `{ result:{ name, enchantments }, cost, at }`；失败 `MISSING_MATERIAL`、`WRONG_STATE`（等级不够）、`TARGET_NOT_MET`（不可合并）
 
+实现说明（2026-11-01 批15，冻结）：费用读 `properties["0"]`；改名走 `renameItem` 包（1.21.11 的 `name_item` 不带 windowId，只能作用于当前打开的铁砧窗口，会话按窗口类型断言兜住）。`result.name` 优先取 `custom_name` 组件，附魔取 `enchantments`。原版只在**真的有变化**时给结果——白板+白板、附魔剑+白板剑都是 cost 0 → 结果槽为空，按合同 `TARGET_NOT_MET` 如实失败（重点击也不算）；费用超过当前经验等级在派发前 `MISSING_MATERIAL`。取回结果后再把输入槽余量整体取回，不让基材留在菜单里。
+
 #### grindstone · `grindstone@1` · act · P2
 - 输入 `{ item: Name|ItemSelector, at?: Pos }` → `{ repaired, removedEnchantments, xp, at }`；失败 `NOT_FOUND`、`WRONG_STATE`
+
+实现说明（2026-11-01 批15，冻结）：结果槽出现即取；`repaired` = 输入/输出 `durability` 差（任一未知则 null），`removedEnchantments` = 输入附魔名减输出附魔名（附魔书用 `stored_enchantments` 一并计入）。**`xp` 恒 null**：砂轮返还的是经验球，需要拾取且无法归因到本次动作，`self.xpLevel` 只按整级变化，用它冒充就是造值。没有附魔也没有磨损的物品在取身体之前 `MISSING_MATERIAL`（库存组件可判）；物品同样按"这一件"搬（`moveExact`），不搬同名的其他副本。
 
 ### 交互与社会
 
@@ -738,6 +746,8 @@ await mc.call("chat@1", {text:"/list"});
 - 输入 `{ target?: EntityRef, offer?: number = 1, item?: Name }`
 - 做：与村民交易，`item` 指定想买的，`offer` 是选第几个报价。
 - 返回 `{ traded:[{ item, count }], cost:{ [item]: number }, at }`；失败 `NOT_FOUND`、`MISSING_MATERIAL`、`WRONG_STATE`（村民没这个报价）
+
+实现说明（2026-11-01 批15，冻结）：`target` 缺省取 8 格内最近的 `villager`/`wandering_trader`（`entityKind` 修正后村民属于 `passive`，此前 minecraft-data 的 `category: "UNKNOWN"` 会让名单里看不见村民）；`item` 与 `offer` 同时给时 `item` 优先。报价来自服务端 `trade_list`（未收到时为 null，不冒充空报价）。付款预检在选交易之前；**`select_trade` 会让服务端把整摞付款搬进付款槽并填好结果槽**，所以取货前先把付款槽收敛成正好一份（`trimPayment`）——余量不清掉，取货后结果槽立刻补货，点击后态不等于 mode-0 预测，回执 unknown 会把整个 run 结算成 unknown。完成 = 取货后背包正增量 ≥ 产物数、净支出正好等于报价（余款由服务端在关窗时退回，但要观察到才认）。报价耗尽/锁定 `WRONG_STATE`，材料不足 `MISSING_MATERIAL`。
 
 #### fish · `fish@1` · act · P2
 - 输入 `{ maxTimeMs?: 60000 }` → `{ caught:[{ item, count }], casts }`；失败 `MISSING_MATERIAL`（没有鱼竿）、`WRONG_STATE`（水面不对）、`TIMEOUT`

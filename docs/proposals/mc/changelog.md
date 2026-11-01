@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-01 · 批15 K7 专用工作站（G2 关闭）
+
+- 能力面 +5：`brew@1`（一批 ≤3 瓶，完成只认瓶子 `potion_contents` 变号）、`enchant@1`（三档等级要求来自 `properties[0..2]`，缺省取最高可负担档，完成后读物品 `enchantments` 组件）、`anvil@1`（rename 走 `name_item` 包，费用读属性 0；原版只在"真的有变化"时给结果）、`grindstone@1`（`xp` 恒 null：经验球无法归因）、`trade@1`（`trade_list` 报价 + `select_trade`，付款先收敛成"正好一份"再取货）。
+- **G2 关闭**：`driver/window/layout.ts` 增 5 条布局（brewing_stand 41 / enchantment 38 / anvil·grindstone·merchant 39），同文件新增 `opensWindow()` 替换 `body/session.ts` 的硬编码正则——它原本把附魔台/铁砧全拒在门外，是比布局表更早的卡点。`container@1` 的容器策略不变（工作站仍拒绝）。
+- `WindowSession` 增 4 个受控操作（`selectEnchant`/`renameItem`/`selectTrade`/`offers`，public-api §4.3 已先行登记）：只派发、不改 revision、不做槽位预测、不置 uncertain，完成合同与 chat 同口径；`trade_list` 在协议窄口捕获，`itemId` 经 registry 解名（未知报 `unknown` 不编名）。
+- 共享件收口：`shared/workstation.ts`（`resolveStation`=原 smelt 的 `resolveFurnace`、`withStation`/`withEntity`、`moveExact` 按具体槽搬、`trimPayment`、组件读取族）；`checkBudget`/`waitFor`/`countInRegion`/`stackLimit` 自 smelt 上移，smelt 行为不变（既有 smelting 测试零改动通过）。
+- 真服协议事实（决定实现，详见实施记录）：附魔三档是服务端随机算的、**已附魔物品三档全 0**；`minecraft:potion` 注册表不下发，药水名只能按入参报、编号进 `observedPotionIds`；`select_trade` 会把整摞付款搬进槽里，余量不清则取货后立刻补货 → 回执 unknown → 整个 run 被 `callHasUnknownEffects` 结算成 unknown；mineflayer 的 `clickWindow` 在商人窗口上会崩（驱动自写包是对的）。
+- 顺带修复：`entityKind` 补 `type==="passive"` 分支——村民的 `category` 是 `UNKNOWN`，漏掉这一支 `entities@1 {kind:"passive"}` 看不见村民。
+- Runtime/Host/历史持久格式不变。能力 **44/51**（14 查询 + 30 动作）；下一包按 §10.3 为玩家名单与地图（K6，`map` 另需 G11 图片出口）。真服验收（Paper 1.21.11：`dev:mc:stations` 源码/构建产物各 14/14）与协议事实见 dev/MC-WORLD.md 批15 节、[实施记录](archive/stations-implementation.md)。
+
 ## 2026-11-01 · 批14 蓝图与施工（K5 关闭）
 
 - 能力面 +2：`build.plan@1`（派生只读：规范化 targets + need/missing/blocked/unreachable/estTicks；不可等待，组合根注入 `ConstructionPlanner` 窄端口，World 不依赖 Construction/Library）、`build@1`（开局读一次计划 → 派发前判 CONFLICT/MISSING_MATERIAL → 先清后放、按列自下而上、多轮 → 收尾逐格复读世界复核 remaining）。`build` 的 progress 必须总量守恒：`placed + cleared + skipped + remainingCount` 恒等于设计格数，超时或中断时队列里没轮到的格以 `reason: "not attempted yet"` 补进 `remaining`（真服先报出 `remainingCount: 0` 而实际还剩 67 格）。
