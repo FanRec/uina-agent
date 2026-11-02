@@ -373,7 +373,7 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("map@1")).toBe(false);
 	});
 
-	test("30 个动作齐备，ref 不重复", () => {
+	test("34 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"anvil@1",
 			"attack@1",
@@ -390,15 +390,19 @@ describe("目录完整性", () => {
 			"excavate@1",
 			"explore@1",
 			"fight@1",
+			"fish@1",
 			"flee@1",
 			"follow@1",
 			"forget@1",
 			"goto@1",
 			"grindstone@1",
+			"lead@1",
 			"mine@1",
 			"pickup@1",
 			"place@1",
 			"remember@1",
+			"ride@1",
+			"sleep@1",
 			"smelt@1",
 			"surface@1",
 			"trade@1",

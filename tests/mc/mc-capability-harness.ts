@@ -137,6 +137,8 @@ export interface HarnessState {
 		selectedSlot?: number | null;
 	};
 	entities?: EntityFixture[];
+	/** world@1 替身（批 18 sleep 用）：缺省白天晴天。 */
+	world?: { ticks: number; weather: string; dimension?: string };
 }
 
 export function key(position: { x: number; y: number; z: number }): string {
@@ -160,8 +162,8 @@ export interface HarnessHooks {
 	onEquip?: (slot: string, selector: ItemSelector | null) => void;
 	onToss?: (name: string, count: number, selector: ItemSelector) => void;
 	digCompletion?: "met" | "not_met" | "unknown";
-	/** 步进替身：测试可在里面模拟"走到之后顺手捡起"。 */
-	onDrive?: (ticks: number) => void;
+	/** 步进替身：测试可在里面模拟"走到之后顺手捡起"；第二参是可变的 self（载具驾驶读数）。 */
+	onDrive?: (ticks: number, selfState: SelfState) => void;
 	/** 导航替身：测试可在里面模拟"走到之后世界发生了什么"（例如顺手捡起）。 */
 	onGoto?: (request: { at: { x: number; y: number; z: number }; tolerance: number }) => void;
 	self?: Partial<SelfState>;
@@ -184,6 +186,18 @@ export interface HarnessHooks {
 	) => void;
 	/** build.plan@1 的替身：build@1 只读一次计划，测试直接给出计划结果。 */
 	buildPlan?: (input: JsonValue) => unknown;
+	/**
+	 * awaitBodyEvent 替身（批 18）：按 kind 返回窗口结论（可 async）；测试在回调里
+	 * 顺手改世界（例如 sleep 事件同时把 ticks 跳到白天）。缺省 = 窗口走完没观察到。
+	 */
+	bodyEvent?: (
+		kind: string,
+		options: { passengerId?: number; detached?: boolean },
+	) =>
+		| { observed: boolean | null; vehicleId?: number | null }
+		| Promise<{ observed: boolean | null; vehicleId?: number | null }>;
+	/** leashedBySelf 替身（批 18）：缺省 = 未拴（interact 路径照走）。 */
+	leashedBySelf?: () => boolean;
 }
 
 export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
@@ -233,6 +247,20 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 					scanned: { radius: raw.radius ?? 32 },
 				}) as Observation<T>;
 			}
+			if (query.ref === "world@1") {
+				const w = state.world ?? { ticks: 1000, weather: "clear", dimension: selfState.place.dimension };
+				return fact({
+					dimension: w.dimension ?? selfState.place.dimension,
+					timeOfDay: "unknown",
+					ticks: w.ticks,
+					dayCount: null,
+					weather: w.weather,
+					biome: null,
+					difficulty: null,
+					gameMode: null,
+					spawn: null,
+				}) as Observation<T>;
+			}
 			if (query.ref === "build.plan@1") {
 				if (hooks.buildPlan == null) throw new Error("this harness has no build plan");
 				return fact(hooks.buildPlan(query.input)) as Observation<T>;
@@ -278,11 +306,12 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		},
 		async drive(input: { lookAt?: unknown }, ticks: number) {
 			calls.push("drive");
-			hooks.onDrive?.(ticks);
+			hooks.onDrive?.(ticks, selfState);
 			// lookAt 为点目标时按"走过去了"建模（spatial 的近距步进依赖它）；
-			// 实体 lookAt（fight 的持盾瞄准）不移动。
+			// 有 onDrive 钩子时移动语义归钩子（载具驾驶的 lookAt 只转向不位移）。
 			const lookAt = input?.lookAt as { x?: unknown; y?: unknown; z?: unknown } | undefined;
 			if (
+				hooks.onDrive == null &&
 				lookAt != null &&
 				typeof lookAt.x === "number" &&
 				typeof lookAt.y === "number" &&
@@ -319,6 +348,18 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		async useItem() {
 			calls.push("useItem");
 			return { effect: "eff:t:7", dispatch: "sent", completion: "met", evidence: [] };
+		},
+		async awaitBodyEvent(kind: string, options: { passengerId?: number; detached?: boolean } = {}) {
+			calls.push(`bodyEvent:${kind}`);
+			return (await hooks.bodyEvent?.(kind, options)) ?? { observed: false, vehicleId: null };
+		},
+		async leashedBySelf() {
+			// 默认未拴（走 interact 路径）；已拴场景由 hook 显式建模（批 18 先拴后牵）。
+			return hooks.leashedBySelf?.() ?? false;
+		},
+		async endSleep() {
+			calls.push("endSleep");
+			return { effect: "eff:t:12", dispatch: "sent", completion: "met", evidence: [] };
 		},
 		async lookAt() {
 			calls.push("lookAt");
