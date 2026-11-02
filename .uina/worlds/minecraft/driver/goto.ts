@@ -70,6 +70,17 @@ export interface GotoOutcome {
 
 const QUIESCE_DEADLINE_MS = 2000;
 
+/**
+ * 无进展判据（G21 收尾）：上游执行器卡住时既不 reject 也不停路径，只在每 3.5s
+ * 静默重规划一次（`resetPath('stuck')` 不 emit `path_stop`），调用方只能等到墙钟。
+ * 这里按"实际位移"而不是"到目标的直线距离"判——绕行会合法地不缩短距离。
+ */
+const STALL_SAMPLE_MS = 500;
+const STALL_WINDOW_MS = 3000;
+const STALL_MIN_DISPLACEMENT = 0.25;
+/** 同一个方块连续挖满这么久还没换目标，就不再当作"正在挖掘"的豁免。 */
+const DIG_STALL_MS = 12000;
+
 /** GoalNear 的判定口径：节点（整数格）之间的 3D 距离。 */
 function nodeGap(a: Vec3, b: Vec3): number {
 	return Math.hypot(
@@ -316,7 +327,7 @@ export class GotoDirector {
 	}
 
 	/**
-	 * 竞速等待：到达 / 上游拒绝 / 墙钟超时 / 信号中断。
+	 * 竞速等待：到达 / 上游拒绝 / 墙钟超时 / 无进展 / 信号中断。
 	 * 上游 promise 经 settle-once 包装收集，避免未处理拒绝与多路清理竞态。
 	 */
 	private awaitOutcome(
@@ -326,16 +337,48 @@ export class GotoDirector {
 	): Promise<"reached" | "timeout" | "aborted" | Error> {
 		return new Promise((resolve) => {
 			let done = false;
+			const samples: { at: number; pos: Vec3 | null }[] = [];
 			const finish = (value: "reached" | "timeout" | "aborted" | Error): void => {
 				if (done) return;
 				done = true;
 				clearTimeout(timer);
+				clearInterval(watchdog);
 				signal.removeEventListener("abort", onAbort);
 				resolve(value);
 			};
 			const timer = setTimeout(() => finish("timeout"), request.timeoutMs);
 			const onAbort = (): void => finish("aborted");
 			signal.addEventListener("abort", onAbort, { once: true });
+			// 起算条件：至少见过一次非空路径。规划期的静止是合法的（A* 可能思考数秒），
+			// 而卡死时上游每次重规划都会重新给出路径，isMoving 只在重规划的那一瞬为假——
+			// 所以"上膛"之后改用 goal 活性判定，不再被重规划窗口打断。
+			let armed = false;
+			let digTarget: unknown = null;
+			let digSince = 0;
+			const watchdog = setInterval(() => {
+				const now = Date.now();
+				const pos = fromMineflayerVec3(bot.entity.position);
+				samples.push({ at: now, pos });
+				while (samples.length > 0 && now - samples[0]!.at > STALL_WINDOW_MS) samples.shift();
+				if (!armed && pathfinderMoving(bot)) armed = true;
+				const digBlock = bot.targetDigBlock;
+				if (digBlock !== digTarget) {
+					digTarget = digBlock;
+					digSince = now;
+				}
+				// 挖掘本身会让身体停住：换目标算进展，同一个方块挖满 DIG_STALL_MS 仍算卡死。
+				const digging = digBlock != null && now - digSince < DIG_STALL_MS;
+				if (!armed || digging || !pathfinderGoalActive(bot)) {
+					samples.length = 0;
+					return;
+				}
+				const oldest = samples[0];
+				if (oldest == null || now - oldest.at < STALL_WINDOW_MS) return;
+				if (oldest.pos == null || pos == null) return;
+				const moved = Math.hypot(pos.x - oldest.pos.x, pos.y - oldest.pos.y, pos.z - oldest.pos.z);
+				if (moved >= STALL_MIN_DISPLACEMENT) return;
+				finish(Object.assign(new Error("navigation made no progress"), { name: "Stalled" }));
+			}, STALL_SAMPLE_MS);
 			gotoNear(bot, request.at, request.tolerance).then(
 				() => finish("reached"),
 				(err: Error) => finish(err),
@@ -386,6 +429,18 @@ export class GotoDirector {
 			});
 		}
 		const name = outcome instanceof Error ? outcome.name : "Unknown";
+		if (name === "Stalled") {
+			return fail({
+				code: "UNREACHABLE",
+				source: "world",
+				message: "navigation made no progress for 3s; the route is blocked or a step cannot be climbed",
+				hint: "inspect the obstacle at the reported position, or allow digThrough / pick a nearer target",
+				dispatch: "sent",
+				progress,
+				effects: [eff],
+				recoverable: true,
+			});
+		}
 		if (name === "NoPath" || name === "Timeout") {
 			return fail({
 				code: "UNREACHABLE",

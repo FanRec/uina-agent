@@ -92,6 +92,9 @@ export function configureMovements(bot: MineflayerBot, config: PathfinderMovemen
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
+	// 上游执行器做不稳跑酷节点（要精确的起跳时机）；默认 true 会让 A* 规划出
+	// 走不出来的路线。与 planEscape/planPath 保持同一口径。
+	movements.allowParkour = false;
 	movements.scafoldingBlocks = config.placeToReach
 		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
 		: [];
@@ -260,6 +263,7 @@ export async function planPath(
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
+	movements.allowParkour = false;
 	movements.scafoldingBlocks = config.placeToReach
 		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
 		: [];

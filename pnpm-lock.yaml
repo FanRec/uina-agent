@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  mineflayer-pathfinder@2.4.5: e19b9c432c4434f5a054b98829e36b02c3d8a856d02a6f7e61d5e075c6527015
   quickjs-emscripten-core@0.32.0: 71cb43aefe9f804e658e2c1a597df9b9e79f772a53c490bee4f0da06317168ae
 
 importers:
@@ -28,7 +29,7 @@ importers:
         version: 4.39.0
       mineflayer-pathfinder:
         specifier: 2.4.5
-        version: 2.4.5
+        version: 2.4.5(patch_hash=e19b9c432c4434f5a054b98829e36b02c3d8a856d02a6f7e61d5e075c6527015)
       quickjs-emscripten:
         specifier: 0.32.0
         version: 0.32.0
@@ -2123,7 +2124,7 @@ snapshots:
       - encoding
       - supports-color
 
-  mineflayer-pathfinder@2.4.5:
+  mineflayer-pathfinder@2.4.5(patch_hash=e19b9c432c4434f5a054b98829e36b02c3d8a856d02a6f7e61d5e075c6527015):
     dependencies:
       minecraft-data: 3.117.0
       prismarine-block: 1.23.0

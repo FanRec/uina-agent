@@ -1,0 +1,142 @@
+diff --git a/index.js b/index.js
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..29c84b8d6e39cb2ea47e3fa7ba859dfa9210a35f 100644
+--- a/index.js
++++ b/index.js
+@@ -27,6 +27,10 @@ function inject (bot) {
+   let placing = false
+   let placingBlock = null
+   let lastNodeTime = performance.now()
++  let stuckSince = 0
++  let backUntil = 0
++  let backOff = 0
++  let backing = false
+   let returningPos = null
+   let stopPathing = false
+   const physics = new Physics(bot)
+@@ -608,26 +612,55 @@ function inject (bot) {
+     bot.setControlState('forward', true)
+     bot.setControlState('jump', false)
+ 
++    // A one-block step has to be jumped with the run-up still intact, so the
++    // decision comes from the blocks ahead rather than from the node type.
++    // Upstream still decides whether the node is reachable at all; the jump key
++    // is only ever pressed when a step is actually in front of the bot.
++    const jumpNow = physics.shouldJump(bot, nextPoint)
++
+     if (bot.entity.isInWater) {
+       bot.setControlState('jump', true)
+       bot.setControlState('sprint', false)
+-    } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
+-      bot.setControlState('jump', false)
+-      bot.setControlState('sprint', true)
+-    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
+-      bot.setControlState('jump', true)
++    } else if (stateMovements.allowSprinting && (physics.canStraightLine(path, true) || physics.canSprintJump(path))) {
++      bot.setControlState('jump', jumpNow)
+       bot.setControlState('sprint', true)
+-    } else if (physics.canStraightLine(path)) {
+-      bot.setControlState('jump', false)
+-      bot.setControlState('sprint', false)
+-    } else if (physics.canWalkJump(path)) {
+-      bot.setControlState('jump', true)
++    } else if (physics.canStraightLine(path) || physics.canWalkJump(path)) {
++      bot.setControlState('jump', jumpNow)
+       bot.setControlState('sprint', false)
+     } else {
+       bot.setControlState('forward', false)
+       bot.setControlState('sprint', false)
+     }
+ 
++    // Step assist: a jump started while already touching a step face cannot clear
++    // it — the collision has eaten the horizontal speed and air control (0.02/tick)
++    // is far too weak to win it back before landing, so the bot just bounces. Back
++    // off for a growing moment to get a run-up, like a player would, then let
++    // shouldJump fire again once there is room.
++    const nowMs = performance.now()
++    const speed = Math.hypot(bot.entity.velocity.x, bot.entity.velocity.z)
++    if (physics.stepAt(bot, nextPoint, 0.6) && speed < 0.12) {
++      if (stuckSince === 0) stuckSince = nowMs
++    } else {
++      stuckSince = 0
++    }
++    if (stuckSince !== 0 && nowMs - stuckSince > 150) {
++      backOff = Math.min(backOff + 200, 900)
++      backUntil = nowMs + backOff
++      stuckSince = 0
++    } else if (nowMs - backUntil > 600) {
++      backOff = 0
++    }
++    if (nowMs < backUntil) {
++      bot.setControlState('forward', false)
++      bot.setControlState('back', true)
++      bot.setControlState('jump', false)
++      backing = true
++    } else if (backing) {
++      bot.setControlState('back', false)
++      backing = false
++    }
++
+     // check for futility
+     if (performance.now() - lastNodeTime > 3500) {
+       // should never take this long to go to the next node
+diff --git a/lib/physics.js b/lib/physics.js
+index ef9e3897b44fd023455f1f0b8adc315d628fa85f..e2590106e94f47cd41127b8472198c79ef4aa984 100644
+--- a/lib/physics.js
++++ b/lib/physics.js
+@@ -1,4 +1,5 @@
+ const { PlayerState } = require('prismarine-physics')
++const Vec3 = require('vec3')
+ 
+ class Physics {
+   constructor (bot) {
+@@ -67,6 +68,50 @@ class Physics {
+     return false
+   }
+ 
++  /**
++   * Whether the bot has to leave the ground on this tick to climb the step it is
++   * walking towards.
++   *
++   * The executor used to read canStraightLine() as "walk, no jump needed" — but
++   * that function also returns true when a *delayed* jump is what makes the node
++   * reachable, so steps were never jumped and the path got reset as stuck. Simply
++   * holding jump does not work either: a jump started while already touching the
++   * step face loses all horizontal speed to the collision, and air control
++   * (0.02/tick) is far too weak to win it back before landing, so the bot just
++   * bounces in place.
++   *
++   * The decision therefore comes from the blocks ahead, never from the node: the
++   * executor only advances to a step node once the bot is 0.35 from the node
++   * below it, which is already too close to jump from. Probing 1.2 and 1.8 blocks
++   * along the direction of travel fires about 1.5 blocks before the face, which
++   * keeps the run-up intact — measured on Paper 1.21.11: takeoff closer than 0.89
++   * from the face never clears the step.
++   */
++  /** Solid at feet level with air above it, `d` blocks along the travel direction. */
++  stepAt (bot, nextPoint, d) {
++    const p = bot.entity.position
++    const dx = nextPoint.x - p.x
++    const dz = nextPoint.z - p.z
++    const len = Math.hypot(dx, dz)
++    if (len < 1e-4) return false
++    const feetY = Math.floor(p.y + 0.1)
++    const bx = Math.floor(p.x + (dx / len) * d)
++    const bz = Math.floor(p.z + (dz / len) * d)
++    const block = bot.blockAt(new Vec3(bx, feetY, bz), false)
++    if (!block || block.boundingBox !== 'block') return false
++    const above = bot.blockAt(new Vec3(bx, feetY + 1, bz), false)
++    return !above || above.boundingBox === 'empty'
++  }
++
++  shouldJump (bot, nextPoint) {
++    // Already touching the face means the run-up is gone; the executor backs off
++    // instead of jumping on the spot (see the step assist in index.js).
++    return (
++      (this.stepAt(bot, nextPoint, 1.2) || this.stepAt(bot, nextPoint, 1.8)) &&
++      !this.stepAt(bot, nextPoint, 0.6)
++    )
++  }
++
+   canStraightLineBetween (n1, n2) {
+     const reached = (state) => {
+       const delta = n2.minus(state.pos)

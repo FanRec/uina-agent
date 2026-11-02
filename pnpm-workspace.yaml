@@ -1,4 +1,5 @@
 allowBuilds:
   esbuild: true
 patchedDependencies:
+  mineflayer-pathfinder@2.4.5: patches/mineflayer-pathfinder@2.4.5.patch
   quickjs-emscripten-core@0.32.0: patches/quickjs-emscripten-core@0.32.0.patch

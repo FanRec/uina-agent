@@ -12,3 +12,23 @@ Emscripten's undercounted realloc memory accounting; Program also checks actual 
 
 Program imports the ESM build. Reevaluate/remove this patch when upgrading the pinned dependency,
 using that regression rather than a version-number assumption.
+
+# mineflayer-pathfinder 2.4.5 patch
+
+`mineflayer-pathfinder@2.4.5.patch` fixes uphill step climbing (G21, batch 19).
+
+- `lib/physics.js`: adds `stepAt(bot, nextPoint, d)` — probe for "solid at feet level, air above" `d`
+  blocks along the travel direction — and rewrites `shouldJump` to jump only when a step exists at
+  1.2/1.8 blocks and the 0.6 block probe is still clear. Upstream `canStraightLine` treated
+  "only clears if you jump early enough" as "walkable", so the executor never pressed jump and every
+  one-block step ended in `resetPath('stuck')` (which does not emit `path_stop`, so the goto promise
+  never settled and burned the full 40s wall clock).
+- `lib/index.js`: routes every movement branch through that single `jumpNow` decision (the
+  `canSprintJump` branch used to hold jump unconditionally), and adds a run-up retry: when the bot is
+  already touching the step face and horizontal speed is ~0, back off for 200–900ms and try again.
+  Real-server measurement: takeoff must start ≥0.89 blocks from the face; jumping while touching it
+  zeroes horizontal speed and the 0.02/tick air control cannot recover it.
+
+`allowParkour` is disabled in our adapter (`driver/mineflayer/pathfinder.ts`) — the executor cannot
+hold parkour nodes reliably. Regression: `pnpm dev:mc:climb` (one-block step, 3-level 1:1 staircase,
+sealed shaft fast-fail, flat 30-block walk). Reevaluate when upgrading the pinned dependency.

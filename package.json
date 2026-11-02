@@ -39,6 +39,8 @@
     "dev:mc:k8": "tsx .uina/worlds/minecraft/dev/k8.ts",
     "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "dev:mc:map": "tsx .uina/worlds/minecraft/dev/map.ts",
+    "dev:mc:climb": "tsx .uina/worlds/minecraft/dev/climb.ts",
+    "dev:mc:transit": "tsx .uina/worlds/minecraft/dev/transit.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",
     "build:web": "tsc -p tsconfig.web.json && node scripts/copy-web-static.mjs",
     "test": "vitest run",
