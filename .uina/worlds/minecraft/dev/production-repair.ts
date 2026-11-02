@@ -10,7 +10,7 @@ import type { RunSummary } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult } from "./scenario.js";
+import { type CallResult, makeScenario } from "./scenario.js";
 
 interface Inventory {
 	slots: ({ slot: number } & ItemValue)[];

@@ -21,15 +21,15 @@
  * 因此不能在整段施工里一直持有身体。
  */
 
-import type { BlockSpec, ControlOwner, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import { plain } from "../../contracts/values.js";
-import type { ExactRef, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
-import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/world.js";
 import { isReplaceableName, matchesDeclared, specBlockName } from "../../construction/target.js";
+import type { BlockSpec, ControlOwner, SelfState } from "../../contracts/body.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { ExactRef, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
+import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/world.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
-import { blockReach, BLOCK_REACH } from "../shared/reach.js";
+import { BLOCK_REACH, blockReach } from "../shared/reach.js";
 import { buildTargetSchema } from "../shared/schema.js";
 import { fail } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";

@@ -1,10 +1,10 @@
 /** Discovery projects descriptors and live Library metadata; it owns no file index. */
 import type { BuiltCapabilities } from "../capabilities/index.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
-import type { LibraryPort, LibraryKind } from "../contracts/library.js";
-import { RpcError } from "../executor/ipc.js";
-import { sha256Hex, canonicalJson } from "../runtime/rows.js";
+import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { plain } from "../contracts/values.js";
+import { RpcError } from "../executor/ipc.js";
+import { canonicalJson, sha256Hex } from "../runtime/rows.js";
 
 export interface DescribeParams {
 	query?: string;

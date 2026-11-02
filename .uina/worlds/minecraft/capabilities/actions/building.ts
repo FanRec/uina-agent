@@ -9,9 +9,9 @@
  */
 
 import type { BlockSpec, SelfState } from "../../contracts/body.js";
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, round2 } from "../shared/reach.js";

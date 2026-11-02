@@ -10,7 +10,7 @@
  */
 
 import { closeHarness, openHarness, sleep } from "./harness.js";
-import { makeScenario, type EntityView } from "./scenario.js";
+import { type EntityView, makeScenario } from "./scenario.js";
 
 interface CollectValue {
 	mined: number;

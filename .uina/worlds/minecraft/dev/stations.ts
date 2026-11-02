@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue, Vec3 } from "../contracts/values.js";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult, type InventoryView } from "./scenario.js";
+import { type CallResult, type InventoryView, makeScenario } from "./scenario.js";
 
 const USER = "UinaDev";
 const CENTER = { x: 8900, y: 200, z: 8900 };

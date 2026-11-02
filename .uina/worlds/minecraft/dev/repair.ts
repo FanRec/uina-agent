@@ -8,7 +8,7 @@ import type { JsonValue, Vec3 } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
 import { protocolFor } from "../driver/mineflayer/protocol.js";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult } from "./scenario.js";
+import { type CallResult, makeScenario } from "./scenario.js";
 
 function devCallable(
 	ref: `${string}@${string}`,

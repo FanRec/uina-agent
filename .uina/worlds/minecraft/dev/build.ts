@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "../contracts/values.js";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult } from "./scenario.js";
+import { type CallResult, makeScenario } from "./scenario.js";
 
 const USER = "UinaDev";
 /** 地板在 y=CENTER.y，平台在 y-1。四个落点互不重叠，共用一个平台。 */

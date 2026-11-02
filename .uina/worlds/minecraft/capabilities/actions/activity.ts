@@ -12,10 +12,10 @@
  *   （实测 salmon 掉落 3.9 格），收竿后走近拾取由本动作的短距 drive-walk 兜底。
  */
 
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
 	BED_NAMES,
@@ -27,8 +27,8 @@ import {
 	SLEEP_MONSTER_RADIUS,
 } from "../shared/activity.js";
 import { readValue } from "../shared/observe.js";
-import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
+import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import { fail, resolveGrid } from "../shared/targets.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
 

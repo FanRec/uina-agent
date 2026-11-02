@@ -1,6 +1,6 @@
 /** SQLite-worker-only immutable snapshots, bounded reads and regenerable exports. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { CompletionHeader, DeliveryReceipt, RecordFormat, RuntimeRecord } from "../contracts/runtime.js";

@@ -3,15 +3,16 @@ import { parentPort } from "node:worker_threads";
 import {
 	getQuickJS,
 	type QuickJSContext,
-	type QuickJSRuntime,
-	type QuickJSHandle,
 	type QuickJSDeferredPromise,
+	type QuickJSHandle,
+	type QuickJSRuntime,
 } from "quickjs-emscripten";
 import type { ProgramDiagnostic } from "../contracts/program.js";
 import type { JsonValue } from "../contracts/values.js";
 import { PROGRAM_POLICY as P } from "./policy.js";
 import { SHIM } from "./shim.js";
-import type { ProgramWorkerMessage, ProgramWorkerRequest, WorkerInvokeResult, WireDecision } from "./wire.js";
+import type { ProgramWorkerMessage, ProgramWorkerRequest, WireDecision, WorkerInvokeResult } from "./wire.js";
+
 if (!parentPort) throw new Error("Program worker requires parentPort");
 const port = parentPort;
 const send = (msg: ProgramWorkerMessage) => port.postMessage(msg);

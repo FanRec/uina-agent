@@ -10,10 +10,10 @@ import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue, Vec3 } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
+import type { QuerySpec } from "../shared/query.js";
 import { BLOCK_SPEC_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import { resolveGrid, resolvePoint, specName, stripNamespace } from "../shared/targets.js";
 import { canHarvest, harvestRequirement } from "../shared/tools.js";
-import type { QuerySpec } from "../shared/query.js";
 
 export interface TerrainDeps {
 	knowledge: () => RegistryKnowledge | null;

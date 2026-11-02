@@ -15,9 +15,9 @@ import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { Fact, FactSource, JsonSchema, JsonValue, Vec3 } from "../../contracts/values.js";
 import { callFailure } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
+import type { QuerySpec } from "../shared/query.js";
 import { GRID_POS_SCHEMA, GRID_VEC_SCHEMA } from "../shared/schema.js";
 import { resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
-import type { QuerySpec } from "../shared/query.js";
 
 /** 单次体素上限（capabilities §2 体积表）；超过在派发前拒绝。 */
 const REGION_MAX_VOXELS = 8192;

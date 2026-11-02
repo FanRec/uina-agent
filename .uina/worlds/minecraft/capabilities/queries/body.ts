@@ -7,11 +7,11 @@
  */
 
 import type { ItemValue } from "../../contracts/body.js";
-import type { ClientInventoryValue, ClientFactView } from "../../contracts/client-facts.js";
+import type { ClientFactView, ClientInventoryValue } from "../../contracts/client-facts.js";
 import type { Fact } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
-import { EMPTY_INPUT } from "../shared/schema.js";
 import type { QuerySpec } from "../shared/query.js";
+import { EMPTY_INPUT } from "../shared/schema.js";
 
 type SlotItem = ItemValue;
 

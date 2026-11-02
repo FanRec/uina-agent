@@ -7,8 +7,8 @@
  * 本文件不碰 SQL：读取由 sqlite-worker 执行，这里只做纯值换算。
  */
 
-import { callFailure } from "../contracts/values.js";
 import type { JsonValue } from "../contracts/values.js";
+import { callFailure } from "../contracts/values.js";
 import type { EventGap, EventPage, GameEventKind, GameEventRecord } from "../contracts/world.js";
 
 export const EVENTS_REF = "events@1";

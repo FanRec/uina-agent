@@ -1,15 +1,15 @@
 import type {
+	ClientPhysicsStep,
 	ControlInput,
 	FeedbackFrame,
 	FeedbackFrameRef,
 	FeedbackStream,
 	SelfState,
-	ClientPhysicsStep,
 } from "../../contracts/body.js";
-import type { EffectReceipt, Fact, JsonValue, Ref, CallFailure } from "../../contracts/values.js";
+import type { CallFailure, EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
+import { fail } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
 import { physicsSteps } from "../mineflayer/physics-step.js";
-import { fail } from "../execution.js";
 
 export const FEEDBACK_VALID_MS = 250;
 interface Deps {

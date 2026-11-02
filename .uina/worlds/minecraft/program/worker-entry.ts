@@ -5,4 +5,5 @@ if (import.meta.url.endsWith(".ts")) {
 }
 const file = import.meta.url.endsWith(".js") ? "./worker.js" : "./worker.ts";
 await import(new URL(file, import.meta.url).href);
+
 export {};

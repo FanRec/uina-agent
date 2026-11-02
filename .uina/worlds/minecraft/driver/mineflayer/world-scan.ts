@@ -14,10 +14,10 @@
  * - 方法是异步的，每个环之间 setImmediate 让出事件循环。
  */
 
+import type { Vec3 } from "../../contracts/values.js";
+import type { SurfaceProbe } from "../../contracts/world.js";
 import type { MineflayerBot } from "./adapter.js";
 import { toMineflayerVec3 } from "./adapter.js";
-import type { SurfaceProbe } from "../../contracts/world.js";
-import type { Vec3 } from "../../contracts/values.js";
 
 /** 1.21 各维度世界顶（overworld 319 / nether 191 / end 255）。 */
 function worldTopY(bot: MineflayerBot): number {

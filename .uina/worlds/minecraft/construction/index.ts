@@ -18,10 +18,10 @@ import type { SelfState } from "../contracts/body.js";
 import type { BlueprintBytes } from "../contracts/library.js";
 import { callFailure, type ExactRef, type JsonValue, type Observation, type Vec3 } from "../contracts/values.js";
 import type { WorldReadPort } from "../contracts/world.js";
-import { planConstruction, type FieldView, type PlanValue } from "./plan.js";
-import { decodeSchem, type AirPolicy } from "./schem.js";
-import { applyTransform, ConstructionError, resolveGrid, resolvePoint, stripNamespace } from "./target.js";
+import { type FieldView, type PlanValue, planConstruction } from "./plan.js";
+import { type AirPolicy, decodeSchem } from "./schem.js";
 import type { ConstructionTarget, TargetCell } from "./target.js";
+import { applyTransform, ConstructionError, resolveGrid, resolvePoint, stripNamespace } from "./target.js";
 import { decodeTargetJson } from "./target-json.js";
 
 export interface BlueprintSource {

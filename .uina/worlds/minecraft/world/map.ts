@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, realpath } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { ItemValue } from "../contracts/body.js";
 import type { ClientFactsPort, ClientInventoryValue, MapIconValue } from "../contracts/client-facts.js";

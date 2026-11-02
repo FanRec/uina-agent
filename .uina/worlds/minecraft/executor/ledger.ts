@@ -1,8 +1,7 @@
 import { Worker } from "node:worker_threads";
-import type { LedgerRequest, LedgerSnapshot } from "./ledger-worker.js";
-import type { RequestCredential, DeliveryAttempt } from "./ledger-worker.js";
 import type { SubmissionLookup } from "../contracts/runtime.js";
 import { RpcError } from "./ipc.js";
+import type { DeliveryAttempt, LedgerRequest, LedgerSnapshot, RequestCredential } from "./ledger-worker.js";
 
 export class ExecutorLedger {
 	private readonly worker: Worker;

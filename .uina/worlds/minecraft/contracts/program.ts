@@ -5,8 +5,8 @@
  * Library 文件管理合同归 library.ts；反馈按后续批次接入。
  */
 
-import type { DecisionRequest, JsonValue } from "./values.js";
 import type { ProgramHeader } from "./library.js";
+import type { DecisionRequest, JsonValue } from "./values.js";
 
 /** 程序以 {name} 或 {code} 提交；Runtime 受理时解析成确切字节。 */
 export type SourceRequest = { name: string } | { code: string };

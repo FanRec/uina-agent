@@ -10,15 +10,15 @@
  * 未加载区块是未知不是空气，宁可继续找，不猜出口。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { ControlOwner, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { sleepAbortable } from "../shared/mobility.js";
 import { readValue } from "../shared/observe.js";
-import { readInventory } from "../shared/views.js";
 import { distance, fail } from "../shared/targets.js";
+import { readInventory } from "../shared/views.js";
 
 /** 露天出口查找半径：水下（视野好）比地下用得更大。 */
 const SWIM_ACCESS_RADIUS = 24;

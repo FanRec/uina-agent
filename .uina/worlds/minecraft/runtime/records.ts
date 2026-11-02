@@ -10,6 +10,7 @@
  * 事实共用同一 writer 序列——flushThrough(H) 覆盖 ≤H 全部已收材料。
  */
 
+import type { ControlOwner } from "../contracts/body.js";
 import type {
 	DriverExecutionFact,
 	DriverExecutionSink,
@@ -17,7 +18,6 @@ import type {
 	RecordTicket,
 	RuntimeRecordBarrier,
 } from "../contracts/runtime.js";
-import type { ControlOwner } from "../contracts/body.js";
 import type { EffectReceipt, Ref } from "../contracts/values.js";
 import type { ApplyItem } from "./runtime-db-worker.js";
 

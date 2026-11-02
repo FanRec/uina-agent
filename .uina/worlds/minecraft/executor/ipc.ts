@@ -1,6 +1,6 @@
 import type { ExecutorFrame, WireError } from "../contracts/executor.js";
 import type { JsonValue } from "../contracts/values.js";
-import { methods, validateFrame, type RpcMethod } from "./protocol.js";
+import { methods, type RpcMethod, validateFrame } from "./protocol.js";
 
 export interface WireEndpoint {
 	send(value: JsonValue, done: (error: Error | null) => void): void;

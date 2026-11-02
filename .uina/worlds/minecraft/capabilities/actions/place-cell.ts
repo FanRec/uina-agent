@@ -13,11 +13,11 @@
  * 量而不是目标格量：真正被点的是支撑面。`face` 是交互约束，不是最终朝向。
  */
 
+import { isReplaceableName, matchesDeclared, specBlockName } from "../../construction/target.js";
 import type { BlockSpec, BlockStateValue, SelfState } from "../../contracts/body.js";
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
 import type { Vec3 } from "../../contracts/values.js";
 import type { WorldReadPort } from "../../contracts/world.js";
-import { isReplaceableName, matchesDeclared, specBlockName } from "../../construction/target.js";
 import { pollUntil } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
 import { faceVector, NEIGHBORS, stripNamespace } from "../shared/targets.js";

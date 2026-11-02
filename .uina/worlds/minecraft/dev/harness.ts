@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuiltCapabilities } from "../capabilities/index.js";
+import { openExecutionSide } from "../companion/side.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { JsonValue, Ref, Vec3 } from "../contracts/values.js";
 import type { ClientHost } from "../driver/client-host.js";
@@ -11,7 +12,6 @@ import type { FactsSource } from "../driver/facts/index.js";
 import type { MineflayerBot } from "../driver/mineflayer/adapter.js";
 import type { MinecraftRuntime } from "../runtime/index.js";
 import type { MinecraftWorld } from "../world/index.js";
-import { openExecutionSide } from "../companion/side.js";
 
 export const DEV_SERVER = {
 	host: "127.0.0.1",

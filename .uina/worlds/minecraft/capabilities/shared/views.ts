@@ -6,9 +6,8 @@
  */
 
 import type { ItemValue } from "../../contracts/body.js";
-import type { Observation } from "../../contracts/values.js";
+import type { Observation, Vec3 } from "../../contracts/values.js";
 import type { WorldReadPort } from "../../contracts/world.js";
-import type { Vec3 } from "../../contracts/values.js";
 
 export interface SlotView extends Partial<ItemValue> {
 	slot: number;

@@ -10,16 +10,16 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readValue } from "../shared/observe.js";
 import { POS_SCHEMA } from "../shared/schema.js";
 import { isGravityBlock, planCorridor, type TunnelColumn, type TunnelProfile } from "../shared/spatial.js";
-import { digCell, reachHint, stepTo, walkLeg } from "./dig-cycle.js";
+import { fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
+import { digCell, reachHint, stepTo, walkLeg } from "./dig-cycle.js";
 
 /** 头顶重力方块延展探测上限：再多就让它掉，不无限向上挖。 */
 const SUPPORT_PROBE_LIMIT = 4;

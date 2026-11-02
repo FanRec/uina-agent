@@ -1,6 +1,7 @@
 /** Furnace loading and collection use confirmed slot transfers; world waits release this call's body scope. */
-import type { CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
+
 import type { WindowSnapshot } from "../../contracts/body.js";
+import type { CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { CallFailure, JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
@@ -10,8 +11,8 @@ import { checkBudget, waitFor } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import { fail, stripNamespace } from "../shared/targets.js";
 import { readInventory } from "../shared/views.js";
-import { countInRegion, resolveStation, stackLimit, withStation } from "../shared/workstation.js";
 import { type TransferAmounts, transferWindow, windowRegion, windowSlot } from "../shared/window-transfer.js";
+import { countInRegion, resolveStation, stackLimit, withStation } from "../shared/workstation.js";
 
 const SMELT_TIMEOUT_MS = 120_000;
 

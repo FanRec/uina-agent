@@ -13,10 +13,10 @@
 
 import type {
 	HarvestRequirement,
+	ItemSource,
 	KnowledgeBlockDrops,
 	KnowledgeItem,
 	KnowledgeRecipe,
-	ItemSource,
 	RegistryKnowledge,
 } from "../../contracts/knowledge.js";
 import { FUEL_TICKS, SMELTING } from "./smelting.js";

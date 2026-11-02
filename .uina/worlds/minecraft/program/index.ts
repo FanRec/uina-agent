@@ -1,22 +1,22 @@
-import { Worker } from "node:worker_threads";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonValue } from "../contracts/values.js";
-import { plain } from "../contracts/values.js";
-import { getDecisionRequest } from "../contracts/program.js";
+import { Worker } from "node:worker_threads";
 import type {
+	InvokeResult,
+	ProgramCapacity,
+	ProgramHostApi,
 	ProgramPort,
 	ProgramSegmentScope,
-	ProgramHostApi,
-	ProgramCapacity,
 	ProgramValidation,
-	InvokeResult,
 	ResolvedProgram,
 } from "../contracts/program.js";
+import { getDecisionRequest } from "../contracts/program.js";
+import type { JsonValue } from "../contracts/values.js";
+import { plain } from "../contracts/values.js";
 import { parseProgramSource, programError, validateProgramName } from "../library/program-source.js";
 import { PROGRAM_POLICY as P } from "./policy.js";
-import type { ProgramWorkerRequest, ProgramWorkerMessage } from "./wire.js";
+import type { ProgramWorkerMessage, ProgramWorkerRequest } from "./wire.js";
 
 interface Active {
 	run: string;

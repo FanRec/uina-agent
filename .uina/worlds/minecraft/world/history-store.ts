@@ -8,22 +8,24 @@
  * durable ACK 发布与待落盘队列移除在同一续体完成（§5.6）。
  */
 
-import { ObservationWatch } from "./watch.js";
-import type { ObservationCursor } from "../contracts/values.js";
 import { Worker } from "node:worker_threads";
 import type { ClientFactNotice, ClientFactsPort, ClientFactsSubscription } from "../contracts/client-facts.js";
+import type { ObservationCursor } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
-import type { AppendItem, WorkerRequest, WorkerResponse } from "./sqlite-worker.js";
+import type { WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
+import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
+import type { EventQueryParams, EventQueryResult } from "./events.js";
 import type {
+	AppendItem,
 	RecordReadParams,
-	RecordWrite,
 	RecordsListParams,
 	RecordsListResult,
+	RecordWrite,
 	StoredRecordRow,
+	WorkerRequest,
+	WorkerResponse,
 } from "./sqlite-worker.js";
-import type { EventQueryParams, EventQueryResult } from "./events.js";
-import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
-import type { WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
+import { ObservationWatch } from "./watch.js";
 
 /** opening 期缓冲上限：超过即显式 unavailable（RAM 接收不是无限缓存承诺，§13.1）。 */
 const MAX_OPENING_BUFFER = 8192;

@@ -1,9 +1,10 @@
 /** Bind current query readers once; every frame samples one synchronous facts view. */
-import type { BuiltCapabilities } from "../index.js";
-import type { ClientFactsPort } from "../../contracts/client-facts.js";
+
 import type { PrepareFeedback } from "../../contracts/body.js";
+import type { ClientFactsPort } from "../../contracts/client-facts.js";
 import type { Fact, JsonValue } from "../../contracts/values.js";
 import { callFailure } from "../../contracts/values.js";
+import type { BuiltCapabilities } from "../index.js";
 
 export function prepareFeedback(capabilities: BuiltCapabilities, facts: ClientFactsPort): PrepareFeedback {
 	const fail = (message: string): never => {

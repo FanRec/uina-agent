@@ -6,15 +6,15 @@
  * 触发进食，按 food/saturation 的真实变化判定，结束时一定释放使用状态。
  */
 
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { EquipSlot, ItemSelector, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { fail, matchesItem, stripNamespace } from "../shared/targets.js";
-import { readInventory, type InventorySnapshot, type SlotView } from "../shared/views.js";
+import { type InventorySnapshot, readInventory, type SlotView } from "../shared/views.js";
 
 const SLOTS: EquipSlot[] = ["hand", "offhand", "head", "chest", "legs", "feet"];
 const SLOT_INDEX: Record<EquipSlot, (selected: number | null) => number> = {

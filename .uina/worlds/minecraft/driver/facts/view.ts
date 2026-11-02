@@ -11,6 +11,14 @@
  */
 
 import type {
+	BlockStateValue,
+	BlockTarget,
+	EntityRef,
+	SelfState,
+	StatusEffectValue,
+	WindowSnapshot,
+} from "../../contracts/body.js";
+import type {
 	ClientBlockSearchRequest,
 	ClientBlockSearchValue,
 	ClientBlockValue,
@@ -27,19 +35,11 @@ import type {
 	ClientWorldValue,
 	SectionTarget,
 } from "../../contracts/client-facts.js";
-import type {
-	BlockStateValue,
-	BlockTarget,
-	EntityRef,
-	SelfState,
-	StatusEffectValue,
-	WindowSnapshot,
-} from "../../contracts/body.js";
 import type { Fact, FactSource, Vec3 } from "../../contracts/values.js";
+import { fromMineflayerVec3, type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
-import { MAP_CELLS, MapCache, MAP_SIZE } from "./map-cache.js";
+import { MAP_CELLS, MAP_SIZE, MapCache } from "./map-cache.js";
 import { effectiveAttribute, trackVitals } from "./vitals.js";
-import { fromMineflayerVec3, toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 
 export interface FactViewContext {
 	bot: MineflayerBot;

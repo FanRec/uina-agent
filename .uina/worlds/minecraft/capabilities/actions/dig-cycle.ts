@@ -8,14 +8,14 @@
 
 import type { ControlOwner, ItemSelector, SelfState } from "../../contracts/body.js";
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
+import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { EffectReceipt, Ref, Vec3 } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { blockReach, round2, BLOCK_REACH } from "../shared/reach.js";
-import { isLiquidBlock } from "../shared/spatial.js";
-import { readInventory, readBlockAt } from "../shared/views.js";
 import { readValue } from "../shared/observe.js";
-import { chooseTool, canHarvest } from "../shared/tools.js";
-import type { RegistryKnowledge } from "../../contracts/knowledge.js";
+import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
+import { isLiquidBlock } from "../shared/spatial.js";
+import { canHarvest, chooseTool } from "../shared/tools.js";
+import { readBlockAt, readInventory } from "../shared/views.js";
 
 export type DigCellResult =
 	| { kind: "dug"; tool: string | null; name: string }

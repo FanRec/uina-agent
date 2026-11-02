@@ -1,9 +1,9 @@
 /** Composition adapter: committed Runtime identity plus Program's verified snapshot. */
 import { readFile } from "node:fs/promises";
 import type { ProgramOrigin } from "../contracts/library.js";
-import type { RecordReply, RunSummary, CallRecord } from "../contracts/runtime.js";
 import type { ProgramPort } from "../contracts/program.js";
-import { libraryError, digest } from "./files.js";
+import type { CallRecord, RecordReply, RunSummary } from "../contracts/runtime.js";
+import { digest, libraryError } from "./files.js";
 
 export async function readCallSource(
 	origin: ProgramOrigin,

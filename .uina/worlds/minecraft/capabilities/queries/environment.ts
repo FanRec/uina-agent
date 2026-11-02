@@ -8,14 +8,14 @@
  * （批16），名单不可用时保持 "player"，不加 unknown——entities 的覆盖语义不含名单。
  */
 
-import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { EntityRef } from "../../contracts/body.js";
+import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
+import type { QuerySpec } from "../shared/query.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 import { distance } from "../shared/targets.js";
-import type { QuerySpec } from "../shared/query.js";
 
 export interface EnvironmentDeps {
 	knowledge: () => RegistryKnowledge | null;

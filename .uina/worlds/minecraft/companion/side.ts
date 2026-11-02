@@ -1,16 +1,15 @@
 /** Game-side composition root shared by bootstrap and development scenarios. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { describeDirectory, type DescribeParams } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
-import { createConstruction } from "../construction/index.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
-import { planEscape, canBreathe } from "../driver/mineflayer/pathfinder.js";
-import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
+import { createConstruction } from "../construction/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
+import type { LibraryRequest } from "../contracts/library.js";
+import type { ProgramPort } from "../contracts/program.js";
 import type {
 	ControlRetirement,
 	DriverExecutionSink,
@@ -25,17 +24,18 @@ import { ClientHost } from "../driver/client-host.js";
 import { DriverControlArbiter } from "../driver/control-arbiter.js";
 import { FactsSource } from "../driver/facts/index.js";
 import { GotoDirector } from "../driver/goto.js";
+import { canBreathe, planEscape } from "../driver/mineflayer/pathfinder.js";
+import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
 import { parseExecutorConfig } from "../executor/config.js";
-import type { RpcMethod } from "../executor/protocol.js";
 import { RpcError } from "../executor/ipc.js";
+import type { RpcMethod } from "../executor/protocol.js";
+import { createLibrary } from "../library/index.js";
+import { readCallSource } from "../library/origin.js";
+import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { readExportedImage } from "../world/map.js";
-import { createProgram } from "../program/index.js";
-import type { ProgramPort } from "../contracts/program.js";
-import { createLibrary } from "../library/index.js";
-import { readCallSource } from "../library/origin.js";
-import type { LibraryRequest } from "../contracts/library.js";
+import { type DescribeParams, describeDirectory } from "./directory.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,

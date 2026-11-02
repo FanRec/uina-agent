@@ -1,11 +1,11 @@
 /** Model adapter. Scheduling and completion remain in Runtime; delivery uses the existing Host. */
 import { randomUUID } from "node:crypto";
-import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { Acceptance, DeliveryState, Entry, Schedule } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
-import { MinecraftExecutor } from "./index.js";
 import { DeliveryPump, formatCompletion } from "./delivery.js";
+import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
 import type { RequestIntent } from "./ledger-worker.js";
 

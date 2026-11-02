@@ -5,11 +5,11 @@
  * 端口由 Executor 工作包引入；本文件只落 Runtime 与组合根/能力实际交换的形状。
  */
 
-import type { CallableDescriptor } from "./capabilities.js";
 import type { ControlOwner } from "./body.js";
+import type { CallableDescriptor } from "./capabilities.js";
 import type {
-	Checkpoint,
 	CallFailureData,
+	Checkpoint,
 	DecisionRequest,
 	ExactRef,
 	Fact,

@@ -11,12 +11,12 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { fail, resolveGrid, resolvePoint } from "../shared/targets.js";
 import { pollUntil, readValue } from "../shared/observe.js";
+import { BLOCK_REACH, blockReach } from "../shared/reach.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import {
 	DEFAULT_EXCAVATE_KEEP,
@@ -26,8 +26,8 @@ import {
 	orderNear,
 	planExcavation,
 } from "../shared/spatial.js";
-import { positiveDelta, readInventory, readBlockAt, type InventorySnapshot } from "../shared/views.js";
-import { blockReach, BLOCK_REACH } from "../shared/reach.js";
+import { fail, resolveGrid, resolvePoint } from "../shared/targets.js";
+import { type InventorySnapshot, positiveDelta, readBlockAt, readInventory } from "../shared/views.js";
 import { digCell, stepTo, walkLeg } from "./dig-cycle.js";
 
 /** 单次挖后等掉落入包的观察窗（短；等不到不计数量，不猜）。 */

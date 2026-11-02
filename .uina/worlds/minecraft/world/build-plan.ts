@@ -8,8 +8,8 @@
  * 输入校验与目标解析归计划端口实现（组合根用 Construction 装配），本文件不做第二套校验。
  */
 
-import type { BuildPlanValue } from "../contracts/world.js";
 import type { Observation } from "../contracts/values.js";
+import type { BuildPlanValue } from "../contracts/world.js";
 
 export const BUILD_PLAN_REF = "build.plan@1";
 

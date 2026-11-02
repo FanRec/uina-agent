@@ -18,8 +18,8 @@ import { parentPort } from "node:worker_threads";
 import type { CapturedClientFact } from "../contracts/client-facts.js";
 import type { JsonValue } from "../contracts/values.js";
 import type { EventGap, WorldHistoryPrune, WorldHistoryPruneResult } from "../contracts/world.js";
-import type { EventQueryParams, EventQueryResult, EventRow } from "./events.js";
 import type { ContainerEvidence, ContainerQueryParams } from "./containers.js";
+import type { EventQueryParams, EventQueryResult, EventRow } from "./events.js";
 
 export interface AppendEvidenceItem {
 	kind: "evidence";

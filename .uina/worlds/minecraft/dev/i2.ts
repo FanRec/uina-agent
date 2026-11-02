@@ -4,14 +4,14 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { UinaHost } from "../../../../src/host/host.js";
 import type { Model, ModelStreamFn, RequestUsage } from "../../../../src/core/types.js";
-import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import type { ExtensionAPI } from "../../../../src/extensions/runner.js";
-import { WorldActivation } from "../../../../src/extensions/world-framework/world-activation.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import { createMinecraftWorld } from "../worlddef/index.js";
+import { WorldActivation } from "../../../../src/extensions/world-framework/world-activation.js";
+import { UinaHost } from "../../../../src/host/host.js";
+import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import type { CallRecord } from "../contracts/runtime.js";
+import { createMinecraftWorld } from "../worlddef/index.js";
 import { i2Scenario } from "./i2-scenario.js";
 
 const modelMode = process.argv.includes("--model");

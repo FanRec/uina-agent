@@ -5,12 +5,12 @@
  * 删除走 WorldPort.removeRecord（按当前绑定分区）；记录不存在如实 NOT_FOUND。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
+import { placeRef } from "../../world/places.js";
 import type { CapabilityDeps } from "../deps.js";
 import { fail } from "../shared/targets.js";
-import { placeRef } from "../../world/places.js";
 import { normalizePlaceName } from "./remember.js";
 
 const descriptor: CallableDescriptor = {

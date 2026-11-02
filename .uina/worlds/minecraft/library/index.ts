@@ -1,25 +1,25 @@
 /** Ordinary working files. No task, asset registry or duplicate execution state. */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type {
-	LibraryPort,
-	LibraryKind,
-	LibraryDetail,
-	LibrarySummary,
-	LibrarySaveRequest,
-	LibraryUpdateRequest,
-	LibraryListQuery,
 	BlueprintBytes,
+	LibraryDetail,
+	LibraryKind,
+	LibraryListQuery,
+	LibraryPort,
+	LibrarySaveRequest,
+	LibrarySummary,
+	LibraryUpdateRequest,
 	ProgramHeader,
-	TextMetadata,
 	ProgramOrigin,
+	TextMetadata,
 } from "../contracts/library.js";
-import type { ResolvedProgram, ProgramValidation } from "../contracts/program.js";
-import { LibraryFiles, digest, libraryError, missing, optionalRead, utf8 } from "./files.js";
+import type { ProgramValidation, ResolvedProgram } from "../contracts/program.js";
+import { digest, LibraryFiles, libraryError, missing, optionalRead, utf8 } from "./files.js";
 import { parseHeader, patchHeader, validateHeader, withHeader } from "./header.js";
-import { parseProgramSource, programError, executionError } from "./program-source.js";
+import { executionError, parseProgramSource, programError } from "./program-source.js";
 
 export interface LibraryOptions {
 	dataRoot: string;

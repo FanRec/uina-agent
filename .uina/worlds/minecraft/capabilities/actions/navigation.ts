@@ -12,20 +12,20 @@
  * 当前跟踪范围解析，多候选 INVALID_INPUT 给候选，不自动等待离线玩家。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
-	FOLLOW_IDLE_MS,
-	FOLLOW_LEG_TIMEOUT_MS,
-	FOLLOW_LOST_SCANS,
-	FOLLOW_SCAN_RADIUS,
 	FLEE_BEARING_OFFSETS,
 	FLEE_LEG_STEP,
 	FLEE_LEG_TIMEOUT_MS,
 	FLEE_SCAN_RADIUS,
+	FOLLOW_IDLE_MS,
+	FOLLOW_LEG_TIMEOUT_MS,
+	FOLLOW_LOST_SCANS,
+	FOLLOW_SCAN_RADIUS,
 	fleeLegTarget,
 	matchFollowTarget,
 	sleepAbortable,

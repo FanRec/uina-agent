@@ -7,11 +7,10 @@
  */
 
 import type { BodySession } from "../contracts/body.js";
-import type { NativeCallable } from "../contracts/capabilities.js";
+import type { CallableDescriptor, NativeCallable } from "../contracts/capabilities.js";
+import type { ProgramDiagnostic, ProgramSegmentScope, ResolvedProgram } from "../contracts/program.js";
 import type { RunRequest, RunWaitReply } from "../contracts/runtime.js";
 import type { CallFailureData, JsonValue, Outcome, Progress, Ref } from "../contracts/values.js";
-import type { ProgramSegmentScope, ResolvedProgram, ProgramDiagnostic } from "../contracts/program.js";
-import type { CallableDescriptor } from "../contracts/capabilities.js";
 
 export type ResolvedInvocation = {
 	ref: string;

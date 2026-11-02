@@ -1,6 +1,7 @@
 /** container.last 的声明；历史读取与存储归 World。 */
-import { GRID_POS_SCHEMA } from "../shared/schema.js";
+
 import type { QuerySpec } from "../shared/query.js";
+import { GRID_POS_SCHEMA } from "../shared/schema.js";
 
 export const containerLastQuery: QuerySpec = {
 	descriptor: {

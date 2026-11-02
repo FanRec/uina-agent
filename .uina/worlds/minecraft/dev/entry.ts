@@ -7,10 +7,10 @@
  * → 静止证明 → 断开。服务端启动/复位在 dev-env/。
  */
 
+import type { WorldSnapshot } from "../capabilities/shared/views.js";
 import type { SelfState } from "../contracts/body.js";
 import type { RunSnapshot, RunSummary } from "../contracts/runtime.js";
 import type { JsonValue, Ref, Vec3 } from "../contracts/values.js";
-import type { WorldSnapshot } from "../capabilities/shared/views.js";
 import { closeHarness, dist, fmtPos, openHarness, sleep } from "./harness.js";
 
 /** 远距 goto 提交后到 stop 前的行走窗口（毫秒）。 */

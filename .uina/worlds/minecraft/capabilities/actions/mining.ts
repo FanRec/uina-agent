@@ -7,18 +7,17 @@
  * 不寻路：够不着就是 UNREACHABLE，站位由调用方用 goto@1 安排（§4 可达性归调用方）。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { ItemSelector, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
-import type { BodyCallScope } from "../../contracts/capabilities.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
 import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { fail, matchesItem, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { chooseTool } from "../shared/tools.js";
-import { itemCountOf, readBlockAt, readInventory, type InventorySnapshot } from "../shared/views.js";
+import { type InventorySnapshot, itemCountOf, readBlockAt, readInventory } from "../shared/views.js";
 
 /** 服务端拾取结算有 delay；只在这个窗口里看背包增量，等不到就不报 dropped。 */
 const PICKUP_TIMEOUT_MS = 2500;

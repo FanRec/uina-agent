@@ -15,6 +15,8 @@ import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
 import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { BodyCallScope, CallContext, NativeCallable } from "../contracts/capabilities.js";
+import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
+import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -30,7 +32,6 @@ import type {
 	StopTarget,
 	SubmissionLookup,
 } from "../contracts/runtime.js";
-import type { WorldPort } from "../contracts/world.js";
 import type {
 	CallFailure,
 	CallFailureData,
@@ -41,27 +42,26 @@ import type {
 	Ref,
 } from "../contracts/values.js";
 import { callFailure, plain } from "../contracts/values.js";
-import { BodyLeaseQueue, type BodyGrant } from "./body-queue.js";
+import type { WorldPort } from "../contracts/world.js";
+import { type BodyGrant, BodyLeaseQueue } from "./body-queue.js";
 import { toCallFailure } from "./failure.js";
 import { RuntimeOwner } from "./owner.js";
-import { RuntimeRefs } from "./refs.js";
+import { createProgramHost } from "./program-host.js";
 import { RecordQueue } from "./records.js";
-import { canonicalJson, sha256Hex, callRowOf, projectSummary, runRowOf, segmentRowOf, summaryFromRow } from "./rows.js";
+import { RuntimeRefs } from "./refs.js";
+import { callRowOf, canonicalJson, projectSummary, runRowOf, segmentRowOf, sha256Hex, summaryFromRow } from "./rows.js";
 import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
+import { RuntimeSafety } from "./safety.js";
+import { scopedBody } from "./scoped-body.js";
 import type {
 	BodyLease,
 	CallFrame,
 	CallState,
+	ResolvedInvocation,
 	RunState,
 	RunWaiter,
 	SubmissionState,
-	ResolvedInvocation,
 } from "./state.js";
-import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
-import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
-import { createProgramHost } from "./program-host.js";
-import { scopedBody } from "./scoped-body.js";
-import { RuntimeSafety } from "./safety.js";
 
 // ---- 纯值辅助 ----
 

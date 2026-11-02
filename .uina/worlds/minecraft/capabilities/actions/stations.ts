@@ -11,8 +11,8 @@
  * - 商人 select_trade 会把**整摞**付款自动搬进付款槽并填好结果槽，点结果只扣应付量。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { EntityRef, ItemValue, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
@@ -20,22 +20,22 @@ import { requireKnowledge } from "../shared/knowledge.js";
 import { checkBudget, pollUntil } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
 import { fail, stripNamespace } from "../shared/targets.js";
-import { itemCountOf, readInventory, slotsOf, type InventorySnapshot, type SlotView } from "../shared/views.js";
+import { type InventorySnapshot, itemCountOf, readInventory, type SlotView, slotsOf } from "../shared/views.js";
+import { windowRegion, windowSlot } from "../shared/window-transfer.js";
 import {
 	countInRegion,
 	customNameOf,
-	moveExact,
 	enchantmentsOf,
+	moveExact,
 	potionIdOf,
 	putRegion,
 	resolveStation,
+	type Station,
 	takeRegion,
 	trimPayment,
 	withEntity,
 	withStation,
-	type Station,
 } from "../shared/workstation.js";
-import { windowRegion, windowSlot } from "../shared/window-transfer.js";
 
 /** 各动作的内部预算：酿造要等 20 秒，其余都是几次点击的事。 */
 const BREW_BUDGET_MS = 60_000;

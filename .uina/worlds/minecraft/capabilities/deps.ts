@@ -5,9 +5,9 @@
  * 受理只会发生在 open 之后（与 I1 相同的注入形状）。
  */
 
-import type { GotoDirector } from "../driver/goto.js";
 import type { RegistryKnowledge } from "../contracts/knowledge.js";
 import type { SurfaceProbe } from "../contracts/world.js";
+import type { GotoDirector } from "../driver/goto.js";
 import type { CapabilityRuntime } from "./shared/runtime.js";
 
 export interface CapabilityDeps {

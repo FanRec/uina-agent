@@ -9,11 +9,11 @@ import type {
 	WindowSnapshot,
 } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
+import { jsonEqual, matchesItem } from "../../contracts/items.js";
 import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { EffectRecorder, fail, nowIso } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
-import { type NativeWindow, type DriverProtocol, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
-import { jsonEqual, matchesItem } from "../../contracts/items.js";
+import { type DriverProtocol, type NativeWindow, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
 import { windowLayout } from "./layout.js";
 
 const RESPONSE_MS = 5000;

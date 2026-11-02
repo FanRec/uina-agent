@@ -11,26 +11,26 @@
  * 但都**不持身体**——Driver 的 Body 槽与 goto 槽互斥，一步一取放才是干净的所有权。
  */
 
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { EntityRef, ItemSelector, SelfState } from "../../contracts/body.js";
-import type { ItemSource, HarvestRequirement } from "../../contracts/knowledge.js";
-import { callFailure, plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { HarvestRequirement, ItemSource } from "../../contracts/knowledge.js";
 import type { CallFailure, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
+import { callFailure, plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { resolveEntity } from "../shared/entities.js";
 import { pollUntil, readValue } from "../shared/observe.js";
-import { ENTITY_REACH, blockReach } from "../shared/reach.js";
+import { blockReach, ENTITY_REACH } from "../shared/reach.js";
 import { ITEM_SELECTOR_SCHEMA, VEC3_SCHEMA } from "../shared/schema.js";
 import { distance, fail, matchesItem, stripNamespace } from "../shared/targets.js";
 import { canHarvest } from "../shared/tools.js";
 import {
 	canAccept,
 	carrySlotsOf,
+	type EntityEntryView,
+	type InventorySnapshot,
 	positiveDelta,
 	readInventory,
 	readObservation,
-	type EntityEntryView,
-	type InventorySnapshot,
 } from "../shared/views.js";
 
 /** 掉落物落点观测半径：丢出去的东西就在脚边，4 格足够覆盖"朝目标丢"的一步。 */

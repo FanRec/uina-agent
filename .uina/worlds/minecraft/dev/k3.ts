@@ -7,7 +7,7 @@
 
 import type { JsonValue, Vec3 } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
-import { closeHarness, openHarness, sleep, waitForStill, type DevHarness } from "./harness.js";
+import { closeHarness, type DevHarness, openHarness, sleep, waitForStill } from "./harness.js";
 import { makeScenario } from "./scenario.js";
 
 interface CraftValue {

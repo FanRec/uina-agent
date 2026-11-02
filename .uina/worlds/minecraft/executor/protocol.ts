@@ -1,7 +1,7 @@
 /** One fixed wire method table. No reflection or caller-selected origins. */
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
-import { librarySchema, libraryResultSchema } from "../library/schema.js";
+import { libraryResultSchema, librarySchema } from "../library/schema.js";
 
 const Ajv = createRequire(import.meta.url)("ajv") as new (
 	options: object,

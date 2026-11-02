@@ -19,9 +19,9 @@ import { plain } from "../contracts/values.js";
 import type { RoutePlanResult } from "../contracts/world.js";
 import type { HostView } from "./body/session.js";
 import type { DriverControlArbiter } from "./control-arbiter.js";
+import { EffectRecorder, fail } from "./execution.js";
 import type { MineflayerBot } from "./mineflayer/adapter.js";
 import { fromMineflayerVec3 } from "./mineflayer/adapter.js";
-import { EffectRecorder, fail } from "./execution.js";
 import {
 	clearGoal,
 	configureMovements,

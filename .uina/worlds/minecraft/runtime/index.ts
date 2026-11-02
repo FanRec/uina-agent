@@ -14,34 +14,34 @@ import type { ControlOwner, PlayerPort } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
-	ContinueRequest,
 	CallSummary,
+	ContinueRequest,
+	ControlRetirement,
+	DeliveryReceipt,
 	DeliveryRef,
 	DeliveryState,
-	DeliveryReceipt,
-	RecordFormat,
-	RecordReply,
-	ControlRetirement,
+	DriverExecutionSink,
+	Origin,
 	OwnerGate,
 	OwnerGateReceipt,
 	OwnerState,
-	DriverExecutionSink,
-	Origin,
+	RecordFormat,
+	RecordReply,
 	RunRequest,
 	RunSummary,
-	RunWaitReply,
 	RuntimeRecordBarrier,
+	RunWaitReply,
 	StopCommand,
 	StopReceipt,
 	SubmissionLookup,
 } from "../contracts/runtime.js";
-import type { WorldPort } from "../contracts/world.js";
 import type { EffectReceipt, JsonValue, Ref } from "../contracts/values.js";
+import type { WorldPort } from "../contracts/world.js";
 import { RuntimeEngine } from "./engine.js";
 import { RecordQueue } from "./records.js";
 import { RuntimeRefs } from "./refs.js";
-import type { StorageQuery } from "./storage-queries.js";
 import type { AdmissionCommand, RecoveredRows, WorkerRequest, WorkerResponse } from "./runtime-db-worker.js";
+import type { StorageQuery } from "./storage-queries.js";
 
 export interface MinecraftRuntimeOptions {
 	evidence?: import("../contracts/world.js").WorldEvidencePort;

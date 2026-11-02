@@ -16,10 +16,10 @@
  * `set_air` → clear，`preserve` → preserve；没有策略却含空气 → INVALID_INPUT。
  */
 
-import { nbtByteArray, nbtCompound, nbtInt, readNbt } from "./nbt.js";
 import type { NbtCompound } from "./nbt.js";
-import { ConstructionError, isAirName, stripNamespace } from "./target.js";
+import { nbtByteArray, nbtCompound, nbtInt, readNbt } from "./nbt.js";
 import type { ConstructionTarget, TargetCell } from "./target.js";
+import { ConstructionError, isAirName, stripNamespace } from "./target.js";
 
 export type AirPolicy = "set_air" | "preserve";
 

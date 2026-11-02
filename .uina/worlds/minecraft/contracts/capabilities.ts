@@ -5,9 +5,9 @@
  * 查询只使用 QueryDescriptor 与 World 查询定义。组合根校验所有确切 ref 唯一。
  */
 
-import type { WorldPort, WorldReadPort } from "./world.js";
 import type { BodyOps } from "./body.js";
 import type { EffectReceipt, ExactRef, Fact, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
+import type { WorldPort, WorldReadPort } from "./world.js";
 
 export interface CallableDescriptor {
 	ref: ExactRef;

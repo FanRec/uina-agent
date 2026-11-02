@@ -11,8 +11,8 @@ import type { EntityRef } from "../../contracts/body.js";
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { Fact, JsonValue, Vec3 } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
-import { distance } from "../shared/targets.js";
 import type { QuerySpec } from "../shared/query.js";
+import { distance } from "../shared/targets.js";
 
 interface RosterRow {
 	name: string;

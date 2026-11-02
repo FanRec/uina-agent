@@ -14,10 +14,10 @@
  */
 
 import { createRequire } from "node:module";
+import type { Vec3 } from "../../contracts/values.js";
+import type { RoutePlanAction } from "../../contracts/world.js";
 import type { MineflayerBot } from "./adapter.js";
 import { toMineflayerVec3 } from "./adapter.js";
-import type { RoutePlanAction } from "../../contracts/world.js";
-import type { Vec3 } from "../../contracts/values.js";
 
 /**
  * mineflayer-pathfinder 是 CJS module.exports 对象字面量，tsx 纯 ESM 下具名导入

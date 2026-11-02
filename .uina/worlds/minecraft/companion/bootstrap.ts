@@ -1,7 +1,7 @@
 /** No game/runtime/storage imports until the parent assigns both Jobs and sends init. */
 import type { CompanionInit } from "../contracts/executor.js";
 import type { JsonValue } from "../contracts/values.js";
-import { RpcPeer, RpcError, type WireEndpoint } from "../executor/ipc.js";
+import { RpcError, RpcPeer, type WireEndpoint } from "../executor/ipc.js";
 import { selfProcessIdentity } from "../executor/platform/index.js";
 import type { ExecutionSide } from "./side.js";
 

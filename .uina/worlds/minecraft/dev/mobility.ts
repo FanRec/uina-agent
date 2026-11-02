@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult, type EntityView } from "./scenario.js";
+import { type CallResult, type EntityView, makeScenario } from "./scenario.js";
 
 const USER = "UinaDev";
 const CENTER = { x: 9500, y: 200, z: 9500 };

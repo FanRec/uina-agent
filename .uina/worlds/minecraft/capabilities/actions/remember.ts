@@ -9,15 +9,15 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import type { DomainRecord } from "../../contracts/world.js";
-import { plain } from "../../contracts/values.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
+import type { DomainRecord } from "../../contracts/world.js";
+import { PLACE_SCHEMA, type PlaceKind, type PlaceValue, placeRef } from "../../world/places.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { POS_SCHEMA } from "../shared/schema.js";
 import { fail, resolvePoint } from "../shared/targets.js";
-import { PLACE_SCHEMA, placeRef, type PlaceKind, type PlaceValue } from "../../world/places.js";
 
 const descriptor: CallableDescriptor = {
 	ref: "remember@1",

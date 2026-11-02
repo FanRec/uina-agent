@@ -9,8 +9,8 @@
  * mineflayer-pathfinder 2.4.5、vec3 0.1.7。
  */
 
-import { createBot, type Bot } from "mineflayer";
 import { createRequire } from "node:module";
+import { type Bot, createBot } from "mineflayer";
 import type { Vec3 } from "../../contracts/values.js";
 
 /**
@@ -23,8 +23,10 @@ const vec3Ctor = createRequire(import.meta.url)("vec3") as unknown as new (
 	y: number,
 	z: number,
 ) => MineflayerVec3;
+
 /** 收敛后的客户端类型；driver 其余模块只经本文件接触 Bot。 */
 export type { MineflayerVec3 };
+
 /**
  * entities.js / bed.js 在运行时挂载但类型缺失的状态字段（批 18 收敛）：
  * vehicle 由 set_passengers/attach_entity/entityGone 驱动，未骑乘为 null；
@@ -34,6 +36,7 @@ type MineflayerBot = Bot & {
 	vehicle?: { name?: string; position: MineflayerVec3 } | null;
 	isSleeping?: boolean;
 };
+
 export type { MineflayerBot };
 
 export interface ClientOptions {

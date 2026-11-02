@@ -4,13 +4,14 @@
  * 不放"用完拆走"：把工作站留在原地更接近真实玩法，也省掉一次破坏与掉落确认。
  * 放置点只取四个水平相邻格，且要求是空气或可替换植被——不猜方块能不能被顶掉。
  */
-import type { CallContext } from "../../contracts/capabilities.js";
+
 import type { SelfState } from "../../contracts/body.js";
+import type { CallContext } from "../../contracts/capabilities.js";
 import type { Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { readValue } from "./observe.js";
 import { fail } from "./targets.js";
-import { readBlockAt, type BlockSnapshot } from "./views.js";
+import { type BlockSnapshot, readBlockAt } from "./views.js";
 
 const REPLACEABLE = new Set([
 	"air",

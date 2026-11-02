@@ -1,9 +1,10 @@
 /** 批 2 真服验收：准备只用 op 指令，受测行为走正式 Runtime/能力/Driver/World。 */
-import type { NativeCallable } from "../contracts/capabilities.js";
+
 import type { SelfState } from "../contracts/body.js";
+import type { NativeCallable } from "../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../contracts/values.js";
 import { plain } from "../contracts/values.js";
-import { openHarness, closeHarness, waitForStill, sleep, type DevHarness } from "./harness.js";
+import { closeHarness, type DevHarness, openHarness, sleep, waitForStill } from "./harness.js";
 import { makeScenario } from "./scenario.js";
 
 const checkWindow: NativeCallable<JsonValue, JsonValue> = {

@@ -11,6 +11,7 @@
  * 不把缺订阅者解释为无事件。reset/epoch 规则见 §4.1 尾段。
  */
 
+import type { SelfState, WindowSnapshot } from "../../contracts/body.js";
 import type {
 	CapturedClientFact,
 	ClientEvidenceAck,
@@ -19,23 +20,22 @@ import type {
 	ClientFactNotice,
 	ClientFactScope,
 	ClientFactStamp,
-	ClientFactView,
 	ClientFactsPort,
-	ClientFactsSubscription,
 	ClientFactsSubscribeOptions,
+	ClientFactsSubscription,
+	ClientFactView,
 	ClientWindowObservation,
 } from "../../contracts/client-facts.js";
-import type { SelfState, WindowSnapshot } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { ClientHost } from "../client-host.js";
-import { createView } from "./view.js";
-import { MapCache } from "./map-cache.js";
-import { trackVitals } from "./vitals.js";
-import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
 import { fromMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
-import type { RegistryKnowledge } from "../../contracts/knowledge.js";
+import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
+import { MapCache } from "./map-cache.js";
+import { createView } from "./view.js";
+import { trackVitals } from "./vitals.js";
 
 export interface FactsBinding {
 	binding: Ref;

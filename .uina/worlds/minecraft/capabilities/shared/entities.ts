@@ -8,7 +8,7 @@
 import type { EntityRef } from "../../contracts/body.js";
 import type { WorldReadPort } from "../../contracts/world.js";
 import { fail } from "./targets.js";
-import { readObservation, type EntityEntryView } from "./views.js";
+import { type EntityEntryView, readObservation } from "./views.js";
 
 interface EntitiesValue {
 	entities: EntityEntryView[];

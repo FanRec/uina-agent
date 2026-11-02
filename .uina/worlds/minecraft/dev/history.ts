@@ -1,6 +1,6 @@
 /** Explicit, offline history maintenance. No default data root, partition, or cutoff. */
 import { stat } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Worker } from "node:worker_threads";
 import type { WorldHistoryPrune } from "../contracts/world.js";

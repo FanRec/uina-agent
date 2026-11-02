@@ -6,15 +6,15 @@
  * 它们的完成口径属于 container/craft/smelt。牌面编辑先腾空主手再交给 body.writeSign。
  */
 
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { BlockStateValue, EntityRef, ItemSelector, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { resolveEntity } from "../shared/entities.js";
 import { readValue } from "../shared/observe.js";
-import { ITEM_SELECTOR_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import { BLOCK_REACH, blockReach, ENTITY_REACH, round2 } from "../shared/reach.js";
+import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { faceVector, fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
 

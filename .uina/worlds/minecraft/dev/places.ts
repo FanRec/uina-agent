@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { SelfState } from "../contracts/body.js";
 import type { Vec3 } from "../contracts/values.js";
 import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
-import { makeScenario, type CallResult } from "./scenario.js";
+import { type CallResult, makeScenario } from "./scenario.js";
 
 const USER = "UinaDev";
 const CENTER = { x: 8500, y: 200, z: 8500 };

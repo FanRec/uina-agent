@@ -1,6 +1,7 @@
 /** Craft one server-confirmed batch at a time; retain confirmed consumption and inventory receipts. */
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
+
 import type { BlockTarget, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { KnowledgeRecipe, RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
@@ -12,9 +13,9 @@ import { findStation, placeStation } from "../shared/stations.js";
 import { fail, stripNamespace } from "../shared/targets.js";
 import { readInventory } from "../shared/views.js";
 import {
-	type WindowMoveState,
 	moveState,
 	placeCursor,
+	type WindowMoveState,
 	windowClick,
 	windowItem,
 	windowRegion,

@@ -8,8 +8,8 @@
  * 过滤冻结：kind 精确匹配；near = 当前维度内欧氏距离 ≤ near，设置 near 时其他维度不返回。
  */
 
-import { callFailure } from "../contracts/values.js";
 import type { JsonValue, Observation, ObservationCursor, Ref, Vec3 } from "../contracts/values.js";
+import { callFailure } from "../contracts/values.js";
 import type { StoredRecordRow } from "./sqlite-worker.js";
 
 export const PLACES_REF = "places@1";

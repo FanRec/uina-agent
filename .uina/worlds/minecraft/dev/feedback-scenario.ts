@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openHarness } from "./harness.js";
 import type { SelfState } from "../contracts/body.js";
 import type { SafetyInterventionRecord } from "../contracts/runtime.js";
+import { openHarness } from "./harness.js";
 
 interface Scenario {
 	direct(action: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;

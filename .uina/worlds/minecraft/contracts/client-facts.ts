@@ -5,14 +5,15 @@
  * World 订阅/采样；不得向脚本或跨进程发送 read 函数/活 view。
  */
 
-import type { ItemValue, BlockStateValue, BlockTarget, EntityRef, SignValue, WindowSnapshot } from "./body.js";
+import type { BlockStateValue, BlockTarget, EntityRef, ItemValue, SignValue, WindowSnapshot } from "./body.js";
 
 /** 真实打开目标与服务端窗口快照；由 Driver 捕获，沿现有证据队列保存。 */
 export interface ClientWindowObservation {
 	target: BlockTarget | EntityRef;
 	snapshot: WindowSnapshot;
 }
-import type { ExactRef, Fact, JsonValue, Ref, Place, Vec3 } from "./values.js";
+
+import type { ExactRef, Fact, JsonValue, Place, Ref, Vec3 } from "./values.js";
 
 export interface ClientFactStamp {
 	source: Ref;

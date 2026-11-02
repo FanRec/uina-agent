@@ -1,6 +1,7 @@
 // 用 op 账号（UinaDev）进服发 /stop，让 Paper 保存并 exit 0。
 // 用法：node .uina/worlds/minecraft/dev-env/stop-server.mjs
 import { createRequire } from "node:module";
+
 const require = createRequire(import.meta.url);
 const mineflayer = require("mineflayer");
 

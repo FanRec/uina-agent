@@ -10,19 +10,18 @@
  * 玩家目标只认 tracked 实体（players 名单属 K6，名字出现不冒认位置）。
  */
 
-import type { SelfState } from "../../contracts/body.js";
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
-import type { ControlOwner } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { ControlOwner, SelfState } from "../../contracts/body.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
+	type Direction,
+	ExploreCursor,
 	LEG_MAX_TIME_MS,
 	LEG_TOLERANCE,
-	SCAN_RADIUS,
-	ExploreCursor,
 	matchesTargetName,
-	type Direction,
+	SCAN_RADIUS,
 } from "../shared/explore.js";
 import { readValue } from "../shared/observe.js";
 import { distance, fail, stripNamespace } from "../shared/targets.js";

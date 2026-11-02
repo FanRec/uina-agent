@@ -14,8 +14,8 @@
  */
 
 import type { BlockSpec } from "../contracts/body.js";
-import { ConstructionError, normalizeTarget } from "./target.js";
 import type { ConstructionTarget, TargetCell, TargetKind } from "./target.js";
+import { ConstructionError, normalizeTarget } from "./target.js";
 
 export const TARGET_SCHEMA = "minecraft:construction.target@1";
 

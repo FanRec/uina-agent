@@ -6,9 +6,6 @@
  * 只做"相对坐标 → 绝对坐标""声明 → 匹配函数"这类语义换算，不存在第二套校验。
  */
 
-import type { BlockSpec, BlockStateValue, ItemSelector, SelfState } from "../../contracts/body.js";
-import { callFailure } from "../../contracts/values.js";
-import type { Vec3 } from "../../contracts/values.js";
 import {
 	matchesDeclared,
 	type PointTargetValue,
@@ -17,13 +14,16 @@ import {
 	specBlockName,
 	stripNamespace,
 } from "../../construction/target.js";
+import type { BlockSpec, BlockStateValue, ItemSelector, SelfState } from "../../contracts/body.js";
+import type { Vec3 } from "../../contracts/values.js";
+import { callFailure } from "../../contracts/values.js";
 
+export type { PointTargetValue };
 /**
  * 坐标/名字/声明匹配的唯一定义在 `construction/target.ts`（施工与查询共用同一份判定）；
  * 能力层只按历史名字再导出，不复制实现。
  */
-export { stripNamespace, resolveGrid, resolvePoint };
-export type { PointTargetValue };
+export { resolveGrid, resolvePoint, stripNamespace };
 
 export function specName(spec: BlockSpec): string {
 	return specBlockName(spec);

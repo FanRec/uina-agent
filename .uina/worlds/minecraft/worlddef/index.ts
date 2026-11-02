@@ -1,10 +1,10 @@
 /** Native World entry. Factory is inert; all resources belong to one activation. */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import { BODY_ENDPOINT_EXPOSED_PREFIX } from "../../../../src/extensions/world-framework/seams.js";
-import { MinecraftExecutor, type ExecutorPolicy } from "../executor/index.js";
+import type { ServiceCompanionContext, WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import { MinecraftFacade } from "../executor/facade.js";
+import { type ExecutorPolicy, MinecraftExecutor } from "../executor/index.js";
 import { createBodyEndpoint } from "./body-endpoint.js";
 import { actionSchemas, nativeGuide } from "./schema.js";
 

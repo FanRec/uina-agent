@@ -1,5 +1,5 @@
 /** Local preservation policy; Runtime owns qualification and records. */
-import type { BodySession, SelfState, ControlInput } from "../contracts/body.js";
+import type { BodySession, ControlInput, SelfState } from "../contracts/body.js";
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { SafetyInterventionRecord } from "../contracts/runtime.js";
 import type { Fact, Ref, Vec3 } from "../contracts/values.js";

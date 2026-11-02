@@ -12,12 +12,12 @@
  */
 
 import type { BodySession, ControlOwner, PlayerPort, SelfState } from "../../contracts/body.js";
-import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
+import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
 import type { EffectReceipt, Fact, Ref } from "../../contracts/values.js";
-import type { MineflayerBot } from "../mineflayer/adapter.js";
 import type { DriverControlArbiter } from "../control-arbiter.js";
 import { EffectRecorder, fail } from "../execution.js";
+import type { MineflayerBot } from "../mineflayer/adapter.js";
 import { BodySessionImpl, type HostView } from "./session.js";
 
 export interface PlayerPortDeps {

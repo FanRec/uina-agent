@@ -1,5 +1,5 @@
 /** Call-bound views over one Driver session; no second control arbiter or client. */
-import type { BodyOps, BodySession, ControlOwner, WindowSession, FeedbackStream } from "../contracts/body.js";
+import type { BodyOps, BodySession, ControlOwner, FeedbackStream, WindowSession } from "../contracts/body.js";
 import { callFailure } from "../contracts/values.js";
 
 export function scopedBody(session: BodySession, scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }) {

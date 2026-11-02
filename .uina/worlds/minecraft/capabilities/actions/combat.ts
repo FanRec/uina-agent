@@ -14,33 +14,33 @@
  * target_lost/timeout），retreated 是成功返回值。
  */
 
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
-import { plain } from "../../contracts/values.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
+import { resolveEntity } from "../shared/entities.js";
 import {
 	ATTACK_COOLDOWN_MS,
+	bestMeleeWeapon,
+	effectiveRetreatHealth,
+	type FightStance,
 	FLEE_BEARING_OFFSETS,
+	fleeLegTarget,
+	matchFollowTarget,
 	NO_PROGRESS_MS_VALUE,
 	RANGED_DRAW_MS,
 	RANGED_HOSTILES,
 	RETREAT_CLEARANCE,
-	bestMeleeWeapon,
-	effectiveRetreatHealth,
-	fleeLegTarget,
-	matchFollowTarget,
-	stanceParams,
 	sleepAbortable,
-	type FightStance,
+	stanceParams,
 } from "../shared/mobility.js";
-import { resolveEntity } from "../shared/entities.js";
 import { readValue } from "../shared/observe.js";
 import { ENTITY_REACH } from "../shared/reach.js";
 import { distance, fail } from "../shared/targets.js";
-import { readInventory, type EntityEntryView, type InventorySnapshot } from "../shared/views.js";
-import { escapeToSurface } from "./surface.js";
+import { type EntityEntryView, type InventorySnapshot, readInventory } from "../shared/views.js";
 import { scanEntities } from "./navigation.js";
+import { escapeToSurface } from "./surface.js";
 
 const EVIDENCE_MS = 600;
 /** 目标跟踪扫描在声明半径外再加的余量。 */

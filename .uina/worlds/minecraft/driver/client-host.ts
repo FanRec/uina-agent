@@ -8,15 +8,15 @@
  * 不自动重连、不自动重启旧游戏任务（§4.4）：重建 = 新 Connection，旧资格全部失效。
  */
 
-import { protocolFor } from "./mineflayer/protocol.js";
-import { trackVitals } from "./facts/vitals.js";
 import type { Ref } from "../contracts/values.js";
+import { trackVitals } from "./facts/vitals.js";
 import {
+	type ClientOptions,
 	connectMinecraftClient,
 	fromMineflayerVec3,
-	type ClientOptions,
 	type MineflayerBot,
 } from "./mineflayer/adapter.js";
+import { protocolFor } from "./mineflayer/protocol.js";
 
 export type ConnectionState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 

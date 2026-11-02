@@ -24,7 +24,7 @@ import { approachBlock } from "./approach.js";
 import { checkBudget } from "./observe.js";
 import { findStation, placeStation } from "./stations.js";
 import { assertSameDimension, fail, resolveGrid, resolvePoint, stripNamespace } from "./targets.js";
-import { itemCountOf, readBlockAt, type InventorySnapshot } from "./views.js";
+import { type InventorySnapshot, itemCountOf, readBlockAt } from "./views.js";
 import {
 	expectation,
 	moveState,

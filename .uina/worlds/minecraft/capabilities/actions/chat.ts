@@ -6,7 +6,7 @@
  * 不占 Body，但仍服从当前 run 的取消（signal）与连接门。
  */
 
-import type { CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { fail } from "../shared/targets.js";

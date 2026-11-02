@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
-import type { BodyCallScope, CallContext } from "../contracts/capabilities.js";
 import type {
+	BlockPos,
 	BlockTarget,
+	ControlInput,
 	EntityRef,
+	FeedbackStream,
+	ItemSelector,
+	SignText,
+	StackExpectation,
 	WindowSession,
 	WindowSnapshot,
-	ItemSelector,
-	StackExpectation,
-	ControlInput,
-	FeedbackStream,
-	BlockPos,
-	SignText,
 } from "../contracts/body.js";
-import type { ProgramHostApi, HandleRef } from "../contracts/program.js";
-import { callFailure, plain, type JsonValue, type Vec3 } from "../contracts/values.js";
-import type { WorldWatch } from "../contracts/world.js";
+import type { BodyCallScope, CallContext } from "../contracts/capabilities.js";
 import { matchesItem } from "../contracts/items.js";
+import type { HandleRef, ProgramHostApi } from "../contracts/program.js";
+import { callFailure, type JsonValue, plain, type Vec3 } from "../contracts/values.js";
+import type { WorldWatch } from "../contracts/world.js";
 
 type BodyHandle = { kind: "body"; scope: BodyCallScope; release(): void; closed: Promise<void> };
 type WindowHandle = {

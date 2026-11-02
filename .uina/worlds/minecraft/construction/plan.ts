@@ -19,8 +19,8 @@
 import type { BlockSpec, BlockStateValue } from "../contracts/body.js";
 import type { Vec3 } from "../contracts/values.js";
 import type { BuildPlanBlocked, BuildPlanValue } from "../contracts/world.js";
-import { ConstructionError, isReplaceableName, matchesDeclared, orderTargets, specBlockName } from "./target.js";
 import type { TargetCell } from "./target.js";
+import { ConstructionError, isReplaceableName, matchesDeclared, orderTargets, specBlockName } from "./target.js";
 
 /** 计划返回的 targets 上限（合同值，见 capabilities.md §2.4 与 §4 的体积口径）。 */
 export const MAX_PLAN_TARGETS = 2048;

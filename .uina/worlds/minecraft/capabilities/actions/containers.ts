@@ -1,16 +1,17 @@
 /** 容器动作：导航在自有身体之外，窗口与槽位搬移在同一身体作用域内。 */
-import type { BodyCallScope, CallContext, CallableDescriptor, NativeCallable } from "../../contracts/capabilities.js";
+
 import type { BlockTarget, EntityRef, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
+import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { CallFailure, JsonSchema, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
-import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
-import { ENTITY_REACH } from "../shared/reach.js";
 import { approachBlock, delegated } from "../shared/approach.js";
 import { readValue } from "../shared/observe.js";
-import { readBlockAt, readObservation, type EntityEntryView } from "../shared/views.js";
+import { ENTITY_REACH } from "../shared/reach.js";
+import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { assertSameDimension, distance, fail, resolveGrid, resolvePoint } from "../shared/targets.js";
-import { transferRoom, transferWindow, windowItem, type TransferSelection } from "../shared/window-transfer.js";
+import { type EntityEntryView, readBlockAt, readObservation } from "../shared/views.js";
+import { type TransferSelection, transferRoom, transferWindow, windowItem } from "../shared/window-transfer.js";
 
 const BLOCK_CONTAINERS = [
 	"chest",

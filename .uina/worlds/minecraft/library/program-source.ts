@@ -1,6 +1,7 @@
 /** Strict execution material built from the same header and scan used by Library. */
-import { dirname } from "node:path";
+
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ProgramHeader } from "../contracts/library.js";
 import type { ResolvedProgram } from "../contracts/program.js";
 import { callFailure } from "../contracts/values.js";

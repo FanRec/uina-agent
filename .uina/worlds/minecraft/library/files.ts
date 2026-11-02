@@ -1,6 +1,6 @@
 /** Filesystem boundaries and atomic publication shared by all three kinds. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, stat, writeFile, link, rename, rm } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LibraryKind } from "../contracts/library.js";
 

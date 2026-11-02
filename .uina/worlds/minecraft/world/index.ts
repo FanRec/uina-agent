@@ -11,41 +11,41 @@
  * WorldEvidencePort 仅保护可信记录所有者实际持有的不可变观察引用。
  */
 
-import { callFailure } from "../contracts/values.js";
+import type { QueryDescriptor, QueryReader, QueryValidator } from "../contracts/capabilities.js";
+import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type {
 	CallFailure,
 	ExactRef,
 	Fact,
+	ImageFileRef,
 	JsonValue,
 	Observation,
 	ObservationCursor,
 	Ref,
 } from "../contracts/values.js";
-import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { QueryDescriptor, QueryReader, QueryValidator } from "../contracts/capabilities.js";
+import { callFailure } from "../contracts/values.js";
 import type {
+	ConstructionPlanner,
 	DomainRecord,
 	EventPage,
 	WorldAvailabilityValue,
-	WorldPort,
 	WorldEvidencePort,
 	WorldHistoryPrune,
 	WorldHistoryPruneResult,
-	ConstructionPlanner,
+	WorldPort,
 	WorldQuery,
 	WorldRoutePlanner,
 	WorldWatch,
 } from "../contracts/world.js";
-import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
-import { PLACES_REF, PLACE_SCHEMA, placesObservation, resolvePlacesQuery, type PlacesOrigin } from "./places.js";
 import { BUILD_PLAN_REF, buildPlanObservation } from "./build-plan.js";
-import { ROUTE_PLAN_REF, routePlanObservation } from "./route-plan.js";
-import { MAP_REF, exportMapImage, mapValueOf, resolveMapInput, sampleMap } from "./map.js";
-import type { ImageFileRef } from "../contracts/values.js";
-import { checkCursor, queryStream, watchFailure } from "./watch.js";
+import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
 import { CurrentReads } from "./current.js";
+import { buildEventPage, EVENTS_REF, type EventScope, eventScopeOf, resolveEventQuery } from "./events.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
-import { EVENTS_REF, buildEventPage, eventScopeOf, resolveEventQuery, type EventScope } from "./events.js";
+import { exportMapImage, MAP_REF, mapValueOf, resolveMapInput, sampleMap } from "./map.js";
+import { PLACE_SCHEMA, PLACES_REF, type PlacesOrigin, placesObservation, resolvePlacesQuery } from "./places.js";
+import { ROUTE_PLAN_REF, routePlanObservation } from "./route-plan.js";
+import { checkCursor, queryStream, watchFailure } from "./watch.js";
 
 export interface MinecraftWorldOptions {
 	facts: ClientFactsPort;

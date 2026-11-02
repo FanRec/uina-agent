@@ -1,5 +1,6 @@
 /** Facade shapes only; native capability input schemas remain with their descriptors. */
 import { librarySchema } from "../library/schema.js";
+
 const text = { type: "string", minLength: 1 };
 const any = {};
 const object = (properties: object, required: string[] = Object.keys(properties)) => ({

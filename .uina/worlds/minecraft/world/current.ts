@@ -8,9 +8,9 @@
  * epoch/source 断裂即 reset；首次 next 立即比较（§9.3）；同一水位只交付一次提示。
  */
 
-import { callFailure } from "../contracts/values.js";
+import type { ClientFactCapture, ClientFactStamp, ClientFactsPort, ClientFactView } from "../contracts/client-facts.js";
 import type { CallFailure, Fact, JsonValue, Observation, ObservationCursor } from "../contracts/values.js";
-import type { ClientFactCapture, ClientFactStamp, ClientFactView, ClientFactsPort } from "../contracts/client-facts.js";
+import { callFailure } from "../contracts/values.js";
 import type { WorldWatch } from "../contracts/world.js";
 import { ObservationWatch, queryStream } from "./watch.js";
 

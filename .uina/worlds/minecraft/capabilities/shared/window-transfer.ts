@@ -1,6 +1,7 @@
 /** 槽位搬移：两个方向共用一个固定清单与 mode-0 点击算法。 */
+
+import type { ItemSelector, ItemValue, StackExpectation, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import { matchesItem, sameItem } from "../../contracts/items.js";
-import type { ItemSelector, StackExpectation, ItemValue, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import type { CallFailure, JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "./targets.js";
