@@ -1,6 +1,6 @@
 # Minecraft 实现入口
 
-更新时间：2026-10-30。基线 `codex/phase0-baseline`。批 0–10 与批 11 已实现：批 11 落地领域记录（world-history.db records 表，history SCHEMA v4，旧库拒绝不迁移）、`places@1`/`remember@1`/`forget@1`、`route.plan@1`（组合根注入 `WorldRoutePlanner` 窄端口）与 `explore@1`；WorldPort 增 `removeRecord`。能力面 **12 查询 + 18 动作（30/51）**。
+更新时间：2026-11-02。基线 `codex/phase0-baseline`。批 0–18 已实现：批 18 落地 K8 四动作 `sleep@1`/`fish@1`/`ride@1`/`lead@1`（真服 K8 验收 16/16，身体证据窗口 `awaitBodyEvent` + 1.21.2+ 载具客户端权威驾驶 + 链接事实缓存；马驾驶缺口登记 G23）。能力面 **16 查询 + 34 动作（50/51）**；仅剩 `transit@1`（受 G21 上坡楔死与 G23 牵制）。真服历史见 dev/MC-WORLD.md，文档合同见 docs/proposals/mc/（changelog/known-gaps/capabilities 均已同步批 18）。
 
 开工先读 [总规划 §10](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读 [公开合同](../../../docs/proposals/mc/public-api.md) 与所属模块。Host 回执行为见 [合同](../../../docs/proposals/runtime/delivery-receipts.md)，批 6 证据见 [实施记录](../../../docs/proposals/mc/native-host-implementation.md)。
 

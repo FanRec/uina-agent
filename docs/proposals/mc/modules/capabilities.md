@@ -504,6 +504,7 @@ type ExploreTarget =
 - 输入 `{ target?: Name | EntityRef, to?: Pos, off?: false }`
 - 做：骑上最近的可用坐骑（船/矿车/马/猪），可选驾驶到 `to`，`off:true` 下马。
 - 返回 `{ riding, mount?, at }`；失败 `NOT_FOUND`、`UNREACHABLE`、`WRONG_STATE`
+- 实现说明（2026-11-02 批 18，冻结）：上下车证据 = `set_passengers`/`attach_entity` 协议事实（mineflayer 事件对"空 passengers 下马"不完整）。1.21.2+ 非矿车载具客户端权威：驾驶按 `vehicle_move` 开环申报（`VEHICLE_KINEMATICS` 速率），到达判定读载具实体的服务端回声位（马 rel_entity_move / 船 sync_entity_position 会被应用，客户端视图=服务端真值）；骑手自身位置骑乘态冻结，`at` 不冒充驾驶结论（驾驶返回带 `vehicleAt` 申报终点）。**矿车不可客户端转向**——驾驶请求如实 `WRONG_STATE`（sneak 下马放行）。**有鞍马驾驶不可达是服务器侧事实（G23）**：Paper 忽略其 `vehicle_move`，对马如实 `UNREACHABLE` 不假装驾驶。`off:true` 下马 = sneak 按住 10 拍（真服实证 ~500ms 起效）+ `attach_entity(entityId=self, vehicleId<=0)` 证据。骑乘态 physicsTick 停发（mineflayer lookAt 会挂死），载具分支先于视角处理。
 
 ### 采集
 
@@ -744,6 +745,7 @@ await mc.call("chat@1", {text:"/list"});
 - 输入 `{ at?: Pos }`
 - 做：找床（或放床）并睡到天亮；会被梦魇/怪物打断。
 - 返回 `{ slept, at, until:"morning" }`；失败 `NOT_FOUND`（没有床）、`WRONG_STATE`（不是晚上/有怪）、`TARGET_NOT_MET`（床被占）
+- 实现说明（2026-11-02 批 18，冻结）：白天/床边有怪在派发前拒绝（`world@1` ticks 12541..23458 与 9 格内 hostiles，独立事实）；入睡证据 = bot sleep 事件 + 服务端 ticks 跳变（世界刻独立复核）；唤醒 = `entity_action stop_sleeping`（1.21.11 的 stop_sleeping 是 entity_action 0，mineflayer bed.js 硬编码的 2 在本版本是 stop_sprinting——协议窄口 `wakeUp()`）。中断安全：睡态相位停在哪都能继续走，睡眠不残留。
 
 #### trade · `trade@1` · act · P2
 - 输入 `{ target?: EntityRef, offer?: number = 1, item?: Name }`
@@ -754,10 +756,12 @@ await mc.call("chat@1", {text:"/list"});
 
 #### fish · `fish@1` · act · P2
 - 输入 `{ maxTimeMs?: 60000 }` → `{ caught:[{ item, count }], casts }`；失败 `MISSING_MATERIAL`（没有鱼竿）、`WRONG_STATE`（水面不对）、`TIMEOUT`
+- 实现说明（2026-11-02 批 18，冻结）：抛竿证据 = `spawn_entity(fishing_bobber)`；咬钩 = 鱼漂位置/运动窗口（world_particles）；收竿 = 再发一次 `use_item`（1.21.11 实证竿不是"使用中"状态，endUse 的 usingHeldItem 守卫对竿不成立；闲置咬钩后服务端已自动收竿，鱼漂不在就别再发——会变成新的一抛）。捕获入包 = 库存增量独立复核；落点非水在派发前快速失败（block@1 落点核验）。
 
 #### lead · `lead@1` · act · P2
 - 输入 `{ target: EntityRef | Name, to?: Pos, tie?: false, release?: false }`
 - 返回 `{ leashed, at }`；失败 `NOT_FOUND`、`MISSING_MATERIAL`（没有拴绳）、`UNREACHABLE`
+- 实现说明（2026-11-02 批 18，冻结）：三路证据全走协议事实——拴 = 手持拴绳对目标 use_entity 等 `attach_entity(目标↔自己)`；系（tie）= 对栅栏 interact 等 `leash_knot` 实体出现（栅栏 1.5 格内短窗轮询）；释放（release）= 空手 use_entity 等 `vehicleId<=0`。**对已拴目标 use_entity = 解除**：先拴后牵两连调用 `leashedBySelf`（attach_entity 的本连接事实缓存；协议无查询包，重连后已拴状态不可见）守卫跳过重复拴。1.21.11 实测拴上不消耗拴绳；牵引到达后牛的跟随 AI 滞后于玩家，链接复核给 6 秒跟上窗口，超时如实 `UNREACHABLE`（progress 带牛位置）。证据窗口一律先开再派发（attach_entity 毫秒级到达，后开窗漏接）。
 
 ### 战斗
 

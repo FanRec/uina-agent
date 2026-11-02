@@ -255,7 +255,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 1. 批 4–6 已沿正式受管入口接通原生能力、Host 回执、WorldDef 和首次模型校准；本批证据与最终收口见 [实施记录](archive/native-host-implementation.md)。
 2. 批 7 Program 与批 8 Library 文件/发现已接通：同一 QuickJS、精确快照、文件管理和程序复用沿正式工具、IPC 与生命周期运行。
-3. **下一工作包为睡眠（sleep，K8 起步）**：批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站五动作（G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口，能力面 **46/51**）；见 dev/MC-WORLD.md 批13–批17 各节。剩余 K8 五动作（sleep/fish/ride/lead/transit）按 §10.3 顺序各自验收。
+3. **下一工作包为 transit（K8 收口）**：批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站五动作（G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口），批18 已接 K8 四动作（sleep/fish/ride/lead，真服 K8 验收 16/16，能力面 **50/51**）；见 dev/MC-WORLD.md 批13–批18 各节。剩余 K8 仅 `transit`（受 G21 上坡楔死与 G23 马驾驶牵制，按 §10.3 验收）。
 4. 不迁移真实旧日志或数据库，不新建通用插件平台、FakeBot 产品分支或临时模型桥。
 
 ## 10. 剩余施工总纲（2026-10-25 重排）
@@ -297,7 +297,7 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 ### 10.3 玩法就绪队列（默认优先级，可据校准调整）
 
-以下不是“前一行全部完成才能开始下一行”的串行表。批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口）；**接下来做睡眠（sleep）**，随后捕鱼/骑乘/牵引/跨维度按直接依赖进入。其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
+以下不是“前一行全部完成才能开始下一行”的串行表。批13 已接地形切片与空间作业（region/tunnel/excavate，G4 关闭），批14 已接蓝图与施工（build.plan/build，K5 关闭），批15 已接 K7 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭），批16 已接玩家名单（players），批17 已接地图与 G11 图片出口（map，K6 收口），批18 已接 K8 四动作（sleep/fish/ride/lead，真服 K8 验收 16/16）；**接下来做跨维度（transit，K8 收口）**，受 G21 上坡楔死与 G23 马驾驶牵制。其他项有真实消费者且直接依赖齐全即可提前。每行是一项能力或紧密共享同一机制的工作包，K 标签仅指原能力组。
 
 | 工作包 | 交付范围 | 直接依赖与边界 | 验收任务 |
 |---|---|---|---|
@@ -312,10 +312,10 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 | ~~蓝图与施工（K5）~~ | Library 的 Raw→Target→Project、build.plan、build | **批14 已实现**（2026-11-01）：`construction/` 模块（Target 语义/`.schem` 解码/差异计划）、`place-cell` 抽取、`build.plan` 派生查询 + `ConstructionPlanner` 窄端口 | 5×5 木屋缺料→补料→完成；含门/火把与 preserve/unknown；plan 后改图产生 CONFLICT，修复只做真实差异（真服源码/产物各 12/12） |
 | ~~玩家名单（K6）~~ | players | **批16 已实现**（2026-11-01）：名单=服务器 player_info 花名册（`bot.players` 投影），关联实体按采样时刻重新解析；entities@1 玩家名覆写为用户名（修 follow/explore 按玩家名目标） | 玩家离开跟踪后名单仍可保留，tracked=null；离线 UUID 不认证正版（真服源码/产物 11/11） |
 | ~~地图（K6）~~ | map、正式 observe 图片附件 | **批17 已实现**（2026-11-01，G11 关闭）：协议窄口 `map` 包捕获（1.21.11 包名 `map`，列主序增量）、per-connection MapCache、色板从 Paper 运行时 jar 提取（62 材质×4 明暗）、world/map.ts 一次 sample 固定切面 + 512×512 PNG 原子缓存、facade observe 经 read_image rpc 产 ToolExecutionResult.images | 自动选图/显式 id/NOT_FOUND、色板对拍（水/草/材质 RGB 与 jar 提取表一致）、图标更新不抹像素、重连不复活旧覆盖、PNG sha256/bytes 对拍；受控 wire 5/5 + 真模型 deepseek-flash 4/4（模型真实描述画面内容）（源码/产物各 10/10） |
-| 睡眠（K8） | sleep | 床/位置交互、游戏时间与中断；无完整战斗前置 | 真服睡到天亮；怪物/占床/非夜间失败和取消如实 |
-| 捕鱼（K8） | fish | 受控使用、鱼漂/咬钩反馈与收竿归属 | 真服抛竿→实际捕获入包；超时/取消不留持续使用 |
-| 骑乘（K8） | ride | 实体交互、载具输入、上下车与停止 | 实际上车/移动/下车；载具消失、取消和急停有真实结论 |
-| 牵引（K8） | lead | 实体/拴绳交互、导航与释放证据 | 牵引、系绳和释放分别核验，不以走到位置代替牵引成功 |
+| ~~睡眠（K8）~~ | sleep | **批18 已实现**（2026-11-02）：白天/床边有怪派发前拒绝（world@1 ticks + hostiles 独立事实）；入睡=bot sleep 事件+服务端 ticks 跳变；唤醒=entity_action stop_sleeping（1.21.11 是 0，mineflayer bed.js 的 2 是 stop_sprinting） | 真服睡到天亮；怪物/占床/非夜间失败和取消如实（K8 验收 sleep 4/4） |
+| ~~捕鱼（K8）~~ | fish | **批18 已实现**（2026-11-02）：抛竿=fishing_bobber spawn、咬钩=鱼漂粒子窗口、收竿=再发 use_item（竿非"使用中"状态，endUse 守卫不成立；自动收竿后别再发） | 真服抛竿→实际捕获入包；超时/取消不留持续使用（K8 验收 fish 3/3） |
+| ~~骑乘（K8）~~ | ride | **批18 已实现**（2026-11-02）：上下车=set_passengers/attach_entity 协议事实；驾驶=vehicle_move 客户端权威开环申报（VEHICLE_KINEMATICS），到达读服务端回声位；矿车不可转向如实 WRONG_STATE；有鞍马驾驶不可达如实 UNREACHABLE（G23）；sneak 下马按住 10 拍 | 实际上车/移动/下车；载具消失、取消和急停有真实结论（K8 验收 ride 5/5，船到达服务端 Pos 差 0.05 格） |
+| ~~牵引（K8）~~ | lead | **批18 已实现**（2026-11-02）：拴/系/释放三路证据全走协议事实（attach_entity/leash_knot/vehicleId<=0）；对已拴目标 use_entity=解除，先拴后牵两连调由 leashedBySelf（本连接事实缓存）守卫；到达后牛跟随给 6 秒窗口 | 牵引、系绳和释放分别核验，不以走到位置代替牵引成功（K8 验收 lead 3/3，牛跟到位 3.7 格） |
 | ~~酿造（K7）~~ | brew | **批15 已实现**（2026-11-01）：一批 ≤3 瓶，完成只认瓶子组件变号；服务端不下发 potion 注册表，成品名按入参报、编号进 observedPotionIds | 3 水瓶+地狱疣 → 3 瓶成品（真服 14/14）；wait:false 只装料并报 readyAt |
 | ~~附魔（K7）~~ | enchant | **批15 已实现**：三档等级要求来自窗口属性，缺省取最高可负担档；已附魔物品三档全 0，优先挑没附魔的那一件 | 报告与库存组件一致、费用为服务端报的档位；等级不足在派发前 MISSING_MATERIAL |
 | ~~铁砧（K7）~~ | anvil | **批15 已实现**：name_item 包（协议不带 windowId）、费用读属性 0；原版只在“真的有变化”时出结果 | 改名与合并按库存组件复核；不可合并 TARGET_NOT_MET |

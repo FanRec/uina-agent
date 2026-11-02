@@ -1,5 +1,18 @@
 # 设计变更记录
 
+## 2026-11-02 · 批18 K8 睡眠/捕鱼/骑乘/牵引（sleep/fish/ride/lead，能力面 50/51）
+
+- 能力面 +4：`sleep@1`（白天/床边有怪 WRONG_STATE 派发前拒绝，入睡证据=bot sleep 事件+服务端 ticks 跳变，唤醒走 `entity_action stop_sleeping`——1.21.11 的 stop_sleeping 是 entity_action 0，mineflayer bed.js 硬编码的 2 在本版本是 stop_sprinting）；`fish@1`（抛竿证据=fishing_bobber spawn，咬钩=鱼漂粒子/运动窗口，收竿=再发一次 use_item——竿不是"使用中"状态，endUse 守卫不成立）；`ride@1`（上下车证据=set_passengers/attach_entity，驾驶按 1.21.2+ 客户端权威 `vehicle_move` 申报，到达判定读载具实体的服务端回声位）；`lead@1`（拴/系/释放三路：拴=对目标 use_entity 等 attach_entity 归属证据、系=对栅栏 interact 等 leash_knot 实体、释放=空手 use_entity 等 vehicleId<=0）。
+- **身体证据窗口**（`driver/body/session.ts` `awaitBodyEvent`）：mount/dismount/link/bobber/bite 五类窗口，只认协议事实不认 bot 事件（mineflayer 对"空 passengers 下马"与拴绳链接不完整）；三态纪律 true/false/null（null=中止没看完）。证据窗必须**先开再派发**——服务端通知在 interact 后毫秒级到达。
+- **载具运动学**：`contracts/body.ts` `VEHICLE_KINEMATICS` 唯一真源（boat 0.22/0.12、default 0.15/0.10），drive 返回带 `vehicleAt` 申报终点；预算换算（ticks/格）统一从它推导（修掉马按船速算预算的确定性偏差）。
+- **协议窄口**：`protocol.ts` 批 18 观察面（attach_entity/set_passengers/spawn_entity 鱼漂/world_particles 咬钩/player_input/vehicle_move）+ `linkHolders` 链接事实缓存（entity→holder，骑乘与拴绳共用 attach_entity；协议无查询包，重连清空）。
+- **lead 幂等**：对已拴目标 use_entity = 解除——"先拴后牵"两连调会把第一次的绳解掉（真服 K8 稳定复现）；`leashedBySelf`（attach_entity 本连接事实）守卫跳过重复拴。
+- **equip 空手**：从手持槽取物的窗口点击拿不到权威确认（真服实证）——`equip(null,"hand")` 优先换选空快捷栏位（held_item_slot），点击路径只作无空位兜底。
+- **矿车**：1.21.11 矿车不可客户端转向——驾驶请求如实 `WRONG_STATE`（sneak 下马原语放行，仅拦截 wantsMovement）。
+- **G23 登记**：有鞍马驾驶不可达（Paper 忽略 vehicle_move，A/B 实证）——`ride@1` 对马如实 UNREACHABLE，不假装驾驶成功。
+- 真服协议事实：骑乘态位移有服务端回声（马 rel_entity_move/船 sync_entity_position 被 mineflayer 应用，客户端视图=服务端真值）；shift 下马需按住 ~500ms（10 拍）；骑手自身位置骑乘态冻结（下马即回同步）；`/data get` 回执是 system 消息（sender=null，不被 facts 层自身回声过滤）；1.21.11 鞍槽位 = `equipment.saddle`（旧 `saddle` 报 Incorrect argument）、牛的拴绳 NBT 不叫 `Leash`（查证恒 "Found no elements matching"，判据走 attach_entity）；拴上不消耗拴绳；mineflayer 骑乘态 physicsTick 停发（lookAt 会永久挂死，载具分支先于视角处理）。
+- 能力 **50/51**（16 查询 + 34 动作）；K8 仅剩 `transit`（受 G21 上坡楔死牵制）。验收：`dev:mc:k8` 真服 **16/16 PASS**（sleep 4、fish 3、ride 5、lead 3、prepare/cleanup；断言全部走独立事实——服务端 Pos/Passengers/库存增量/实体复读）；MC 单测 riding 22 + window 21 + queries 目录 30→34 全绿，`leashedBySelf` 入 contracts/driver/harness 三层；非骑乘撤销不再发 `player_input`（player_input 是载具键位通道，window 测试抓到的多余包暴露此问题）。基线红 `mc-client-lifecycle`（protodef 编译炸，批16 已证 HEAD 同败）与 `mcp-extension-loading` 与本批无关。
+
 ## 2026-11-01 · 批17 K6 地图（map@1，G11 关闭）
 
 - 能力面 +1：`map@1`（不可等待、非 feedback）——输入 `{id?, image?=true}`，缺省按主手→副手→热键栏→背包选一张携带的 filled_map；返回像素计数（receivedPixels/paintedPixels/totalPixels:16384）+ 图标 + 可选 ImageFileRef；center/dimension 协议不下发恒 null，不读服务器存档推断。无已开地图 NOT_FOUND，不自动开图或装备。
