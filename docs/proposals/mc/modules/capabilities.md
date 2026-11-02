@@ -499,6 +499,7 @@ type ExploreTarget =
 - 返回 `{ reached, dimension, at, stages: [{ kind:"goto"|"portal"|"ride"|"enter", ok, at?, reason? }] }`
 - 失败 `UNREACHABLE`（`hint` 带 `stage` 与 `furthest`，说明是哪一段做不到）、`MISSING_MATERIAL`（缺建门材料）、`WRONG_STATE`（门被堵/连接异常）、`TIMEOUT`。交通方式不可用时**明确失败**，不静默退化成一段不可能的步行。
 - 只此一个旅行入口：不再加 `journey`/`travel`/`transport` 这类同义 API。
+- 实现说明（2026-11-02 批 19，冻结）：阶段**兄弟化**——`goto` 占导航槽、`withBody` 占身体槽，`runNavigation` 见 `frame.bodyLease` 即 `CONTROL_CONFLICT`，所以每段各自开合，绝不在 `withBody` 里调 `goto`。找门 = `blocks@1 {name:"nether_portal", radius:64}` 取最近一格；建门 = 一次 `region@1` 读回判定候选（`shared/portal.ts` 纯函数：4×5 框 14 格黑曜石、6 格内部、底排 4 格支撑、两侧 × 齐平/低一格共 4 个站位），逐格 `inspectPlacement`/`commitPlacement`，再用打火石点**底排中"正上方是门内空气"的那一格顶面**（点四角会把火指向柱子，服务端什么都不放）。进门：门面只有一格厚，闷头走会穿门而过；按 2 拍一步推进并每步复核"身体是不是真在门方块里"，进了就停手——生存模式 `Player.getPortalWaitTime()` = 80 拍（实测 3.6s 传送），刚用过门还有 300 拍（15s）冷却、冷却期内站进去什么都不发生，所以等待窗口取 20s（正常 4s 内返回，只有真卡住才用满）。同维度不给 `at` 直接完成、零派发；给 `at` 退化成一段 `goto`。
 
 #### ride · `ride@1` · act · P2
 - 输入 `{ target?: Name | EntityRef, to?: Pos, off?: false }`

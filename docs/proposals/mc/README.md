@@ -23,7 +23,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
-**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](archive/native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保；批11已接领域记录（G1 关闭）、地点与路径探索；批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；批14已接蓝图与施工（build.plan/build，K5 关闭）；批15已接专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）；批16已接玩家名单（players，entities 玩家名覆写）；批17已接地图与 G11 图片出口（map，K6 收口），下一组为 K8 活动（sleep/fish/ride/lead/transit）。现有 46 项能力不等于全部 51 项设计完成。
+**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](archive/native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保；批11已接领域记录（G1 关闭）、地点与路径探索；批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；批14已接蓝图与施工（build.plan/build，K5 关闭）；批15已接专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）；批16已接玩家名单（players，entities 玩家名覆写）；批17已接地图与 G11 图片出口（map，K6 收口）；批18已接 K8 活动（sleep/fish/ride/lead，G23 登记）；批19 关闭 G21（pathfinder 台阶补丁 + goto 无进展看门狗）并接上 K8 最后一项跨维度旅行（transit）。**能力面 51/51 已全部落地**（16 查询 + 35 动作），剩余是 G6/G7/G12–G17 这些横向缺口与 G24（上行 1:1 走廊净空）。
 
 批 2 设计、取舍与任务记录见 [窗口与容器实施](archive/window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
 

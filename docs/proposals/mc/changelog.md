@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-02 · 批19 G21 关闭（pathfinder 台阶补丁 + goto 看门狗）与 transit（能力面 51/51）
+
+- **G21 根因**：`mineflayer-pathfinder` 的 `canStraightLine` 把"延迟起跳才过得去"的节点算成"直线可走"，执行器因此**永不按 jump**；随后 `resetPath('stuck')` 不 emit `path_stop`，promise 不 settle，只能等 40s 墙钟。真服实测：起跳点距台阶面 ≥0.89 格才过得去；贴面起跳的横向速度被面碰撞清零，空中控制 0.02/拍补不回来，只能原地弹跳。
+- **补丁**（`patches/mineflayer-pathfinder@2.4.5.patch`，与 lockfile 同提交）：`lib/physics.js` 新增 `stepAt(bot, nextPoint, d)`（沿行进方向 d 格探"脚下一格实心 + 头上一格空"），`shouldJump` 改为"1.2/1.8 处有台阶且 0.6 处还没贴上"才起跳；`lib/index.js` 所有移动分支统一走同一个 `jumpNow`（`canSprintJump` 分支原来无条件按住 jump），并加**后退助跑**：贴面且水平速度 <0.12 时后退 200ms 起、逐次 +200ms 上限 900ms 再冲。`allowParkour` 在适配层显式关掉（执行器做不稳跑酷节点）。
+- **goto 无进展看门狗**（`driver/goto.ts`）：上膛（见过一次非空路径）+ 挖掘豁免（换目标算进展、同一方块挖满 12s 算卡死）+ 3s 窗口 0.25 格位移 → `UNREACHABLE`。密封竖井从 40s 墙钟降到 **68ms**。
+- **能力面 +1** `transit@1`（P2，K8 收口）：找门（`blocks@1` 半径 64 取最近一格）或建门（一次 `region@1` 读回判定全部候选；`capabilities/shared/portal.ts` 纯函数：4×5 框 14 格黑曜石、6 格内部、底排 4 格支撑、两侧 × 齐平/低一格共 4 个站位）→ 逐格 `inspectPlacement`/`commitPlacement` → 打火石点**底排中"正上方是门内空气"的那一格顶面** → 走进门内 → 等维度切换 → 出门 → 可选最后一段 `goto`。阶段**兄弟化**：`goto` 占导航槽、`withBody` 占身体槽，持身体时 `runNavigation` 直接 `CONTROL_CONFLICT`，所以每段各自开合。
+- 真服协议事实（批19 探针）：生存 `Player.getPortalWaitTime()` = 80 拍，站进门内实测 **3.6s** 传送；传送后 **300 拍（15s）冷却**，冷却期内站进去什么都不发生（进门的等待窗口因此取 20s）；门面只有一格厚，闷头走会穿门而过，必须按 2 拍一步推进并复核"身体是否真在门方块里"；点火点四角（底排两端）会把火指向柱子、服务端什么都不放；`self@1` 的维度随 respawn 即时更新；下界链接坐标 = 主世界 ÷8（9850 → 1231，服务端实际生成在 1234）；传送会把身体租约掀掉（`INTERRUPTED` 不是失败）。
+- **G24 登记**：上行 1:1 走廊 2 高净空物理不可通行（玩家高 1.8、跳跃抬升 1.25，踏步上方只有 1 格时被削顶）——不是导航 bug，`tunnel@1` 上行段需要 3 高净空或半砖级差。原隧道步骤已从 `dev:mc:climb` 移除并如实登记，不改成通过。
+- 能力 **51/51**（16 查询 + 35 动作）。验收：`dev:mc:climb` 真服 **5/5 PASS**（1 格台阶 1090ms、三级 1:1 阶梯 7318ms、密封竖井 68ms 快速失败、平地 30 格 5472ms）；`dev:mc:transit` 真服 **5/5 PASS**（空手 MISSING_MATERIAL 零派发、建门+点亮+进门 11.0s 落地下界、原路返回 6.3s 复用下界侧门且回到原址 2.1 格内、再进一次 6.3s 复用主世界侧门）；MC 单测 transit 12 项、queries 目录 34→35 全绿。
+
 ## 2026-11-02 · 批18 K8 睡眠/捕鱼/骑乘/牵引（sleep/fish/ride/lead，能力面 50/51）
 
 - 能力面 +4：`sleep@1`（白天/床边有怪 WRONG_STATE 派发前拒绝，入睡证据=bot sleep 事件+服务端 ticks 跳变，唤醒走 `entity_action stop_sleeping`——1.21.11 的 stop_sleeping 是 entity_action 0，mineflayer bed.js 硬编码的 2 在本版本是 stop_sprinting）；`fish@1`（抛竿证据=fishing_bobber spawn，咬钩=鱼漂粒子/运动窗口，收竿=再发一次 use_item——竿不是"使用中"状态，endUse 守卫不成立）；`ride@1`（上下车证据=set_passengers/attach_entity，驾驶按 1.21.2+ 客户端权威 `vehicle_move` 申报，到达判定读载具实体的服务端回声位）；`lead@1`（拴/系/释放三路：拴=对目标 use_entity 等 attach_entity 归属证据、系=对栅栏 interact 等 leash_knot 实体、释放=空手 use_entity 等 vehicleId<=0）。
