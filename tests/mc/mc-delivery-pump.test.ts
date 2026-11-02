@@ -246,3 +246,114 @@ test("one unavailable report does not block other headers; unavailable content r
 		await pump.close();
 	}
 });
+async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+test("G6 digest events ride minecraft_digest without an events@1 pointer; other notices keep theirs", async () => {
+	const events: WorldEvent[] = [];
+	const listeners = new Set<
+		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
+	>();
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		isBusy: () => false,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async () => ({ kind: "absent" }),
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvent: async (event) => {
+			events.push(event);
+		},
+	};
+	const executor = {
+		subscribe: (
+			listener: (events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void,
+		) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async () => ({ items: [] }),
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx, 10);
+	try {
+		pump.start();
+		const send = (ref: string, payload: unknown) => {
+			for (const listener of listeners) listener([{ ref, observedAt: "t", payload } as never]);
+		};
+		send("digest:n:1", { kind: "digest", self: { dimension: "overworld" }, inventory: { counts: {} }, world: {} });
+		await until(() => events.length === 1);
+		expect(events[0]!.type).toBe("minecraft_digest");
+		const text = JSON.parse(events[0]!.text!);
+		expect(text.kind).toBe("digest");
+		expect(text.observedAt).toBe("t");
+		expect(text.nextCall).toBeUndefined();
+		send("ev:n:2", { kind: "safety_changed", intervention: {} });
+		await until(() => events.length === 2);
+		expect(events[1]!.type).toBe("minecraft_event");
+		expect(JSON.parse(events[1]!.text!).nextCall).toEqual({
+			action: "runs",
+			params: { op: "record", ref: "ev:n:2" },
+		});
+	} finally {
+		await pump.close();
+	}
+});
+
+test("G6 while the host is busy only the newest digest is held; it flushes on idle", async () => {
+	const events: WorldEvent[] = [];
+	const listeners = new Set<
+		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
+	>();
+	let busy = true;
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		isBusy: () => busy,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async () => ({ kind: "absent" }),
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvent: async (event) => {
+			events.push(event);
+		},
+	};
+	const executor = {
+		subscribe: (
+			listener: (events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void,
+		) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async () => ({ items: [] }),
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx, 10);
+	try {
+		pump.start();
+		const send = (seq: string) => {
+			for (const listener of listeners)
+				listener([{ ref: `digest:n:${seq}`, observedAt: "t", payload: { kind: "digest", seq } } as never]);
+		};
+		send("A");
+		send("B");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(events).toHaveLength(0);
+		busy = false;
+		await pump.reconcile();
+		await until(() => events.length === 1);
+		expect(JSON.parse(events[0]!.text!).seq).toBe("B");
+	} finally {
+		await pump.close();
+	}
+});

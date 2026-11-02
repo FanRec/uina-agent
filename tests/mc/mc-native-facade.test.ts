@@ -142,3 +142,45 @@ console.log('facade passed');
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+test("run {wait} overrides the short window per call; 0 skips waiting entirely (G8)", async () => {
+	const waits: { run: string; timeoutMs?: number }[] = [];
+	const snapshot = {
+		run: "run-1",
+		rootRequestId: "q",
+		segment: "s",
+		revision: 1,
+		record: "rec",
+		completion: { scope: "execution" as const },
+		phase: "running" as const,
+		completionRef: "c1",
+		progress: null,
+		progressComplete: false,
+		control: "running" as const,
+		unknownEffectCount: 0,
+		unknownEffects: [],
+		unknownEffectsComplete: true,
+	};
+	const executor = {
+		status: () => ({ actionsAllowed: true, side: { launch: "launch" } }),
+		ledger: { putRequest: async () => {}, found: async () => {} },
+		submit: async () => ({ kind: "accepted", snapshot }),
+		wait: async (run: string, options: { timeoutMs?: number }) => {
+			waits.push({ run, timeoutMs: options?.timeoutMs });
+			return { kind: "accepted", snapshot };
+		},
+	} as unknown as MinecraftExecutor;
+	const facade = new MinecraftFacade(executor, { signal: new AbortController().signal });
+	const signal = new AbortController().signal;
+	try {
+		const plain = await facade.execute("run", { selector: "goto@1", input: {} }, signal);
+		const override = await facade.execute("run", { selector: "goto@1", input: {}, wait: 1200 }, signal);
+		const zero = await facade.execute("run", { selector: "goto@1", input: {}, wait: 0 }, signal);
+		for (const reply of [plain, override, zero]) expect(reply.status).toBe("succeeded");
+		expect(waits).toEqual([
+			{ run: "run-1", timeoutMs: 3000 },
+			{ run: "run-1", timeoutMs: 1200 },
+		]);
+	} finally {
+		await facade.close();
+	}
+});

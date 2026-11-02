@@ -174,3 +174,38 @@ test("workstation selects write their own packets and reject nothing locally", (
 	]);
 	b.emit("end", "test complete");
 });
+test("G7 slot marks keep per-slot last-changed revisions and retire with the connection", () => {
+	const b = bot();
+	(b as unknown as { inventory: EventEmitter }).inventory = new EventEmitter();
+	const p = protocolFor(b);
+	const Item = mf("prismarine-item")(b.registry);
+	const stack = (name: string, count: number) => Item.toNotch(new Item(b.registry.itemsByName[name].id, count));
+	const full = (specials: Record<number, ReturnType<typeof stack>>) =>
+		Array.from({ length: 46 }, (_, slot) => specials[slot] ?? Item.toNotch(null));
+	// 首次同步：无前值，全部槽位标记为当前 revision。
+	b._client.emit("window_items", {
+		windowId: 0,
+		items: full({ 9: stack("stone", 3) }),
+		carriedItem: Item.toNotch(null),
+	});
+	expect(p.playerSnapshot()?.revision).toBe(1);
+	expect(p.playerSlotMarks()).toEqual(Array.from({ length: 46 }, () => 1));
+	// 相同内容的全量重同步：revision 前进，标记不动（差量不会误报全库）。
+	b._client.emit("window_items", {
+		windowId: 0,
+		items: full({ 9: stack("stone", 3) }),
+		carriedItem: Item.toNotch(null),
+	});
+	expect(p.playerSnapshot()?.revision).toBe(2);
+	expect(p.playerSlotMarks()?.[9]).toBe(1);
+	// 单槽写入：revision 与该槽标记一起推进；光标推进 revision 但不算槽位变更。
+	b._client.emit("set_cursor_item", { contents: Item.toNotch(null) });
+	expect(p.playerSnapshot()?.revision).toBe(3);
+	expect(p.playerSlotMarks()?.[9]).toBe(1);
+	b._client.emit("set_slot", { windowId: 0, slot: 9, item: stack("stone", 5) });
+	expect(p.playerSnapshot()?.revision).toBe(4);
+	expect(p.playerSlotMarks()?.[9]).toBe(4);
+	expect(p.playerSlotMarks()?.[10]).toBe(1);
+	b.emit("end", "test complete");
+	expect(p.playerSlotMarks()).toBeNull();
+});

@@ -135,6 +135,8 @@ function makeView(overrides: Partial<ClientFactView> = {}): ClientFactView {
 				spawn: null,
 			}),
 		searchBlocks: () => fact({ matches: [], scanned: { radius: 32, chunksLoaded: 0 }, capped: false }),
+		// G7：默认无标记（真实视图总有此方法；替身按"标记不可用"处理）。
+		inventoryChanges: () => null,
 		players: () => fact(null, ["players not implemented"]),
 		map: () => fact(null, ["map not implemented"]),
 		window: () => fact(null, ["window not implemented"]),
@@ -193,6 +195,66 @@ describe("inventory@1", () => {
 		expect(result.value.usedSlots).toBe(3);
 		expect(result.value.freeSlots).toBe(33);
 		expect(result.value.slots.map((slot) => slot.slot)).toEqual([5, 36, 37, 38]);
+	});
+
+	test("{since} 相同游标回 changes:[] 与变化后总数，不回全量 slots", () => {
+		const reader = readerOf("inventory@1");
+		if (reader.kind !== "current") throw new Error("inventory must be a current reader");
+		const view = makeView({ inventoryChanges: () => [] });
+		const result = reader.read(view, { since: 4 } as JsonValue) as Fact<{
+			revision: number;
+			changes: unknown[];
+			counts: Record<string, number>;
+			slots?: unknown;
+		}>;
+		expect(result.value.revision).toBe(4);
+		expect(result.value.changes).toEqual([]);
+		expect(result.value.counts).toEqual({ diamond_helmet: 1, oak_log: 12, apple: 2 });
+		expect(result.value).not.toHaveProperty("slots");
+	});
+
+	test("{since} 差量回变更槽位当前内容 + 变化后总数", () => {
+		const reader = readerOf("inventory@1");
+		if (reader.kind !== "current") throw new Error("inventory must be a current reader");
+		const view = makeView({
+			inventoryChanges: (since) =>
+				since < 7
+					? [{ slot: 38, item: { name: "apple", count: 5, stackSize: 64, durability: null, components: null } }]
+					: [],
+		});
+		const result = reader.read(view, { since: 4 } as JsonValue) as Fact<{
+			revision: number;
+			changes: { slot: number; item: { name: string; count: number } | null }[];
+			counts: Record<string, number>;
+			slots?: unknown;
+		}>;
+		expect(result.value.changes).toEqual([
+			{ slot: 38, item: { name: "apple", count: 5, stackSize: 64, durability: null, components: null } },
+		]);
+		// 总数始终是当前全量的聚合，不是差量的聚合。
+		expect(result.value.counts).toEqual({ diamond_helmet: 1, oak_log: 12, apple: 2 });
+		expect(result.value).not.toHaveProperty("slots");
+	});
+
+	test("{since} 标记不可用退回全量并如实标注", () => {
+		const reader = readerOf("inventory@1");
+		if (reader.kind !== "current") throw new Error("inventory must be a current reader");
+		const view = makeView({ inventoryChanges: () => null });
+		const result = reader.read(view, { since: 4 } as JsonValue) as Fact<{ slots: unknown[] }> & { unknown: string[] };
+		expect(result.value.slots).toHaveLength(4);
+		expect(result.unknown).toContain("slot change marks unavailable; returning full inventory");
+	});
+
+	test("{since} 超前游标（含跨重启）报 INVALID_INPUT", () => {
+		const reader = readerOf("inventory@1");
+		if (reader.kind !== "current") throw new Error("inventory must be a current reader");
+		try {
+			reader.read(makeView(), { since: 99 } as JsonValue);
+			expect.unreachable("since beyond the current revision must fail");
+		} catch (error) {
+			expect((error as CallFailure).code).toBe("INVALID_INPUT");
+			expect((error as Error).message).toContain("since 99 is ahead");
+		}
 	});
 });
 
