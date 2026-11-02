@@ -8,7 +8,8 @@
 
 import type { ItemValue } from "../../contracts/body.js";
 import type { ClientFactView, ClientInventoryValue } from "../../contracts/client-facts.js";
-import type { Fact } from "../../contracts/values.js";
+import type { Fact, JsonSchema, JsonValue } from "../../contracts/values.js";
+import { callFailure } from "../../contracts/values.js";
 import { factOf } from "../shared/facts.js";
 import type { QuerySpec } from "../shared/query.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
@@ -88,11 +89,58 @@ const selfQuery: QuerySpec = {
 	},
 };
 
+const INVENTORY_INPUT: JsonSchema = {
+	type: "object",
+	properties: {
+		since: { type: "integer", minimum: 0, description: "inventory revision; omit for the full read" },
+	},
+	additionalProperties: false,
+};
+
+/** 主背包/快捷栏占用与总数（两种模式共用；护甲/副手/合成槽不参与搬运判断）。 */
+function carrySummary(
+	value: ClientInventoryValue,
+	slots: { slot: number; item: ItemValue | null }[],
+): { counts: Record<string, number>; usedSlots: number; freeSlots: number } {
+	const counts: Record<string, number> = {};
+	for (const slot of slots) {
+		if (slot.item == null) continue;
+		counts[slot.item.name] = (counts[slot.item.name] ?? 0) + slot.item.count;
+	}
+	const carry = value.layout.regions.filter((region) => region.name === "main" || region.name === "hotbar");
+	const carrySlots = new Set(carry.flatMap((region) => region.slots));
+	let usedSlots = 0;
+	for (const slot of slots) if (slot.item != null && carrySlots.has(slot.slot)) usedSlots++;
+	return { counts, usedSlots, freeSlots: Math.max(0, carrySlots.size - usedSlots) };
+}
+
+/** 全量形态（省略 since 或标记不可用时的回退）；extraUnknown 追加进事实 unknown。 */
+function fullInventoryFact(
+	value: ClientInventoryValue,
+	meta: { unknown: string[]; source: Fact<unknown>["source"]; basis: Fact<unknown>["basis"] },
+	summary: { counts: Record<string, number>; usedSlots: number; freeSlots: number },
+	extraUnknown: string[],
+): Fact<unknown> {
+	const slots: (ItemValue & { slot: number })[] = [];
+	for (const slot of value.slots) if (slot.item != null) slots.push({ slot: slot.slot, ...slot.item });
+	return factOf(
+		{
+			revision: value.revision,
+			layout: value.layout,
+			slots,
+			...summary,
+			selectedSlot: value.selectedSlot,
+			...gearOf(value),
+		},
+		{ unknown: [...meta.unknown, ...extraUnknown], source: meta.source, basis: meta.basis },
+	);
+}
+
 const inventoryQuery: QuerySpec = {
 	descriptor: {
 		ref: "inventory@1",
 		summary: "Inventory slots, layout regions, per-item counts and free space at the current commit boundary",
-		input: EMPTY_INPUT,
+		input: INVENTORY_INPUT,
 		output: { type: "object" },
 		access: "read",
 		watchable: true,
@@ -112,42 +160,51 @@ const inventoryQuery: QuerySpec = {
 					unknown: ["item durability/components not captured in the current view"],
 				},
 			},
+			{
+				input: { since: 41 },
+				output: {
+					value: {
+						revision: 47,
+						changes: [
+							{ slot: 36, item: { name: "oak_log", count: 11, stackSize: 64, durability: null, components: null } },
+							{ slot: 37, item: null },
+						],
+						counts: { oak_log: 11 },
+						usedSlots: 1,
+						freeSlots: 35,
+						selectedSlot: 0,
+					},
+				},
+			},
 		],
 	},
 	reader: {
 		kind: "current",
-		read: (view: ClientFactView): Fact<unknown> => {
+		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const inventory = view.inventory();
 			if (inventory.value == null) return inventory as Fact<unknown>;
 			const value = inventory.value;
-			const unknown = [...inventory.unknown];
-			const slots: (ItemValue & { slot: number })[] = [];
-			const counts: Record<string, number> = {};
-			for (const slot of value.slots) {
-				if (slot.item == null) continue;
-				slots.push({ slot: slot.slot, ...slot.item });
-				counts[slot.item.name] = (counts[slot.item.name] ?? 0) + slot.item.count;
-			}
-			// 可用空间只按主背包 + 快捷栏计（36 格）；护甲/副手/合成槽不参与搬运判断。
-			const carry = value.layout.regions.filter((region) => region.name === "main" || region.name === "hotbar");
-			const carrySlots = new Set(carry.flatMap((region) => region.slots));
-			let usedSlots = 0;
-			for (const slot of slots) if (carrySlots.has(slot.slot)) usedSlots++;
-			const freeSlots = Math.max(0, carrySlots.size - usedSlots);
-			const gear = gearOf(value);
-			return factOf(
-				{
-					revision: value.revision,
-					layout: value.layout,
-					slots,
-					counts,
-					usedSlots,
-					freeSlots,
-					selectedSlot: value.selectedSlot,
-					...gear,
-				},
-				{ unknown, source: inventory.source, basis: inventory.basis },
-			);
+			const meta = { unknown: [...inventory.unknown], source: inventory.source, basis: inventory.basis };
+			const since = (input as { since?: number } | null)?.since;
+			const fullSlots = value.slots.map((slot) => ({ slot: slot.slot, item: slot.item }));
+			const summary = carrySummary(value, fullSlots);
+			if (since === undefined) return fullInventoryFact(value, meta, summary, []);
+			// 游标超前（含跨进程重启后 revision 归零）：如时报错，不编差量。
+			if (value.revision < since)
+				throw callFailure({
+					code: "INVALID_INPUT",
+					source: "input",
+					message: `since ${since} is ahead of the current inventory revision ${value.revision}`,
+					hint: "revision is per-connection; re-read inventory@1 without since",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: true,
+				});
+			const changes = view.inventoryChanges(since);
+			// 标记不可用：退回全量并如实标注，不冒充差量。
+			if (changes == null)
+				return fullInventoryFact(value, meta, summary, ["slot change marks unavailable; returning full inventory"]);
+			return factOf({ revision: value.revision, changes, ...summary, selectedSlot: value.selectedSlot }, meta);
 		},
 	},
 };

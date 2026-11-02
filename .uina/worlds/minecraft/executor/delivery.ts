@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import type { GameNotice } from "../contracts/executor.js";
 import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
 import type { MinecraftExecutor } from "./index.js";
 import type { DeliveryAttempt } from "./ledger-worker.js";
@@ -21,6 +22,8 @@ export class DeliveryPump {
 	private pendingCount: number | null = null;
 	private hostState: HostDeliveryState = { kind: "unavailable", reason: "not checked" };
 	private failures = 0;
+	/** G6：主脑忙碌时只保留最新一份 digest，空闲即补发——避免长任务期间 followUp 刷屏。 */
+	private heldDigest: GameNotice | null = null;
 	private readonly activation = `delivery:${randomUUID()}`;
 	constructor(
 		private readonly executor: MinecraftExecutor,
@@ -30,7 +33,13 @@ export class DeliveryPump {
 	start(): void {
 		this.unsubscribeSide = this.executor.subscribe((events) => {
 			this.wake(0);
-			for (const event of events)
+			for (const event of events) {
+				// G6 digest：独立事件类型 minecraft_digest（不指向 events@1）；忙时只保最新一份。
+				if ((event.payload as { kind?: string } | null)?.kind === "digest") {
+					this.heldDigest = event;
+					this.flushDigest();
+					continue;
+				}
 				void this.ctx.emitEvent!({
 					id: event.ref,
 					type: "minecraft_event",
@@ -46,6 +55,7 @@ export class DeliveryPump {
 				}).catch((error) => {
 					this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
 				});
+			}
 		});
 		this.unsubscribe = this.ctx.onHostEvent?.(() => this.wake(0)) ?? null;
 		this.wake(this.pollMs);
@@ -56,7 +66,29 @@ export class DeliveryPump {
 		this.timer = setTimeout(() => {
 			this.timer = null;
 			void this.reconcile().catch(() => {});
+			this.flushDigest();
 		}, ms);
+	}
+	/** 空闲（主脑不在回合中）才投递保留的 digest；isBusy 不可用时与普通事件同权直发。 */
+	private flushDigest(): void {
+		const event = this.heldDigest;
+		if (!event || this.stopped) return;
+		if (this.ctx.isBusy?.() === true) return;
+		this.heldDigest = null;
+		const payload = event.payload;
+		void this.ctx.emitEvent!({
+			id: event.ref,
+			type: "minecraft_digest",
+			origin: "external",
+			channel: "world",
+			text: JSON.stringify(
+				payload != null && typeof payload === "object" && !Array.isArray(payload)
+					? { observedAt: event.observedAt, ...payload }
+					: { observedAt: event.observedAt, payload },
+			),
+		}).catch((error) => {
+			this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
+		});
 	}
 	async view(state: DeliveryState): Promise<CompletionView> {
 		const header = state.delivery;
@@ -275,6 +307,7 @@ export class DeliveryPump {
 	async close(): Promise<void> {
 		this.stopped = true;
 		if (this.timer) clearTimeout(this.timer);
+		this.heldDigest = null;
 		this.unsubscribe?.();
 		this.unsubscribeSide?.();
 		await this.running;

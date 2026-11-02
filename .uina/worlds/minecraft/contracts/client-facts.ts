@@ -256,6 +256,11 @@ export interface ClientFactView {
 	players(): Fact<ClientPlayersValue | null>;
 	map(id: number): Fact<ClientMapValue | null>;
 	inventory(): Fact<ClientInventoryValue | null>;
+	/**
+	 * 槽位级增量（G7）：自 since 以来内容可能变化的槽位及其当前内容（item null = 已空）。
+	 * 差量按"自 since 起被写过"合并，不重放中间态；标记不可用（未同步/长度不齐）回 null，不猜。
+	 */
+	inventoryChanges(since: number): { slot: number; item: import("./body.js").ItemValue | null }[] | null;
 	window(): Fact<WindowSnapshot | null>;
 }
 

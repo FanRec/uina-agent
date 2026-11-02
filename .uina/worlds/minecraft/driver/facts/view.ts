@@ -58,6 +58,7 @@ export function createView(ctx: FactViewContext): ClientFactView {
 		scope: () => ctx.scope,
 		self: () => selfFact(ctx),
 		inventory: () => inventoryFact(ctx),
+		inventoryChanges: (since) => inventoryChangesFact(ctx, since),
 		block: (target) => blockFact(ctx, target),
 		sections: (targets) => sectionsFact(ctx, targets),
 		entities: () => entitiesFact(ctx),
@@ -249,6 +250,23 @@ function inventoryFact(ctx: FactViewContext): Fact<ClientInventoryValue | null> 
 		connection: stamp.connection ?? undefined,
 		incarnation: stamp.incarnation ?? undefined,
 	} as Fact<ClientInventoryValue | null>;
+}
+
+/**
+ * 槽位级增量（G7）：协议层的每槽位变更标记 > since 的槽位及其当前内容。
+ * 标记不可用（未同步/与快照不齐）回 null，由查询层如实上报，不猜差量。
+ */
+function inventoryChangesFact(
+	ctx: FactViewContext,
+	since: number,
+): { slot: number; item: import("../../contracts/body.js").ItemValue | null }[] | null {
+	const protocol = protocolFor(ctx.bot);
+	const snapshot = protocol.playerSnapshot();
+	const marks = protocol.playerSlotMarks();
+	if (snapshot == null || marks == null || marks.length !== snapshot.slots.length) return null;
+	return snapshot.slots
+		.filter((entry) => (marks[entry.slot] ?? 0) > since)
+		.map((entry) => ({ slot: entry.slot, item: entry.item as import("../../contracts/body.js").ItemValue | null }));
 }
 
 // ---- block ----

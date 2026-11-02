@@ -117,6 +117,11 @@ export interface DriverProtocol {
 	decode(raw: unknown): JsonValue | null;
 	item(value: unknown): ItemValue | null;
 	playerSnapshot(): WindowSnapshot | null;
+	/**
+	 * G7 槽位增量标记：每槽位最后一次内容变更时的 inventory revision，与 playerSnapshot().slots 对齐；
+	 * 未同步回 null（不猜）。光标移动只推 revision，不算槽位变更。
+	 */
+	playerSlotMarks(): number[] | null;
 	click(window: NativeWindow, slot: number, button: number): void;
 	/** 工作站专用提交（批 15）：只写包，不预测槽位、不判定生效。 */
 	selectEnchant(window: NativeWindow, offer: number): void;
@@ -179,6 +184,8 @@ class Protocol12111 implements DriverProtocol {
 	private codec: ItemCodec | null = null;
 	private itemNames: Map<number, string> | null = null;
 	private player: WindowSnapshot | null = null;
+	/** G7 槽位增量标记：每槽位最后一次内容变更时的 revision；与 player.slots 对齐，player 为 null 时清空。 */
+	private slotMarks: number[] = [];
 	private lastClosedWindow: NativeWindow | null = null;
 	private playerSynchronized = false;
 	private sequence = 0;
@@ -224,15 +231,24 @@ class Protocol12111 implements DriverProtocol {
 			if (packet.windowId === 0 && items.length >= 46) {
 				this.playerSynchronized = true;
 				const inventory = fixedLayout("minecraft:inventory");
+				const previous = this.player;
+				const revision = (previous?.revision ?? 0) + 1;
 				this.player = {
 					window: "player-inventory",
 					type: "minecraft:inventory",
-					revision: (this.player?.revision ?? 0) + 1,
+					revision,
 					layout: { slotCount: items.length, regions: inventory?.regions ?? [] },
 					properties: {},
 					slots: items.map((item: JsonValue | null, slot: number) => ({ slot, item })),
 					cursor,
 				};
+				// G7：全量重同步只标内容真正变化的槽位；无前值（登录/重生）时全部视为已变。
+				this.slotMarks = items.map((item: JsonValue | null, slot: number) => {
+					const before =
+						previous != null && previous.slots.length === items.length ? previous.slots[slot]?.item : undefined;
+					if (before === undefined) return revision;
+					return JSON.stringify(before) !== JSON.stringify(item) ? revision : (this.slotMarks[slot] ?? revision);
+				});
 			}
 			if (packet.windowId !== 0 && window && items.length === window.slots.length && this.player) {
 				for (let slot = window.inventoryStart; slot < window.inventoryEnd; slot++)
@@ -381,12 +397,14 @@ class Protocol12111 implements DriverProtocol {
 		});
 		native("respawn", () => {
 			this.player = null;
+			this.slotMarks = [];
 			this.lastClosedWindow = null;
 			this.activeBobber = null;
 		});
 		native("end", () => {
 			this.ended = true;
 			this.player = null;
+			this.slotMarks = [];
 			this.lastClosedWindow = null;
 			this.activeBobber = null;
 			this.emit({ kind: "end" });
@@ -443,6 +461,9 @@ class Protocol12111 implements DriverProtocol {
 	playerSnapshot(): WindowSnapshot | null {
 		return this.player == null || !this.playerSynchronized ? null : structuredClone(this.player);
 	}
+	playerSlotMarks(): number[] | null {
+		return this.player == null || !this.playerSynchronized ? null : [...this.slotMarks];
+	}
 	subscribe(listener: (notice: ProtocolNotice) => void): () => void {
 		this.listeners.add(listener);
 		return () => {
@@ -456,6 +477,7 @@ class Protocol12111 implements DriverProtocol {
 		if (this.player && slot >= 0 && slot < this.player.layout.slotCount) {
 			this.player.slots[slot] = { slot, item };
 			this.player.revision++;
+			this.slotMarks[slot] = this.player.revision;
 		}
 	}
 	private updateCursor(raw: unknown): void {

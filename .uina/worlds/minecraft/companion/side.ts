@@ -33,6 +33,7 @@ import { createLibrary } from "../library/index.js";
 import { readCallSource } from "../library/origin.js";
 import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
+import { startDigestPush } from "../world/digest.js";
 import { MinecraftWorld } from "../world/index.js";
 import { readExportedImage } from "../world/map.js";
 import { type DescribeParams, describeDirectory } from "./directory.js";
@@ -137,6 +138,21 @@ export async function openExecutionSide(
 		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
 	});
 	capabilities.callables.push(...(options.callables ?? []));
+	// G6 节流 digest：三个段落复用现有查询读取器（与 observe 同口径），经 onGameEvent 上行。
+	const digestReader = (ref: ExactRef) => {
+		const reader = capabilities.readers.get(ref);
+		if (reader?.kind !== "current") throw new Error(`digest requires a current reader for ${ref}`);
+		return reader;
+	};
+	const digest = startDigestPush({
+		facts,
+		readers: {
+			self: digestReader("self@1"),
+			inventory: digestReader("inventory@1"),
+			world: digestReader("world@1"),
+		},
+		emit: ({ observedAt, payload }) => options.onGameEvent?.({ ref: mint("digest"), observedAt, payload }),
+	});
 	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
 	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
 	// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
@@ -299,6 +315,7 @@ export async function openExecutionSide(
 			(closePromise ??= (async () => {
 				closing = true;
 				importantEvents.close();
+				digest.close();
 				const errors: unknown[] = [];
 				const owner = getRuntime().inspectOwner();
 				if (owner) {
@@ -469,6 +486,7 @@ export async function openExecutionSide(
 		};
 	} catch (error) {
 		importantEvents.close();
+		digest.close();
 		await Promise.allSettled([
 			host.close(),
 			world.close(),

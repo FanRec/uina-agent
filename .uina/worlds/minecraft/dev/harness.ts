@@ -66,6 +66,8 @@ export async function openHarness(
 		dataRoot?: string;
 		/** 重开同一数据根时复用上次的 ns：runtime.db 的 world_owner 与历史库身份都绑定它。 */
 		ns?: string;
+		/** 游戏侧事件（safety_changed / 死亡 / G6 digest 等）收集口，透传给 openExecutionSide。 */
+		onGameEvent?: (notice: import("../contracts/executor.js").GameNotice) => void;
 	} = {},
 ): Promise<DevHarness> {
 	const log = (message: string): void => console.log(`[mc-${label}] ${message}`);
@@ -92,7 +94,7 @@ export async function openHarness(
 			ownerLifetimeMs: 5000,
 			localGates: [],
 		},
-		{ callables: options.callables },
+		{ callables: options.callables, onGameEvent: options.onGameEvent },
 	);
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	try {

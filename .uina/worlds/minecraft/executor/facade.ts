@@ -176,9 +176,15 @@ export class MinecraftFacade {
 				},
 			},
 			signal,
+			// G8：按调用短窗覆盖。0 = 只受理不等（完成走 minecraft_completion）。
+			typeof params.wait === "number" ? params.wait : undefined,
 		);
 	}
-	private async submitRequest(intent: RequestIntent, signal: AbortSignal): Promise<ToolExecutionResult> {
+	private async submitRequest(
+		intent: RequestIntent,
+		signal: AbortSignal,
+		waitMs?: number,
+	): Promise<ToolExecutionResult> {
 		if (!this.executor.status().actionsAllowed)
 			return response({ code: "OWNER_GATE_CLOSED", message: "owner action gate is closed" }, "not_started");
 		const { requestId } = intent.request;
@@ -251,11 +257,12 @@ export class MinecraftFacade {
 					},
 					accepted.kind === "unknown" ? "unknown" : "failed",
 				);
+			if (waitMs === 0) return response(accepted);
 			let waited;
 			try {
 				waited = await this.executor.wait(
 					accepted.snapshot.run,
-					{ timeoutMs: this.policy.shortWindowMs ?? 3000 },
+					{ timeoutMs: waitMs ?? this.policy.shortWindowMs ?? 3000 },
 					signal,
 				);
 			} catch (error) {
