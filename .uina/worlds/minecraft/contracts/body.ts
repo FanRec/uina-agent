@@ -294,7 +294,8 @@ export interface BodyOps {
 		receipt: EffectReceipt;
 		actualTicks: number;
 		end: Fact<SelfState>;
-		/** 载具驾驶时的开环申报终点（骑乘态无服务端回声，这是唯一的驾驶结论载体）；步行驾驶缺席。 */
+		/** 载具驾驶的开环申报终点，审计对照用：骑乘态 self 视图冻结，但载具本体有
+		 *  服务端回声（rel_entity_move/sync_entity_position），到达判定读载具实体位置。 */
 		vehicleAt?: Vec3;
 	}>;
 	dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;

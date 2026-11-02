@@ -417,8 +417,8 @@ export class BodySessionImpl implements BodySession {
 
 			// 载具分支（批 18）必须先于视角处理：骑乘态 physicsTick 停发（mineflayer
 			// mount 后停模拟），bot.lookAt 等物理 tick 收敛会永久挂死（真服 60s 挂死实证）。
-			// 船走客户端权威 vehicle_move 运动学，马/猪/驼等服务端权威走 look + player_input；
-			// 视角在 driveVehicle 内按角度直算、发原始包。
+			// 1.21.2+ 全部非矿车载具走客户端权威 vehicle_move（G23：Paper 忽略有鞍马的
+			// 申报）；视角在 driveVehicle 内按角度直算、发原始包。
 			if (bot.vehicle != null) {
 				if (input.use != null || input.attack != null) {
 					throw fail({
@@ -504,8 +504,9 @@ export class BodySessionImpl implements BodySession {
 
 	/**
 	 * 载具驾驶（批 18）：固定 50ms 节拍逐拍派发，任何退出路径先中和输入。
-	 * 船（客户端权威）：运动学递推位置 + 每拍 vehicle_move；服务端权威实体：
-	 * 每拍 look（服务端从骑手视角取转向）+ player_input 键位。
+	 * 1.21.2+ 全部非矿车载具客户端权威：运动学递推位置 + 每拍 vehicle_move
+	 * （已知缺口 G23：Paper 忽略有鞍马的申报）；视角在分支内按角度直算发原始包，
+	 * 不走 bot.lookAt（骑乘态 physicsTick 停发会永久挂死）。
 	 */
 	private async driveVehicle(
 		bot: MineflayerBot,
@@ -573,8 +574,8 @@ export class BodySessionImpl implements BodySession {
 			}),
 		);
 		const consumed = await this.consumeVehicleTicks(bot, input, kinematics, ticks, eff);
-		// 骑乘态无服务端回声（self 与被骑载具的客户端视图都冻结）：申报终点是唯一的
-		// 驾驶结论载体，随 receipt 交给调用方；服务端真值复核是验收场景的职责。
+		// 骑乘态 self 视图冻结，申报终点只作审计对照；载具本体有服务端回声
+		// （rel_entity_move/sync_entity_position），到达判定由调用方读载具实体位置。
 		const vehicleAt: Vec3 = { x: kinematics.x, y: kinematics.y, z: kinematics.z };
 		const sampled = this.deps.sampleSelf();
 		if (sampled == null || sampled.value == null) {

@@ -1,10 +1,10 @@
 /**
  * K8 实体交互的纯决策面（批 18）：床名、夜间判定、可骑实体与转向能力。
  *
- * 事实依据（2026-11-01 真服探针 + mineflayer bed.js/fishing.js 口径）：
+ * 事实依据（2026-11-01~02 真服探针 + mineflayer bed.js/fishing.js 口径）：
  * - 夜间 = ticks ∈ [12541, 23458]（bed.js 同源；雷暴白天可睡是协议上限，见偏差登记）。
- * - 上车证据 = set_passengers；拴绳证据 = attach_entity（vehicleId<=0 = 解除）。
- * - 船 = 客户端权威（vehicle_move）；minecart 不可转向；pig/strider 需手持胡萝卜钓竿/诡异菌。
+ * - 上车证据 = set_passengers；拴绳证据 = attach_entity（vehicleId<=0 = 解除，实测发 0 非 -1）。
+ * - 1.21.2+ 非矿车载具客户端权威（vehicle_move）；pig/strider 驾驶未专项实测。
  */
 
 /** 全部床方块名（16 色 + 旧版 bed；bed.js 同表）。 */
@@ -51,16 +51,14 @@ export function isMountName(name: string): boolean {
 }
 
 /**
- * 转向能力：minecart 不可转向（to 给定 → WRONG_STATE）；
- * pig/strider 可"骑"但转向依赖手持专属物品，未持有时原地不动（驾驶停滞如实 UNREACHABLE）。
+ * 转向能力：minecart 不可转向（to 给定 → WRONG_STATE）。
+ * pig/strider/camel 按 1.21.2+ 客户端权威口径走 vehicle_move 申报，真服未专项实测——
+ * 驾驶停滞会走到达判定如实 UNREACHABLE，不假装成功。
  */
 export function isSteerableMount(name: string): boolean {
 	if (name.includes("minecart")) return false;
 	return isMountName(name);
 }
-
-/** 拴绳链接的解除判据：attach_entity 的 vehicleId<=0（1.21.11 实测释放发 0，不是 -1）。 */
-export const isDetachedLink = (vehicleId: number): boolean => vehicleId <= 0;
 
 /**
  * 可系拴绳结的方块（原版只认普通栅栏，墙/栅栏门都不行）。

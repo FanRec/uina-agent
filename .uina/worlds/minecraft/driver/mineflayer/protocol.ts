@@ -144,7 +144,7 @@ export interface DriverProtocol {
 	wakeUp(): void;
 }
 
-/** player_input 的键位面（1.21.2+ 服务端权威载具输入；船忽略，只认 vehicle_move）。 */
+/** player_input 的键位面（1.21.2+ 载具键位申报：shift 下马/跳跃等服务端判定键；移动由 vehicle_move 承担）。 */
 export interface VehicleInputFlags {
 	forward?: boolean;
 	backward?: boolean;

@@ -163,6 +163,7 @@ async function driveToward(
 	const ticksPerBlock =
 		mount.name.includes("boat") || mount.name.includes("raft") ? BOAT_TICKS_PER_BLOCK : MOUNT_TICKS_PER_BLOCK;
 	const gap = flatDistance(mount.position, to);
+	// 取偶拍（100ms 粒度）：申报拍至少给两拍起步，短距离也留出输入生效窗口。
 	const ticks = Math.min(DRIVE_MAX_TICKS, Math.max(20, Math.ceil((gap * ticksPerBlock) / 2) * 2));
 	// 视角交给 drive 的载具分支：骑乘态不能走 body.lookAt（mineflayer lookAt 等物理
 	// tick 收敛，mount 后物理停发会永久挂死——真服 60s 挂死实证），分支内直接算角度发原始包。
@@ -350,6 +351,7 @@ async function assertStillLeashed(
 	// 给 6 秒让牛跟上来，进容差即通过；真丢了/超时才如实 UNREACHABLE。
 	const deadline = Date.now() + 6000;
 	for (;;) {
+		if (signal.aborted) interrupted({ phase: "transit_settle" });
 		const entities = await readEntities({ world, signal }, LEAD_SEARCH_RADIUS);
 		const mob = entities.find((entity) => entity.ref.networkId === targetId);
 		if (mob == null) {
@@ -492,7 +494,8 @@ async function tieToFence(scope: BodyCallScope, ctx: CallContext, mobAt: Vec3): 
 	if (fence == null) return null;
 	const self = await readValue<SelfState>(scope.world, "self@1", {}, scope.signal, "self state");
 	if (blockReach(self, fence.position) > BLOCK_REACH) return null;
-	// 空手点栅栏（探针实证：拴绳已被拴牛挂走，手持物品反而会触发放置）；
+	// 空手点栅栏（1.21.5+ 拴绳挂在链接上、不在手上显示——牵牛时手里本来就是空的，
+	// 空手右键栅栏即把绳系上去；手持其他物品反而可能触发放置/开门）。
 	// 已空手就不再点击（手持槽自换会产生不可确认的窗口点击，真服实证）。
 	if ((await readInventory(scope.world)).held != null) {
 		await scope.player.equip(null, "hand");
