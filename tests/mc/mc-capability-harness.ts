@@ -166,6 +166,11 @@ export interface HarnessHooks {
 	onDrive?: (ticks: number, selfState: SelfState) => void;
 	/** 导航替身：测试可在里面模拟"走到之后世界发生了什么"（例如顺手捡起）。 */
 	onGoto?: (request: { at: { x: number; y: number; z: number }; tolerance: number }) => void;
+	/**
+	 * self 读回前的一次回调：服务端在"条件满足的当下"改变身体状态时用（例如站在点亮的
+	 * 门里被传送——这不是任何动作的后果，所以不该挂在 drive/interact 上）。
+	 */
+	onSelf?: (selfState: SelfState) => void;
 	self?: Partial<SelfState>;
 	/** 覆盖静态知识：配方类测试要自己的注册表。 */
 	knowledge?: RegistryKnowledge;
@@ -206,7 +211,10 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 	const calls: string[] = [];
 	const world: WorldReadPort = {
 		async read<T>(query: { ref: string; input: JsonValue }): Promise<Observation<T>> {
-			if (query.ref === "self@1") return fact(selfState) as Observation<T>;
+			if (query.ref === "self@1") {
+				hooks.onSelf?.(selfState);
+				return fact(selfState) as Observation<T>;
+			}
 			if (query.ref === "inventory@1") {
 				// 真实 World 每次返回新的纯值；替身必须同样快照，否则"动作前的库存"会被后续变更污染。
 				return fact(structuredClone(state.inventory)) as Observation<T>;
@@ -264,6 +272,57 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			if (query.ref === "build.plan@1") {
 				if (hooks.buildPlan == null) throw new Error("this harness has no build plan");
 				return fact(hooks.buildPlan(query.input)) as Observation<T>;
+			}
+			if (query.ref === "region@1") {
+				// 与真实读取器同口径：palette + xzy 索引，未登记的格子是空气，
+				// 登记为 null 的格子是"未加载"（-1，不是空气）。
+				const raw = query.input as {
+					from: { x: number; y: number; z: number };
+					to: { x: number; y: number; z: number };
+				};
+				const origin = {
+					x: Math.min(raw.from.x, raw.to.x),
+					y: Math.min(raw.from.y, raw.to.y),
+					z: Math.min(raw.from.z, raw.to.z),
+				};
+				const nx = Math.abs(raw.to.x - raw.from.x) + 1;
+				const ny = Math.abs(raw.to.y - raw.from.y) + 1;
+				const nz = Math.abs(raw.to.z - raw.from.z) + 1;
+				const palette: { name: string; properties: Record<string, string> }[] = [{ name: "air", properties: {} }];
+				const paletteIndex = new Map<string, number>([["air{}", 0]]);
+				const cells: number[] = new Array(nx * ny * nz).fill(0);
+				let missing = 0;
+				for (let y = origin.y; y < origin.y + ny; y++) {
+					for (let z = origin.z; z < origin.z + nz; z++) {
+						for (let x = origin.x; x < origin.x + nx; x++) {
+							const index = (y - origin.y) * nx * nz + (z - origin.z) * nx + (x - origin.x);
+							if (!state.blocks.has(key({ x, y, z }))) continue;
+							const block = state.blocks.get(key({ x, y, z }));
+							if (block == null) {
+								cells[index] = -1;
+								missing += 1;
+								continue;
+							}
+							const paletteKey = `${block.name}${JSON.stringify(block.properties)}`;
+							let slot = paletteIndex.get(paletteKey);
+							if (slot == null) {
+								slot = palette.length;
+								palette.push({ name: block.name, properties: block.properties });
+								paletteIndex.set(paletteKey, slot);
+							}
+							cells[index] = slot;
+						}
+					}
+				}
+				return fact({
+					origin,
+					shape: [nx, ny, nz],
+					palette,
+					cells,
+					order: "xzy",
+					missing,
+					scanned: { chunksLoaded: 1 },
+				}) as Observation<T>;
 			}
 			if (query.ref === "entities@1") {
 				// 与真实读取器同口径：kind 过滤（all/hostile/passive/player）。

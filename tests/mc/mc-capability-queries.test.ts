@@ -373,7 +373,7 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("map@1")).toBe(false);
 	});
 
-	test("34 个动作齐备，ref 不重复", () => {
+	test("35 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"anvil@1",
 			"attack@1",
@@ -407,6 +407,7 @@ describe("目录完整性", () => {
 			"surface@1",
 			"trade@1",
 			"transfer@1",
+			"transit@1",
 			"tunnel@1",
 			"use@1",
 		]);

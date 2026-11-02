@@ -32,6 +32,7 @@ import { leadCallable, rideCallable } from "./actions/riding.js";
 import { smeltCallable } from "./actions/smelt.js";
 import { anvilCallable, brewCallable, enchantCallable, grindstoneCallable, tradeCallable } from "./actions/stations.js";
 import { surfaceCallable } from "./actions/surface.js";
+import { transitCallable } from "./actions/transit.js";
 import { tunnelCallable } from "./actions/tunnel.js";
 import type { CapabilityDeps } from "./deps.js";
 import { bodyQueries } from "./queries/body.js";
@@ -142,6 +143,7 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		fishCallable(deps),
 		rideCallable(deps),
 		leadCallable(deps),
+		transitCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {
