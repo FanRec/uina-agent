@@ -11,8 +11,7 @@
  * 不是"动作都派发出去了"。交通方式不可用时如实失败，不静默退化成步行。
  */
 
-import { isReplaceableName } from "../../construction/target.js";
-import { resolvePoint } from "../../construction/target.js";
+import { isReplaceableName, resolvePoint } from "../../construction/target.js";
 import type { ControlOwner, SelfState } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
@@ -22,7 +21,6 @@ import { sleepAbortable } from "../shared/mobility.js";
 import { readValue } from "../shared/observe.js";
 import {
 	bareDimension,
-	gridAt,
 	LINKED_SITE_RADIUS,
 	linkedCoordinates,
 	PORTAL_IGNITER,
@@ -30,21 +28,25 @@ import {
 	type PortalFrame,
 	type PortalSite,
 	portalSite,
+	portalSiteAccess,
 	regionGrid,
 	siteBounds,
 	siteCandidates,
-	siteUsable,
 } from "../shared/portal.js";
 import { distance, fail } from "../shared/targets.js";
 import { itemCountOf, readBlockAt, readInventory } from "../shared/views.js";
 import { commitPlacement, inspectPlacement, placeOf } from "./place-cell.js";
 
 const KNOWN_DIMENSIONS = new Set(["overworld", "the_nether", "the_end"]);
+/** 下界门只在主世界与下界之间成立；末地要走末地传送门框架，本能力不建。 */
+const PORTAL_DIMENSIONS = new Set(["overworld", "the_nether"]);
 const TRANSPORTS = ["portal", "minecart", "boat", "horse"] as const;
 type Transport = (typeof TRANSPORTS)[number];
 
 /** 找门的水平半径：64 是 blocks@1 的上限，也覆盖了下界门的实际链接范围。 */
 const PORTAL_SEARCH_RADIUS = 64;
+/** 选址的搜索半径（格）：先原地，再按环向外扩。 */
+const SITE_SEARCH_RADIUS = 6;
 /** 等维度切换的预算：首次进下界要生成地形，给足 60s。 */
 const DIMENSION_WAIT_MS = 60000;
 /** 进门/出门的推进拍数（4 拍 ≈ 200ms 一格）。 */
@@ -79,9 +81,9 @@ const descriptor: CallableDescriptor = {
 			},
 			allow: {
 				type: "array",
-				items: { enum: ["portal", "minecart", "boat", "horse"] },
+				items: { enum: [...TRANSPORTS] },
 				minItems: 1,
-				maxItems: 4,
+				maxItems: TRANSPORTS.length,
 				description: "transport kinds the caller allows (default: portal only)",
 			},
 			maxTimeMs: { type: "number", minimum: 1000, maximum: 1800000, description: "wall-clock budget (default 600000)" },
@@ -109,11 +111,15 @@ const descriptor: CallableDescriptor = {
 	errors: [
 		{ code: "INVALID_INPUT", meaning: "unknown dimension, at outside that dimension, or an unknown allow entry" },
 		{ code: "MISSING_MATERIAL", meaning: "not enough obsidian or no flint_and_steel to build and light a portal" },
-		{ code: "WRONG_STATE", meaning: "portal interior blocked, or the frame did not light" },
+		{
+			code: "WRONG_STATE",
+			meaning: "portal interior blocked, the frame did not light, or standing in it did not move the body",
+		},
 		{
 			code: "UNREACHABLE",
-			meaning: "a stage could not be completed (hint.stage names it); never falls back to walking",
+			meaning: "a stage could not be completed (hint names the stage); never falls back to walking",
 		},
+		{ code: "TARGET_NOT_MET", meaning: "the server did not confirm a frame cell after the placement was dispatched" },
 		{ code: "TIMEOUT", meaning: "the wall-clock budget ran out before the dimension changed" },
 		{ code: "INTERRUPTED", meaning: "the run was stopped or safety took over" },
 	],
@@ -126,8 +132,9 @@ const descriptor: CallableDescriptor = {
 				dimension: "the_nether",
 				at: { x: 16.5, y: 70, z: 16.5 },
 				stages: [
-					{ kind: "portal", ok: true, reason: "built" },
+					{ kind: "portal", ok: true, reason: "built (14 obsidian)" },
 					{ kind: "enter", ok: true },
+					{ kind: "leave", ok: true },
 					{ kind: "goto", ok: true },
 				],
 			},
@@ -143,7 +150,7 @@ interface TransitInput {
 }
 
 interface Stage {
-	kind: "goto" | "portal" | "enter" | "leave" | "ride";
+	kind: "goto" | "portal" | "enter" | "leave";
 	ok: boolean;
 	at?: Vec3;
 	reason?: string;
@@ -152,10 +159,8 @@ interface Stage {
 interface PortalPlace {
 	/** 门内一格（站着进门的那个格，也是进门前的朝向点）。 */
 	entrance: Vec3;
-	/** 进门那一拍要按 jump（门立在平地上时，门内比脚下高一格）。 */
+	/** 进门那一拍要不要按 jump（门立在平地上时，门内比脚下高一格）。 */
 	stepUp: boolean;
-	/** 门是否本次建成（false = 复用了世界里已有的门）。 */
-	built: boolean;
 }
 
 export function transitCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
@@ -183,6 +188,13 @@ export function transitCallable(deps: CapabilityDeps): NativeCallable<JsonValue,
 				}
 				return report(self, stages);
 			}
+			// 末地门是另一种结构：不在这里建，也不该先建一扇下界门再等 60s 超时。
+			if (!PORTAL_DIMENSIONS.has(current) || !PORTAL_DIMENSIONS.has(target)) {
+				fail("UNREACHABLE", `a nether portal cannot connect ${current} and ${target}`, {
+					hint: "stage: plan — the_end needs an end portal frame, which transit@1 does not build",
+					progress: { stage: "plan", from: current, to: target },
+				});
+			}
 			if (!allow.includes("portal")) {
 				fail(
 					"UNREACHABLE",
@@ -202,11 +214,12 @@ export function transitCallable(deps: CapabilityDeps): NativeCallable<JsonValue,
 				await leg(deps, ctx, destinationAt, 2, deadline, stages);
 				self = await readSelf(ctx);
 			}
+			// 只在走过 destinationAt 之后可达：那一段步行可能自己穿回另一扇门。
 			if (bareDimension(self.place.dimension) !== target) {
 				fail("WRONG_STATE", `still in ${self.place.dimension} after travelling to ${target}`, {
-					hint: "the server moved the body somewhere unexpected; re-read self before retrying",
+					hint: "the walking leg ended in another dimension; re-read self before retrying",
 					dispatch: "sent",
-					progress: { at: self.place.position },
+					progress: { stage: "goto", at: self.place.position, dimension: bareDimension(self.place.dimension) },
 				});
 			}
 			return report(self, stages);
@@ -236,7 +249,7 @@ async function readSelf(ctx: CallContext): Promise<SelfState> {
 function resolveDestinationAt(raw: unknown, target: string, self: SelfState): Vec3 | null {
 	if (raw == null) return null;
 	const point = resolvePoint(raw, self);
-	if (typeof raw === "object" && raw != null && "position" in raw) {
+	if (typeof raw === "object" && "position" in raw) {
 		const declared = bareDimension((raw as { dimension?: string }).dimension ?? "");
 		if (declared !== target) {
 			fail("INVALID_INPUT", `destination.at is in ${declared}, but destination.dimension is ${target}`, {
@@ -278,7 +291,6 @@ async function leg(
 	} catch (error) {
 		const code = (error as { code?: string }).code;
 		if (code === "UNREACHABLE" || code === "TIMEOUT") {
-			stages.push({ kind: "goto", ok: false, at, reason: code });
 			fail(code, `could not walk to ${at.x},${at.y},${at.z}: ${(error as Error).message}`, {
 				hint: "stage: goto — the walking leg did not reach its point",
 				dispatch: "sent",
@@ -303,10 +315,10 @@ async function ensurePortal(
 	if (existing != null) {
 		stages.push({ kind: "portal", ok: true, at: existing, reason: "found" });
 		await leg(deps, ctx, existing, 1, deadline, stages);
-		return { entrance: existing, stepUp: true, built: false };
+		// 现成的门不知道门槛高度：一律带 jump，多跳一拍无害。
+		return { entrance: existing, stepUp: true };
 	}
-	const built = await buildPortal(deps, ctx, self, target, destinationAt, deadline, stages);
-	return built;
+	return await buildPortal(deps, ctx, self, target, destinationAt, deadline, stages);
 }
 
 /** 已加载区块里的现成传送门（最近的一格）。 */
@@ -343,7 +355,7 @@ async function buildPortal(
 			`building a portal needs ${PORTAL_OBSIDIAN_COST} obsidian and 1 ${PORTAL_IGNITER}; inventory holds ${obsidian} and ${igniters}`,
 			{
 				hint: "bring the materials, or travel to a dimension that already has a portal",
-				progress: { obsidian, flint_and_steel: igniters },
+				progress: { stage: "portal", obsidian, flint_and_steel: igniters },
 			},
 		);
 	}
@@ -368,7 +380,7 @@ async function buildPortal(
 			if (outcome.kind === "not_met") {
 				fail("TARGET_NOT_MET", `the server did not confirm obsidian at ${cell.x},${cell.y},${cell.z}`, {
 					dispatch: "sent",
-					progress: { at: cell, actual: outcome.actual },
+					progress: { stage: "portal", at: cell, actual: outcome.actual },
 				});
 			}
 			count += 1;
@@ -391,11 +403,11 @@ async function buildPortal(
 		fail("WRONG_STATE", "the frame did not light: no nether_portal appeared inside it", {
 			hint: "the interior may be blocked, or the frame shape is wrong",
 			dispatch: "sent",
-			progress: { at: site.frame.entrance },
+			progress: { stage: "portal", at: site.frame.entrance, ignite: site.frame.ignite },
 		});
 	}
 	stages.push({ kind: "portal", ok: true, at: site.frame.entrance, reason: `built (${placed} obsidian)` });
-	return { entrance: site.frame.entrance, stepUp: site.stepUp, built: true };
+	return { entrance: site.frame.entrance, stepUp: site.stepUp };
 }
 
 /** 选址：先按目的地换算，超出步行范围就地建；一次 region 读回判定全部候选。 */
@@ -411,8 +423,9 @@ async function chooseSite(
 		const linked = linkedCoordinates(self.place.dimension, target, destinationAt);
 		if (distance(here, linked) <= LINKED_SITE_RADIUS) anchor = linked;
 	}
-	const candidates = siteCandidates(anchor, 6);
-	// 一次读回覆盖所有候选的并集，避免逐格 block@1。
+	const candidates = siteCandidates(anchor, SITE_SEARCH_RADIUS);
+	// 一次读回覆盖所有候选的并集，避免逐格 block@1。半径 6 的并集约 17×7×17 ≈ 2k 体素，
+	// 远低于 region@1 的 8192 上限；要调大半径就得重新算这个盒子。
 	let min = { x: anchor.x, y: anchor.y, z: anchor.z };
 	let max = { x: anchor.x, y: anchor.y, z: anchor.z };
 	const sites: PortalSite[] = [];
@@ -422,12 +435,6 @@ async function chooseSite(
 		sites.push(site);
 		min = { x: Math.min(min.x, bounds.from.x), y: Math.min(min.y, bounds.from.y), z: Math.min(min.z, bounds.from.z) };
 		max = { x: Math.max(max.x, bounds.to.x), y: Math.max(max.y, bounds.to.y), z: Math.max(max.z, bounds.to.z) };
-	}
-	const size = { x: max.x - min.x + 1, y: max.y - min.y + 1, z: max.z - min.z + 1 };
-	if (size.x * size.y * size.z > 8192) {
-		// 候选太散：退回只试原地两种朝向（1x5x1 的盒子）。
-		sites.length = 0;
-		for (const axis of ["x", "z"] as const) sites.push(portalSite({ ...anchor, y: Math.floor(anchor.y) }, axis));
 	}
 	const grid = regionGrid(
 		await readValue<unknown>(ctx.world, "region@1", { from: min, to: max }, ctx.signal, "portal site"),
@@ -439,16 +446,11 @@ async function chooseSite(
 		});
 	}
 	for (const site of sites) {
-		if (!siteUsable(grid, site, isReplaceableName)) continue;
-		const approach = site.approaches.find((candidate) => {
-			const ground = gridAt(grid, candidate.ground);
-			const feet = gridAt(grid, candidate.feet);
-			return ground != null && !isReplaceableName(ground.name) && feet != null && isReplaceableName(feet.name);
-		});
+		const approach = portalSiteAccess(grid, site, isReplaceableName);
 		if (approach == null) continue;
 		return { frame: site.frame, approach: approach.feet, stepUp: approach.stepUp };
 	}
-	fail("UNREACHABLE", "no room for a 4x5 portal within 6 blocks of the chosen spot", {
+	fail("UNREACHABLE", `no room for a 4x5 portal within ${SITE_SEARCH_RADIUS} blocks of the chosen spot`, {
 		hint: "stage: portal — no flat 4-wide face with headroom nearby",
 		progress: { stage: "portal", furthest: anchor, anchor, candidates: sites.length },
 	});
@@ -486,8 +488,8 @@ async function enterPortal(
 	// 先站到门前一格内；精确的"进那一格"由下面的闭环完成（GoalNear 判的是格角距离，
 	// 四个相邻格中心都落在同一半径上，靠它进不了指定格）。
 	await leg(deps, ctx, place.entrance, 1, deadline, stages);
-	for (let step = 0; step < ENTER_STEPS; step++) {
-		if (await standingInPortal(ctx)) break;
+	let inside = await standingInPortal(ctx);
+	for (let step = 0; step < ENTER_STEPS && !inside; step++) {
 		await ctx.withBody(async (scope) => {
 			// drive 的 forward 是"当前朝向"：不对着门，走再多拍也进不去。
 			await scope.player.drive(
@@ -495,24 +497,23 @@ async function enterPortal(
 				ENTER_STEP_TICKS,
 			);
 		});
+		inside = await standingInPortal(ctx);
 	}
-	if (!(await standingInPortal(ctx))) {
+	if (!inside) {
 		fail("UNREACHABLE", "could not get the body inside the portal", {
 			hint: "stage: enter — the portal mouth is blocked or the walk-in was pushed back out",
 			dispatch: "sent",
 			progress: { stage: "enter", furthest: place.entrance },
 		});
 	}
-	if (await awaitDimensionChange(ctx, origin, PORTAL_WAIT_MS)) {
-		stages.push({ kind: "enter", ok: true });
-		return;
+	if (!(await awaitDimensionChange(ctx, origin, PORTAL_WAIT_MS))) {
+		fail("WRONG_STATE", "standing in the portal did not move the body to another dimension", {
+			hint: "the portal may be unlit, blocked, or the server denied the teleport",
+			dispatch: "sent",
+			progress: { stage: "enter", at: place.entrance, reason: "dimension did not change" },
+		});
 	}
-	stages.push({ kind: "enter", ok: false, reason: "dimension did not change" });
-	fail("WRONG_STATE", "standing in the portal did not move the body to another dimension", {
-		hint: "the portal may be unlit, blocked, or the server denied the teleport",
-		dispatch: "sent",
-		progress: { at: place.entrance },
-	});
+	stages.push({ kind: "enter", ok: true });
 }
 
 /** 身体所在格是不是门方块（门内没有碰撞，站位由脚下黑曜石决定）。 */
@@ -561,7 +562,12 @@ async function waitForDimension(ctx: CallContext, target: string, deadline: numb
 	}
 }
 
-/** 落地后先走出门，避免站在门里被立刻送回。 */
+/**
+ * 落地后先走出门，避免站在门里被立刻送回。
+ *
+ * 这一步是**收尾**：维度已经换过来了，走出去失败不该把一次成功的旅行判成失败，所以只把
+ * 结论记进 stages。唯一的例外是取消——`INTERRUPTED` 必须上抛，否则停了还在继续跑。
+ */
 async function leavePortal(ctx: CallContext, stages: Stage[]): Promise<void> {
 	try {
 		await ctx.withBody(async (scope) => {
@@ -570,6 +576,7 @@ async function leavePortal(ctx: CallContext, stages: Stage[]): Promise<void> {
 		stages.push({ kind: "leave", ok: true });
 	} catch (error) {
 		const code = (error as { code?: string }).code;
-		if (code !== "INTERRUPTED" && code !== "WRONG_STATE") throw error;
+		if (code === "INTERRUPTED") throw error;
+		stages.push({ kind: "leave", ok: false, reason: code ?? "walk-out failed" });
 	}
 }

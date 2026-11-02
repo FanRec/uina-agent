@@ -3,8 +3,8 @@
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md §4 transit。
  * 纯函数：不读世界、不做身体操作，可建性由动作层用一次 region@1 体素读回喂进来。
- * 门面朝向只有两种（宽度沿 x 或沿 z）；四角黑曜石在 vanilla 里可选，这里照建，
- * 因为"缺角门点不着"是调用方最难自诊断的失败。
+ * 门面朝向只有两种（宽度沿 x 或沿 z）。vanilla 允许省掉四角黑曜石，这里照建完整
+ * 4×5：一种形状 = 一个成本常量、一行支撑、一个点火格，不用为"为什么点不着"分情况。
  */
 
 import type { Vec3 } from "../../contracts/values.js";
@@ -150,29 +150,34 @@ export function siteBounds(site: PortalSite): { from: Vec3; to: Vec3 } {
 	};
 }
 
-/** 候选是否可建：open 全可替换、supports 全实心、至少一个站位可站。 */
-export function siteUsable(grid: RegionGrid, site: PortalSite, replaceable: (name: string) => boolean): boolean {
+/**
+ * 候选能不能建：`open` 全可替换、`supports` 全实心，且至少一侧站得进去。
+ * 能建就返回**那一侧**（调用方还要用它走过去），否则 null——判定和"从哪进"是同一次计算，
+ * 拆成两个函数就会各写一遍"能不能站"。
+ */
+export function portalSiteAccess(
+	grid: RegionGrid,
+	site: PortalSite,
+	replaceable: (name: string) => boolean,
+): PortalApproach | null {
 	for (const at of site.open) {
 		const block = gridAt(grid, at);
-		if (block == null || !replaceable(block.name)) return false;
+		if (block == null || !replaceable(block.name)) return null;
 	}
 	for (const at of site.supports) {
 		const block = gridAt(grid, at);
-		if (block == null || replaceable(block.name)) return false;
+		if (block == null || replaceable(block.name)) return null;
 	}
-	return site.approaches.some((approach) => {
+	for (const approach of site.approaches) {
 		const ground = gridAt(grid, approach.ground);
 		const feet = gridAt(grid, approach.feet);
 		const head = gridAt(grid, approach.head);
-		return (
-			ground != null &&
-			!replaceable(ground.name) &&
-			feet != null &&
-			replaceable(feet.name) &&
-			head != null &&
-			replaceable(head.name)
-		);
-	});
+		if (ground == null || replaceable(ground.name)) continue;
+		if (feet == null || !replaceable(feet.name)) continue;
+		if (head == null || !replaceable(head.name)) continue;
+		return approach;
+	}
+	return null;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 	linkedCoordinates,
 	portalFrame,
 	portalSite,
-	siteUsable,
+	portalSiteAccess,
 	regionGrid,
 } from "../../.uina/worlds/minecraft/capabilities/shared/portal.js";
 import { failureOf, makeHarness, type HarnessState } from "./mc-capability-harness.js";
@@ -78,31 +78,46 @@ describe("portal geometry", () => {
 		for (const support of site.supports)
 			blocks.set(at(support.x, support.y, support.z), { name: "stone", properties: {} });
 		blocks.set(at(11, 63, 11), { name: "stone", properties: {} });
-		const grid = regionGrid({
-			origin: { x: 0, y: 0, z: 0 },
-			shape: [32, 96, 32],
-			palette: [
-				{ name: "air", properties: {} },
-				{ name: "stone", properties: {} },
-			],
-			cells: buildCells(32, 96, 32, blocks),
-		});
-		expect(grid).not.toBeNull();
-		expect(siteUsable(grid!, site, (name) => name === "air")).toBe(true);
-		// 抽掉一侧支撑就不可建
+		// 平地建门：底排在 y=64，人站在 y=64 的地面上，门内比脚下高一格（stepUp）
+		const approach = portalSiteAccess(gridOf(blocks), site, isAir);
+		expect(approach?.feet).toEqual({ x: 11, y: 64, z: 11 });
+		expect(approach?.stepUp).toBe(true);
+		// 抽掉底排下面的一格支撑就不可建
 		blocks.delete(at(12, 63, 10));
-		const broken = regionGrid({
-			origin: { x: 0, y: 0, z: 0 },
-			shape: [32, 96, 32],
-			palette: [
-				{ name: "air", properties: {} },
-				{ name: "stone", properties: {} },
-			],
-			cells: buildCells(32, 96, 32, blocks),
-		});
-		expect(siteUsable(broken!, site, (name) => name === "air")).toBe(false);
+		expect(portalSiteAccess(gridOf(blocks), site, isAir)).toBeNull();
+	});
+
+	test("齐平站位优先于低一格（少跳一次）", () => {
+		const site = portalSite({ x: 10, y: 64, z: 10 }, "x");
+		const blocks = new Map<string, { name: string; properties: Record<string, string> }>();
+		for (const support of site.supports)
+			blocks.set(at(support.x, support.y, support.z), { name: "stone", properties: {} });
+		// 门前垫高到门内同层：脚下实心 + 脚/头两格空 → 直接走进去，不用跳
+		blocks.set(at(11, 64, 11), { name: "stone", properties: {} });
+		const approach = portalSiteAccess(gridOf(blocks), site, isAir);
+		expect(approach?.feet).toEqual({ x: 11, y: 65, z: 11 });
+		expect(approach?.stepUp).toBe(false);
 	});
 });
+
+function isAir(name: string): boolean {
+	return name === "air";
+}
+
+/** region@1 的读回视图：palette[0]=air、palette[1]=stone，cells 按 xzy 索引。 */
+function gridOf(blocks: Map<string, { name: string }>) {
+	const grid = regionGrid({
+		origin: { x: 0, y: 0, z: 0 },
+		shape: [32, 96, 32],
+		palette: [
+			{ name: "air", properties: {} },
+			{ name: "stone", properties: {} },
+		],
+		cells: buildCells(32, 96, 32, blocks),
+	});
+	if (grid == null) throw new Error("region grid did not parse");
+	return grid;
+}
 
 function buildCells(nx: number, ny: number, nz: number, blocks: Map<string, { name: string }>): number[] {
 	const cells = new Array(nx * ny * nz).fill(0);
