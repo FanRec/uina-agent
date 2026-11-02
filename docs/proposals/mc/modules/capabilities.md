@@ -280,10 +280,12 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 例：`{ place:{dimension:"overworld",position:{x:120,y:64,z:-30}}, health:18, food:17, onGround:true, held:{name:"stone_pickaxe",count:1,durability:{used:12,max:131}} }`
 
 ### inventory · `inventory@1`
-- 输入 `{}`
-- 返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`
+- 输入 `{}`（全量）或 `{ since: revision }`（**批20 起增量**，G7）
+- 全量返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`
+- 增量（`since` = 上次读到的 `revision`）：revision 更新时返回 `{ revision, changes:[{ slot, item|null }], counts, usedSlots, freeSlots, selectedSlot }`——`changes` 是"自 since 起被写过"的槽位及其**当前内容**（item null = 已空），合并中间态不重放；`counts/usedSlots/freeSlots` 恒为变化后总数。同游标回 `changes:[]`。不含 slots/layout/gear。
+- 失败面：`since` 超前当前 revision（含跨进程重启后 revision 归零）→ `INVALID_INPUT`（hint：重读全量）；槽位标记不可用 → 退回全量并在 unknown 如实标注，不冒充差量。
 - slots 使用当前库存窗口实际编号，另给 layout.regions；常见 Java 库存窗口为合成 0..4、护甲 5..8、背包 9..35、快捷栏 36..44、副手 45。quickBarSlot 的 0..8 只是快捷栏选择索引，不能拿来 click。版本实际布局以返回 regions 为准，物品项保留 components/durability。
-- 例：`{ counts:{ oak_log:8, cobblestone:5, crafting_table:1 }, freeSlots:30 }`
+- 例：`{ counts:{ oak_log:8, cobblestone:5, crafting_table:1 }, freeSlots:30 }`；`{ since:41 } → { revision:47, changes:[{slot:36,item:{name:"oak_log",count:11}}], counts:{oak_log:11}, usedSlots:1, freeSlots:35 }`
 
 ### block · `block@1`
 - 输入 `{ at: GridPos }` 或 `{ below: 1..4 }`（脚下第 N 格）

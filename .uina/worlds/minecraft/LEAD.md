@@ -1,6 +1,6 @@
 # Minecraft 实现入口
 
-更新时间：2026-11-02。基线 `codex/phase0-baseline`。批 0–18 已实现：批 18 落地 K8 四动作 `sleep@1`/`fish@1`/`ride@1`/`lead@1`（真服 K8 验收 16/16，身体证据窗口 `awaitBodyEvent` + 1.21.2+ 载具客户端权威驾驶 + 链接事实缓存；马驾驶缺口登记 G23）。能力面 **16 查询 + 34 动作（50/51）**；仅剩 `transit@1`（受 G21 上坡楔死与 G23 牵制）。真服历史见 dev/MC-WORLD.md，文档合同见 docs/proposals/mc/（changelog/known-gaps/capabilities 均已同步批 18）。
+更新时间：2026-11-03。基线 `codex/phase0-baseline`。批 0–19 已实现，**能力面 16 查询 + 35 动作 = 51/51 全部落地**（批19 关闭 G21 并接 `transit@1`）；批20（2026-11-03）关闭横向缺口 G6（节流 digest 推送，`world/digest.ts`，独立事件类型 `minecraft_digest` + 忙时只保最新）、G7（`inventory@1 {since}` 增量游标，协议槽位变更标记）与 G8（`run {wait}` 按调用短窗）。真服 `dev:mc:digest` 7/7、tests/mc 771 项全绿。剩余缺口 G9/G10、G12–G17、G24 见 known-gaps.md。真服历史见 dev/MC-WORLD.md，文档合同见 docs/proposals/mc/（changelog/known-gaps/capabilities/public-api 均已同步批 20）。
 
 开工先读 [总规划 §10](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读 [公开合同](../../../docs/proposals/mc/public-api.md) 与所属模块。Host 回执行为见 [合同](../../../docs/proposals/runtime/delivery-receipts.md)，批 6 证据见 [实施记录](../../../docs/proposals/mc/native-host-implementation.md)。
 

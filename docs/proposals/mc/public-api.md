@@ -383,6 +383,8 @@ interface ClientFactView {
   players(): Fact<ClientPlayersValue | null>;
   map(id: number): Fact<ClientMapValue | null>;
   inventory(): Fact<ClientInventoryValue | null>;
+  /** G7：自 since 以来被写过的槽位及其当前内容（item null=已空）；标记不可用回 null，不猜。 */
+  inventoryChanges(since: number): { slot: number; item: import("./body.js").ItemValue | null }[] | null;
   window(): Fact<WindowSnapshot | null>;
 }
 interface SectionTarget { world: Ref; worldRevision: Ref; dimension: Ref; section: Vec3 }

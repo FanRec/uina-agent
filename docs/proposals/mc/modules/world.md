@@ -381,6 +381,10 @@ Driver stamp 只是其中一个输入。失效只按**查询实际可见边界**
 
 WorldWatch 只提示重新看。完整聊天、死亡和所选历史事件从对应记录查询，不依赖 changed 穷举。World 不根据 Watch 定时器开炉、移动、避险或创建 Run；主动复查仍由能力和 Runtime 取得新身体执行。
 
+### 9.5 节流 digest 推送（批20，G6）
+
+Watch 是"等变化的拉取原语"；digest 是"有变化就推的摘要"：`world/digest.ts` 订阅 facts 的 changed/reset，前缘节流 10s（`DIGEST_INTERVAL_MS` 集中策略值），按查询依赖采样——三段（self/inventory/world）复用现有查询读取器，同一 `facts.sample` 提交边界，与 observe 同口径；规范化 JSON 哈希去重，同一份不重复，facts reset 后清哈希（重连即使内容相同也补发一份）。采样失败（未附着/断线）不造摘要，重连后的 reset+changed 自然补发。digest 是 ephemeral 推送：不落 `world-history.db`、不进 `events@1`，经 `onGameEvent` 事件管道上行、由 Executor 以独立事件类型 `minecraft_digest` 交付；"主脑忙时只保最新一份"在 DeliveryPump 侧（见 [executor §1](executor.md)）。时间只取粗粒度相位与天数、位置取整数格——连续量进 digest 会让去重失效。
+
 <a id="retention"></a>
 
 ## 10. 领域记录、证据引用与保留

@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-03 · 批20 感知效率包：G6 节流推送 + G7 增量游标 + G8 按调用短窗
+
+- **G6 节流 digest 推送**（`world/digest.ts` 新模块）：模型不主动 read 就不知道世界在变。digest 按查询依赖生成——三段（self/inventory/world）直接复用 `capabilities.readers` 的现有读取器，同一 `facts.sample` 提交边界采样，与 observe 口径一致，不建第二套事实提取。前缘节流 10s（`DIGEST_INTERVAL_MS`，集中策略值不新增配置面）、规范化 JSON 哈希去重（"同一份不重复"；`world/watch.ts` 的 `canonical` 导出复用）、facts reset 后清哈希（重连即使内容相同也补发一份）。上行走既有事件管道（`onGameEvent` → executor 事件 → `DeliveryPump`），以独立事件类型 **minecraft_digest** 交付：不指向 events@1（不污染历史）、无 nextCall；**主脑忙碌（`isBusy`）时只保留最新一份待发、空闲即补发**——长任务期间 digest 不刷屏。时间只取粗粒度相位与天数（ticks 连续变化会让去重永远失效）、位置取整数格。
+- **G7 inventory@1 增量游标**：协议层补每槽位最后变更 revision（`playerSlotMarks()`；全量重同步只标内容真变的槽位，光标移动只推 revision 不算槽位变更，respawn/end 清空）→ `view.inventoryChanges(since)` 暴露差量（标记不可用回 null 不猜）→ `inventory@1` 输入 `{since?}`：同游标回 `changes:[]` + 变化后总数、有变化回 `{revision, changes:[{slot,item|null}], counts, usedSlots, freeSlots}`（不含全量 slots/layout/gear）、标记不可用退回全量并如实标注 unknown、游标超前（含跨重启 revision 归零）如实 `INVALID_INPUT`。其余查询仍全量，按真实消费者逐个补。
+- **G8 run 按调用短窗**：`run` 入参增 `wait`（ms，≥0；continue 的 entry 不加）——默认仍 3000ms，`wait:0` 只受理不等（完成走 minecraft_completion 通知），更久的显式等待仍用 `runs.wait`。落到 `executor/facade.ts` 的短窗覆盖点，指南同步。
+- 指南（nativeGuide）补三句：run 短窗与 wait 覆盖、minecraft_digest 的含义与节流口径、inventory@1 {since} 语义。
+- 验收：`pnpm dev:mc:digest` 真服 **7/7 PASS**（静态环境准备；baseline 三段齐全 overworld/day/clear；空闲 15s 零 digest 证去重；/give diamond 3 后 digest 反映变化；inventory@1 {since} rev 10→11 差量恰含 emerald +2；窗口内变化合并、digest gap 10015ms ≥ 10s；events@1 无 digest 记录）。场景前两轮暴露的是场景自身缺陷（prepare 变化的节流尾流被 idle 断言误判、背包残留使命中回看旧 digest），修场景后全绿，实现未改。单测新增/扩展：`mc-world-digest` 6 项（前缘首发/去重/合并/reset 放行/段落降级/未附着不造摘要/close）、`mc-delivery-pump` +2（minecraft_digest 分类与忙时保最新）、`mc-protocol` +1（槽位标记随重同步/单槽写入/光标/退役推进）、`mc-capability-queries` +4（since 四态）、`mc-native-facade` +1（wait 覆盖与 0 跳过）；**tests/mc 全量 85 文件/771 项全绿**，`pnpm typecheck` 通过。
+- 真服环境事实：`start-server.ps1` 在 Windows PowerShell 5.1 下因 UTF-8 无 BOM 中文注释按 ANSI 误解析而无法使用（解析器报错），本轮直接 `java -Xmx2G -jar paper-1.21.11-132.jar --nogui` 起服（配置已就绪时等价）；如修复脚本需给文件加 BOM 或改用 pwsh。
+
 ## 2026-11-02 · 批19 G21 关闭（pathfinder 台阶补丁 + goto 看门狗）与 transit（能力面 51/51）
 
 - **G21 根因**：`mineflayer-pathfinder` 的 `canStraightLine` 把"延迟起跳才过得去"的节点算成"直线可走"，执行器因此**永不按 jump**；随后 `resetPath('stuck')` 不 emit `path_stop`，promise 不 settle，只能等 40s 墙钟。真服实测：起跳点距台阶面 ≥0.89 格才过得去；贴面起跳的横向速度被面碰撞清零，空中控制 0.02/拍补不回来，只能原地弹跳。

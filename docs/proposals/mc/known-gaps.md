@@ -1,18 +1,18 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-11-01（批14 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-11-03（批20 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
-证据口径：**[源码]** = 本次逐行核实；**[记录]** = 来自实施记录，本轮未复跑。本文是只读审查产出，未施工、未改代码、未起服务端、未复跑测试。
+本文由审查轮产初版、施工批次持续更新：关闭条目在关闭时写入"关闭事实"（含证据口径），开放条目保留现象/证据/修法要点三段；取舍（§8）登记后不修。历史措辞（如早期"未施工、未复跑"）只描述登记当轮，不代表当前状态。
 
 ## 1. 优先级与依赖
 
 | 顺序 | 条目 | 理由 |
 |---|---|---|
 | 1 | G1 领域记录 | ~~下一工作包的唯一前置~~（已关闭） |
-| 2 | G6 节流推送 | 同时修掉"模型不 read 就瞎"和"轮询成本"，是面向观众这条线的前置 |
-| 3 | G8 按调用的短窗 | 演出节奏的唯一硬阻塞，改动面最小 |
-| 4 | G5 剩余能力 | 按 §4 的工作包推进，不平铺（批17 后剩 K8 五项） |
-| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞 |
+| 2 | ~~G6 节流推送~~ | **批20 已关闭**——同时修掉"模型不 read 就瞎"和"轮询成本"，面向观众线的前置已就位 |
+| 3 | ~~G8 按调用的短窗~~ | **批20 已关闭**（同批含 G7 增量游标） |
+| 4 | ~~G5 剩余能力~~ | 批19 收口 51/51 |
+| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G9/G10（运行时调度）、G24（tunnel 上行净空）、G14–G17（复验与终态报告） |
 
 ## 2. P0 阻断项
 
@@ -82,9 +82,9 @@
 
 | ID | 缺口 | 证据 | 修法要点 |
 |---|---|---|---|
-| G6 | **无周期性推送**，模型不主动 `read` 就不知道世界在变 | `emitEvent` 全仓仅 `executor/delivery.ts:34`、`:230`，都是交付通知 | 新增节流快照：按查询依赖生成 digest，有变化才生成、同一份不重复、默认 10s，走独立事件类型（不污染 `events@1`） |
-| G7 | **查询无增量**，每次回全量 | `capabilities/queries/*.ts` 中 `since`/`diff`/`delta` 零命中 | 先给 `inventory@1` 加 `since` 游标，回差量 + 变化后总数 |
-| G8 | **`run` 短窗全局固定 3000ms**，不能按调用选择不等 | `executor/facade.ts:200-215`；`worlddef/index.ts:15` 只有世界级 `deliveryPolicy` | `worlddef/schema.ts` 的 `run` 增 `wait` 或 `shortWindowMs` 覆盖，落到 `facade.ts:204` |
+| ~~G6~~ | **无周期性推送**（✅ 已于 2026-11-03 批20 关闭） | 关闭方式：`world/digest.ts` 按查询依赖采样（self@1/inventory@1/world@1 三个现有读取器，同一 `facts.sample` 提交边界，与 observe 同口径）、前缘节流 10s（`DIGEST_INTERVAL_MS` 集中策略值）、规范化 JSON 哈希去重、facts reset 后补发；`companion/side.ts` 经 `onGameEvent` 上行，`executor/delivery.ts` 以独立事件类型 **minecraft_digest** 交付（不指向 events@1），主脑忙碌（`isBusy`）时只保留最新一份、空闲即补发。时间只取粗粒度相位与天数（ticks 连续变化会让去重失效），位置取整数格 | 真服 `dev:mc:digest` 7/7：baseline 三段齐全、空闲 15s 零 digest（去重）、/give 后 digest 反映变化、节流 gap 10015ms、events@1 无污染；泵层事件分类/忙时合并由 mc-delivery-pump 单测覆盖 |
+| ~~G7~~ | **查询无增量**（✅ 已于 2026-11-03 批20 关闭，inventory@1 先行） | 关闭方式：`protocol.ts` 增每槽位最后变更 revision 标记（`playerSlotMarks`，全量重同步只标内容真变的槽位，光标只推 revision 不算槽位）；`view.inventoryChanges(since)` 暴露差量（标记不可用回 null 不猜）；`inventory@1` 输入 `{since}` 回 `{revision, changes:[{slot,item|null}], counts, usedSlots, freeSlots}`（差量 + 变化后总数，不含全量 slots）；`since` 超前（含跨重启 revision 归零）如实 INVALID_INPUT。其余查询仍全量，按真实消费者逐个补 | 真服：rev 10→11 差量恰含 emerald +2；单测覆盖同游标/差量/标记不可用回退全量/超前报错四态 |
+| ~~G8~~ | **`run` 短窗全局固定 3000ms**（✅ 已于 2026-11-03 批20 关闭） | 关闭方式：`worlddef/schema.ts` 的 `run` 增 `wait`（ms，≥0），`executor/facade.ts` 按调用覆盖短窗，`wait:0` 只受理不等（完成走 minecraft_completion 通知）；指南同步 | mc-native-facade 单测：默认 3000 / 覆盖 1200 / 0 跳过等待 三态 |
 | G9 | **普通 Run 之间无优先级**，长任务可挡紧急任务 | `runtime/engine.ts` 单槽队列 + `preempt_current` 需 `expectedRun` | 先只做"显式插入"一档，不建多级调度；safety 已独立 |
 | G10 | **两个计算预算不统一** | `driver/body/feedback.ts:84,205`（`FRAME_EXPIRED`, 250ms）vs `program/worker.ts:107`（`PROGRAM_TIMEOUT`, burst + `mc.sleep(0)`） | 最小改动：`FRAME_EXPIRED` 的 hint 指向 burst 预算；能力面与 Program 指南各补一句 |
 | ~~G11~~ | **Host 无图片出口**（✅ 已于 2026-11-01 批17 关闭） | 关闭方式：`world/map.ts` 产 ImageFileRef + `companion/side.ts` read_image rpc + `executor/facade.ts` observe 产 `ToolExecutionResult.images`；world-tool 本就透传 | 真实 wire：受控 5/5 + 真模型 4/4（模型实际描述画面） |
