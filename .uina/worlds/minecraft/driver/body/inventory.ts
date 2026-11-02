@@ -8,8 +8,8 @@ import type {
 	WindowSession,
 	WindowSnapshot,
 } from "../../contracts/body.js";
-import type { CallFailure, EffectReceipt } from "../../contracts/values.js";
 import { matchesItem } from "../../contracts/items.js";
+import type { CallFailure, EffectReceipt } from "../../contracts/values.js";
 import { fail } from "../execution.js";
 import type { BodyOperationDeps } from "./operation.js";
 
@@ -102,6 +102,19 @@ export async function runEquip(
 	let source: number;
 	let destination: number;
 	if (selector == null) {
+		// 空手优先换选空快捷栏位（held_item_slot 包，免窗口点击）：真服实证从手持槽
+		// 取物的点击拿不到权威确认（放入可以），点击路径只作无空位时的兜底。
+		if (slot === "hand") {
+			for (let candidate = 36; candidate <= 44; candidate++) {
+				if (candidate === target || itemAt(snapshot, candidate) != null) continue;
+				deps.bot.setQuickBarSlot(candidate - 36);
+				deps.recorder.record(effect, operation, "body.equip@1", "receipt", "sent", "met", {
+					how: "hotbar-slot-select",
+					selectedSlot: candidate - 36,
+				});
+				return { effect, dispatch: "sent", completion: "met", evidence: [] };
+			}
+		}
 		source = target;
 		destination =
 			snapshot.slots.find(

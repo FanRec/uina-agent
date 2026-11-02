@@ -8,7 +8,7 @@
 
 import type { SelfState } from "../contracts/body.js";
 import type { JsonValue, Vec3 } from "../contracts/values.js";
-import { sleep, type DevHarness } from "./harness.js";
+import { type DevHarness, sleep } from "./harness.js";
 
 export interface CallResult {
 	ok: boolean;
@@ -80,6 +80,11 @@ export interface Scenario {
 	readBlocks: (name: string, radius?: number) => Promise<{ position: Vec3; name: string }[]>;
 	/** op 指令：走 chat@1 发 /命令，与服务端同一通道。 */
 	command: (text: string) => Promise<void>;
+	/** 服务端真值：/data get entity <selector> <path> 的最新回执文本（骑乘态客户端
+	 *  视图的独立对照源；events@1 升序，取最后一条匹配）。 */
+	serverData: (selector: string, path: string) => Promise<string>;
+	/** 服务端真值坐标：/data get Pos 的解析结果（解析失败返回 null）。 */
+	serverPos: (selector: string) => Promise<Vec3 | null>;
 	step: (name: string, run: () => Promise<string>) => Promise<void>;
 	/** 打印汇总并设置退出码；返回失败条数。 */
 	finish: () => number;
@@ -113,10 +118,26 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		if (reply.snapshot.outcome !== "succeeded") {
 			// RunSummary 只带 code/message（contracts/runtime.ts）；hint/progress 只在调用记录里，
 			// 场景不据此判定，失败面用"世界/库存有没有变"证明。
+			// outcome 异常（如 unknown）时先读运行记录拿真实结果：记录里有值 = 调用其实成功，
+			// 只是 outcome 未落；记录读不出值才把快照摘录带出来。
+			try {
+				const full = await rt.readRecord(reply.snapshot.record);
+				if (full.kind === "inline") {
+					const record = full.record.value as { value?: JsonValue; code?: string; message?: string };
+					if (record.value !== undefined) {
+						return { ok: true, value: record.value };
+					}
+					if (record.code != null) {
+						return { ok: false, code: record.code, message: record.message };
+					}
+				}
+			} catch {
+				// 记录读不出：保持 outcome 侧信息
+			}
 			return {
 				ok: false,
 				code: reply.snapshot.error?.code ?? reply.snapshot.outcome,
-				message: reply.snapshot.error?.message,
+				message: reply.snapshot.error?.message ?? `snapshot=${JSON.stringify(reply.snapshot).slice(0, 220)}`,
 			};
 		}
 		const full = await rt.readRecord(reply.snapshot.record);
@@ -176,6 +197,34 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		await sleep(350);
 	};
 
+	const serverData = async (selector: string, path: string): Promise<string> => {
+		await call("chat@1", { text: `/data get entity ${selector} ${path}` });
+		await sleep(500);
+		// /data get 回执是 system 消息（sender=null，不会被 facts 层的自身回声过滤丢弃）；
+		// events@1 升序返回，场景无并发聊天，最新匹配即本次回执。
+		const observation = await world.read<{ events?: { payload?: unknown }[] }>({
+			ref: "events@1",
+			input: { limit: 40, kinds: ["chat"] },
+		});
+		const texts = (observation.value?.events ?? []).map((event) => {
+			const raw = JSON.stringify(event.payload ?? "");
+			const match = /"text":"((?:[^"\\]|\\.)*)"/.exec(raw);
+			return match != null ? match[1] : raw;
+		});
+		for (let i = texts.length - 1; i >= 0; i--) {
+			if (texts[i].includes("has the following entity data") || texts[i].includes("Found no elements matching")) {
+				return texts[i];
+			}
+		}
+		return texts.at(-1) ?? "NO_OUTPUT";
+	};
+
+	const serverPos = async (selector: string): Promise<Vec3 | null> => {
+		const text = await serverData(selector, "Pos");
+		const match = /\[(-?[\d.]+)d?,\s*(-?[\d.]+)d?,\s*(-?[\d.]+)d?\]/.exec(text);
+		return match == null ? null : { x: Number(match[1]), y: Number(match[2]), z: Number(match[3]) };
+	};
+
 	const step = async (name: string, run: () => Promise<string>): Promise<void> => {
 		try {
 			const detail = await run();
@@ -208,6 +257,8 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		readPlayers,
 		readBlocks,
 		command,
+		serverData,
+		serverPos,
 		step,
 		finish,
 		log,

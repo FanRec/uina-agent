@@ -36,6 +36,7 @@
     "dev:mc:library": "tsx .uina/worlds/minecraft/dev/library.ts",
     "dev:mc:build": "tsx .uina/worlds/minecraft/dev/build.ts",
     "dev:mc:stations": "tsx .uina/worlds/minecraft/dev/stations.ts",
+    "dev:mc:k8": "tsx .uina/worlds/minecraft/dev/k8.ts",
     "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "dev:mc:map": "tsx .uina/worlds/minecraft/dev/map.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",

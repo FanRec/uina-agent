@@ -31,6 +31,8 @@ import { forgetCallable } from "./actions/forget.js";
 import { rememberCallable } from "./actions/remember.js";
 import { exploreCallable } from "./actions/explore.js";
 import { anvilCallable, brewCallable, enchantCallable, grindstoneCallable, tradeCallable } from "./actions/stations.js";
+import { sleepCallable, fishCallable } from "./actions/activity.js";
+import { rideCallable, leadCallable } from "./actions/riding.js";
 import { bodyQueries } from "./queries/body.js";
 import { containerCallable, transferCallable } from "./actions/containers.js";
 import { containerLastQuery } from "./queries/containers.js";
@@ -136,6 +138,10 @@ export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
 		anvilCallable(deps),
 		grindstoneCallable(deps),
 		tradeCallable(deps),
+		sleepCallable(deps),
+		fishCallable(deps),
+		rideCallable(deps),
+		leadCallable(deps),
 	];
 	const seen = new Set<string>();
 	for (const callable of callables) {

@@ -5,8 +5,8 @@
  * Runtime 是 acquire 的唯一调用方；能力/程序经 withBody 拿 BodyCallScope。
  */
 
-import type { WorldQuery } from "./world.js";
 import type { EffectReceipt, Fact, JsonValue, Place, Ref, Vec3 } from "./values.js";
+import type { WorldQuery } from "./world.js";
 
 export type Hand = "main" | "off";
 
@@ -238,6 +238,51 @@ export interface EvidenceOutcome {
 }
 
 /**
+ * 身体事件证据窗口的观察对象（批 18）：睡眠、上下载具、拴绳链接、鱼漂与咬钩。
+ * 来源都是服务端已解码事实：pose 元数据（sleep/wake）、set_passengers/attach_entity
+ * （mount/dismount/link）、spawn_entity 鱼漂与 world_particles 咬钩判据（bobber/bite）。
+ */
+export type BodyEventKind = "sleep" | "wake" | "mount" | "dismount" | "bobber" | "bite" | "link";
+
+export interface BodyEventOptions {
+	evidenceMs?: number;
+	/** kind="link" 时：只认该 passenger 的链接（拴绳证据归属目标实体）。 */
+	passengerId?: number;
+	/** kind="link" 时：true=等待解除链接（vehicleId<=0）；false/缺省=等待建立链接。 */
+	detached?: boolean;
+}
+
+export interface BodyEventOutcome {
+	/** true=窗口内观察到；false=窗口自然走完没有观察；null=中止/断线（没看完）。 */
+	observed: boolean | null;
+	/** link/mount 命中时的对端 id（拴绳持有者或载具；解除=0/-1）。 */
+	vehicleId?: number | null;
+}
+
+/**
+ * 载具输入权威（批 18，真服探针实测）：1.21.2+ 载具移动全面客户端权威——船与马/猪/驼
+ * 都由客户端运动学维护位置、以 vehicle_move 上报（player_input 的 forward 对马无效，
+ * 只承担下马 shift 等服务端判定键）；矿车是轨道驱动，不在其列。
+ * **骑乘态位移有服务端回声**（探针 X4 实证）：服务端把接受的载具位姿以
+ * rel_entity_move（马）/sync_entity_position（船）回传，mineflayer 应用后客户端视图
+ * （self 除外——骑手自身位置仍冻结）与服务器真值吻合到 1e-7 量级；
+ * 因此到达判定读载具实体位置是可信的，drive 返回的申报终点（vehicleAt）只作审计对照。
+ */
+export function isClientAuthVehicle(name: string | undefined): boolean {
+	return name != null && !name.includes("minecart");
+}
+
+/**
+ * 载具运动学速率（格/拍，批 18 真服探针实测被服务端接受的申报值）：
+ * 唯一真源——driver 的 vehicle_move 递推与 capability 的驾驶拍预算都从这里取。
+ * 船 0.22/拍；其余客户端权威载具（马/猪/驼等）0.15/拍。
+ */
+export const VEHICLE_KINEMATICS = {
+	boat: { forward: 0.22, reverse: 0.12 },
+	default: { forward: 0.15, reverse: 0.1 },
+} as const;
+
+/**
  * 身体操作集。全部要求当前有效资格；资格失效返回 CONTROL_INVALID/REFERENCE_STALE。
  * dig 默认瞄准（aim=target）；preserve 不自动瞄准，供同一协调者组合使用。
  */
@@ -249,15 +294,31 @@ export interface BodyOps {
 		receipt: EffectReceipt;
 		actualTicks: number;
 		end: Fact<SelfState>;
+		/** 载具驾驶时的开环申报终点（骑乘态无服务端回声，这是唯一的驾驶结论载体）；步行驾驶缺席。 */
+		vehicleAt?: Vec3;
 	}>;
 	dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt>;
 	attack(target: EntityRef, options?: { evidenceMs?: number }): Promise<AttackOutcome>;
 	/** 证据窗口：不派发动作，等待该实体在窗口内的受击/死亡观察（批 12）。 */
 	awaitEvidence(target: EntityRef, options?: { evidenceMs?: number }): Promise<EvidenceOutcome>;
+	/**
+	 * 证据窗口（批 18）：不派发动作，等待身体相关事件在窗口内出现。
+	 * mount/dismount 的证据是 set_passengers/attach_entity 原始包——mineflayer 对
+	 * "空 passengers 下马"不发事件，事件层不可靠，这里统一走协议事实。
+	 */
+	awaitBodyEvent(kind: BodyEventKind, options?: BodyEventOptions): Promise<BodyEventOutcome>;
+	/**
+	 * 目标当前是否被本玩家拴住（批 18）：attach_entity 的本连接事实缓存。
+	 * 协议没有"查询拴绳状态"的包，重连后已拴状态不可见（此时对已拴目标
+	 * interact 会解除——真实客户端也这样，只是它能看见绳子）。
+	 */
+	leashedBySelf(target: EntityRef): Promise<boolean>;
 	/** 一次激活；持续使用由 drive/feedback 的 hold 表达。 */
 	useItem(hand: Hand): Promise<EffectReceipt>;
 	/** 结束所属的原生使用状态，可能释放蓄力效果；对已结束状态幂等。 */
 	endUse(): Promise<EffectReceipt>;
+	/** 结束睡眠（entity_action stop_sleeping）；是否真的醒来由调用方观察 wake 证据。 */
+	endSleep(): Promise<EffectReceipt>;
 	interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;
 	/** null=腾空该手（只允许 hand/offhand），不得隐式丢弃。 */
 	equip(item: ItemSelector | null, slot: EquipSlot): Promise<EffectReceipt>;

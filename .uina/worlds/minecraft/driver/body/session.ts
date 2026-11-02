@@ -16,8 +16,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	AttackOutcome,
 	BlockTarget,
+	BodyEventKind,
+	BodyEventOptions,
+	BodyEventOutcome,
 	BodySession,
 	ControlInput,
+	ControlOwner,
 	EntityRef,
 	EquipSlot,
 	EvidenceOutcome,
@@ -25,29 +29,29 @@ import type {
 	Hand,
 	ItemSelector,
 	Key,
-	ControlOwner,
 	PointTarget,
 	SelfState,
 	SignText,
-	WindowSession,
 	TossOutcome,
+	WindowSession,
 } from "../../contracts/body.js";
-import type { WorldQuery } from "../../contracts/world.js";
+import { isClientAuthVehicle, VEHICLE_KINEMATICS } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
-import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
+import type { CallFailure, EffectReceipt, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { WorldQuery } from "../../contracts/world.js";
 import type { ClientHostListener } from "../client-host.js";
 import { EffectRecorder, fail } from "../execution.js";
-import { toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
+import { type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
-import { runMining } from "./mining.js";
-import { runSign } from "./sign.js";
-import { runEquip, runToss } from "./inventory.js";
-import type { BodyOperationDeps } from "./operation.js";
 import { opensWindow } from "../window/layout.js";
 import { WindowSessionImpl } from "../window/session.js";
 import { FeedbackController } from "./feedback.js";
+import { runEquip, runToss } from "./inventory.js";
+import { runMining } from "./mining.js";
+import type { BodyOperationDeps } from "./operation.js";
+import { runSign } from "./sign.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
 type MFEntity = NonNullable<MineflayerBot["entities"][string]>;
@@ -83,6 +87,10 @@ export interface BodySessionDeps {
 const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
 /** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
 const DRIVE_STALL_MS = 2000;
+/** 载具分支（批 18）：mineflayer mount 后 physicsTick 停发，载具拍用固定 50ms 节拍。 */
+const VEHICLE_TICK_MS = 50;
+/** 载具转向速率（弧度/拍）：开环递推的航向修正，探针实测被服务端接受。 */
+const BOAT_TURN_RATE = 0.04;
 function isIntVec(v: Vec3): boolean {
 	return Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z);
 }
@@ -197,6 +205,7 @@ export class BodySessionImpl implements BodySession {
 			} catch {
 				// 撤销不因上游异常失败；连接已亡时控制态随连接消亡
 			}
+			this.neutralizeVehicle(bot);
 			if (bot.targetDigBlock != null) {
 				const eff = this.deps.mintEff();
 				const op = this.deps.mintOp();
@@ -406,7 +415,24 @@ export class BodySessionImpl implements BodySession {
 		try {
 			bot = this.botForWrite();
 
-			// 视角：先于键位安装；lookAt/look 各派发一次
+			// 载具分支（批 18）必须先于视角处理：骑乘态 physicsTick 停发（mineflayer
+			// mount 后停模拟），bot.lookAt 等物理 tick 收敛会永久挂死（真服 60s 挂死实证）。
+			// 船走客户端权威 vehicle_move 运动学，马/猪/驼等服务端权威走 look + player_input；
+			// 视角在 driveVehicle 内按角度直算、发原始包。
+			if (bot.vehicle != null) {
+				if (input.use != null || input.attack != null) {
+					throw fail({
+						code: "INVALID_INPUT",
+						source: "input",
+						message: "vehicle drive covers movement keys only; use/attack are not available while mounted",
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
+				return await this.driveVehicle(bot, input, ticks, eff, op);
+			}
+
+			// 视角：先于键位安装；lookAt/look 各派发一次。
 			if (input.lookAt != null) {
 				const point = this.lookPointFor(bot, input.lookAt);
 				await bot.lookAt(toMineflayerVec3(point), false);
@@ -464,13 +490,229 @@ export class BodySessionImpl implements BodySession {
 			// 任何退出路径都要撤销输入：停滞看门狗/中断/等待取消失败都不会走到成功路径，
 			// 留下按住的键等于让客户端自己继续走（§7.2）；hold 蓄力同理必须释放（§7.5）。
 			// once 留下的原生使用状态归使用会话，不在此释放。
+			// 载具输入一并中和：骑乘态键位走 player_input，与 controlState 无关（批 18）。
 			if (bot != null) {
 				this.revokeKeys(bot);
+				this.neutralizeVehicle(bot);
 				if (input.use != null && input.use.mode === "hold") {
 					this.releaseUse(bot, input.use.hand, op, "drive exited");
 				}
 			}
 			this.exitOp();
+		}
+	}
+
+	/**
+	 * 载具驾驶（批 18）：固定 50ms 节拍逐拍派发，任何退出路径先中和输入。
+	 * 船（客户端权威）：运动学递推位置 + 每拍 vehicle_move；服务端权威实体：
+	 * 每拍 look（服务端从骑手视角取转向）+ player_input 键位。
+	 */
+	private async driveVehicle(
+		bot: MineflayerBot,
+		input: ControlInput,
+		ticks: number,
+		eff: Ref,
+		op: Ref,
+	): Promise<{ receipt: EffectReceipt; actualTicks: number; end: Fact<SelfState>; vehicleAt: Vec3 }> {
+		const vehicle = bot.vehicle;
+		const vehicleName = vehicle?.name ?? "";
+		const clientAuth = isClientAuthVehicle(vehicleName);
+		const wantsMovement =
+			input.keys.forward === true || input.keys.back === true || input.keys.left === true || input.keys.right === true;
+		if (!clientAuth && wantsMovement) {
+			// 矿车是轨道驱动：驾驶请求如实失败（capability 层先挡，这里是协议窄口的第二道）；
+			// 但 sneak-only 放行——它是下马原语，矿车也靠它下车（批 18 真服实证）。
+			throw fail({
+				code: "WRONG_STATE",
+				source: "input",
+				message: `${vehicleName} follows rails and takes no drive input`,
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
+		// 运动学以载具实体位置为起点（骑乘态客户端视图冻结：self 与被骑载具都不回同步）。
+		// 速率取 contracts 唯一真源：船 0.22/拍，马/猪等 0.15/拍（探针实测被服务端接受）。
+		const isBoat = vehicleName.includes("boat") || vehicleName.includes("raft");
+		const rates = isBoat ? VEHICLE_KINEMATICS.boat : VEHICLE_KINEMATICS.default;
+		const kinematics = {
+			x: vehicle?.position.x ?? bot.entity.position.x,
+			y: vehicle?.position.y ?? bot.entity.position.y,
+			z: vehicle?.position.z ?? bot.entity.position.z,
+			yaw: bot.entity.yaw,
+			pitch: bot.entity.pitch,
+			speed: 0,
+			forwardRate: rates.forward,
+			reverseRate: rates.reverse,
+		};
+		// 视角：按角度直算进运动学（mineflayer lookAt 等物理 tick 收敛，骑乘态会永久挂死）。
+		if (input.lookAt != null) {
+			const point = this.lookPointFor(bot, input.lookAt);
+			const eye = { x: kinematics.x, y: kinematics.y + 1.2, z: kinematics.z };
+			const dx = point.x - eye.x;
+			const dy = point.y - eye.y;
+			const dz = point.z - eye.z;
+			kinematics.yaw = Math.atan2(-dx, dz);
+			kinematics.pitch = Math.atan2(-dy, Math.hypot(dx, dz));
+		} else if (input.look != null) {
+			kinematics.yaw = input.look.yaw;
+			kinematics.pitch = input.look.pitch;
+		}
+		this.recorder.record(
+			eff,
+			op,
+			"body.drive@1",
+			"dispatch",
+			"sent",
+			"unknown",
+			plain({
+				keys: { ...input.keys },
+				look: input.look ?? null,
+				lookAt: input.lookAt == null ? null : ({ ...input.lookAt } as unknown as JsonValue),
+				vehicle: { name: vehicleName, clientAuth },
+				kind: "vehicle",
+			}),
+		);
+		const consumed = await this.consumeVehicleTicks(bot, input, kinematics, ticks, eff);
+		// 骑乘态无服务端回声（self 与被骑载具的客户端视图都冻结）：申报终点是唯一的
+		// 驾驶结论载体，随 receipt 交给调用方；服务端真值复核是验收场景的职责。
+		const vehicleAt: Vec3 = { x: kinematics.x, y: kinematics.y, z: kinematics.z };
+		const sampled = this.deps.sampleSelf();
+		if (sampled == null || sampled.value == null) {
+			throw fail({
+				code: "INTERNAL",
+				source: "capability",
+				message: "self sampling unavailable after vehicle drive; inputs were applied",
+				dispatch: "sent",
+				progress: { actualTicks: consumed, vehicle: vehicleName },
+				effects: [eff],
+				recoverable: false,
+			});
+		}
+		const end: Fact<SelfState> = { ...sampled, value: sampled.value };
+		this.recorder.record(eff, op, "body.drive@1", "receipt", "sent", "met", {
+			actualTicks: consumed,
+			vehicle: vehicleName,
+			vehicleAt: plain(vehicleAt),
+			completionContract:
+				"vehicle inputs applied for the requested 50ms ticks; the declared endpoint is the open-loop proposal, not a server-confirmed position",
+		});
+		return {
+			receipt: { effect: eff, dispatch: "sent", completion: "met", evidence: [] },
+			actualTicks: consumed,
+			end,
+			vehicleAt,
+		};
+	}
+
+	/** 载具拍消费：固定节拍；中止/断线如实 INTERRUPTED（actualTicks 保留）。 */
+	private consumeVehicleTicks(
+		bot: MineflayerBot,
+		input: ControlInput,
+		kinematics: {
+			x: number;
+			y: number;
+			z: number;
+			yaw: number;
+			pitch: number;
+			speed: number;
+			forwardRate: number;
+			reverseRate: number;
+		},
+		ticks: number,
+		eff: Ref,
+	): Promise<number> {
+		const signal = this.signal;
+		const keys = input.keys;
+		const protocol = protocolFor(bot);
+		return new Promise<number>((resolve, reject) => {
+			let consumed = 0;
+			let settled = false;
+			const cleanup = (): void => {
+				clearInterval(timer);
+				signal.removeEventListener("abort", onAbort);
+			};
+			const settle = (fn: () => void): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				fn();
+			};
+			const onAbort = (): void => {
+				settle(() =>
+					reject(
+						fail({
+							code: "INTERRUPTED",
+							source: "environment",
+							message: "vehicle drive interrupted; inputs neutralized",
+							dispatch: "sent",
+							progress: { actualTicks: consumed },
+							effects: [eff],
+							recoverable: true,
+						}),
+					),
+				);
+			};
+			const timer = setInterval(() => {
+				consumed++;
+				// 回调内任何异常都必须 settle：setInterval 里抛错会让本 promise 永不结束，
+				// 身体槽被占死（真服 60s 挂死 + CONTROL_ISOLATION_FAILED 连锁的教训）。
+				try {
+					// 1.21.2+ 载具移动全面客户端权威（真服探针实测）：马对 player_input 的
+					// forward 无响应；vehicle_move 生效但服务端带自己的物理拉扯，且**同一拍
+					// 里发 player_input 会以输入位压制位移**（forward:false + 位置变更 = 拒收）。
+					// 因此移动拍只发 vehicle_move（服务端回传位姿做闭环起点，沿 yaw 推进）；
+					// 非移动拍（sneak 下马 / jump）只发 player_input，不掺 vehicle_move。
+					const movement = keys.forward === true || keys.back === true || keys.left === true || keys.right === true;
+					if (movement) {
+						if (keys.left === true) kinematics.yaw += BOAT_TURN_RATE;
+						if (keys.right === true) kinematics.yaw -= BOAT_TURN_RATE;
+						kinematics.speed =
+							keys.forward === true ? kinematics.forwardRate : keys.back === true ? -kinematics.reverseRate : 0;
+						// 开环递推（探针验证）：申报点必须持续前移，马才会追踪；
+						// 不能用服务端回读位置做闭环起点——被拒后回读不动，申报点冻结在原地，死锁。
+						kinematics.x += -Math.sin(kinematics.yaw) * kinematics.speed;
+						kinematics.z += Math.cos(kinematics.yaw) * kinematics.speed;
+						protocol.vehicleMove({ x: kinematics.x, y: kinematics.y, z: kinematics.z }, kinematics.yaw);
+					} else {
+						protocol.vehicleInput({
+							forward: false,
+							backward: false,
+							left: false,
+							right: false,
+							jump: keys.jump === true,
+							shift: keys.sneak === true,
+							sprint: keys.sprint === true,
+						});
+					}
+					if (consumed >= ticks) settle(() => resolve(consumed));
+				} catch (err) {
+					settle(() =>
+						reject(
+							fail({
+								code: "INTERNAL",
+								source: "environment",
+								message: `vehicle input write failed: ${String(err)}`,
+								dispatch: "sent",
+								progress: { actualTicks: consumed, vehicle: bot.vehicle?.name ?? "" },
+								effects: [eff],
+								recoverable: true,
+							}),
+						),
+					);
+				}
+			}, VEHICLE_TICK_MS);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	/** 载具输入中和：退出路径统一调用（防止"下车后还在按 W"与马持续前行）。 */
+	private neutralizeVehicle(bot: MineflayerBot): void {
+		// 非骑乘不发：player_input 是载具键位通道（1.21.2+），步行撤销发它纯属多余。
+		if (bot.vehicle == null) return;
+		try {
+			protocolFor(bot).vehicleInput({});
+		} catch {
+			// 客户端消亡时输入随连接消亡
 		}
 	}
 
@@ -807,6 +1049,114 @@ export class BodySessionImpl implements BodySession {
 			bot.on("end", onEnd as never);
 			signal.addEventListener("abort", onAbort, { once: true });
 		});
+	}
+
+	/**
+	 * 身体事件证据窗口（批 18）：三态纪律与 awaitHurtEvidence 相同——
+	 * true=窗口内观察到；false=窗口走完没有；null=中止/断线（没看完）。
+	 * mount/dismount 只认 set_passengers/attach_entity 协议事实，
+	 * mineflayer 的 mount/dismount 事件在"空 passengers 下马"与拴绳链接上不完整。
+	 */
+	async awaitBodyEvent(kind: BodyEventKind, options?: BodyEventOptions): Promise<BodyEventOutcome> {
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			const evidenceMs = Math.max(100, Math.min(options?.evidenceMs ?? 3000, 600000));
+			return await this.awaitBodyEventWindow(bot, kind, options ?? {}, evidenceMs);
+		} finally {
+			this.exitOp();
+		}
+	}
+
+	/** 目标是否被本玩家拴住（批 18）：attach_entity 的本连接事实缓存，见 contracts 注释。 */
+	async leashedBySelf(target: EntityRef): Promise<boolean> {
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			const entity = this.resolveEntity(bot, target);
+			const selfId = bot.entity?.id;
+			return selfId != null && protocolFor(bot).linkHolder(entity.id) === selfId;
+		} finally {
+			this.exitOp();
+		}
+	}
+
+	private awaitBodyEventWindow(
+		bot: MineflayerBot,
+		kind: BodyEventKind,
+		options: BodyEventOptions,
+		windowMs: number,
+	): Promise<BodyEventOutcome> {
+		const signal = this.signal;
+		const selfId = bot.entity?.id;
+		return new Promise<BodyEventOutcome>((resolve) => {
+			let done = false;
+			const finish = (outcome: BodyEventOutcome): void => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				unsubscribeNotice();
+				bot.removeListener("sleep", onBotEvent as never);
+				bot.removeListener("wake", onBotEvent as never);
+				bot.removeListener("dismount", onBotEvent as never);
+				bot.removeListener("end", onEnd as never);
+				signal.removeEventListener("abort", onAbort);
+				resolve(outcome);
+			};
+			const onBotEvent = (): void => finish({ observed: true, vehicleId: null });
+			const onEnd = (): void => finish({ observed: null });
+			const onAbort = (): void => finish({ observed: null });
+			// 窗口走完 = 明确的 false（没有观察到），null 只属于未走完。
+			const timer = setTimeout(() => finish({ observed: false, vehicleId: null }), windowMs);
+			const unsubscribeNotice = protocolFor(bot).subscribe((notice) => {
+				if (kind === "mount") {
+					if (notice.kind === "passengers" && notice.passengers.includes(selfId))
+						finish({ observed: true, vehicleId: notice.vehicleId });
+					else if (notice.kind === "link" && notice.entityId === selfId && notice.vehicleId > 0)
+						finish({ observed: true, vehicleId: notice.vehicleId });
+					return;
+				}
+				if (kind === "dismount") {
+					if (notice.kind === "passengers" && !notice.passengers.includes(selfId))
+						finish({ observed: true, vehicleId: null });
+					else if (notice.kind === "link" && notice.entityId === selfId && notice.vehicleId <= 0)
+						finish({ observed: true, vehicleId: notice.vehicleId });
+					return;
+				}
+				if (kind === "link") {
+					if (notice.kind !== "link") return;
+					if (options.passengerId != null && notice.entityId !== options.passengerId) return;
+					if (options.detached === true && notice.vehicleId > 0) return;
+					if (options.detached !== true && notice.vehicleId <= 0) return;
+					finish({ observed: true, vehicleId: notice.vehicleId });
+					return;
+				}
+				if (kind === "bobber" && notice.kind === "bobber") finish({ observed: true, vehicleId: notice.id });
+				if (kind === "bite" && notice.kind === "bite") finish({ observed: true, vehicleId: null });
+			});
+			if (kind === "sleep") bot.on("sleep", onBotEvent as never);
+			if (kind === "wake") bot.on("wake", onBotEvent as never);
+			if (kind === "dismount") bot.on("dismount", onBotEvent as never);
+			bot.on("end", onEnd as never);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	/** 结束睡眠（批 18）：entity_action stop_sleeping；唤醒与否由调用方的 wake 证据决定。 */
+	async endSleep(): Promise<EffectReceipt> {
+		const op = this.deps.mintOp();
+		const eff = this.deps.mintEff();
+		this.enterOp();
+		try {
+			const bot = this.botForWrite();
+			protocolFor(bot).wakeUp();
+			this.recorder.record(eff, op, "body.endSleep@1", "dispatch", "sent", "unknown", {
+				completionContract: "stop_sleeping dispatched; the wake observation belongs to the caller",
+			});
+			return { effect: eff, dispatch: "sent", completion: "unknown", evidence: [] };
+		} finally {
+			this.exitOp();
+		}
 	}
 
 	async useItem(hand: Hand): Promise<EffectReceipt> {

@@ -25,7 +25,15 @@ const vec3Ctor = createRequire(import.meta.url)("vec3") as unknown as new (
 ) => MineflayerVec3;
 /** 收敛后的客户端类型；driver 其余模块只经本文件接触 Bot。 */
 export type { MineflayerVec3 };
-type MineflayerBot = Bot;
+/**
+ * entities.js / bed.js 在运行时挂载但类型缺失的状态字段（批 18 收敛）：
+ * vehicle 由 set_passengers/attach_entity/entityGone 驱动，未骑乘为 null；
+ * isSleeping 由 pose 元数据驱动。只声明 Driver 实际读取的字段。
+ */
+type MineflayerBot = Bot & {
+	vehicle?: { name?: string; position: MineflayerVec3 } | null;
+	isSleeping?: boolean;
+};
 export type { MineflayerBot };
 
 export interface ClientOptions {

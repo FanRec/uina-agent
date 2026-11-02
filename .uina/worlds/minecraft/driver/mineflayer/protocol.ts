@@ -6,7 +6,7 @@ import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "../execution.js";
 import { fixedLayout } from "../window/layout.js";
-import { toMineflayerVec3, type MineflayerBot } from "./adapter.js";
+import { type MineflayerBot, toMineflayerVec3 } from "./adapter.js";
 
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
@@ -24,6 +24,14 @@ export type ProtocolNotice =
 	| { kind: "block"; position: Vec3; stateId: number; air: boolean }
 	| { kind: "sign_editor"; position: Vec3; front: boolean }
 	| { kind: "sign_update"; position: Vec3 }
+	/** 拴绳/上下车的链接事实（批 18）：attach_entity 的 (passenger, vehicle) 对；vehicleId<=0 = 解除。 */
+	| { kind: "link"; entityId: number; vehicleId: number }
+	/** 骑乘乘客表（批 18）：set_passengers；含自己 = 上载具，不含 = 下载具（mineflayer 对后者不发事件）。 */
+	| { kind: "passengers"; vehicleId: number; passengers: number[] }
+	/** 鱼漂生命周期与咬钩判据（批 18）：spawn_entity(type=fishing_bobber) / entity_destroy / 粒子窗口命中。 */
+	| { kind: "bobber"; id: number }
+	| { kind: "bobber_gone"; id: number }
+	| { kind: "bite"; bobberId: number }
 	/** 1.21.11 的 packet_map（线上包名 map）：像素矩形未校验，由事实层校验后一次提交。 */
 	| {
 			kind: "map";
@@ -90,6 +98,12 @@ interface RawPackets {
 		y?: number;
 		data?: Buffer;
 	};
+	/** 批 18 观察面：拴绳/乘客/鱼漂/咬钩。 */
+	attach_entity: { entityId: number; vehicleId: number };
+	set_passengers: { entityId: number; passengers: number[] };
+	spawn_entity: { entityId: number; type: number };
+	entity_destroy: { entityIds: number[] };
+	world_particles: { x: number; y: number; z: number; amount: number; particle: { type?: unknown } };
 }
 /** registry 只暴露到这里的字段；不引第二份物品表。 */
 interface ItemRegistry {
@@ -117,6 +131,28 @@ export interface DriverProtocol {
 	finishDig(position: Vec3, face: number): void;
 	cancelDig(position: Vec3, face: number): void;
 	writeSign(position: Vec3, front: boolean, lines: SignText): void;
+	/** 载具驾驶输入（批 18）。 */
+	vehicleMove(position: Vec3, yaw: number, pitch?: number): void;
+	vehicleInput(inputs: VehicleInputFlags): void;
+	look(yaw: number, pitch: number, onGround: boolean): void;
+	/**
+	 * 链接状态查询（批 18）：该实体当前的持有者 id（拴绳的玩家/knot，或骑乘的载具）；
+	 * 无记录 = null。只覆盖本连接内收到过的 attach_entity（协议无查询包，重连后为空）。
+	 */
+	linkHolder(entityId: number): number | null;
+	/** 结束睡眠（1.21.11 entity_action 0 = stop_sleeping；mineflayer bed.js 硬编码的 2 在本版本是 stop_sprinting）。 */
+	wakeUp(): void;
+}
+
+/** player_input 的键位面（1.21.2+ 服务端权威载具输入；船忽略，只认 vehicle_move）。 */
+export interface VehicleInputFlags {
+	forward?: boolean;
+	backward?: boolean;
+	left?: boolean;
+	right?: boolean;
+	jump?: boolean;
+	shift?: boolean;
+	sprint?: boolean;
 }
 
 function json(value: unknown): JsonValue {
@@ -147,6 +183,16 @@ class Protocol12111 implements DriverProtocol {
 	private playerSynchronized = false;
 	private sequence = 0;
 	private ended = false;
+	/** 当前连接的活跃鱼漂（批 18）：spawn 起置位，destroy 清空；bite 判据以它的位置为锚。 */
+	private activeBobber: number | null = null;
+	/**
+	 * 链接事实缓存（批 18）：attach_entity 的 (entity → holder) 最新状态。
+	 * 骑乘与拴绳共用这个包（entityId=乘客/被拴者，vehicleId=载具/持有者，<=0 解除）；
+	 * 协议没有"查询拴绳状态"的包，这是客户端唯一可用的已拴事实，重连后为空。
+	 */
+	private readonly linkHolders = new Map<number, number>();
+	/** fishing_bobber 的实体类型 id；registry 查不到 = null（本版本无鱼漂观察）。 */
+	private bobberTypeIdCache: number | null | undefined = undefined;
 	get version(): string {
 		return this.bot.version;
 	}
@@ -292,6 +338,42 @@ class Protocol12111 implements DriverProtocol {
 				data: p.data,
 			});
 		});
+		// ---- 批 18 观察面：拴绳/乘客/鱼漂/咬钩 ----
+		raw("attach_entity", (p) => {
+			if (p.vehicleId > 0) this.linkHolders.set(p.entityId, p.vehicleId);
+			else this.linkHolders.delete(p.entityId);
+			this.emit({ kind: "link", entityId: p.entityId, vehicleId: p.vehicleId });
+		});
+		raw("set_passengers", (p) =>
+			this.emit({ kind: "passengers", vehicleId: p.entityId, passengers: [...p.passengers] }),
+		);
+		raw("spawn_entity", (p) => {
+			const bobber = this.bobberTypeId();
+			if (bobber != null && p.type === bobber) {
+				this.activeBobber = p.entityId;
+				this.emit({ kind: "bobber", id: p.entityId });
+			}
+		});
+		raw("entity_destroy", (p) => {
+			if (this.activeBobber != null && p.entityIds.includes(this.activeBobber)) {
+				const id = this.activeBobber;
+				this.activeBobber = null;
+				this.emit({ kind: "bobber_gone", id });
+			}
+		});
+		raw("world_particles", (p) => {
+			// 咬钩判据与 mineflayer fishing.js 同口径：fishing/bubble × 6 且距鱼漂 ≤1.23（同 y）。
+			if (this.activeBobber == null) return;
+			const type = p.particle?.type;
+			if (type !== "fishing" && type !== "bubble") return;
+			if (p.amount !== 6) return;
+			const bobber = this.bot.entities[String(this.activeBobber)] as
+				| { position?: { x: number; z: number } }
+				| undefined;
+			if (bobber?.position == null) return;
+			const d = Math.hypot(p.x - bobber.position.x, p.z - bobber.position.z);
+			if (d <= 1.23) this.emit({ kind: "bite", bobberId: this.activeBobber });
+		});
 		native("windowOpen", (window: NativeWindow) => this.emit({ kind: "window_open", window }));
 		native("windowClose", (window: NativeWindow | null) => {
 			if (window && window.id !== 0) this.lastClosedWindow = window;
@@ -300,11 +382,13 @@ class Protocol12111 implements DriverProtocol {
 		native("respawn", () => {
 			this.player = null;
 			this.lastClosedWindow = null;
+			this.activeBobber = null;
 		});
 		native("end", () => {
 			this.ended = true;
 			this.player = null;
 			this.lastClosedWindow = null;
+			this.activeBobber = null;
 			this.emit({ kind: "end" });
 			for (const detach of this.detach.splice(0)) detach();
 			this.listeners.clear();
@@ -404,6 +488,14 @@ class Protocol12111 implements DriverProtocol {
 		const name = registry.mapIcons?.[id]?.name;
 		return typeof name === "string" ? name : String(id);
 	}
+	/** fishing_bobber 实体类型 id（批 18）；查不到返回 null 且不再重试（版本没有鱼漂观察面）。 */
+	private bobberTypeId(): number | null {
+		if (this.bobberTypeIdCache === undefined) {
+			const registry = this.bot.registry as unknown as { entitiesByName?: Record<string, { id: number }> };
+			this.bobberTypeIdCache = registry.entitiesByName?.fishing_bobber?.id ?? null;
+		}
+		return this.bobberTypeIdCache;
+	}
 	/** 付款项只在 itemCount>0 时算存在；产物为 Slot（itemCount=0 即空）。 */
 	private cost(raw: RawTradeCost | undefined): { item: string; count: number }[] {
 		if (raw == null || raw.itemCount <= 0) return [];
@@ -480,6 +572,9 @@ class Protocol12111 implements DriverProtocol {
 			location: toMineflayerVec3({ x: 0, y: 0, z: 0 }),
 		});
 	}
+	linkHolder(entityId: number): number | null {
+		return this.linkHolders.get(entityId) ?? null;
+	}
 	useItem(hand: number): void {
 		this.write("use_item", {
 			hand,
@@ -518,6 +613,47 @@ class Protocol12111 implements DriverProtocol {
 			text3: lines[2],
 			text4: lines[3],
 		});
+	}
+	/** 客户端权威载具（船）的位置同步：每拍一包，坐标由调用方的运动学递推。 */
+	vehicleMove(position: Vec3, yaw: number, pitch = 0): void {
+		// 协议角度单位是度（mineflayer 的 bot.look 内部换算，直写必须自己换）；
+		// 弧度直发会被服务端的"位移方向 vs 朝向"校验拒收（真服实测马 0 位移）。
+		// 1.21.11 的 vehicle_move 比 1.21.3 多了 onGround 字段：缺省会被服务端
+		// 对马的位移校验拒绝（船宽容，所以早期船探针未暴露）。
+		this.write("vehicle_move", {
+			x: position.x,
+			y: position.y,
+			z: position.z,
+			yaw: (yaw * 180) / Math.PI,
+			pitch: (pitch * 180) / Math.PI,
+			onGround: true,
+		});
+	}
+	/** 服务端权威载具（马/猪/驼等）的键位输入；船忽略此包。 */
+	vehicleInput(inputs: VehicleInputFlags): void {
+		this.write("player_input", {
+			inputs: {
+				forward: inputs.forward === true,
+				backward: inputs.backward === true,
+				left: inputs.left === true,
+				right: inputs.right === true,
+				jump: inputs.jump === true,
+				shift: inputs.shift === true,
+				sprint: inputs.sprint === true,
+			},
+		});
+	}
+	/** 独立视角包（1.21.3+ position 包已无 yaw/pitch）：服务端权威载具转向走这里。 */
+	look(yaw: number, pitch: number, onGround: boolean): void {
+		// 协议角度单位是度（同 vehicleMove）。
+		this.write("look", {
+			yaw: (yaw * 180) / Math.PI,
+			pitch: (pitch * 180) / Math.PI,
+			flags: { onGround, hasHorizontalCollision: false },
+		});
+	}
+	wakeUp(): void {
+		this.write("entity_action", { entityId: this.bot.entity.id, actionId: 0, jumpBoost: 0 });
 	}
 }
 
