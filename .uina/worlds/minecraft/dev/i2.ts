@@ -1,5 +1,6 @@
 /** I2 through formal Host/WorldDef/managed Executor, source or dist. Uses an already running Paper. */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,13 @@ const durationIndex = process.argv.indexOf("--duration-minutes");
 const durationMinutes = durationIndex < 0 ? 0 : Number(process.argv[durationIndex + 1]);
 assert.ok(Number.isFinite(durationMinutes) && durationMinutes >= 0, "--duration-minutes needs a non-negative number");
 assert.ok(modelMode || durationMinutes === 0, "--duration-minutes is a real --model observation window");
+// G14 成本闸门（仅验收脚本，不进入生产 Runtime）：usage 请求达到上限即止损。
+const budgetIndex = process.argv.indexOf("--max-requests");
+const maxRequests = budgetIndex < 0 ? 500 : Number(process.argv[budgetIndex + 1]);
+assert.ok(Number.isFinite(maxRequests) && maxRequests > 0, "--max-requests needs a positive number");
+// G14 扰动演练：窗口 60% 处 SIGKILL 伴生执行进程（unclean 重建 → owner_lost 关闭 →
+// 模型须自行 runs recover）。批9B 的"门关闭后不恢复"复验开关。
+const chaos = process.argv.includes("--chaos");
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-i2-model-" : "uina-mc-i2-"));
 const configPath = join(root, "config.json");
 const username = "UinaDev";
@@ -29,7 +37,9 @@ await writeFile(
 		binding: { world: "dev-i2-world", worldRevision: "i2-2026-10-26" },
 	}),
 );
-console.log(`[mc-i2] ${modelMode ? "REAL MODEL" : "controlled Provider"}; REAL Host/Paper; data=${root}`);
+console.log(
+	`[mc-i2] ${modelMode ? "REAL MODEL" : "controlled Provider"}; REAL Host/Paper; data=${root}; budget=${maxRequests} requests${chaos ? "; chaos drill armed (kill companion at 60% of window)" : ""}`,
+);
 console.log(
 	"[mc-i2] Server is externally owned and will remain running; only UinaDev's bounded 16000 test scene is prepared.",
 );
@@ -38,6 +48,12 @@ const transcript: unknown[] = [],
 let planned: { id: string; action: string; params: Record<string, unknown> } | null = null;
 let providerRequests = 0,
 	passed = 0;
+let budgetHit = false;
+let deathCount = 0;
+let chaosDone = false,
+	chaosAt = 0,
+	chaosPid: number | null = null,
+	chaosKilledAt: string | null = null;
 const results = new Map<string, ToolResultEvent>();
 const usage = new Map<string, RequestUsage>();
 const model: Model = {
@@ -83,7 +99,14 @@ const host = await UinaHost.create({
 	onError: (text) => console.error(`[mc-i2] ${text}`),
 });
 host.subscribe((event) => {
-	if (event.type === "usage_update") usage.set(event.usage.callId, event.usage);
+	if (event.type === "usage_update") {
+		usage.set(event.usage.callId, event.usage);
+		if (modelMode && !interrupted && usage.size >= maxRequests) {
+			budgetHit = true;
+			console.error(`[mc-i2] request budget hit (${maxRequests}); interrupting to stop spend`);
+			interrupt();
+		}
+	}
 	if (event.type === "tool_result") {
 		results.set(event.callId, event);
 		transcript.push(event);
@@ -208,9 +231,35 @@ async function allItems(op: "list" | "calls", params: Record<string, unknown>) {
 	} while (cursor);
 	return items;
 }
+/** G14 扰动：伴生执行进程是本进程的子进程（命令行含 companion/bootstrap），按父 PID 定位后 SIGKILL。 */
+const killCompanionChild = (): number => {
+	const out = spawnSync(
+		"powershell",
+		[
+			"-NoProfile",
+			"-Command",
+			`Get-CimInstance Win32_Process -Filter "ParentProcessId=${process.pid}" | ` +
+				`Where-Object { $_.CommandLine -like '*companion*' -and $_.ProcessId -ne $PID } | Select-Object -ExpandProperty ProcessId`,
+		],
+		{ encoding: "utf8", windowsHide: true },
+	);
+	const pid = Number(out.stdout.trim().split(/\s+/)[0]);
+	assert.ok(Number.isInteger(pid) && pid > 0, `companion process not found: ${out.stdout || out.stderr}`);
+	process.kill(pid, "SIGKILL");
+	return pid;
+};
+
 async function modelScenario() {
 	const baseline = ((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks ?? 0;
-	const deadline = Date.now() + durationMinutes * 60000;
+	const windowStart = Date.now();
+	const deadline = windowStart + durationMinutes * 60000;
+	if (chaos && durationMinutes >= 10) chaosAt = windowStart + durationMinutes * 60000 * 0.6;
+	// 死亡计数的基线游标：窗口前的死亡属于历史，不计入本窗口。
+	let deathCursor: string | null = null;
+	const deathBaseline = (await observe("events@1", { kinds: ["death"], limit: 1 })).value as {
+		after?: string | null;
+	};
+	deathCursor = deathBaseline.after ?? null;
 	console.log(
 		`[mc-i2] provider=${host.snapshot().modelName}; observationMinutes=${durationMinutes}; initialPlanks=${baseline}`,
 	);
@@ -253,15 +302,47 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 	const settled = task.catch((error) => {
 		modelFailure = error;
 	});
+	// 观察读取在伴生重启窗口可能瞬时失败：容错降级，不让观察者弄死整个窗口。
+	const safe = async <T>(work: () => Promise<T>, fallback: T): Promise<T> => {
+		try {
+			return await work();
+		} catch (error) {
+			console.error(`[mc-i2] observer read degraded: ${String(error)}`);
+			return fallback;
+		}
+	};
 	// One real autonomous request; genuine Runtime notifications may wake the Host.
 	// The observer never synthesizes model replies or repeatedly injects canned tasks.
 	while (Date.now() < deadline) {
 		if (interrupted) throw new Error("I2 observation interrupted");
 		if (modelFailure) throw modelFailure;
+		if (chaosAt > 0 && !chaosDone && Date.now() - windowStart >= chaosAt) {
+			chaosDone = true;
+			chaosPid = killCompanionChild();
+			chaosKilledAt = new Date().toISOString();
+			console.error(`[mc-i2] chaos drill: SIGKILL companion pid=${chaosPid} at ${chaosKilledAt}`);
+		}
+		const deathPage = await safe(
+			async () =>
+				(
+					await observe("events@1", {
+						kinds: ["death"],
+						...(deathCursor ? { after: deathCursor } : {}),
+						limit: 200,
+					})
+				).value as { items?: unknown[]; after?: string | null },
+			{} as { items?: unknown[]; after?: string | null },
+		);
+		deathCount += deathPage.items?.length ?? 0;
+		if (deathPage.after) deathCursor = deathPage.after;
+		const platform = await safe(() => direct("runs", { op: "status" }), null as unknown as Record<string, unknown>);
 		const current = {
 			at: new Date().toISOString(),
-			inventory: (await observe("inventory@1")).value,
-			platform: await direct("runs", { op: "status" }),
+			inventory: await safe(() => observe("inventory@1").then((r) => r.value), null),
+			self: await safe(() => observe("self@1").then((r) => r.value), null),
+			platform,
+			gates: ((platform?.side as { owner?: { gates?: string[] } } | null)?.owner?.gates ?? []) as string[],
+			deathCount,
 		};
 		observations.push(current);
 		await sleep(Math.min(10000, deadline - Date.now()));
@@ -398,6 +479,25 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 		}
 		assert.deepEqual(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts, inventory);
 	});
+	if (chaosAt > 0 && chaosDone) {
+		await step("owner_lost gate recovered through the model after the scripted companion kill", async () => {
+			const tools = transcript.filter((e): e is ToolResultEvent => (e as { type?: string }).type === "tool_result");
+			const recoverOp = tools.some(
+				(t) =>
+					t.status === "succeeded" && t.args.action === "runs" && (t.args.params as { op?: string }).op === "recover",
+			);
+			const gates = observations.map((sample) => (sample as { gates?: string[] }).gates ?? []);
+			const closedIndex = gates.findIndex((g) => g.includes("owner_lost"));
+			const reopenedBySample = closedIndex >= 0 && gates.slice(closedIndex + 1).some((g) => !g.includes("owner_lost"));
+			console.log(
+				`[mc-i2] chaos evidence: killed pid=${chaosPid} at ${chaosKilledAt}; recoverOp=${recoverOp}, gateReopened=${reopenedBySample}, sawClosed=${closedIndex >= 0}, deaths=${deathCount}`,
+			);
+			assert.ok(
+				recoverOp || reopenedBySample,
+				"owner_lost gate was never reopened after the chaos kill (batch9B failure not recovered)",
+			);
+		});
+	}
 }
 let failure: unknown;
 try {
@@ -441,6 +541,9 @@ try {
 					controlledProviderRequests: modelMode ? null : providerRequests,
 					observedUsageRequests: usage.size,
 					usage: [...usage.values()],
+					budget: { maxRequests, hit: budgetHit },
+					deaths: deathCount,
+					chaos: { enabled: chaos, armed: chaosAt > 0, done: chaosDone, pid: chaosPid, killedAt: chaosKilledAt },
 					durationMinutes,
 					model: host.snapshot().modelName,
 					worldDataDir: context?.worldDataDir,

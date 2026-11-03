@@ -80,6 +80,19 @@ const STALL_WINDOW_MS = 3000;
 const STALL_MIN_DISPLACEMENT = 0.25;
 /** 同一个方块连续挖满这么久还没换目标，就不再当作"正在挖掘"的豁免。 */
 const DIG_STALL_MS = 12000;
+/**
+ * 上膛后 goal 被上游清空的宽限：resetPath('stuck') 会连 goal 一起清且不 emit
+ * path_stop（批19 G21 的静默卡死形态、批22 山地实测复现）——上膛后 goal 消失超过
+ * 这个宽限仍无重规划新 goal、promise 也未结算，按 Stalled 收束，不再烧满墙钟。
+ * 宽限覆盖合法的瞬时重规划（goal 短暂消失后立刻重设）。
+ */
+const GOAL_DROP_GRACE_MS = 2500;
+/**
+ * 零位移总兜底：无论 goal/isMoving 如何闪烁（重规划循环会把上膛与 goal 宽限双双
+ * 重置——批22 山地实测第三形态），只要非挖掘状态下连续这么久位移 <0.25 格就按
+ * Stalled 收束。它不依赖任何上游状态，是看门狗的最终防线。
+ */
+const ZERO_MOVE_STALL_MS = 10000;
 
 /** GoalNear 的判定口径：节点（整数格）之间的 3D 距离。 */
 function nodeGap(a: Vec3, b: Vec3): number {
@@ -353,14 +366,27 @@ export class GotoDirector {
 			// 而卡死时上游每次重规划都会重新给出路径，isMoving 只在重规划的那一瞬为假——
 			// 所以"上膛"之后改用 goal 活性判定，不再被重规划窗口打断。
 			let armed = false;
+			let goalInactiveSince = 0;
 			let digTarget: unknown = null;
 			let digSince = 0;
+			let lastMoveAt = Date.now();
+			let lastTickPos: Vec3 | null = null;
 			const watchdog = setInterval(() => {
 				const now = Date.now();
 				const pos = fromMineflayerVec3(bot.entity.position);
 				samples.push({ at: now, pos });
 				while (samples.length > 0 && now - samples[0]!.at > STALL_WINDOW_MS) samples.shift();
-				if (!armed && pathfinderMoving(bot)) armed = true;
+				if (lastTickPos != null && pos != null) {
+					const tickMoved = Math.hypot(pos.x - lastTickPos.x, pos.y - lastTickPos.y, pos.z - lastTickPos.z);
+					if (tickMoved >= STALL_MIN_DISPLACEMENT) lastMoveAt = now;
+				}
+				lastTickPos = pos;
+				if (!armed) {
+					// 规划期的静止合法（A* 可能思考数秒）；见到非空路径即上膛。
+					// 始终无路径的静默空转（goal 在而 A* 不产出）由下方零位移兜底收束。
+					if (pathfinderMoving(bot)) armed = true;
+					else return;
+				}
 				const digBlock = bot.targetDigBlock;
 				if (digBlock !== digTarget) {
 					digTarget = digBlock;
@@ -368,10 +394,34 @@ export class GotoDirector {
 				}
 				// 挖掘本身会让身体停住：换目标算进展，同一个方块挖满 DIG_STALL_MS 仍算卡死。
 				const digging = digBlock != null && now - digSince < DIG_STALL_MS;
-				if (!armed || digging || !pathfinderGoalActive(bot)) {
+				if (digging) {
+					lastMoveAt = now;
+					samples.length = 0;
+					goalInactiveSince = 0;
+					return;
+				}
+				// 零位移总兜底：与 goal/isMoving 状态无关（闪烁免疫），挖掘已在上方豁免。
+				if (now - lastMoveAt > ZERO_MOVE_STALL_MS) {
+					finish(
+						Object.assign(new Error("no displacement for 10s regardless of pathfinder state"), {
+							name: "Stalled",
+						}),
+					);
+					return;
+				}
+				if (!pathfinderGoalActive(bot)) {
+					// 上膛后 goal 消失 = 上游清了路径与 goal 却未结算 promise（resetPath 形态）。
+					// 宽限内的重规划（goal 立刻重设）不打断；超宽限按 Stalled 收束。
+					if (goalInactiveSince === 0) goalInactiveSince = now;
+					else if (now - goalInactiveSince > GOAL_DROP_GRACE_MS) {
+						samples.length = 0;
+						finish(Object.assign(new Error("navigation stopped without settling"), { name: "Stalled" }));
+						return;
+					}
 					samples.length = 0;
 					return;
 				}
+				goalInactiveSince = 0;
 				const oldest = samples[0];
 				if (oldest == null || now - oldest.at < STALL_WINDOW_MS) return;
 				if (oldest.pos == null || pos == null) return;
