@@ -158,7 +158,7 @@
 - **扫描预算**：findSkyAccess 按时间预算（4ms）在候选列间让出（检查在列探测前）+ AbortSignal 停止屏障中途生效；下界跳过无意义的天空出口大扫描。
 - **地图导出**：唯一 tmp + link 容忍 EEXIST（与 LibraryFiles.write 同家法），同摘要并发导出互不冲突；启动清理上一会话派生图片（磁盘有界，运行中不删已交付 ref）。
 - **Watch 类别化失效**：见 [world §9.2](modules/world.md) 批23 注——inventory@1 等待不再被物理拍 20Hz 唤醒；公开合同不变。
-- **简化批**：nativeGuide 4.3KB→1.4KB（API 教学移交 describe）；删 `scaffoldsUsed` 占位字段（G22 已更新）；删 `PROGRAM_POLICY.workerCount` 零消费字段；未绑定世界启动警告；慢读诊断（>100ms 警告、10s 抑制，为 P1-9 测量取证）。
+- **简化批**：nativeGuide 4.3KB→1.75KB（无其他可发现来源的 mc API 要点保留，其余移交 describe）；删 `scaffoldsUsed` 占位字段（G22 已更新）；删 `PROGRAM_POLICY.workerCount` 零消费字段；未绑定世界启动警告；慢读诊断（>100ms 警告、10s 抑制，为 P1-9 测量取证）。
 - **不做**：P1-9 大查询异步快照（先测量再定修法）；engine.ts/body-session.ts 拆分（文件长度不是重构理由）；Library 缓存；MapCache 内存上限；reconnect 热替换 Bot。
 
 验收：tests/mc 89 文件 / 806 项全绿 + `pnpm typecheck`（biome + 10 边界 + 双 tsc），五个 PR 独立提交；断线入库、私聊推送、recover 重连、慢读测量的真服回归随 G14 窗口执行。

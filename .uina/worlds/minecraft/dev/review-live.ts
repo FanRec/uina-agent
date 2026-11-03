@@ -52,24 +52,30 @@ async function startServer(): Promise<ChildProcess> {
 		stdio: ["ignore", "ignore", "ignore"],
 	});
 	child.unref();
-	// Paper 先绑端口后写 Done：端口 + 日志 Done 双确认。
-	await until(
-		async () => portOpen(),
-		(open) => open,
-		180_000,
-	);
-	await until(
-		async () => {
-			try {
-				const log = await readFile(join(SERVER_DIR, "logs", "latest.log"), "utf8");
-				return log.includes("Done (");
-			} catch {
-				return false;
-			}
-		},
-		(done) => done,
-		120_000,
-	);
+	try {
+		// Paper 先绑端口后写 Done：端口 + 日志 Done 双确认。
+		await until(
+			async () => portOpen(),
+			(open) => open,
+			180_000,
+		);
+		await until(
+			async () => {
+				try {
+					const log = await readFile(join(SERVER_DIR, "logs", "latest.log"), "utf8");
+					return log.includes("Done (");
+				} catch {
+					return false;
+				}
+			},
+			(done) => done,
+			120_000,
+		);
+	} catch (error) {
+		// 启动失败不留半启动的 java 进程占着端口/内存。
+		child.kill();
+		throw error;
+	}
 	await sleep(2000);
 	return child;
 }
@@ -190,13 +196,12 @@ async function main(): Promise<void> {
 		});
 		await step("断线证据先入库并推送，执行侧保持 ready（P0-7）", async () => {
 			notices.length = 0;
-			// op 账号优雅停服：bot 收到 kick（Server closed）→ end。
-			const run = await executor!.submit({
+			// op 账号优雅停服：bot 收到 kick（Server closed）→ end。不等待完成——服务器正在退出。
+			await executor!.submit({
 				requestId: `q:stop:${randomUUID()}`,
 				entry: { kind: "call", selector: "chat@1", input: { text: "/stop" } },
 				schedule: { kind: "enqueue" },
 			});
-			void run;
 			await until(
 				async () => executor!.status(),
 				(state) => state.side?.connection === "disconnected",
