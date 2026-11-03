@@ -327,6 +327,8 @@ test("rolled-back preemption leaves old body live and storage usable", async () 
 	await entered;
 	const db = new DatabaseSync(join(f.root, "runtime.db"));
 	try {
+		// 裸连接与 runtime worker 并存（WAL）：装 trigger 的写要等 worker 的在途提交，给忙等
+		db.exec("PRAGMA busy_timeout = 5000");
 		db.exec(
 			"CREATE TRIGGER reject_preemption BEFORE INSERT ON submissions WHEN NEW.request_id='rollback' BEGIN SELECT RAISE(ABORT,'rollback preemption'); END",
 		);
@@ -626,4 +628,130 @@ test("navigation and body acquisitions share the same FIFO and preemption barrie
 	await f.runtime.wait(third.snapshot.run, { timeoutMs: 4000 });
 	await f.runtime.wait(second.snapshot.run, { timeoutMs: 4000 });
 	expect(order).toEqual(["C", "B"]);
+});
+
+test("explicit priority run's body request jumps ahead of an existing FIFO waiter (G9)", async () => {
+	let enter!: () => void;
+	const entered = new Promise<void>((r) => (enter = r));
+	let releaseHolder!: () => void;
+	const holderDone = new Promise<void>((r) => (releaseHolder = r));
+	const order: string[] = [];
+	const port = {
+		acquire: async () =>
+			({
+				runScoped: async (_s: unknown, fn: () => Promise<unknown>) => fn(),
+				close: async () => {},
+			}) as unknown as import("../../.uina/worlds/minecraft/contracts/body.js").BodySession,
+		chat: async () => {
+			throw Error("unused");
+		},
+	} satisfies PlayerPort;
+	const f = await setup(
+		[
+			native("hold@1", (ctx) =>
+				ctx.withBody(async () => {
+					enter();
+					await holderDone;
+					return null;
+				}),
+			),
+			native("body@1", (ctx, input) =>
+				ctx.withBody(async () => {
+					order.push(String(input));
+					return null;
+				}),
+			),
+		],
+		port,
+	);
+	const holder = await f.runtime.submit(f.origin, {
+		requestId: "A",
+		entry: { kind: "call", selector: "hold@1", input: {} },
+		schedule: { kind: "enqueue" },
+	});
+	if (holder.kind !== "accepted") throw Error("not accepted");
+	await entered;
+	const fifo = await f.runtime.submit(f.origin, {
+		requestId: "B",
+		entry: { kind: "call", selector: "body@1", input: "B" },
+		schedule: { kind: "enqueue" },
+	});
+	if (fifo.kind !== "accepted") throw Error("not accepted");
+	// 宏任务边界：B 的身体申请已入队后，再受理 priority run——
+	// 这样 C 的插队走的是优先级而不是入队先后。即便顺序偶然颠倒，
+	// [C, B] 仍由 FIFO 成立，断言不会因竞态假通过/假失败。
+	await new Promise((r) => setTimeout(r, 25));
+	const priority = await f.runtime.submit(f.origin, {
+		requestId: "C",
+		entry: { kind: "call", selector: "body@1", input: "C" },
+		schedule: { kind: "enqueue", priority: true },
+	});
+	if (priority.kind !== "accepted") throw Error(JSON.stringify(priority));
+	await new Promise((r) => setTimeout(r, 25));
+	releaseHolder();
+	await f.runtime.wait(priority.snapshot.run, { timeoutMs: 4000 });
+	await f.runtime.wait(fifo.snapshot.run, { timeoutMs: 4000 });
+	expect(order).toEqual(["C", "B"]);
+});
+
+test("without priority the same submissions keep FIFO order (G9 control)", async () => {
+	let enter!: () => void;
+	const entered = new Promise<void>((r) => (enter = r));
+	let releaseHolder!: () => void;
+	const holderDone = new Promise<void>((r) => (releaseHolder = r));
+	const order: string[] = [];
+	const port = {
+		acquire: async () =>
+			({
+				runScoped: async (_s: unknown, fn: () => Promise<unknown>) => fn(),
+				close: async () => {},
+			}) as unknown as import("../../.uina/worlds/minecraft/contracts/body.js").BodySession,
+		chat: async () => {
+			throw Error("unused");
+		},
+	} satisfies PlayerPort;
+	const f = await setup(
+		[
+			native("hold@1", (ctx) =>
+				ctx.withBody(async () => {
+					enter();
+					await holderDone;
+					return null;
+				}),
+			),
+			native("body@1", (ctx, input) =>
+				ctx.withBody(async () => {
+					order.push(String(input));
+					return null;
+				}),
+			),
+		],
+		port,
+	);
+	const holder = await f.runtime.submit(f.origin, {
+		requestId: "A",
+		entry: { kind: "call", selector: "hold@1", input: {} },
+		schedule: { kind: "enqueue" },
+	});
+	if (holder.kind !== "accepted") throw Error("not accepted");
+	await entered;
+	const first = await f.runtime.submit(f.origin, {
+		requestId: "B",
+		entry: { kind: "call", selector: "body@1", input: "B" },
+		schedule: { kind: "enqueue" },
+	});
+	if (first.kind !== "accepted") throw Error("not accepted");
+	// B 的申请确定入队后才受理 C：控制组证明插队来自 priority 而非入队时序。
+	await new Promise((r) => setTimeout(r, 25));
+	const second = await f.runtime.submit(f.origin, {
+		requestId: "C",
+		entry: { kind: "call", selector: "body@1", input: "C" },
+		schedule: { kind: "enqueue" },
+	});
+	if (second.kind !== "accepted") throw Error("not accepted");
+	await new Promise((r) => setTimeout(r, 25));
+	releaseHolder();
+	await f.runtime.wait(first.snapshot.run, { timeoutMs: 4000 });
+	await f.runtime.wait(second.snapshot.run, { timeoutMs: 4000 });
+	expect(order).toEqual(["B", "C"]);
 });

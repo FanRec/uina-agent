@@ -77,7 +77,10 @@ test("expiry before actual simulation rejects input without installing it", asyn
 	h.step();
 	const frame = await h.stream.next(null, new AbortController().signal);
 	const result = h.stream.apply(frame, { keys: { forward: true } });
-	const rejected = expect(result).rejects.toMatchObject({ code: "FRAME_EXPIRED" });
+	const rejected = expect(result).rejects.toMatchObject({
+		code: "FRAME_EXPIRED",
+		hint: expect.stringContaining("mc.sleep(0)"),
+	});
 	await new Promise((r) => setTimeout(r, 270));
 	h.step();
 	await rejected;

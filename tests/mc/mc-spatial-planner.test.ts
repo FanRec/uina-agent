@@ -57,8 +57,26 @@ describe("tunnel corridor planning", () => {
 		expect(columns[0]!.cells).toContainEqual(at(0, 66, 0));
 		expect(columns[1]!.digCeiling).toBe(true);
 		expect(columns[1]!.cells).toContainEqual(at(1, 67, 0));
+		// G24：升坡列自身也开 3 高净空——越顶瞬间头部会探进落点列的顶格。
+		expect(columns[2]!.digCeiling).toBe(true);
+		expect(columns[2]!.cells).toContainEqual(at(2, 68, 0));
 		// 平地段（66 保持）不再挖净空。
 		expect(columns[3]!.digCeiling).toBe(false);
+		expect(columns[4]!.digCeiling).toBe(false);
+	});
+
+	test("profiles with 3+ headroom do not widen the ascending column itself", () => {
+		// 1x2 单级上行：升坡列自身 ceiling（y=67）进挖除集。
+		const narrow = planCorridor(at(0, 64, 0), at(3, 65, 0), "1x2", "auto");
+		expect(narrow[0]!.cells).toContainEqual(at(0, 66, 0));
+		expect(narrow[1]!.digCeiling).toBe(true);
+		expect(narrow[1]!.cells).toContainEqual(at(1, 67, 0));
+		// 1x3 同几何：净空已够，只挖前一位列的跳跃净空，升坡列自身 ceiling 保持实心。
+		const tall = planCorridor(at(0, 64, 0), at(3, 65, 0), "1x3", "auto");
+		expect(tall[0]!.cells).toContainEqual(at(0, 67, 0));
+		expect(tall[1]!.digCeiling).toBe(false);
+		expect(tall[1]!.cells).not.toContainEqual(at(1, 68, 0));
+		expect(tall[2]!.digCeiling).toBe(false);
 	});
 
 	test("descending columns also open the lintel above the tunnel mouth", () => {

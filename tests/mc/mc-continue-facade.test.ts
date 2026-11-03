@@ -150,6 +150,7 @@ test("run passes explicit replacement and preemption schedules to Runtime", asyn
 		for (const schedule of [
 			{ kind: "replace_pending", targets: ["run:old"] },
 			{ kind: "preempt_current", expectedRun: "run:old" },
+			{ kind: "enqueue", priority: true },
 		]) {
 			const result = await f.facade.execute("run", { selector: "chat@1", schedule }, new AbortController().signal);
 			expect(result.status).toBe("succeeded");

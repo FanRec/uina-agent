@@ -183,6 +183,63 @@ describe("BodyLeaseQueue：授予前复验与停止覆盖", () => {
 	});
 });
 
+describe("BodyLeaseQueue：显式优先级一档（G9）", () => {
+	test("priority 申请插队到已排队的 FIFO 等待者之前，safety 仍最前", async () => {
+		const { port, stats } = makePort({ delayMs: 5 });
+		const queue = new BodyLeaseQueue({ port, onGrant: () => {}, onRelease: () => {}, isOwnerLive: () => true });
+		const grant = await queue.request(owner("run:hold"), "call:hold", signal());
+		const fifo = queue.request(owner("run:fifo"), "call:fifo", signal());
+		// priority run：引擎在申请前设一次性旗标 → unshift 到 fifo 之前
+		queue.prioritize("run:priority");
+		const priority = queue.request(owner("run:priority"), "call:priority", signal());
+		// safety 到得最晚，仍按 enqueue 语义 unshift 到最前
+		const safety = queue.request(
+			{ kind: "safety", intervention: "int:1", interruptedRun: "run:hold" } as ControlOwner,
+			"call:safety",
+			signal(),
+		);
+		await grant.session.close();
+		grant.release();
+		const safetyGrant = await safety;
+		safetyGrant.release();
+		const priorityGrant = await priority;
+		priorityGrant.release();
+		const fifoGrant = await fifo;
+		fifoGrant.release();
+		expect(stats.acquires.map((o) => (o.kind === "run" ? o.run : "safety"))).toEqual([
+			"run:hold",
+			"safety",
+			"run:priority",
+			"run:fifo",
+		]);
+	});
+
+	test("一次性旗标：匹配申请消费后，同 run 未重设旗标的下一次申请回到 FIFO", async () => {
+		const { port, stats } = makePort({ delayMs: 5 });
+		const queue = new BodyLeaseQueue({ port, onGrant: () => {}, onRelease: () => {}, isOwnerLive: () => true });
+		const grant = await queue.request(owner("run:hold"), "call:hold", signal());
+		const other = queue.request(owner("run:other"), "call:other", signal());
+		queue.prioritize("run:priority");
+		const first = queue.request(owner("run:priority"), "call:priority-1", signal());
+		await grant.session.close();
+		grant.release();
+		const firstGrant = await first;
+		firstGrant.release();
+		// 旗标已被消费；同 run 再次申请（引擎未重设）排在 other 之后
+		const second = queue.request(owner("run:priority"), "call:priority-2", signal());
+		const otherGrant = await other;
+		otherGrant.release();
+		const secondGrant = await second;
+		secondGrant.release();
+		expect(stats.acquires.map((o) => (o.kind === "run" ? o.run : "safety"))).toEqual([
+			"run:hold",
+			"run:priority",
+			"run:other",
+			"run:priority",
+		]);
+	});
+});
+
 // ---- 引擎级：谱系冲突与独立申请的排队 ----
 
 function makeCallable(
