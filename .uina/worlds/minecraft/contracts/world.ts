@@ -153,8 +153,11 @@ export interface SurfaceProbe {
 	standable(at: Vec3): Promise<boolean | null>;
 	/** 露天判据：所在柱自世界顶向下第一个实体块在头顶之上（天空可见，液体不遮天）。 */
 	skyOpen(at: Vec3): Promise<boolean | null>;
-	/** 半径内最近的露天可站整数格（脚位），螺旋就近早退；无 → null。 */
-	findSkyAccess(center: Vec3, radius: number): Promise<Vec3 | null>;
+	/**
+	 * 半径内最近的露天可站整数格（脚位），螺旋就近早退；无 → null。
+	 * signal 是调用方的停止屏障：扫描中途取消要能及时结束，不能烧完预算。
+	 */
+	findSkyAccess(center: Vec3, radius: number, signal?: AbortSignal): Promise<Vec3 | null>;
 }
 
 /** Trusted maintenance only: exact capture partition and exclusive local storage cutoff. */

@@ -159,9 +159,14 @@ export async function escapeToSurface(
 			if (self.onGround && (await probe.standable(here)) === true && (await probe.skyOpen(here)) === true) {
 				return { at: here, reason };
 			}
+			// 下界没有正常意义的"露天"（顶部基岩层）：跳过无意义的天空出口大扫描，
+			// 直接走向上游/竖井上升的脱困腿。
+			const skySearch = !(self.place.dimension ?? "").includes("nether");
 			const remaining = deadline - Date.now();
 			const plan: LegPlan | null =
-				self.inWater === true ? await waterLeg(probe, here) : await landLeg(ctx, probe, here);
+				self.inWater === true
+					? await waterLeg(probe, here, skySearch, ctx.signal)
+					: await landLeg(ctx, probe, here, skySearch);
 			if (plan == null) {
 				// 已在出口近旁但判据未过：重查仍在同一拍发生，连续多次即视为死局，
 				// 不允许"空转等待预算烧尽"。
@@ -230,8 +235,10 @@ export async function escapeToSurface(
 async function waterLeg(
 	probe: NonNullable<ReturnType<CapabilityDeps["surface"]>>,
 	here: Vec3,
+	skySearch: boolean,
+	signal: AbortSignal,
 ): Promise<LegPlan | null> {
-	const access = await probe.findSkyAccess(here, SWIM_ACCESS_RADIUS);
+	const access = skySearch ? await probe.findSkyAccess(here, SWIM_ACCESS_RADIUS, signal) : null;
 	if (access == null) {
 		return {
 			request: leg(
@@ -266,8 +273,9 @@ async function landLeg(
 	ctx: CallContext,
 	probe: NonNullable<ReturnType<CapabilityDeps["surface"]>>,
 	here: Vec3,
+	skySearch: boolean,
 ): Promise<LegPlan | null> {
-	const access = await probe.findSkyAccess(here, LAND_ACCESS_RADIUS);
+	const access = skySearch ? await probe.findSkyAccess(here, LAND_ACCESS_RADIUS, ctx.signal) : null;
 	if (access != null && distance(here, access) > 1.5) {
 		return { request: leg(access, 1, true, true, true), reason: "walked_to_opening" };
 	}

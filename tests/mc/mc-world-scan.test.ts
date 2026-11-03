@@ -3,7 +3,7 @@
  * 寻路真值与真实区块加载由真服场景验收；这里用脚本化列数据证明纯判定逻辑，
  * 不 fake 一个世界来假装测过加载。
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 import { findSkyAccess, skyOpenAt, standableAt } from "../../.uina/worlds/minecraft/driver/mineflayer/world-scan.js";
 
@@ -119,5 +119,54 @@ describe("findSkyAccess", () => {
 	test("半径内无可用柱 → null", async () => {
 		const bot = makeBot(new Map());
 		expect(await findSkyAccess(bot, { x: 0, y: 64, z: 0 }, 8)).toBe(null);
+	});
+
+	test("预算耗尽在候选列间让出；激进修零预算不改变最近柱语义", async () => {
+		const world = new Map<string, Block | null>();
+		const fillColumn = (x: number, z: number, ground: number, waterTop: number | null) => {
+			if (waterTop != null) {
+				for (let y = waterTop + 1; y <= 319; y++) world.set(`${x},${y},${z}`, { name: "air", boundingBox: "empty" });
+				for (let y = ground + 1; y <= waterTop; y++)
+					world.set(`${x},${y},${z}`, { name: "water", boundingBox: "empty" });
+			} else {
+				for (let y = ground + 1; y <= 319; y++) world.set(`${x},${y},${z}`, { name: "air", boundingBox: "empty" });
+			}
+			world.set(`${x},${ground},${z}`, { name: waterTop != null ? "sand" : "stone", boundingBox: "block" });
+		};
+		fillColumn(3, 0, 64, null);
+		fillColumn(1, 0, 65, 67);
+		const bot = makeBot(world);
+		const immediate = vi.spyOn(globalThis, "setImmediate");
+		const access = await findSkyAccess(bot, { x: 0, y: 64, z: 0 }, 8, { budgetMs: 0 });
+		expect(access).toEqual({ x: 3, y: 65, z: 0 });
+		// budgetMs=0 → 每个候选列前都让出：让出发生在列间，不只是环间（ring 0..8 共 289 列）。
+		expect(immediate.mock.calls.length).toBeGreaterThan(50);
+		immediate.mockRestore();
+	});
+
+	test("停止屏障中途生效：取消立即结束扫描，不烧完剩余候选", async () => {
+		// 每列 65..71 空气、64 实心地面、72..319 实心封顶：columnGround 落在 319、
+		// standableAt(320) 因头顶未加载为 null → 无任何命中，扫描必然跨越多个让出点。
+		const world = new Map<string, Block | null>();
+		for (let x = -8; x <= 8; x++)
+			for (let z = -8; z <= 8; z++) {
+				for (let y = 72; y <= 319; y++) world.set(`${x},${y},${z}`, { name: "stone", boundingBox: "block" });
+				for (let y = 65; y <= 71; y++) world.set(`${x},${y},${z}`, { name: "air", boundingBox: "empty" });
+				world.set(`${x},64,${z}`, { name: "stone", boundingBox: "block" });
+			}
+		const bot = makeBot(world);
+		const controller = new AbortController();
+		const original = globalThis.setImmediate as (callback: () => void, ...args: unknown[]) => unknown;
+		const spy = vi.spyOn(globalThis, "setImmediate").mockImplementation(((callback: () => void, ...args: unknown[]) => {
+			controller.abort(new Error("stop scanning"));
+			return original(callback, ...args);
+		}) as never);
+		try {
+			await expect(
+				findSkyAccess(bot, { x: 0, y: 64, z: 0 }, 8, { signal: controller.signal, budgetMs: 0 }),
+			).rejects.toThrow("stop scanning");
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

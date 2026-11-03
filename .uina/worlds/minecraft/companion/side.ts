@@ -35,7 +35,7 @@ import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { startDigestPush } from "../world/digest.js";
 import { MinecraftWorld } from "../world/index.js";
-import { readExportedImage } from "../world/map.js";
+import { pruneExportedImages, readExportedImage } from "../world/map.js";
 import { type DescribeParams, describeDirectory } from "./directory.js";
 
 export async function openExecutionSide(
@@ -173,6 +173,8 @@ export async function openExecutionSide(
 	});
 	// map@1 的 PNG 缓存目录：查询产出与 read_image 读取共用这一份派生（world.md §8.6）。
 	const imageDir = join(init.worldDataDir, "exports", "images");
+	// 启动即清上一会话的派生图片（fire-and-forget）：本会话 ref 尚未产出，磁盘占用有界。
+	void pruneExportedImages(imageDir).catch(() => {});
 	let world: MinecraftWorld;
 	const construction = createConstruction({ blueprints: library, world: () => world });
 	world = new MinecraftWorld({

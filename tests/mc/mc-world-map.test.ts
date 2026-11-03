@@ -12,7 +12,12 @@ import type {
 } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { Fact } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { MAP_CELLS, MAP_IMAGE_SIZE } from "../../.uina/worlds/minecraft/world/png.js";
-import { MAP_REF, readExportedImage } from "../../.uina/worlds/minecraft/world/map.js";
+import {
+	exportMapImage,
+	MAP_REF,
+	pruneExportedImages,
+	readExportedImage,
+} from "../../.uina/worlds/minecraft/world/map.js";
 import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 
 /**
@@ -295,3 +300,47 @@ function factOf<T>(value: T): Fact<T> {
 		evidence: [],
 	};
 }
+
+// ---- 批22：同摘要并发导出与派生缓存生命周期 ----
+
+function mapSample(id: number): Parameters<typeof exportMapImage>[1] {
+	return {
+		id,
+		colors: new Array<number>(MAP_CELLS).fill(4),
+		scale: null,
+		locked: false,
+		icons: null,
+		receivedPixels: MAP_CELLS,
+		paintedPixels: MAP_CELLS,
+		unknown: [],
+		observedAt: "t",
+	};
+}
+
+describe("导出并发与生命周期", () => {
+	test("同摘要并发导出互不冲突：双方成功、单文件、tmp 清干净", async () => {
+		const dir = tempDir("uina-map-race-");
+		const s = mapSample(1);
+		const [a, b] = await Promise.all([exportMapImage(dir, s), exportMapImage(dir, s)]);
+		expect(a.ref.sha256).toBe(b.ref.sha256);
+		expect(a.ref.path).toBe(b.ref.path);
+		expect(existsSync(a.ref.path)).toBe(true);
+		expect(readdirSync(dir).filter((name) => name.endsWith(".png")).length).toBe(1);
+		expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		const read = await readExportedImage(dir, a.ref);
+		expect(read.mimeType).toBe("image/png");
+	});
+
+	test("启动清理删除上一会话的派生图片与残留 tmp，其他文件不动", async () => {
+		const dir = tempDir("uina-map-prune-");
+		writeFileSync(join(dir, "aaa.png"), "png");
+		writeFileSync(join(dir, "bbb.png"), "png");
+		writeFileSync(join(dir, ".stale.tmp"), "partial");
+		writeFileSync(join(dir, "notes.txt"), "keep");
+		expect(await pruneExportedImages(dir)).toBe(3);
+		expect(existsSync(join(dir, "notes.txt"))).toBe(true);
+		expect(existsSync(join(dir, "aaa.png"))).toBe(false);
+		// 目录尚不存在：无事可清
+		expect(await pruneExportedImages(join(dir, "missing"))).toBe(0);
+	});
+});

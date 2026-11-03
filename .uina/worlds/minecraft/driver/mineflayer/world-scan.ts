@@ -11,13 +11,18 @@
  * 卡住几十秒（心跳饿死 → OWNER_EXPIRED，批11 经验 2 的翻版）。因此：
  * - findSkyAccess 用螺旋环序 + 命中即退（多数场景在近环解决）；
  * - 列扫描起点限高（头顶 64 格内），不扫全高；
- * - 方法是异步的，每个环之间 setImmediate 让出事件循环。
+ * - 方法是异步的：环之间让出事件循环，单圈内按时间预算（SCAN_BUDGET_MS）在候选列间
+ *   额外让出——限制总工作量不等于限制单次事件循环占用；
+ * - 停止屏障（AbortSignal）中途生效，取消不必等扫描自然结束。
  */
 
 import type { Vec3 } from "../../contracts/values.js";
 import type { SurfaceProbe } from "../../contracts/world.js";
 import type { MineflayerBot } from "./adapter.js";
 import { toMineflayerVec3 } from "./adapter.js";
+
+/** 单次让出前允许的连续扫描毫秒数；单列探测本身不保证在此预算内（测量后再调）。 */
+const SCAN_BUDGET_MS = 4;
 
 /** 1.21 各维度世界顶（overworld 319 / nether 191 / end 255）。 */
 function worldTopY(bot: MineflayerBot): number {
@@ -89,20 +94,42 @@ function yieldEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
+export interface FindSkyAccessOptions {
+	/** 停止屏障：取消时立即结束扫描（抛出中止原因）。 */
+	signal?: AbortSignal;
+	/** 单次让出前的连续扫描毫秒预算；缺省 SCAN_BUDGET_MS。 */
+	budgetMs?: number;
+}
+
 /**
- * 半径内最近的露天可站脚位：按距离环序螺旋扫描，命中即退。
+ * 半径内最近的露天可站脚位：按距离环序螺旋扫描，命中即退（环内取最近）。
  * 列扫描起点限高（center.y + COLUMN_UP_BOUND）；列未加载/限高范围内无实体块 → 跳过该列。
- * 每个环之间让出事件循环。无命中 → null（不猜）。
+ * 环之间让出事件循环；单圈超过预算也在候选列间让出。signal 取消 → 抛出中止原因。
+ * 无命中 → null（不猜）。
  */
-export async function findSkyAccess(bot: MineflayerBot, center: Vec3, radius: number): Promise<Vec3 | null> {
+export async function findSkyAccess(
+	bot: MineflayerBot,
+	center: Vec3,
+	radius: number,
+	options: FindSkyAccessOptions = {},
+): Promise<Vec3 | null> {
 	const cx = Math.floor(center.x);
 	const cz = Math.floor(center.z);
 	const cy = Math.floor(center.y);
+	const budgetMs = options.budgetMs ?? SCAN_BUDGET_MS;
+	let deadline = performance.now() + budgetMs;
 	let best: Vec3 | null = null;
 	for (let ring = 0; ring <= radius; ring++) {
 		for (let dx = -ring; dx <= ring; dx++) {
 			for (let dz = -ring; dz <= ring; dz++) {
 				if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+				// 检查放在列探测之前：加载但不可站的列是最重的一类，不能靠"探测完"才让出。
+				options.signal?.throwIfAborted();
+				if (performance.now() >= deadline) {
+					// 限制单次事件循环占用：预算耗尽即让出，不等整圈扫完。
+					await yieldEventLoop();
+					deadline = performance.now() + budgetMs;
+				}
 				const x = cx + dx;
 				const z = cz + dz;
 				const top = Math.min(worldTopY(bot), cy + COLUMN_UP_BOUND);
@@ -132,6 +159,6 @@ export function createSurfaceProbe(bot: MineflayerBot): SurfaceProbe {
 	return {
 		standable: async (at) => standableAt(bot, at),
 		skyOpen: async (at) => skyOpenAt(bot, at),
-		findSkyAccess: (center, radius) => findSkyAccess(bot, center, radius),
+		findSkyAccess: (center, radius, signal) => findSkyAccess(bot, center, radius, { signal }),
 	};
 }

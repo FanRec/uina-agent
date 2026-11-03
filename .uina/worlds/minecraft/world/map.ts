@@ -7,8 +7,8 @@
  * 中心/维度协议不下发恒 null，不读服务器存档补值；缺失增量不补透明色。
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, open, readFile, realpath, rename } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdir, readdir, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { ItemValue } from "../contracts/body.js";
 import type { ClientFactsPort, ClientInventoryValue, MapIconValue } from "../contracts/client-facts.js";
@@ -155,27 +155,57 @@ export interface MapImageExport {
 }
 
 /**
- * 编码本次切面为 512×512 PNG 并原子写 `<imageDir>/<sha256>.png`。
- * 同摘要文件重复查询写同名文件（字节相同，rename 原子替换），旧引用不失效。
+ * 编码本次切面为 512×512 PNG 并原子发布 `<imageDir>/<sha256>.png`。
+ * 临时文件唯一命名 + 独占创建：同摘要并发导出互不干扰，link 容忍 EEXIST
+ * （发布成功者胜，字节按摘要一致）；与 LibraryFiles.write 同一发布家法。
+ * 旧引用不失效：内容寻址文件只会被同内容重放。
  */
 export async function exportMapImage(imageDir: string, sample: MapSample): Promise<MapImageExport> {
 	const png = encodeMapPng(sample.colors);
 	const sha256 = createHash("sha256").update(png).digest("hex");
 	const path = join(imageDir, `${sha256}.png`);
 	await mkdir(imageDir, { recursive: true });
-	const tmp = join(imageDir, `.${sha256}.tmp`);
-	const handle = await open(tmp, "w");
+	const tmp = join(imageDir, `.${sha256}.${randomUUID()}.tmp`);
+	await writeFile(tmp, png, { flag: "wx" });
 	try {
-		await handle.writeFile(png);
+		try {
+			await link(tmp, path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
 	} finally {
-		await handle.close();
+		await rm(tmp, { force: true });
 	}
-	await rename(tmp, path);
 	const legend = `map ${sample.id} cut: ${sample.receivedPixels}/${MAP_CELLS} pixels received, ${sample.paintedPixels} painted; magenta checkerboard = unknown, parchment = received transparent`;
 	return {
 		ref: { path, sha256, bytes: png.length, mimeType: "image/png", width: MAP_IMAGE_SIZE, height: MAP_IMAGE_SIZE },
 		legend,
 	};
+}
+
+/**
+ * 启动时清理上一会话的派生图片缓存（exports/images）：全部 *.png 与残留 *.tmp。
+ * 本会话尚未产出任何 ref，删除不影响当前观察；跨会话旧 ref 读取会如实报文件缺失
+ * （facade 的 imageDelivery 已有口径）。返回删除的文件数。
+ */
+export async function pruneExportedImages(imageDir: string): Promise<number> {
+	let entries: string[];
+	try {
+		entries = await readdir(imageDir);
+	} catch {
+		return 0; // 目录尚不存在：无事可清
+	}
+	let removed = 0;
+	for (const entry of entries) {
+		if (!entry.endsWith(".png") && !entry.endsWith(".tmp")) continue;
+		try {
+			await unlink(join(imageDir, entry));
+			removed++;
+		} catch {
+			// 单个文件删除失败不阻塞启动（只读打开中的文件下次再清）。
+		}
+	}
+	return removed;
 }
 
 /** read_image 授权校验（executor.md §2.1.1）：realpath 必须落在 imageDir 内，字节与摘要一致。 */
