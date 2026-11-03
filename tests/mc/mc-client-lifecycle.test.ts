@@ -45,3 +45,22 @@ test("ready retains lifecycle listeners; death invalidates immediately and respa
 	expect(events).toContainEqual(expect.objectContaining({ kind: "incarnation_invalidated" }));
 	expect(bot.listenerCount("spawn")).toBe(0);
 });
+
+test("voluntary close records a truthful disconnect reason and detaches lifecycle listeners", async () => {
+	const emitter = new EventEmitter();
+	const bot = Object.assign(emitter, {
+		game: { dimension: "overworld" },
+		quit() {
+			emitter.emit("end");
+		},
+	});
+	state.bot = bot;
+	const host = new ClientHost();
+	const pending = host.connect({ host: "test", port: 1, username: "test" });
+	bot.emit("spawn");
+	await pending;
+	await host.close();
+	expect(host.state).toBe("disconnected");
+	expect(host.disconnectFacts?.reason).toBe("closed");
+	expect(bot.listenerCount("spawn")).toBe(0);
+});

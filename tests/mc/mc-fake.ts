@@ -78,7 +78,14 @@ export interface FactsHarness {
 }
 
 export function makeFactsHarness(
-	options: { bot?: FakeBot; state?: HostState; dimension?: string | null; namespace?: string } = {},
+	options: {
+		bot?: FakeBot;
+		state?: HostState;
+		dimension?: string | null;
+		namespace?: string;
+		/** ClientHost.disconnectFacts 的替身；断线证据捕获会读取它。 */
+		disconnectFacts?: { reason: string | null } | null;
+	} = {},
 ): FactsHarness {
 	const listeners = new Set<(notice: unknown) => void>();
 	let state: HostState = options.state ?? "ready";
@@ -100,7 +107,7 @@ export function makeFactsHarness(
 			return options.dimension === undefined ? "overworld" : options.dimension;
 		},
 		get disconnectFacts() {
-			return null;
+			return options.disconnectFacts ?? null;
 		},
 		on: (fn: (notice: unknown) => void) => {
 			listeners.add(fn);

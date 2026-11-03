@@ -196,8 +196,10 @@ export class ClientHost {
 				resolve();
 			}
 		});
+		// 主动关闭也是断线事实：给出真实原因，FactsSource 的断线捕获按字段读取。
+		if (this._disconnect == null) this._disconnect = { reason: "closed" };
 		this.setState("disconnected");
-		this.emit({ kind: "disconnected", facts: this._disconnect ?? { reason: "closed" } });
+		this.emit({ kind: "disconnected", facts: this._disconnect });
 	}
 
 	/** 当前维度名（ minecraft: 前缀已剥离）；未就绪为 null。 */

@@ -357,3 +357,92 @@ test("G6 while the host is busy only the newest digest is held; it flushes on id
 		await pump.close();
 	}
 });
+
+test("minecraft_event 投递失败补发一次；补发成功不留诊断错误", async () => {
+	const events: string[] = [];
+	const listeners = new Set<
+		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
+	>();
+	let failed = false;
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async () => ({ kind: "absent" }),
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvent: async (event) => {
+			events.push(event.text!);
+			if (!failed) {
+				failed = true;
+				throw new Error("transient submit rejection");
+			}
+		},
+	};
+	const executor = {
+		subscribe: (
+			listener: (events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void,
+		) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async () => ({ items: [] }),
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx, 60_000); // 测试期内不跑 reconcile，诊断错误不被清空
+	try {
+		pump.start();
+		for (const listener of listeners)
+			listener([{ ref: "ev:t:1", observedAt: "t", payload: { kind: "death" } } as never]);
+		await until(() => events.length === 2);
+		expect(events[0]).toBe(events[1]); // 幂等 id：同一条事件补发
+		expect(pump.diagnostics().error).toBeNull();
+	} finally {
+		await pump.close();
+	}
+});
+
+test("补发仍失败只存诊断，不无限重试", async () => {
+	const events: string[] = [];
+	const listeners = new Set<
+		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
+	>();
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async () => ({ kind: "absent" }),
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvent: async (event) => {
+			events.push(event.text!);
+			throw new Error("queue keeps rejecting");
+		},
+	};
+	const executor = {
+		subscribe: (
+			listener: (events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void,
+		) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async () => ({ items: [] }),
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx, 60_000);
+	try {
+		pump.start();
+		for (const listener of listeners)
+			listener([{ ref: "ev:t:1", observedAt: "t", payload: { kind: "death" } } as never]);
+		await until(() => events.length === 2);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(events.length).toBe(2);
+		expect(pump.diagnostics().error).toMatchObject({ code: "EVENT_DELIVERY_FAILED" });
+	} finally {
+		await pump.close();
+	}
+});

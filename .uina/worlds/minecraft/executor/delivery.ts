@@ -7,6 +7,11 @@ import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/ru
 import type { MinecraftExecutor } from "./index.js";
 import type { DeliveryAttempt } from "./ledger-worker.js";
 
+/** minecraft_event 投递失败的补发等待；幂等 id 下重试一次的重复风险低于静默丢失。 */
+const EVENT_RETRY_MS = 1000;
+
+type EventNotice = Parameters<NonNullable<ServiceCompanionContext["emitEvent"]>>[0];
+
 export class DeliveryPump {
 	readonly heldRequests = new Set<string>();
 	private readonly heldTools = new Set<string>();
@@ -40,7 +45,7 @@ export class DeliveryPump {
 					this.flushDigest();
 					continue;
 				}
-				void this.ctx.emitEvent!({
+				this.emitNotice({
 					id: event.ref,
 					type: "minecraft_event",
 					origin: "external",
@@ -52,8 +57,6 @@ export class DeliveryPump {
 								? { action: "runs", params: { op: "record", ref: event.ref } }
 								: { action: "observe", params: { selector: "events@1" } },
 					}),
-				}).catch((error) => {
-					this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
 				});
 			}
 		});
@@ -76,7 +79,7 @@ export class DeliveryPump {
 		if (this.ctx.isBusy?.() === true) return;
 		this.heldDigest = null;
 		const payload = event.payload;
-		void this.ctx.emitEvent!({
+		this.emitNotice({
 			id: event.ref,
 			type: "minecraft_digest",
 			origin: "external",
@@ -86,9 +89,23 @@ export class DeliveryPump {
 					? { observedAt: event.observedAt, ...payload }
 					: { observedAt: event.observedAt, payload },
 			),
-		}).catch((error) => {
+		});
+	}
+	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
+	private emitNotice(notice: EventNotice): void {
+		void this.attemptEmit(notice).catch((error: unknown) => {
 			this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
 		});
+	}
+	private async attemptEmit(notice: EventNotice, retries = 1): Promise<void> {
+		try {
+			await this.ctx.emitEvent!(notice);
+		} catch (error) {
+			if (retries === 0 || this.stopped) throw error;
+			await new Promise<void>((resolve) => setTimeout(resolve, EVENT_RETRY_MS));
+			if (this.stopped) throw error;
+			await this.attemptEmit(notice, retries - 1);
+		}
 	}
 	async view(state: DeliveryState): Promise<CompletionView> {
 		const header = state.delivery;

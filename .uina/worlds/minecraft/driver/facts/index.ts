@@ -142,6 +142,19 @@ export class FactsSource implements ClientFactsPort {
 					this.resetSource("source_rebuilt");
 					this.attach(this.host.bot);
 				} else if (notice.state === "disconnected" || notice.state === "faulted") {
+					// 断线本身是事件：先捕获再封源。capture 不要求活 bot，证据落旧流并同步送达
+					// 订阅者（断线通知由此真实发出）。faulted 只发生在 ready 之前——从未 attach
+					// 过就只报连接错误，不伪造已断开的游戏会话。
+					if (this.attachedBot != null)
+						this.capture(
+							"client.event@1",
+							{
+								kind: "connection",
+								state: "disconnected",
+								reason: this.host.disconnectFacts?.reason ?? null,
+							},
+							[],
+						);
 					// 旧 bot 引用封印：sample 转为 DISCONNECTED，不读死连接。
 					this.detach();
 					this.resetSource("connection_changed");
@@ -511,38 +524,67 @@ export class FactsSource implements ClientFactsPort {
 		};
 		bot.on("death", onDeath);
 		this.detachFns.push(() => bot.removeListener("death", onDeath));
-		// 运行时发射为 (text, position, jsonMsg, sender)；类型只声明前三参，sender 走 rest。
+		// 聊天分类对齐 public-api §events 的 channel 合同。whisper/chat 事件由 mineflayer
+		// 内建聊天模式从 messagestr 派生（插件的 messagestr 匹配器先于本监听注册），携带
+		// 同一原始消息对象；messagestr 处理器按对象身份跳过已分类消息——同一入包只记一条，
+		// 不做文本去重（不同包相同文本互不吞）。内建模式不识别的自定义格式如实记 unknown。
+		const classified = new WeakSet<object>();
+		const actorOf = (name: unknown): { name: string | null; uuid: string | null; entity: null } => ({
+			name: typeof name === "string" ? name : null,
+			uuid: null,
+			entity: null,
+		});
+		const captureChat = (
+			channel: "public" | "private" | "system" | "action_bar" | "unknown",
+			text: string,
+			sender: { name: string | null; uuid: string | null; entity: null } | null,
+			recipient: string | null,
+			self: boolean | null,
+			unknowns: string[],
+		): void => {
+			this.captureEvent("client.event@1", { kind: "chat", channel, text, sender, recipient, self }, unknowns);
+			this.commit();
+		};
+		// 运行时发射为 (sender, text, translate, raw)；raw 是 messagestr 同一个原始消息对象。
+		const onPatternChat =
+			(channel: "public" | "private") =>
+			(sender: unknown, text: unknown, ...rest: unknown[]) => {
+				const raw = rest[1];
+				if (typeof raw === "object" && raw !== null) classified.add(raw);
+				const name = typeof sender === "string" ? sender : null;
+				// 我方消息回声由 chat 动作核验，不重复捕获（chat 证据归属动作回执）。
+				if (name == null || name === bot.username) return;
+				captureChat(channel, String(text), actorOf(name), channel === "private" ? bot.username : null, false, []);
+			};
+		const onWhisper = onPatternChat("private");
+		bot.on("whisper", onWhisper as never);
+		this.detachFns.push(() => bot.removeListener("whisper", onWhisper as never));
+		const onPublic = onPatternChat("public");
+		bot.on("chat", onPublic as never);
+		this.detachFns.push(() => bot.removeListener("chat", onPublic as never));
+		// 运行时发射为 (text, position, jsonMsg, sender)；未分类的按 position 归位：
+		// system→system、game_info（动作栏）→action_bar、玩家位但格式未匹配→unknown。
 		const onMessageStr = (message: string, ...rest: unknown[]) => {
+			const raw = rest[1];
+			if (typeof raw === "object" && raw !== null && classified.has(raw)) return;
+			const position = rest[0];
 			const sender = rest[2];
-			const botName = bot.username;
 			const text = String(message);
 			// 我方消息回声由 chat 动作核验，不重复捕获（chat 证据归属动作回执）。
-			if (sender != null && sender === botName) return;
-			this.captureEvent(
-				"client.event@1",
-				{
-					kind: "chat",
-					channel: "public",
-					text,
-					sender: typeof sender === "string" ? { name: sender, uuid: null, entity: null } : null,
-					recipient: null,
-					self: sender === botName ? true : null,
-				},
-				["chat channel inferred as public; private/system classification not captured in I1"],
+			if (sender != null && sender === bot.username) return;
+			const channel = position === "system" ? "system" : position === "game_info" ? "action_bar" : "unknown";
+			// playerChat 路径的 sender 是 UUID 而非名字，格式未解析时只记 uuid，不冒充 name。
+			captureChat(
+				channel,
+				text,
+				typeof sender === "string" ? { name: null, uuid: sender, entity: null } : null,
+				null,
+				null,
+				channel === "unknown" ? ["chat channel not recognized in this protocol path"] : [],
 			);
-			this.commit();
 		};
 		bot.on("messagestr", onMessageStr as never);
 		this.detachFns.push(() => bot.removeListener("messagestr", onMessageStr as never));
-		on("end", (reason?: string) => {
-			// 断线本身是事件：先入库再封流（流封口不影响已捕获载荷）。
-			this.captureEvent(
-				"client.event@1",
-				{ kind: "connection", state: "disconnected", reason: typeof reason === "string" ? reason : null },
-				[],
-			);
-			this.resetSource("connection_changed");
-		});
 		// 库存窗口提交：同一函数引用登记/移除。
 		const inv = bot.inventory;
 		if (inv != null) {
