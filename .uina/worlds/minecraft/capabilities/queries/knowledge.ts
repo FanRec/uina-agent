@@ -68,6 +68,7 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 	descriptor: {
 		ref: "recipe@1",
+		facts: ["inventory"],
 		summary: "Recipes (crafting and smelting) for an item plus the missing-material plan against the current inventory",
 		input: {
 			type: "object",

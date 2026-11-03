@@ -45,6 +45,8 @@ function harvestOf(
 const blockQuery = (deps: TerrainDeps): QuerySpec => ({
 	descriptor: {
 		ref: "block@1",
+		// 目标格、脚下支撑与手持工具（可挖掘性）都进入判定。
+		facts: ["self", "blocks", "inventory"],
 		summary: "Single block state at integer coordinates (+ whether the current inventory can harvest it)",
 		input: {
 			oneOf: [
@@ -141,6 +143,7 @@ const blockQuery = (deps: TerrainDeps): QuerySpec => ({
 const blocksQuery: QuerySpec = {
 	descriptor: {
 		ref: "blocks@1",
+		facts: ["blocks"],
 		summary: "Nearest blocks of one name within a horizontal radius (loaded range only)",
 		input: {
 			type: "object",

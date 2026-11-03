@@ -112,7 +112,8 @@ test("current watches catch the read/subscribe gap, reset sources and close with
 	const q = { ref: "inventory@1" as const, input: {} };
 	try {
 		const a = await w.read(q);
-		h.bot().emit("health");
+		// 类别化失效（批22）：inventory@1 只被 inventory 类提交唤醒，无关的 health 提交不再算数。
+		(h.bot().inventory as unknown as { emit: () => void }).emit();
 		const watch = await w.watch(q, a.cursor!, signal());
 		expect(await watch.next(a.cursor!, signal())).toMatchObject({ kind: "changed" });
 		const b = await w.read(q);

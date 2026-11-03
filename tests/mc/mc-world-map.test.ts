@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { emptyFactRevisions } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type {
 	ClientFactView,
 	ClientInventoryValue,
@@ -91,7 +92,14 @@ function mapValue(id: number, colors: (number | null)[]): ClientMapValue {
 }
 
 function fakeFacts(view: Partial<ClientFactView>) {
-	const stamp = { source: "facts:t", epoch: "ep:t", sequence: 1, connection: "conn:t", incarnation: "inc:t" };
+	const stamp = {
+		source: "facts:t",
+		epoch: "ep:t",
+		sequence: 1,
+		revisions: emptyFactRevisions(),
+		connection: "conn:t",
+		incarnation: "inc:t",
+	};
 	const facts = {
 		sample: (fn: (view: ClientFactView) => unknown) => ({
 			stamp,

@@ -54,6 +54,8 @@ function invalid(message: string, hint?: string): never {
 export const regionQuery: QuerySpec = {
 	descriptor: {
 		ref: "region@1",
+		// 原点来自 self；体素读 block。
+		facts: ["self", "blocks"],
 		summary:
 			"Voxel grid over a closed box as a BlockStateValue palette + xzy-ordered cell indices; unloaded cells are -1 (missing), never air",
 		input: REGION_INPUT,

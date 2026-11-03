@@ -15,10 +15,32 @@ export interface ClientWindowObservation {
 
 import type { ExactRef, Fact, JsonValue, Place, Ref, Vec3 } from "./values.js";
 
+/**
+ * 事实类别（Watch 类别化失效）：FactsSource.commit 只推进受影响类别的修订版本；
+ * current 查询声明依赖后，游标 = 依赖类别修订之和——无关提交不再唤醒等待方。
+ * 无法精确归类的事件源必须保守多报，不得漏报。
+ */
+export type FactCategory = "self" | "inventory" | "entities" | "blocks" | "world" | "players" | "maps" | "window";
+
+export type FactRevisions = Record<FactCategory, number>;
+
+/** 游标序号 = 依赖类别修订之和（各类别只增不减，任一依赖变化必然改变和值）。 */
+export function queryRevision(revisions: FactRevisions, dependencies: readonly FactCategory[]): number {
+	let sum = 0;
+	for (const category of dependencies) sum += revisions[category];
+	return sum;
+}
+
+export function emptyFactRevisions(): FactRevisions {
+	return { self: 0, inventory: 0, entities: 0, blocks: 0, world: 0, players: 0, maps: 0, window: 0 };
+}
+
 export interface ClientFactStamp {
 	source: Ref;
 	epoch: Ref;
 	sequence: number;
+	/** 各类别修订版本；与 sequence 出自同一同步采样边界（stamp 拷贝共享只读）。 */
+	revisions: FactRevisions;
 	connection: Ref | null;
 	incarnation: Ref | null;
 }

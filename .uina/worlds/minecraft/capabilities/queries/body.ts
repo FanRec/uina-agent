@@ -47,6 +47,8 @@ function gearOf(inventory: ClientInventoryValue): GearView {
 const selfQuery: QuerySpec = {
 	descriptor: {
 		ref: "self@1",
+		// 手持/护甲切自同一份库存快照：库存修订也参与 self@1 的游标。
+		facts: ["self", "inventory"],
 		summary: "Client body state at the current commit boundary (position, vitals, effects, held item, armor)",
 		input: EMPTY_INPUT,
 		output: { type: "object" },
@@ -139,6 +141,7 @@ function fullInventoryFact(
 const inventoryQuery: QuerySpec = {
 	descriptor: {
 		ref: "inventory@1",
+		facts: ["inventory"],
 		summary: "Inventory slots, layout regions, per-item counts and free space at the current commit boundary",
 		input: INVENTORY_INPUT,
 		output: { type: "object" },

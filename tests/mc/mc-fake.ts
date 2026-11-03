@@ -16,6 +16,8 @@ export interface FakeBot {
 		slots: unknown[];
 		on(event: string, fn: () => void): void;
 		removeListener(event: string, fn: () => void): void;
+		/** 触发已注册的槽位更新监听（updateSlot）。 */
+		emit(): void;
 	};
 	on(event: string, fn: Handler): void;
 	removeListener(event: string, fn: Handler): void;
@@ -33,6 +35,10 @@ export function makeBot(overrides: Record<string, unknown> = {}): FakeBot {
 			slots: [],
 			on: (_event, fn) => invHandlers.add(fn),
 			removeListener: (_event, fn) => invHandlers.delete(fn),
+			// 触发库存槽位更新（FactsSource 注册的 updateSlot 监听）。
+			emit: () => {
+				for (const fn of [...invHandlers]) fn();
+			},
 		},
 		// 协议窄口挂在 _client 上：替身默认无事件（未实现即缺失），map 等测试显式 emit。
 		_client: {

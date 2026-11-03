@@ -39,7 +39,7 @@ import type {
 } from "../contracts/world.js";
 import { BUILD_PLAN_REF, buildPlanObservation } from "./build-plan.js";
 import { CONTAINER_LAST_REF, containerObservation, resolveContainerQuery } from "./containers.js";
-import { CurrentReads } from "./current.js";
+import { CurrentReads, type QueryDependencies } from "./current.js";
 import { buildEventPage, EVENTS_REF, type EventScope, eventScopeOf, resolveEventQuery } from "./events.js";
 import { HistoryIngest, type HistoryState } from "./history-store.js";
 import { exportMapImage, MAP_REF, mapValueOf, resolveMapInput, sampleMap } from "./map.js";
@@ -142,6 +142,8 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	/** places 记录观察的分区键：换分区后旧游标失效（与 events 同形）。 */
 	private readonly placesPartition: string;
 	private readonly watchable: Set<string>;
+	/** 查询依赖的事实类别表：read/watch 统一按此计算游标（未声明 → 全局 sequence）。 */
+	private readonly factDependencies: ReadonlyMap<string, QueryDependencies>;
 	private readonly watches = new Set<WorldWatch>();
 	private closed = false;
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
@@ -156,6 +158,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		this.buildPlanner = options.buildPlanner ?? null;
 		this.imageDir = options.imageDir ?? null;
 		this.watchable = new Set(options.queries.filter((q) => q.watchable).map((q) => q.ref));
+		this.factDependencies = new Map(options.queries.map((q) => [q.ref as string, q.facts]));
 		const queryRefs: ExactRef[] = [
 			...options.readers.keys(),
 			EVENTS_REF,
@@ -199,7 +202,12 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		const input = this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader?.kind === "current") {
-			const observation = await this.current.read<T>(query.ref, input, reader.read);
+			const observation = await this.current.read<T>(
+				query.ref,
+				input,
+				reader.read,
+				this.factDependencies.get(query.ref),
+			);
 			// 派生结果（如 recipe 的 plan）读当前库存但不发布观察水位。
 			return reader.cursor === "none" || !this.watchable.has(query.ref)
 				? { ...observation, cursor: null }
@@ -249,7 +257,7 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 			const reader = this.readers.get(query.ref);
 			if (reader?.kind !== "current" || reader.cursor === "none")
 				throw watchFailure("INVALID_INPUT", `${query.ref} has no watchable observation source`);
-			inner = await this.current.watch(query.ref, input, signal);
+			inner = await this.current.watch(query.ref, input, signal, this.factDependencies.get(query.ref));
 		}
 		const close = async () => {
 			signal.removeEventListener("abort", abort);

@@ -25,7 +25,9 @@ import type {
 	ClientFactsSubscription,
 	ClientFactView,
 	ClientWindowObservation,
+	FactCategory,
 } from "../../contracts/client-facts.js";
+import { emptyFactRevisions } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
@@ -127,6 +129,7 @@ export class FactsSource implements ClientFactsPort {
 			source: this.nextRef("facts"),
 			epoch: this.nextRef("ep"),
 			sequence: 0,
+			revisions: emptyFactRevisions(),
 			connection: host.identity?.connection ?? null,
 			incarnation: host.identity?.incarnation ?? null,
 		};
@@ -286,12 +289,12 @@ export class FactsSource implements ClientFactsPort {
 	publishWindow(observation: ClientWindowObservation | null): void {
 		if (observation == null) {
 			this.windowFact = null;
-			this.commit();
+			this.commit("window");
 			return;
 		}
 		if (this.attachedBot == null) return;
 		const value = JSON.parse(JSON.stringify(observation)) as ClientWindowObservation;
-		this.commit();
+		this.commit("window");
 		const unknown: string[] = [];
 		const snapshot = value.snapshot;
 		const slots = new Set(snapshot.slots.map((slot) => slot.slot));
@@ -351,6 +354,8 @@ export class FactsSource implements ClientFactsPort {
 			...this.stamp,
 			epoch: this.nextRef("ep"),
 			sequence: 0,
+			// 换代后 stream/epoch 变化已使所有 watch reset；类别修订从零重开保持口径一致。
+			revisions: emptyFactRevisions(),
 			connection: this.host.identity?.connection ?? null,
 			incarnation: this.host.identity?.incarnation ?? null,
 		};
@@ -361,8 +366,19 @@ export class FactsSource implements ClientFactsPort {
 		});
 	}
 
-	private commit(): void {
-		this.stamp = { ...this.stamp, sequence: this.stamp.sequence + 1 };
+	/**
+	 * 推进事实版本：全局 sequence 单调 +1，受影响类别的修订 +1（无参 = 全类别，
+	 * 用于连接建立这类"一切可能都变了"的时刻）。同一轮事件循环内多次 commit 合并
+	 * 为一条 changed 通知，通知携带最新 stamp（含已推进的类别修订）。
+	 */
+	private commit(...categories: FactCategory[]): void {
+		const revisions = { ...this.stamp.revisions };
+		if (categories.length === 0) {
+			for (const category of Object.keys(revisions) as FactCategory[]) revisions[category] += 1;
+		} else {
+			for (const category of categories) revisions[category] += 1;
+		}
+		this.stamp = { ...this.stamp, sequence: this.stamp.sequence + 1, revisions };
 		if (this.changedScheduled) return;
 		this.changedScheduled = true;
 		queueMicrotask(() => {
@@ -442,36 +458,42 @@ export class FactsSource implements ClientFactsPort {
 			bot.on(event as never, fn as never);
 			this.detachFns.push(() => bot.removeListener(event as never, fn as never));
 		};
-		on("move", () => this.commit());
-		on("health", () => this.commit());
-		on("physicsTick", () => this.commit());
-		on("breath", () => this.commit());
-		on("entityAttributes", () => this.commit());
-		this.detachFns.push(trackVitals(bot).subscribe(() => this.commit()));
-		on("forcedMove", () => this.commit());
-		on("entitySpawn", () => this.commit());
-		on("entityDespawn", () => this.commit());
-		on("chunkColumnLoad", () => this.commit());
-		on("chunkColumnUnload", () => this.commit());
+		// 事件源按事实类别提交（Watch 类别化失效）：无法精确归类就保守多报，不得漏报。
+		// 自己也是实体：位置变化会改变 entities@1 的排序与 selfRef，move 一并失效 entities。
+		on("move", () => this.commit("self", "entities"));
+		on("forcedMove", () => this.commit("self", "entities"));
+		on("health", () => this.commit("self"));
+		on("breath", () => this.commit("self"));
+		on("entityAttributes", () => this.commit("self", "entities"));
+		this.detachFns.push(trackVitals(bot).subscribe(() => this.commit("self")));
+		// 物理拍：无专用事件的连续量兜底——自身/实体运动与时间天气（world@1 的 ticks
+		// 每拍递增）。方块变化有真实 blockUpdate 事件，不在这里冒认。
+		on("physicsTick", () => this.commit("self", "entities", "world"));
+		on("blockUpdate", () => this.commit("blocks"));
+		on("entitySpawn", () => this.commit("entities"));
+		on("entityDespawn", () => this.commit("entities"));
+		// 区块装卸：方块可用性变化，biome（来自区块列）随之。
+		on("chunkColumnLoad", () => this.commit("blocks", "world"));
+		on("chunkColumnUnload", () => this.commit("blocks", "world"));
 		// 玩家名单：首个公告事件起名单可用；三类事件都推进版本（capabilities.md §players 可等待口径）。
 		on("playerJoined", () => {
 			this.rosterSeen = true;
-			this.commit();
+			this.commit("players");
 		});
 		on("playerUpdated", () => {
 			this.rosterSeen = true;
-			this.commit();
+			this.commit("players");
 		});
 		on("playerLeft", () => {
 			this.rosterSeen = true;
-			this.commit();
+			this.commit("players");
 		});
 		// 地图：协议窄口解码 map 包，这里校验矩形后一次提交（driver.md §11.8）。
 		this.detachFns.push(
 			protocolFor(bot).subscribe((notice) => {
 				if (notice.kind !== "map") return;
 				this.maps.apply(notice);
-				this.commit();
+				this.commit("maps");
 			}),
 		);
 		// 自身受伤：只认本客户端玩家的实体，不把附近实体受伤记成自己的。
@@ -499,7 +521,7 @@ export class FactsSource implements ClientFactsPort {
 				},
 				["damage amount and cause are not reported in this protocol path"],
 			);
-			this.commit();
+			this.commit("self");
 		};
 		bot.on("entityHurt", onHurt as never);
 		this.detachFns.push(() => bot.removeListener("entityHurt", onHurt as never));
@@ -520,7 +542,7 @@ export class FactsSource implements ClientFactsPort {
 				}),
 				["death message not captured in I1"],
 			);
-			this.commit();
+			this.commit("self");
 		};
 		bot.on("death", onDeath);
 		this.detachFns.push(() => bot.removeListener("death", onDeath));
@@ -542,8 +564,8 @@ export class FactsSource implements ClientFactsPort {
 			self: boolean | null,
 			unknowns: string[],
 		): void => {
+			// 聊天不改变任何当前事实（events@1 走历史库 record_version 失效），不推进版本。
 			this.captureEvent("client.event@1", { kind: "chat", channel, text, sender, recipient, self }, unknowns);
-			this.commit();
 		};
 		// 运行时发射为 (sender, text, translate, raw)；raw 是 messagestr 同一个原始消息对象。
 		const onPatternChat =
@@ -588,11 +610,12 @@ export class FactsSource implements ClientFactsPort {
 		// 库存窗口提交：同一函数引用登记/移除。
 		const inv = bot.inventory;
 		if (inv != null) {
-			const onSlotUpdate = () => this.commit();
+			const onSlotUpdate = () => this.commit("inventory");
 			inv.on("updateSlot", onSlotUpdate);
 			this.detachFns.push(() => inv.removeListener("updateSlot", onSlotUpdate));
 		}
 		this.captureEvent("client.event@1", { kind: "connection", state: "connected", reason: null }, []);
+		// 连接建立：一切事实都可能已变，全类别失效。
 		this.commit();
 	}
 

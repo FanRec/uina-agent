@@ -4,11 +4,19 @@
  * 唯一定义来源：docs/proposals/mc/public-api.md §5、modules/world.md §6.1、§9.2–§9.4。
  * read = facts.sample 同步采样 + 调用方给出的 resolver（返回 Fact）；cursor 取当前源
  * stamp 与确切查询/参数绑定。静态知识查询不进这里（无观察源）。
- * watch 保守失效（§9.2）：当前源任何推进即 changed（changed=[] 不做精确分类），
+ * watch 类别化失效（§9.2）：声明了依赖类别（facts）的查询按依赖类别修订和值计算游标
+ * （queryRevision）——无关类别提交不再推进水位；未声明的查询保守使用全局 sequence。
  * epoch/source 断裂即 reset；首次 next 立即比较（§9.3）；同一水位只交付一次提示。
  */
 
-import type { ClientFactCapture, ClientFactStamp, ClientFactsPort, ClientFactView } from "../contracts/client-facts.js";
+import type {
+	ClientFactCapture,
+	ClientFactStamp,
+	ClientFactsPort,
+	ClientFactView,
+	FactCategory,
+} from "../contracts/client-facts.js";
+import { queryRevision } from "../contracts/client-facts.js";
 import type { CallFailure, Fact, JsonValue, Observation, ObservationCursor } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
 import type { WorldWatch } from "../contracts/world.js";
@@ -16,6 +24,9 @@ import { ObservationWatch, queryStream } from "./watch.js";
 
 /** 当前查询 resolver：从同一提交边界的事实视图组装一个 Fact。 */
 export type QueryResolver = (view: ClientFactView, input: JsonValue) => Fact<unknown>;
+
+/** 查询依赖的事实类别；undefined = 未声明（保守回退全局 sequence）。 */
+export type QueryDependencies = readonly FactCategory[] | undefined;
 
 function worldFailure(code: string, message: string, hint?: string): CallFailure {
 	return callFailure({ code, source: "world", message, hint, dispatch: "not_sent", effects: [], recoverable: false });
@@ -45,30 +56,53 @@ function toReadFailure(err: unknown): CallFailure {
 
 export class CurrentReads {
 	constructor(private readonly facts: ClientFactsPort) {}
-	async read<T>(ref: string, input: JsonValue, resolver: QueryResolver): Promise<Observation<T>> {
+	async read<T>(
+		ref: string,
+		input: JsonValue,
+		resolver: QueryResolver,
+		dependencies?: QueryDependencies,
+	): Promise<Observation<T>> {
 		let capture: ClientFactCapture<Fact<unknown>>;
 		try {
 			capture = this.facts.sample((view) => resolver(view, input));
 		} catch (error) {
 			throw toReadFailure(error);
 		}
-		return { ...capture.value, value: capture.value.value as T, cursor: this.cursor(ref, input, capture.stamp) };
+		return {
+			...capture.value,
+			value: capture.value.value as T,
+			cursor: this.cursor(ref, input, capture.stamp, dependencies),
+		};
 	}
-	private cursor(ref: string, input: JsonValue, stamp: ClientFactStamp): ObservationCursor {
-		return { stream: queryStream(ref, input, stamp.source), epoch: stamp.epoch, sequence: stamp.sequence };
+	/** read/watch/checkpoint 用同一游标计算：依赖类别修订和值（未声明回退全局 sequence）。 */
+	private cursor(
+		ref: string,
+		input: JsonValue,
+		stamp: ClientFactStamp,
+		dependencies?: QueryDependencies,
+	): ObservationCursor {
+		const sequence = dependencies == null ? stamp.sequence : queryRevision(stamp.revisions, dependencies);
+		return { stream: queryStream(ref, input, stamp.source), epoch: stamp.epoch, sequence };
 	}
-	async watch(ref: string, input: JsonValue, signal: AbortSignal): Promise<WorldWatch> {
+	async watch(
+		ref: string,
+		input: JsonValue,
+		signal: AbortSignal,
+		dependencies?: QueryDependencies,
+	): Promise<WorldWatch> {
 		signal.throwIfAborted();
 		let watch: ObservationWatch | undefined;
 		const subscription = this.facts.subscribe((notice) => {
-			if (notice.kind === "changed" || notice.kind === "reset") watch?.update(this.cursor(ref, input, notice.stamp));
+			if (notice.kind === "changed" || notice.kind === "reset")
+				// 依赖类别未变的提交推进到相同 sequence，ObservationWatch 对等值水位天然空转。
+				watch?.update(this.cursor(ref, input, notice.stamp, dependencies));
 		});
 		watch = new ObservationWatch(
-			this.cursor(ref, input, subscription.stamp),
+			this.cursor(ref, input, subscription.stamp, dependencies),
 			() => subscription.close(),
 			() => {
 				try {
-					return this.cursor(ref, input, this.facts.sample(() => null).stamp);
+					return this.cursor(ref, input, this.facts.sample(() => null).stamp, dependencies);
 				} catch (error) {
 					throw toReadFailure(error);
 				}

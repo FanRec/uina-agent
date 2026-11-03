@@ -24,6 +24,8 @@ export interface EnvironmentDeps {
 const worldQuery: QuerySpec = {
 	descriptor: {
 		ref: "world@1",
+		// ticks/timeOfDay 随时间连续变化：world 修订在物理拍诚实推进。
+		facts: ["world"],
 		summary: "Current dimension, time of day, weather, biome and server rules",
 		input: EMPTY_INPUT,
 		output: { type: "object" },
@@ -63,6 +65,8 @@ export interface EntityEntry {
 const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
 	descriptor: {
 		ref: "entities@1",
+		// 名单 join 玩家名：players 修订同样影响本查询。
+		facts: ["self", "entities", "players"],
 		summary: "Currently tracked entities within a radius (tracked extent, not proof of absence beyond it)",
 		input: {
 			type: "object",

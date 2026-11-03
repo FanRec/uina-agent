@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { emptyFactRevisions } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { ClientFactsPort } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -19,7 +20,14 @@ const capabilities = buildCapabilities({
 describe("query descriptor validation at the World boundary", () => {
 	test("rejects malformed current/static/history input before sampling or storage", async () => {
 		let samples = 0;
-		const stamp = { source: "facts:test", epoch: "ep:test", sequence: 0, connection: null, incarnation: null };
+		const stamp = {
+			source: "facts:test",
+			epoch: "ep:test",
+			sequence: 0,
+			revisions: emptyFactRevisions(),
+			connection: null,
+			incarnation: null,
+		};
 		const facts = {
 			sample: () => {
 				samples++;

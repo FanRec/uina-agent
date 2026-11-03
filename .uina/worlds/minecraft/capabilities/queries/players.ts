@@ -26,6 +26,8 @@ interface RosterRow {
 const playersQuery: QuerySpec = {
 	descriptor: {
 		ref: "players@1",
+		// 名单为主体，tracked 实体与自身排除也参与。
+		facts: ["players", "entities", "self"],
 		summary:
 			"Server-announced player roster with tracked-entity links; absence from the list is not proof of being offline",
 		input: {

@@ -46,6 +46,12 @@ export interface QueryDescriptor {
 	/** watchable 可按查询明确声明的输入/结果条件收窄。 */
 	watchable: boolean;
 	feedback: boolean;
+	/**
+	 * 本查询读取的事实类别（Watch 类别化失效）：current 查询声明其实际依赖，
+	 * 游标按依赖类别修订和值推进——无关提交不再唤醒等待方。缺省 = 全类别（保守）。
+	 * 历史查询（events/places）与派生查询（cursor "none"/planner 端口）不适用。
+	 */
+	facts?: import("./client-facts.js").FactCategory[];
 	examples: { input: JsonValue; output: JsonValue }[];
 }
 
