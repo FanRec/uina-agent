@@ -136,6 +136,36 @@ test("IPC loss retires the exact launch; recovery changes attachment and keeps o
 	}
 });
 
+test("recover rebuilds the execution domain when the game client is gone while the executor stays ready", async () => {
+	const dataRoot = await root();
+	let executor: MinecraftExecutor | undefined;
+	try {
+		executor = await MinecraftExecutor.open({
+			worldDataDir: dataRoot,
+			config: config(),
+			policy: { autoRecover: false, closeGraceMs: 3000 },
+		});
+		const old = executor.status().side!;
+		// 不可达服务器：伴生进程健康（phase ready），但游戏连接进入 faulted。
+		expect(executor.status().phase).toBe("ready");
+		await until(() => {
+			const connection = executor!.status().side?.connection;
+			return connection === "faulted" || connection === "disconnected";
+		});
+		await executor.recover();
+		expect(executor.status().phase).toBe("ready");
+		expect(executor.status().side!.launch).not.toBe(old.launch);
+		// 重建成功不等于登录成功：同一不可达服务器下如实回到断线状态。
+		await until(() => {
+			const connection = executor!.status().side?.connection;
+			return connection === "faulted" || connection === "disconnected";
+		});
+	} finally {
+		await executor?.close().catch(() => {});
+		await rm(dataRoot, { recursive: true, force: true });
+	}
+});
+
 test("missing initialized Runtime is refused without recreating its database", async () => {
 	const dataRoot = await root();
 	const connection = config();

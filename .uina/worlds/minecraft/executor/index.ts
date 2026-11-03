@@ -553,6 +553,17 @@ export class MinecraftExecutor {
 				if (!(await this.retireSide(false)))
 					throw new RpcError("EXECUTOR_OWNERSHIP_UNAVAILABLE", "old tree retirement is unknown");
 				await this.startLaunch(true);
+			} else {
+				// 执行侧进程健康但游戏连接已断：退役重建执行域。旧 Run 不重放，旧资格全部
+				// 失效；新 Companion 创建成功不代表登录成功，最终状态由 side.connection 如实报告。
+				const status = await this.inspect();
+				const connection = status.side?.connection;
+				if (connection === "disconnected" || connection === "faulted") {
+					if (!(await this.retireSide(false)))
+						throw new RpcError("EXECUTOR_OWNERSHIP_UNAVAILABLE", "old tree retirement is unknown");
+					await this.startLaunch(true);
+				}
+				// connecting/syncing：连接仍在建立，不重复连接。
 			}
 		}
 		return await this.inspect();

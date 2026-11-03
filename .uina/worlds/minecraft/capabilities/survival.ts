@@ -7,6 +7,8 @@ import type { WorldPort } from "../contracts/world.js";
 import type { SafetyTrigger, SafetyWork } from "../runtime/safety.js";
 
 type Hazard = SafetyTrigger["kind"];
+/** 介入未确认安全后的重试等待。岩浆/溺水反应时间敏感，未实测不加长。 */
+const RETRY_DELAY_MS = 1000;
 export function nextEscapeWaypoint(route: Vec3[], p: Vec3): Vec3 | undefined {
 	while (route.length && Math.hypot(route[0]!.x - p.x, route[0]!.z - p.z) < 0.15 && Math.abs(route[0]!.y - p.y) < 0.25)
 		route.shift();
@@ -62,7 +64,8 @@ export function startSurvival(deps: Dependencies) {
 		running: Promise<unknown> | null = null,
 		lastDamage: number | null = null,
 		damage: Ref | null = null;
-	let latched: string | null = null;
+	/** 危险键的锁存：确认安全后锁到危险事实消失；失败/未确认只冷却 RETRY_DELAY_MS。 */
+	let latch: { key: string; retryAt: number } | null = null;
 	const sample = (): Fact<SelfState> | null => {
 		const fact = deps.facts.sample((view) => view.self()).value;
 		return fact.value ? { ...fact, value: fact.value } : null;
@@ -133,24 +136,33 @@ export function startSurvival(deps: Dependencies) {
 			if (!fact) return;
 			const kind = survivalTrigger(fact.value, lastDamage, performance.now());
 			if (!kind) {
-				latched = null;
+				latch = null;
 				return;
 			}
 			const key = `${fact.connection}:${fact.incarnation}:${kind}:${kind === "low_health_damage" ? damage : ""}`;
-			if (running || latched === key) return;
+			if (running) return;
+			// 锁存挡的是"同一危险冷却期内重复触发"；新伤害证据/换代生成新 key，不受旧冷却抑制。
+			if (latch?.key === key && performance.now() < latch.retryAt) return;
 			deps.runtime.assertActionAllowed();
-			latched = key;
+			// 先按成功占位（锁到危险消失）；结算为失败/未确认时改写为有限冷却。
+			latch = { key, retryAt: Number.POSITIVE_INFINITY };
 			const trigger: SafetyTrigger = {
 				kind,
 				sample: fact,
 				evidence: damage && kind === "low_health_damage" ? [damage] : [],
 			};
-			running = deps.runtime
-				.intervene(trigger, (body, signal) => work(kind, body, signal))
-				.catch(deps.onFault)
-				.finally(() => {
-					running = null;
-				});
+			running = (async () => {
+				try {
+					const record = await deps.runtime.intervene(trigger, (body, signal) => work(kind, body, signal));
+					if (record.ended === "safe" && record.outcome === "succeeded") return;
+					latch = { key, retryAt: performance.now() + RETRY_DELAY_MS };
+				} catch (error) {
+					deps.onFault(error);
+					latch = { key, retryAt: performance.now() + RETRY_DELAY_MS };
+				}
+			})().finally(() => {
+				running = null;
+			});
 		} catch {
 			/* gates and unsynchronized sources forbid intervention */
 		}
@@ -165,7 +177,7 @@ export function startSurvival(deps: Dependencies) {
 		if (notice.kind === "reset") {
 			lastDamage = null;
 			damage = null;
-			latched = null;
+			latch = null;
 		}
 		check();
 	});

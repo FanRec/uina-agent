@@ -73,6 +73,11 @@ export async function openExecutionSide(
 	let closing = false;
 	let closePromise: Promise<void> | null = null;
 	const faults: { code: string; message: string }[] = [];
+	/** 状态面诊断有界：重试类故障可能反复发生，不设上限会无界增长。 */
+	const pushFault = (fault: { code: string; message: string }): void => {
+		faults.push(fault);
+		if (faults.length > 32) faults.splice(0, faults.length - 32);
+	};
 	const requireRetirement = (notice: ControlRetirement): void => {
 		if (retirement) return;
 		let detail = notice.detail;
@@ -256,7 +261,7 @@ export async function openExecutionSide(
 			},
 			breathable: (self) => (host.bot ? canBreathe(host.bot, self.place.position) : null),
 			onFault: (error) => {
-				faults.push({ code: "SAFETY_FAULT", message: String(error) });
+				pushFault({ code: "SAFETY_FAULT", message: String(error) });
 				options.onChanged?.();
 			},
 		});
@@ -282,7 +287,7 @@ export async function openExecutionSide(
 			.then(() => {
 				if (closing) return;
 				if (host.state === "ready" && host.bot?.username !== config.connection.username) {
-					faults.push({
+					pushFault({
 						code: "IDENTITY_MISMATCH",
 						message: "server login name differs from configured offline username",
 					});
@@ -295,7 +300,7 @@ export async function openExecutionSide(
 				}
 			})
 			.catch((error: unknown) => {
-				faults.push({ code: "CONNECTION_FAILED", message: error instanceof Error ? error.message : String(error) });
+				pushFault({ code: "CONNECTION_FAILED", message: error instanceof Error ? error.message : String(error) });
 			});
 		const inspect = (): ExecutionSideStatus => ({
 			launch: init.launch,
