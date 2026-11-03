@@ -131,6 +131,7 @@ interface QueryDescriptor {
   tags?: string[];
   access: "read";
   watchable: boolean; feedback: boolean; // watchable 可按查询明确声明的输入/结果条件收窄
+  facts?: FactCategory[]; // current 查询声明事实依赖（批23）：游标 = 依赖类别修订之和，未声明保守回退全局序号
   examples: {input: JsonValue; output: JsonValue}[];
 }
 type DiscoveryKind = "capability" | "program" | "blueprint" | "experience";

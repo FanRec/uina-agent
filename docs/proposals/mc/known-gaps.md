@@ -134,7 +134,7 @@
 
 ### G22 · 施工不搭脚手架、不绕行（批14 登记）
 
-- **现象**：`build@1` 的 `scaffoldsUsed` 恒 0；够不着的格只做一次朝向设计盒的走位（盒中心 → 盒外同侧地面），不做绕行寻路、不垫柱登高。走不过去或站在封闭结构里时，对应格进 `remaining`（`reason` 写清是没支撑、够不着还是走不到）。
+- **现象**：`scaffoldsUsed` 占位结果字段已于批23 删除（恒 0、无能力支撑，schema/返回值/文档不再暴露该承诺；"不搭脚手架"的取舍本身不变）；够不着的格只做一次朝向设计盒的走位（盒中心 → 盒外同侧地面），不做绕行寻路、不垫柱登高。走不过去或站在封闭结构里时，对应格进 `remaining`（`reason` 写清是没支撑、够不着还是走不到）。
 - **依据**：§4 总则"可达性归调用方"——站位是调用方的责任，动作内部寻路会与 `goto@1` 重复实现一套路径逻辑。真服验收里也是场景先把身体放到盒内中心再施工（`/tp` 属场景准备，不是被测行为）。
 - **影响**：一次调用能建的规模受"从当前位置的 4.5 格射程"限制。5×5×4 小屋在盒中心可以一站建完（最远角 4.76，靠一格 `stepTo` 补上）；更大的结构要调用方分段站位。
 - **未做**：垫柱/脚手架、绕行、按可达性重排的大型工程分段。
@@ -145,6 +145,23 @@
 - **证据**：批18 探针 T/V/W/X 系列（真服 Paper 1.21.11 build132）：有鞍马申报 40 拍服务端 Pos 恒定；卸鞍后服务端 Pos 追踪申报终点但落点偏移 ≥2.7 格；同场对照船申报精确到达。验收口径按此收窄：`ride@1` 对马如实 `UNREACHABLE`（缺 G23），矿车不可转向如实 `WRONG_STATE`，船驾驶全绿（到达断言走服务端 Pos）。
 - **影响**：`ride@1` 的 `to` 对马系坐骑是空话；远距离马背交通与 `transit` 的 horse 阶段在 Paper 上不成立，只能依赖步行 goto 或船/矿车。
 - **修法方向**：协议层无马驾驶确认包，怀疑 Paper 的载具反作弊按"有鞍=玩家控制=客户端位置申报不可信"处理；无上游修复前不做绕行（伪造包属于作弊面）。上游版本升级时用同探针复测。
+
+## 9. 批23 审查修复轮关闭记录（2026-11-04）
+
+外部审查（11 项定位缺陷 + 5 项简化）经三路源码核实后分五个 PR 修复。核实结论：10 项确认、1 项部分成立（事件交付——G6 digest 削峰与证据持久化已存在，真实缺口是断线/私聊两个死分支）、3 项过时（本清单并不漂移、G21/G24 已关闭）。
+
+- **断线证据链**：FactsSource 在 host disconnected/faulted 时先 capture 断线证据再封源（旧实现的 end 监听因 attachedBot 已清空而空转，断线从不入库、importantEvents 推送死路）；主动关闭记 reason=closed。
+- **聊天 channel 对齐合同**：whisper/chat 事件按 mineflayer 内建模式分流 private/public，messagestr 按原始消息对象身份去重（同一入包只记一条），未匹配格式如实 unknown（playerChat 路径 sender 记 uuid 不冒充 name）——public-api §events 的 channel 枚举自始如此，实现此前一直违反。
+- **事件投递**：minecraft_event/digest 投递失败 1s 补发一次（幂等 id）；完成回执路径未动。
+- **生存介入重试**：锁存改 {key, retryAt}——确认安全锁存到危险事实消失，失败/抛错只冷却 1s 后允许重试；新伤害证据换 key 立即重试；faults 诊断加 32 条上限。
+- **游戏断线恢复**：recover() 在执行侧进程健康但 side.connection disconnected/faulted 时退役重建执行域（复用 retireSide+startLaunch 与现有锁；旧 Run 不重放，connecting/syncing 不重复连接）。
+- **扫描预算**：findSkyAccess 按时间预算（4ms）在候选列间让出（检查在列探测前）+ AbortSignal 停止屏障中途生效；下界跳过无意义的天空出口大扫描。
+- **地图导出**：唯一 tmp + link 容忍 EEXIST（与 LibraryFiles.write 同家法），同摘要并发导出互不冲突；启动清理上一会话派生图片（磁盘有界，运行中不删已交付 ref）。
+- **Watch 类别化失效**：见 [world §9.2](modules/world.md) 批23 注——inventory@1 等待不再被物理拍 20Hz 唤醒；公开合同不变。
+- **简化批**：nativeGuide 4.3KB→1.4KB（API 教学移交 describe）；删 `scaffoldsUsed` 占位字段（G22 已更新）；删 `PROGRAM_POLICY.workerCount` 零消费字段；未绑定世界启动警告；慢读诊断（>100ms 警告、10s 抑制，为 P1-9 测量取证）。
+- **不做**：P1-9 大查询异步快照（先测量再定修法）；engine.ts/body-session.ts 拆分（文件长度不是重构理由）；Library 缓存；MapCache 内存上限；reconnect 热替换 Bot。
+
+验收：tests/mc 89 文件 / 806 项全绿 + `pnpm typecheck`（biome + 10 边界 + 双 tsc），五个 PR 独立提交；断线入库、私聊推送、recover 重连、慢读测量的真服回归随 G14 窗口执行。
 
 ## 附：不要照抄的部分
 

@@ -365,6 +365,8 @@ Driver stamp 只是其中一个输入。失效只按**查询实际可见边界**
 
 同一个 H 的保守失效只入账一次；之后迟到的 <=C 范围只细化/去重，不重复分配“新变化”水位，也不撤回已经发布的保守失效。新 read 必须真实 sample 到该 H，纳入这次保守水位后才生成 cursor；因此 read21 后没有新 stamp 时可以等待，不会每次 watch 自激 changed。旧 read20 不能只因另一查询读过21而被当作已看见21。reset 仅用于 epoch/来源断裂等无法比较情形。
 
+**批23 类别化实现**：当前源的保守失效按声明粒度落地——Driver stamp 携带各 `FactCategory` 的修订版本（`FactRevisions`，与 sequence 出自同一同步采样边界），commit 按事件源归类推进（[driver §11.6](driver.md)；无法精确归类的物理拍保守覆盖 self+entities+world）；current 查询描述符声明 `facts` 依赖，游标 = 依赖类别修订之和（`queryRevision`）——任一依赖推进必然改变和值，等值水位由 ObservationWatch 天然空转，无需订阅侧过滤层；未声明依赖的查询回退全局 sequence（全源保守）。公开 `WorldChange.changed` 合同不变，Driver 分类不向模型层泄露。
+
 ### 9.3 read → watch → next 无漏失效
 
 同域：read 固定相关 cursor；watch 和 next 在一个 World 步骤内核验、比较所需水位并登记等待者。有当前依赖才纳入当下源 stamp，纯历史直接核验本地历史/领域/时间水位，不 sample Driver。状态已更新但当前通知仍排队也能被发现。
