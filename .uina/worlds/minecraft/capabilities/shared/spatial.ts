@@ -138,13 +138,19 @@ export function planCorridor(from: Vec3, to: Vec3, profile: TunnelProfile, stair
 	// 上坡过渡要挖前一位列的跳跃净空（prev 的 ceiling 格）：2 高空间里跳跃被天花板
 	// 削顶（脚只能抬 ~0.2），跳不上 1 格台阶——净空挖开后跳跃弧线才够得到踏步面。
 	// 与下坡挖檐对称；挖了它支撑探测也从再上一格起步。
+	// G24：升坡列自身也要 3 高净空——越顶瞬间头部会探进落点列的顶格，height<3 的
+	// profile 把升坡列 ceiling 一并挖除；height≥3 的走廊净空已够，不多挖。
+	const widenAscender = height < 3;
+	const openCeiling = (column: TunnelColumn): void => {
+		column.cells.push(column.ceiling);
+		column.digCeiling = true;
+		const seen = new Set(column.cells.map(keyOf));
+		column.cells = column.cells.filter((cell) => seen.delete(keyOf(cell)));
+	};
 	for (let i = 1; i < columns.length; i++) {
 		if (columns[i]!.floor.y > columns[i - 1]!.floor.y) {
-			const previous = columns[i - 1]!;
-			previous.cells.push(previous.ceiling);
-			previous.digCeiling = true;
-			const seen = new Set(previous.cells.map(keyOf));
-			previous.cells = previous.cells.filter((cell) => seen.delete(keyOf(cell)));
+			openCeiling(columns[i - 1]!);
+			if (widenAscender) openCeiling(columns[i]!);
 		}
 	}
 	return columns;

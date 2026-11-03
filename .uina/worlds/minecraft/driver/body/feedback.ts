@@ -12,6 +12,12 @@ import type { MineflayerBot } from "../mineflayer/adapter.js";
 import { physicsSteps } from "../mineflayer/physics-step.js";
 
 export const FEEDBACK_VALID_MS = 250;
+/**
+ * G10：帧窗与 Program burst 预算是两个口径（250ms 输入新鲜窗 vs 20ms 单段计算配额），
+ * 不合并常量；过期拒绝统一互指——长同步计算用 mc.sleep(0) 分片，输入才落得进帧窗。
+ */
+const FRAME_EXPIRED_HINT =
+	"inputs must apply within the 250ms feedback frame; chunk long synchronous computation with await mc.sleep(0) to stay inside the program burst budget";
 interface Deps {
 	body: Ref;
 	operation: Ref;
@@ -59,10 +65,11 @@ export class FeedbackController implements FeedbackStream {
 		deps.signal.addEventListener("abort", this.abort, { once: true });
 		if (deps.signal.aborted) this.abort();
 	}
-	private error(code: string, message: string): CallFailure {
+	private error(code: string, message: string, hint?: string): CallFailure {
 		return fail({
 			code,
 			message,
+			hint,
 			source: "environment",
 			dispatch: this.installed ? "sent" : "not_sent",
 			recoverable: true,
@@ -82,7 +89,7 @@ export class FeedbackController implements FeedbackStream {
 	private expire() {
 		const now = performance.now();
 		if (this.pending && now >= this.pending.frame.validUntil) {
-			this.pending.reject(this.error("FRAME_EXPIRED", "feedback frame expired before application"));
+			this.pending.reject(this.error("FRAME_EXPIRED", "feedback frame expired before application", FRAME_EXPIRED_HINT));
 			this.pending = null;
 		}
 		if (this.installed && now >= this.installedUntil) {
@@ -202,7 +209,8 @@ export class FeedbackController implements FeedbackStream {
 			this.consumed
 		)
 			throw this.error("FRAME_STALE", "frame was not delivered by this stream or was already consumed");
-		if (performance.now() >= this.delivered.validUntil) throw this.error("FRAME_EXPIRED", "feedback frame expired");
+		if (performance.now() >= this.delivered.validUntil)
+			throw this.error("FRAME_EXPIRED", "feedback frame expired", FRAME_EXPIRED_HINT);
 		this.consumed = true;
 		return new Promise<{ receipt: EffectReceipt; appliedStep: ClientPhysicsStep }>((resolve, reject) => {
 			this.pending = { frame: this.delivered!, input: structuredClone(input), resolve, reject };

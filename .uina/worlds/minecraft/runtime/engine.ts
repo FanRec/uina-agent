@@ -1388,6 +1388,7 @@ export class RuntimeEngine {
 		)
 			throw this.scopeError("CONTROL_CONFLICT", "delegated body cannot start independent navigation");
 		const state = this.runs.get(owner.run)!;
+		this.prioritizeIfRequested(state);
 		const pending = this.bodyLeaseQueue.requestNavigation(owner, owner.callId, frame.call.abort.signal);
 		this.releasePriority(state);
 		const grant = await pending;
@@ -1750,6 +1751,12 @@ export class RuntimeEngine {
 
 	// ---- 身体申请（§3.3.1 三种情况） ----
 
+	/** G9：显式优先级 Run 的申请先于普通等待者入队（一次性原语，逐次申请重设；safety 仍最前）。 */
+	private prioritizeIfRequested(state: RunState): void {
+		const schedule = state.request.schedule;
+		if (schedule.kind === "enqueue" && schedule.priority === true) this.bodyLeaseQueue.prioritize(state.run);
+	}
+
 	private async runWithBody<T>(
 		callState: CallState,
 		state: RunState,
@@ -1793,6 +1800,7 @@ export class RuntimeEngine {
 		state.awaitingBody++;
 		let grant: BodyGrant;
 		try {
+			this.prioritizeIfRequested(state);
 			const requested = this.bodyLeaseQueue.request(owner, callState.call, callState.abort.signal);
 			this.releasePriority(state);
 			grant = await requested;

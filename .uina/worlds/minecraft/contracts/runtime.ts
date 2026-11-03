@@ -32,7 +32,9 @@ export type Entry =
 	| { kind: "program"; source: import("./program.js").SourceRequest; input: JsonValue };
 
 export type Schedule =
-	| { kind: "enqueue" }
+	/** priority：显式插入一档（G9）——该 Run 的身体/导航申请排在普通等待者之前入队；
+	 * safety 仍最前，reservation（抢占挡板）不 bypass。只作用于本次受理的段，continue 新段不带。 */
+	| { kind: "enqueue"; priority?: boolean }
 	| { kind: "replace_pending"; targets?: Ref[] }
 	| { kind: "preempt_current"; expectedRun: Ref };
 

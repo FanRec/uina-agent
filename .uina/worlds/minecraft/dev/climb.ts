@@ -1,13 +1,15 @@
 /**
- * 批 19 真服验收：导航爬阶（G21）与卡死快速失败。
+ * 批 19/21 真服验收：导航爬阶（G21）、卡死快速失败与上行走廊净空（G24）。
  *
  * 被测行为全部走正式能力面（Runtime submit → callable）；op 指令只摆地形/给工具，
  * 不代替任何被测动作。断言用服务端真值（/data get Pos）与复读交叉核验。
  *
- * 这一批改的是依赖执行器（patches/mineflayer-pathfinder）：上游把"延迟起跳才能过"
+ * 批 19 改的是依赖执行器（patches/mineflayer-pathfinder）：上游把"延迟起跳才能过"
  * 的节点当成"直线可走"，执行器因此永不按跳跃键，1 格台阶走不上去、卡满 40s 墙钟。
  * 场景里的几何全部是批13/14 记录过的失败形态（1 格石台、1:1 上行阶梯），
  * 所以"爬上去了"本身就是修复证据；不需要另设旧行为开关。
+ * 批 21 增加上行隧道步骤：1x2 上行 1:1 走廊由规划器自动加高（升坡列 ceiling 一并
+ * 挖除，G24），挖通并走到终点；升坡列顶开天窗、平地段顶保持实心是世界级证据。
  */
 
 import { mkdtempSync } from "node:fs";
@@ -103,10 +105,49 @@ async function main(): Promise<void> {
 			return `server (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}) in ${elapsed}ms`;
 		});
 
+		await s.step("tunnel climbs an ascending 1:1 corridor (G24 auto-widened headroom)", async () => {
+			const x0 = CENTER.x - 30;
+			const z0 = CENTER.z;
+			await s.command(`/gamemode creative ${USER}`);
+			// 清出施工区再浇整块石体：走廊必须挖在实体里，1x2 上行才测得到净空问题。
+			await s.command(`/fill ${x0 - 2} 200 ${z0 - 2} ${x0 + 7} 206 ${z0 + 2} minecraft:air`);
+			await s.command(`/fill ${x0 + 1} 200 ${z0 - 1} ${x0 + 6} 205 ${z0 + 1} minecraft:stone`);
+			await reset({ x: x0 + 0.5, y: 200, z: z0 + 0.5 });
+			const started = Date.now();
+			const value = valueOf<{
+				dug: number;
+				stopped?: string;
+				path: { at: { x: number; y: number; z: number }; name: string }[];
+			}>(await s.call("tunnel@1", { to: { x: x0 + 4, y: 202, z: z0 }, maxTimeMs: 150000 }, 240000));
+			const elapsed = Date.now() - started;
+			if (value.stopped != null) throw new Error(`tunnel stopped early: ${value.stopped}`);
+			if (value.dug < 8) throw new Error(`ascending corridor dug only ${value.dug} cells`);
+			const pos = await serverPos();
+			if (Math.abs(pos.x - (x0 + 4)) > 1.5 || Math.abs(pos.y - 202) > 1.5 || Math.abs(pos.z - z0) > 1.5) {
+				throw new Error(`bot did not reach the corridor end: ${JSON.stringify(pos)}`);
+			}
+			// G24 证据：升坡列自身的 ceiling 被自动挖开（踏步上方 3 高净空），平地段顶保持实心。
+			for (const at of [
+				{ x: x0 + 1, y: 203, z: z0 },
+				{ x: x0 + 2, y: 204, z: z0 },
+			]) {
+				const cell = await s.readBlock(at);
+				if (cell?.name !== "air") {
+					throw new Error(`ascender ceiling at ${at.x},${at.y},${at.z} is ${cell?.name ?? "null"}`);
+				}
+			}
+			const flatTop = await s.readBlock({ x: x0 + 4, y: 204, z: z0 });
+			if (flatTop?.name !== "stone") throw new Error(`flat ceiling was dug: ${flatTop?.name ?? "null"}`);
+			return `${value.dug} dug in ${elapsed}ms, server (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`;
+		});
+
 		await s.step("a sealed shaft fails fast instead of burning the wall clock", async () => {
 			const x0 = CENTER.x + 20;
 			const z0 = CENTER.z;
 			await s.command(`/gamemode creative ${USER}`);
+			// 本步的前提是"密封且没有可用材料"：goto 的 placeToReach 默认 true（垫柱合法），
+			// 上一步隧道挖落的圆石留在背包里就能垫柱翻墙（批21 实测）。清包是步骤复位的一部分。
+			await s.command(`/clear ${USER}`);
 			// 先把区块拉起来，且人站在井外：站在井位里被 /fill 埋进石头后会被服务端挤出去，
 			// 井就不"密封"了（批19 实测：这样能稳定复现"进得去、出不来"）。
 			await s.command(`/tp ${USER} ${x0 + 4.5} 200.1 ${z0 + 1.5}`);
