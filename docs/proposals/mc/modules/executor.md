@@ -565,7 +565,7 @@ delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询
 
 以下区分各项承诺所需证据；开发顺序见 [总规划](../development-plan.md)，真实环境优先及避免重复检查的规则见 [开发规范](../development-guide.md#5-验证选择)。不要求把同一游戏动作在每个验证层重做一遍。
 
-实现重置：2026-10-18 已删除 Minecraft 的旧 WorldDef、Executor、Driver、World、Assets、contracts 与专属测试。当前没有 Minecraft World 入口；新实现按本文及所属模块合同建立。
+实现重置：2026-10-18 已删除 Minecraft 的旧 WorldDef、Executor、Driver、World、Assets、contracts 与专属测试；新实现按本文及所属模块合同建立。批 4–6 已接通 Executor 平台、Host 回执与正式 WorldDef 入口（真服记录见 archive/native-host-implementation.md），批 7–9 接通 Program/Library 与完整 I2。
 
 实施落点：worlddef 只做 WorldDef/生命周期适配，executor 放 façade/IPC/账本/通知/平台监管，companion 入口负责静态装配，runtime 回归独立所有者。沿用 World lifecycle、工具结果与 BodyEndpoint，并实现通用 Host delivery 标记、状态查询/退役接缝；它是 Tool execution/Mailbox/Canonical history 的扩展，不新增内核业务概念、Minecraft 专属事件或通用通知服务。文件数量按实现需要拆分，不建立新的 Manager 层。
 

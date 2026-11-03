@@ -530,6 +530,7 @@ type ExploreTarget =
 #### tunnel · `tunnel@1` · act · P1
 - 输入 `{ to: Pos, size?: "1x2"|"1x3"|"2x2"|"3x3" = "1x2", stairs?: "auto"|"never" = "auto", support?: true, maxTimeMs?: 180000 }`
 - 做：挖一条到 `to` 的通道；高度差大时自动做台阶；`support` 时在头顶补支撑（防砂砾）。
+- 规划塑形：上行走廊在 height<3 的 profile 下自动把踏步列上方挖到 3 高净空（G24）——越顶瞬间头部会探进落点列的顶格；与下坡挖檐对称，多挖的格计入 `dug`/`path`。
 - 完成：通道连通且可从起点走到终点。
 - 返回 `{ dug, path:[{ at, name }], stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
 

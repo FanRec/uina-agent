@@ -12,7 +12,7 @@
 | 2 | ~~G6 节流推送~~ | **批20 已关闭**——同时修掉"模型不 read 就瞎"和"轮询成本"，面向观众线的前置已就位 |
 | 3 | ~~G8 按调用的短窗~~ | **批20 已关闭**（同批含 G7 增量游标） |
 | 4 | ~~G5 剩余能力~~ | 批19 收口 51/51 |
-| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G9/G10（运行时调度）、G24（tunnel 上行净空）、G14–G17（复验与终态报告） |
+| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G14–G16（长时复验）、G15（复杂避障，随 G14 窗口）、G17（终态报告）。G9/G10/G24 已于批21 关闭 |
 
 ## 2. P0 阻断项
 
@@ -41,13 +41,14 @@
 - **影响**：`surface`（洞穴/水下脱困）、`tunnel`、`excavate`、`build`、`transit` 共同前置缺失。
 - **关闭事实**：`SurfaceProbe` 窄端口（contracts/world.ts，public-api §5）+ `driver/mineflayer/world-scan.ts`：`standableAt`（脚下实心 + 上两格非固体非液体）、`skyOpenAt`（头顶之上无实体块，液体不遮天）、`findSkyAccess`（螺旋早退 + 限高列扫描 + 候选 skyOpen 复核）。goto@1 的 GoalNear 节点语义未改（§10.6 要求），判据经端口供 surface/fight 消费；未加载区块 null 不猜。真服：石箱挖出/水井游出均回露天可站（源码/产物 7/7）。tunnel/excavate/build/transit 沿用此端口，无需再建。
 
-### G4 · `ctx.verify` 注册表为空
+### G4 · `ctx.verify` 注册表为空（✅ 已于 2026-10-31 批13 关闭，本表补标）
 
 - **现象**：门已存在，任何 verifier 调用都失败。
 - **证据**：`runtime/engine.ts:1685-1691`（未注册即 `verifier ... is not registered`，hint 指向"随能力工作包到达"）。
 - **影响**：`unknown` 效果无法显式复查；空间/施工包承诺的复查没有落点。
 - **修法**：不预建注册框架。第一个真实需要复查的能力（空间/施工）在同一批里加注册入口与实现。
 - **验收**：一次真实 `unknown` 被复查并追加到原 Effect，不改写历史报告。
+- **关闭事实**：`EffectVerifier` 合同 + `EngineOptions.verifiers` 注册表 + 首个消费者 `verify/dig@1`（读 effect facts 的目标格：air→met/原方块→not_met/未加载→unknown）；`ctx.verify` append-only 追加 EffectVerification，效果行跨重启恢复后仍可复查；程序桥 `mc.verify`。真服 G4 复查 4 态（met/not_met/NOT_FOUND/不改写）随 `dev:mc:spatial` 8/8 通过（批13）。
 
 ## 3. 能力面缺口（G5）
 
@@ -70,23 +71,22 @@
 - **验收**：`dev:mc:climb` 真服 **5/5 PASS**——1 格台阶 1090ms、三级 1:1 阶梯 7318ms、密封竖井 68ms 快速失败（原 40s 墙钟）、平地 30 格 5472ms。
 - **残余**：见 G24（1:1 上行走廊的净空本身不够，不是导航问题）。
 
-### G24 · 上行 1:1 走廊 2 高净空物理不可通行（批19 登记）
+### G24 · 上行 1:1 走廊 2 高净空物理不可通行（批19 登记，✅ 已于 2026-11-03 批21 关闭）
 
 - **现象**：`tunnel@1` 默认 `size:"1x2"` 挖出的上行走廊，机器人走不进去；换成 `1x3` 仍只到 dug=10。
 - **证据**：`dev:mc:climb` 批19 的隧道步骤（已从场景移除）——stuck 在 9824/9825 米、want 9827,203；同一补丁下 1 格台阶与三级阶梯都秒过。
 - **原因**：不是导航 bug。玩家高 1.8，跳跃抬升 ~1.25 格；踏步上方只有 1 格空间（2 高走廊）时，身体在起跳瞬间被天花板削顶，从静止起跳翻不上 1 格。原版玩家同样做不到——要上 1 格必须有 3 高净空（或半砖级差）。
 - **修法方向**：`tunnel@1` 上行段把踏步上方留到 3 格净空（`size` 语义或自动加高），或改挖半砖台阶；这是 `tunnel` 的规划问题，不动导航。
 - **验收**：`1x2` 上行 1:1 走廊在自动加高后能走到终点，或 `tunnel@1` 对上行请求明确要求 3 高净空。
-
-## 4. P1 已实现部分的缺口
+- **关闭事实**：`planCorridor` 上坡过渡在 height<3 的 profile 下把升坡列自身 ceiling 一并挖除（踏步上方成 3 高净空；height≥3 物理已够不多挖），`digCeiling` 使支撑探测自动上移一格；合同句落 capabilities.md §4 tunnel。真服 `dev:mc:climb` 源码与产物各 6/6：1x2 上行 1:1 走廊 10 格全挖（与规划器逐格一致）并走到终点（服务端 Pos y=202.0），升坡列顶 (9821,203)/(9822,204) 世界复读为 air、平地段顶 (9824,204) 保持 stone；既有 1 格台阶/三级阶梯/密封竖井 100ms 快速失败/平地 30 格全部保持通过。批19 记录的"1x3 也只到 dug=10"另有成因：该轮步骤留下了挖掘掉落物，goto 的 placeToReach（默认 true，垫柱合法）用圆石垫柱翻墙——不是净空问题；场景步骤现以 `/clear` 固定其"无材料"前提 |
 
 | ID | 缺口 | 证据 | 修法要点 |
 |---|---|---|---|
 | ~~G6~~ | **无周期性推送**（✅ 已于 2026-11-03 批20 关闭） | 关闭方式：`world/digest.ts` 按查询依赖采样（self@1/inventory@1/world@1 三个现有读取器，同一 `facts.sample` 提交边界，与 observe 同口径）、前缘节流 10s（`DIGEST_INTERVAL_MS` 集中策略值）、规范化 JSON 哈希去重、facts reset 后补发；`companion/side.ts` 经 `onGameEvent` 上行，`executor/delivery.ts` 以独立事件类型 **minecraft_digest** 交付（不指向 events@1），主脑忙碌（`isBusy`）时只保留最新一份、空闲即补发。时间只取粗粒度相位与天数（ticks 连续变化会让去重失效），位置取整数格 | 真服 `dev:mc:digest` 7/7：baseline 三段齐全、空闲 15s 零 digest（去重）、/give 后 digest 反映变化、节流 gap 10015ms、events@1 无污染；泵层事件分类/忙时合并由 mc-delivery-pump 单测覆盖 |
 | ~~G7~~ | **查询无增量**（✅ 已于 2026-11-03 批20 关闭，inventory@1 先行） | 关闭方式：`protocol.ts` 增每槽位最后变更 revision 标记（`playerSlotMarks`，全量重同步只标内容真变的槽位，光标只推 revision 不算槽位）；`view.inventoryChanges(since)` 暴露差量（标记不可用回 null 不猜）；`inventory@1` 输入 `{since}` 回 `{revision, changes:[{slot,item|null}], counts, usedSlots, freeSlots}`（差量 + 变化后总数，不含全量 slots）；`since` 超前（含跨重启 revision 归零）如实 INVALID_INPUT。其余查询仍全量，按真实消费者逐个补 | 真服：rev 10→11 差量恰含 emerald +2；单测覆盖同游标/差量/标记不可用回退全量/超前报错四态 |
 | ~~G8~~ | **`run` 短窗全局固定 3000ms**（✅ 已于 2026-11-03 批20 关闭） | 关闭方式：`worlddef/schema.ts` 的 `run` 增 `wait`（ms，≥0），`executor/facade.ts` 按调用覆盖短窗，`wait:0` 只受理不等（完成走 minecraft_completion 通知）；指南同步 | mc-native-facade 单测：默认 3000 / 覆盖 1200 / 0 跳过等待 三态 |
-| G9 | **普通 Run 之间无优先级**，长任务可挡紧急任务 | `runtime/engine.ts` 单槽队列 + `preempt_current` 需 `expectedRun` | 先只做"显式插入"一档，不建多级调度；safety 已独立 |
-| G10 | **两个计算预算不统一** | `driver/body/feedback.ts:84,205`（`FRAME_EXPIRED`, 250ms）vs `program/worker.ts:107`（`PROGRAM_TIMEOUT`, burst + `mc.sleep(0)`） | 最小改动：`FRAME_EXPIRED` 的 hint 指向 burst 预算；能力面与 Program 指南各补一句 |
+| ~~G9~~ | **普通 Run 之间无优先级**（✅ 已于 2026-11-03 批21 关闭） | 关闭方式：`Schedule` 的 enqueue 变体增 `priority?: boolean`（contracts/runtime.ts，public-api §7 同步）；engine 在独立身体申请与导航申请两处入队前按 `state.request.schedule` 重设队列既有的一次性 `prioritize` 旗标（`runtime/engine.ts` `prioritizeIfRequested`），队列无常驻优先级栈的不变量不破坏 | 插队/一次性消费/safety 仍最前由 `mc-body-queue` 覆盖；engine 接线（priority 先于 FIFO 等待者取得身体 + 无 priority 的 FIFO 控制组）由 `mc-decision-runtime` 真 SQLite 引擎覆盖；facade 透传由 `mc-continue-facade` 覆盖。priority 只作用于本次受理的段，continue 新段不带（worlddef 指南同步） |
+| ~~G10~~ | **两个计算预算不统一**（✅ 已于 2026-11-03 批21 关闭） | 关闭方式：两处 `FRAME_EXPIRED` 统一携带 hint（"inputs must apply within the 250ms feedback frame; chunk long synchronous computation with await mc.sleep(0)…"），数字语义不同（250ms 帧窗 vs 20ms burst）不做常量合并；baseGuide 把"过期帧拒绝"与"mc.sleep(0) 分片"接成因果句 | `mc-feedback` 过期用例断言 hint 含 mc.sleep(0)；engine 侧 failureData 本就透传 hint，零改动 |
 | ~~G11~~ | **Host 无图片出口**（✅ 已于 2026-11-01 批17 关闭） | 关闭方式：`world/map.ts` 产 ImageFileRef + `companion/side.ts` read_image rpc + `executor/facade.ts` observe 产 `ToolExecutionResult.images`；world-tool 本就透传 | 真实 wire：受控 5/5 + 真模型 4/4（模型实际描述画面） |
 
 ## 5. P1 兼容与认证
@@ -105,15 +105,15 @@
 | G16 | 断电、长期负载、历史库增长成本 | 均未验证 |
 | G17 | 51 项终态报告 | 不存在；需按 `buildCapabilities()` 实际目录与 `capabilities.md` 的 16+35 逐项对照出状态表 |
 
-## 7. P2 文档漂移
+## 7. P2 文档漂移（✅ 已于 2026-11-03 批21 全部修复）
 
-| 位置 | 现文 | 实际 |
+| 位置 | 原漂移 | 修复 |
 |---|---|---|
-| `modules/executor.md:566` | "当前没有 Minecraft World 入口" | WorldDef 已接线并有真服记录 |
-| `modules/runtime.md:339` | "schema v5" | v6（批10） |
-| `modules/runtime.md:340` | "feedback 尚缺" | 批10 已交付并真服验证 |
-| `modules/world.md:632` | "终态设计尚未重写或验收" | 三路读取/历史/Watch 均在运行 |
-| `contracts.md:3` | "等待/决策与完整 I2 仍待实现" | 9A/9B 均已实现 |
+| `modules/executor.md` | "当前没有 Minecraft World 入口" | 改为批 4–6 已接通 WorldDef/回执、批 7–9 接通 Program/Library 与 I2 |
+| `modules/runtime.md` | "schema v5" | v6（批10 起） |
+| `modules/runtime.md` | "feedback 尚缺" | 批10 已交付并真服验证 |
+| `modules/world.md` | "终态设计尚未重写或验收" | 现行实现运行中并经真服验收；断电/长期负载归 G16 |
+| `contracts.md` | "等待/决策与完整 I2 仍待实现" | 9A/9B 均已实现，能力面 51/51 |
 
 `README.md`、`development-plan §10`、`dev/MC-WORLD.md` 三处状态表准确，不必改。
 

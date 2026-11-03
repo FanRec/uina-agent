@@ -46,7 +46,7 @@ singleflight 绑定本次准备的真实 attachment/关闭代次，不将旧准�
 
 Body 队列项为某 Call 的最外层 withBody 申请，分配 readySeq；独立申请普通 FIFO，包括同一 Segment 的兄弟 Call。只有选中项进入 Driver.acquire；上一个 Driver.close 完成才发下一项。Driver 不排等待队列，只接受选中申请；意外竞争是内部 CONTROL_CONFLICT，由 Runtime 处理，不要求模型重试 acquire。取消在队列中删除自己的项；grant 与取消竞争时检查 scope，失效 grant 立即关闭且不执行回调。
 
-replace_pending 只替换本 owner、明确归属且整个 Run 从未开始的目标；没有可信 caller 时必须提供 targets，否则 REPLACE_SCOPE_REQUIRED；operationIdentity 不是 caller。事务核验全部 targets，不静默扩大或缩小范围。已开始但再次等待身体的 Run 不符合。preempt_current 核验 expectedRun，按先 commit 后撤销的顺序停止指定旧范围；新工作在屏障后获得一次优先机会，不建插队栈。已受理新工作后来取消，不复活旧运行。独立 stop/emergency 则立即撤销，不等待新工作或受理事务；真正的 recorder 故障可另行触发故障停机，不能把普通抢占拒绝冒充故障停机理由。
+replace_pending 只替换本 owner、明确归属且整个 Run 从未开始的目标；没有可信 caller 时必须提供 targets，否则 REPLACE_SCOPE_REQUIRED；operationIdentity 不是 caller。事务核验全部 targets，不静默扩大或缩小范围。已开始但再次等待身体的 Run 不符合。preempt_current 核验 expectedRun，按先 commit 后撤销的顺序停止指定旧范围；新工作在屏障后获得一次优先机会，不建插队栈。enqueue 可声明 priority（G9）：该 Run 的身体/导航申请排在普通 FIFO 等待者之前入队——一档，不建多级调度；safety 仍最前，抢占 reservation 不被它绕过；priority 只作用于本次受理的段，continue 新段不带。已受理新工作后来取消，不复活旧运行。独立 stop/emergency 则立即撤销，不等待新工作或受理事务；真正的 recorder 故障可另行触发故障停机，不能把普通抢占拒绝冒充故障停机理由。
 
 phase 表示执行活动，优先级为 finished/awaiting_decision → stopping → running（有执行或正在进行的操作）→ queued（未启动或仅等待取得资源）→ waiting（其余活动仅在等待）。持有身体本身不使 phase 变成 running；允许 waiting 且 control=active。control 表示身体归属/隔离状态，反馈帧和持续输入是否有效由 Driver 各自检查。混合分支详情保留在 Call/等待项中。没有自动身体时间片或任务时长上限；显式长期持有仍可停止/抢占。
 
@@ -336,8 +336,8 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v5 固定 owner/storage，旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../archive/native-host-implementation.md)，批 9B 已接正式 I2，见 ../archive/decision-implementation.md |
-| Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback 尚缺 |
+| Runtime/Executor | 原生受理、调用、身体队列、效果记录与 SQLite 恢复；批 4 补齐 Owner/心跳/门、受理及开始提交屏障、关闭；批 6 WorldDef、固定记录与可靠交付已接通 | `submit` 为异步持久受理；schema v6 固定 owner/storage（批10 起），旧库明确拒绝。原生主脑入口与首次校准见 [实施记录](../archive/native-host-implementation.md)，批 9B 已接正式 I2，见 ../archive/decision-implementation.md |
+| Driver | 已接真实客户端、身体/导航、窗口与 Runtime sink | 窗口派发和确认沿同一效果记录；feedback/持续输入/默认自保已由批10 交付 |
 | Library | 旧 SQLite/CAS Assets 已清理；批 7 程序只读材料与共用头解析、批 8 文件管理/发现与来源保存已实现 | 沿 [Library](library.md) 文件合同使用，不兼容旧 Assets 仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
 | World Watch | 当前与事件提交的保守失效 Watch、Program waitUntil 已由批 9A 接通 | 不把历史 container.last 当作当前库存或可等待条件 |

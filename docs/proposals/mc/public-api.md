@@ -668,7 +668,7 @@ interface Origin { worldOwner: Ref; activation: Ref; caller?: Ref; invocation?: 
 // SourceRequest 引用 Program §7
 type Entry = { kind: "call"; selector: Selector; input: JsonValue }
   | { kind: "program"; source: SourceRequest; input: JsonValue };
-type Schedule = { kind: "enqueue" }
+type Schedule = { kind: "enqueue"; priority?: boolean } // priority：身体/导航申请插队一档（G9）；safety 仍最前，只作用于本次受理的段
   | { kind: "replace_pending"; targets?: Ref[] }
   | { kind: "preempt_current"; expectedRun: Ref };
 interface RunRequest { requestId: Ref; entry: Entry; schedule: Schedule }
