@@ -221,12 +221,13 @@ describe("BodyLeaseQueue：显式优先级一档（G9）", () => {
 		const other = queue.request(owner("run:other"), "call:other", signal());
 		queue.prioritize("run:priority");
 		const first = queue.request(owner("run:priority"), "call:priority-1", signal());
+		// second 在 other 仍在排队时入队：若旗标未被消费，它会把 other 挤到后面；
+		// 实际旗标已被 first 的入队消费，second 只能排到 other 之后
+		const second = queue.request(owner("run:priority"), "call:priority-2", signal());
 		await grant.session.close();
 		grant.release();
 		const firstGrant = await first;
 		firstGrant.release();
-		// 旗标已被消费；同 run 再次申请（引擎未重设）排在 other 之后
-		const second = queue.request(owner("run:priority"), "call:priority-2", signal());
 		const otherGrant = await other;
 		otherGrant.release();
 		const secondGrant = await second;

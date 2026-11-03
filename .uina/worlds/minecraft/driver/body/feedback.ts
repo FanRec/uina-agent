@@ -16,8 +16,7 @@ export const FEEDBACK_VALID_MS = 250;
  * G10：帧窗与 Program burst 预算是两个口径（250ms 输入新鲜窗 vs 20ms 单段计算配额），
  * 不合并常量；过期拒绝统一互指——长同步计算用 mc.sleep(0) 分片，输入才落得进帧窗。
  */
-const FRAME_EXPIRED_HINT =
-	"inputs must apply within the 250ms feedback frame; chunk long synchronous computation with await mc.sleep(0) to stay inside the program burst budget";
+const FRAME_EXPIRED_HINT = `inputs must apply within the ${FEEDBACK_VALID_MS}ms feedback frame; chunk long synchronous computation with await mc.sleep(0) to stay inside the program burst budget`;
 interface Deps {
 	body: Ref;
 	operation: Ref;
