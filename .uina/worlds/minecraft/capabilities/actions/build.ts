@@ -63,10 +63,9 @@ const descriptor: CallableDescriptor = {
 			cleared: { type: "integer" },
 			skipped: { type: "integer" },
 			remaining: { type: "array" },
-			scaffoldsUsed: { type: "integer" },
 			blueprint: { type: "object" },
 		},
-		required: ["placed", "cleared", "skipped", "remaining", "scaffoldsUsed"],
+		required: ["placed", "cleared", "skipped", "remaining"],
 		additionalProperties: false,
 	},
 	access: "act",
@@ -94,7 +93,6 @@ const descriptor: CallableDescriptor = {
 				cleared: 0,
 				skipped: 74,
 				remaining: [],
-				scaffoldsUsed: 0,
 				blueprint: { ref: "blueprint:oak_hut", digest: "9f2c…" },
 			},
 		},
@@ -221,7 +219,6 @@ export function buildCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 					skipped,
 					remainingCount: remaining.length,
 					remaining: remaining.slice(0, REMAINING_DETAIL_LIMIT) as unknown as JsonValue,
-					scaffoldsUsed: 0,
 					...(blueprint != null ? { blueprint } : {}),
 				};
 			};
@@ -361,7 +358,6 @@ export function buildCallable(deps: CapabilityDeps): NativeCallable<JsonValue, J
 				cleared,
 				skipped,
 				remaining: [],
-				scaffoldsUsed: 0,
 				...(blueprint != null ? { blueprint } : {}),
 			});
 		},

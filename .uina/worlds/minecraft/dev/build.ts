@@ -91,7 +91,6 @@ interface BuildValue {
 	cleared: number;
 	skipped: number;
 	remaining: unknown[];
-	scaffoldsUsed: number;
 	blueprint?: { ref: string; digest: string };
 }
 

@@ -128,6 +128,11 @@ export function projectAvailability(input: {
 	};
 }
 
+/** 单次 current 读超过该毫秒数视为慢读（大范围同步采样占用事件循环的信号）。 */
+const SLOW_READ_WARN_MS = 100;
+/** 慢读警告抑制窗口：真服压测时足够采样，又不刷屏。 */
+const SLOW_READ_WARN_INTERVAL_MS = 10_000;
+
 export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly facts: ClientFactsPort;
 	private readonly current: CurrentReads;
@@ -146,6 +151,8 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 	private readonly factDependencies: ReadonlyMap<string, QueryDependencies>;
 	private readonly watches = new Set<WorldWatch>();
 	private closed = false;
+	/** 慢读诊断的抑制窗口。 */
+	private lastSlowReadWarnAt = 0;
 	/** 历史侧就绪信号：ready 或明确 unavailable 都结算（§13.1，不进公开查询面）。 */
 	readonly historyReady: Promise<"ready" | "unavailable">;
 
@@ -202,12 +209,22 @@ export class MinecraftWorld implements WorldPort, WorldEvidencePort {
 		const input = this.validateQuery(query);
 		const reader = this.readers.get(query.ref);
 		if (reader?.kind === "current") {
+			// 大范围同步采样（如 radius 64 的 blocks@1）可能占用事件循环：慢读如实留痕，
+			// 为后续"测量→定修法"提供数据，不静默（10s 抑制防刷屏）。
+			const startedAt = performance.now();
 			const observation = await this.current.read<T>(
 				query.ref,
 				input,
 				reader.read,
 				this.factDependencies.get(query.ref),
 			);
+			const elapsed = performance.now() - startedAt;
+			if (elapsed >= SLOW_READ_WARN_MS && Date.now() - this.lastSlowReadWarnAt >= SLOW_READ_WARN_INTERVAL_MS) {
+				this.lastSlowReadWarnAt = Date.now();
+				console.warn(
+					`[mc-world] slow current read ${query.ref} took ${Math.round(elapsed)}ms: ${JSON.stringify(input).slice(0, 200)}`,
+				);
+			}
 			// 派生结果（如 recipe 的 plan）读当前库存但不发布观察水位。
 			return reader.cursor === "none" || !this.watchable.has(query.ref)
 				? { ...observation, cursor: null }

@@ -1,6 +1,5 @@
 /** Initial measured-policy inputs from program.md §5; no task wall-clock deadline. */
 export const PROGRAM_POLICY = {
-	workerCount: 1,
 	maxResidentGuests: 32,
 	maxPendingRpcsPerGuest: 16,
 	guestMemoryBytes: 32 * 1024 * 1024,

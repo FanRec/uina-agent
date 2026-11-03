@@ -58,6 +58,10 @@ export async function openExecutionSide(
 					state: "unbound" as const,
 				}
 			: { binding: `binding:${init.origin.worldOwner}`, ...config.binding, state: "bound" as const };
+	if (binding.state === "unbound")
+		console.warn(
+			'[mc-world] config.binding is null: places/records are partitioned per launch and will NOT be readable after restart; set "binding": {"world": "...", "worldRevision": "..."} in config.json for a persistent world identity',
+		);
 	const host = new ClientHost();
 	const arbiter = new DriverControlArbiter();
 	const counters = new Map<string, number>();
