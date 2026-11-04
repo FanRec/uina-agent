@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import type { BuiltCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 
@@ -23,24 +23,24 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 	await writeFile(join(root, "programs/bad.js"), "// uina {bad}\nasync function main(){}");
 	for (let i = 0; i < 12; i++)
 		await library.save({ name: `echo_${i}`, summary: "echo", source: "async function main(){}" });
-	const capabilities = { queries: [], callables: [] } as unknown as BuiltCapabilities;
-	const first = await describeDirectory(capabilities, library, { query: "echo" });
+	const catalog = CapabilityCatalog.create([]);
+	const first = await describeDirectory(catalog, library, { query: "echo" });
 	expect(first).toMatchObject({ next: "10" });
 	expect("items" in first && first.items.slice(0, 2)).toMatchObject([
 		{ kind: "experience", name: "echo" },
 		{ kind: "program", name: "echo" },
 	]);
-	const second = await describeDirectory(capabilities, library, { query: "echo", cursor: "10" });
+	const second = await describeDirectory(catalog, library, { query: "echo", cursor: "10" });
 	expect((second as { items: unknown[] }).items).toHaveLength(4);
-	expect(JSON.stringify(await describeDirectory(capabilities, library, { selector: "echo" }))).not.toContain(
+	expect(JSON.stringify(await describeDirectory(catalog, library, { selector: "echo" }))).not.toContain(
 		"async function main",
 	);
-	expect(
-		JSON.stringify(await describeDirectory(capabilities, library, { kind: "experience", name: "echo" })),
-	).not.toContain("BODY IS PRIVATE");
-	expect(await describeDirectory(capabilities, library, { kind: "program", name: "bad" })).toMatchObject({
+	expect(JSON.stringify(await describeDirectory(catalog, library, { kind: "experience", name: "echo" }))).not.toContain(
+		"BODY IS PRIVATE",
+	);
+	expect(await describeDirectory(catalog, library, { kind: "program", name: "bad" })).toMatchObject({
 		availability: { state: "unavailable" },
 		program: { headerError: expect.any(String) },
 	});
-	expect(await describeDirectory(capabilities, library, {})).toMatchObject({ families: expect.any(Array) });
+	expect(await describeDirectory(catalog, library, {})).toMatchObject({ families: expect.any(Array) });
 });

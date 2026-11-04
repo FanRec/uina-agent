@@ -1,5 +1,5 @@
 /** Discovery projects descriptors and live Library metadata; it owns no file index. */
-import type { BuiltCapabilities } from "../capabilities/index.js";
+import type { CapabilityCatalog } from "../capabilities/catalog.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { plain } from "../contracts/values.js";
@@ -13,11 +13,8 @@ export interface DescribeParams {
 	kind?: "capability" | LibraryKind;
 	name?: string;
 }
-export async function describeDirectory(capabilities: BuiltCapabilities, library: LibraryPort, params: DescribeParams) {
-	const descriptors: (CallableDescriptor | QueryDescriptor)[] = [
-		...capabilities.queries,
-		...capabilities.callables.map((c) => c.descriptor),
-	];
+export async function describeDirectory(catalog: CapabilityCatalog, library: LibraryPort, params: DescribeParams) {
+	const descriptors = catalog.allDescriptors();
 	const native = (d: CallableDescriptor | QueryDescriptor) => ({
 		kind: "capability",
 		callable: d.access === "act",

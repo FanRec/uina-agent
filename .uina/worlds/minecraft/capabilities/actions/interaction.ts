@@ -7,10 +7,10 @@
  */
 
 import type { BlockStateValue, EntityRef, ItemSelector, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
-import type { CapabilityDeps } from "../deps.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import { resolveEntity } from "../shared/entities.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, ENTITY_REACH, round2 } from "../shared/reach.js";
@@ -216,104 +216,6 @@ async function writeSign(ctx: CallContext, self: SelfState, raw: UseInput): Prom
 	});
 }
 
-export function useCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void deps;
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as UseInput;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			if (raw.text != null) return await writeSign(ctx, self, raw);
-			const hand = raw.hand ?? "main";
-			const times = raw.times ?? 1;
-
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				if (raw.item != null) {
-					const selector: ItemSelector = typeof raw.item === "string" ? { name: raw.item } : raw.item;
-					const receipt = await scope.player.equip(selector, hand === "main" ? "hand" : "offhand");
-					if (receipt.completion === "unknown") {
-						fail("TARGET_NOT_MET", "the requested item could not be equipped into the hand", {
-							dispatch: receipt.dispatch,
-							effects: [receipt.effect],
-						});
-					}
-				}
-
-				if (raw.at != null) {
-					const point = resolvePoint(raw.at, self);
-					if (point.dimension !== self.place.dimension) {
-						fail("WRONG_STATE", `target is in ${point.dimension}, current dimension is ${self.place.dimension}`);
-					}
-					const position = resolveGrid(raw.at, self);
-					const targetReach = blockReach(self, position);
-					if (targetReach > BLOCK_REACH) {
-						fail("UNREACHABLE", `target is out of reach (${round2(targetReach)} > ${BLOCK_REACH})`, {
-							hint: "goto@1 closer first; use does not path",
-						});
-					}
-					const block = await readBlockAt(scope.world, position);
-					if (block == null) fail("NOT_FOUND", `no block at ${position.x},${position.y},${position.z}`);
-					if (block.name === "air") fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is air`);
-					if (WINDOW_BLOCKS.has(block.name)) {
-						fail("WRONG_STATE", `${block.name} opens a window; use container@1/craft@1/smelt@1`, {
-							hint: "use only covers effects observable without a window",
-						});
-					}
-					const face = raw.face != null ? faceVector(raw.face) : faceToward(self, position);
-					for (let time = 0; time < times; time++) {
-						await scope.player.interact({
-							target: { place: placeOf(self, position), block: position },
-							hand,
-							face,
-						});
-					}
-					await new Promise((resolve) => setTimeout(resolve, EFFECT_WINDOW_MS));
-					const after = await readBlockAt(scope.world, position);
-					const changed = changeOf(block as BlockStateValue, after as BlockStateValue | null);
-					if (changed == null) {
-						fail("TARGET_NOT_MET", `no observable change on ${block.name}`, {
-							hint: "this (item, target) combination may have no effect in this version",
-							dispatch: "sent",
-						});
-					}
-					return plain({
-						effect: "block_used",
-						at: { position, dimension: self.place.dimension },
-						changed,
-					});
-				}
-
-				if (raw.entity != null) {
-					const entity = await resolveEntity(ctx.world, raw.entity);
-					if (entity.distance > ENTITY_REACH) {
-						fail("UNREACHABLE", `${entity.name} is ${entity.distance} blocks away`, { hint: "goto@1 closer first" });
-					}
-					for (let time = 0; time < times; time++) {
-						await scope.player.interact({ target: entity.ref, hand });
-					}
-					return plain({ effect: "entity_used", entity: { name: entity.name, networkId: entity.ref.networkId } });
-				}
-
-				// 空手/手持物品右键：激活一次；可观察的变化是物品数量（例如投掷/放置/消耗）。
-				const before = await readInventory(scope.world);
-				for (let time = 0; time < times; time++) {
-					await scope.player.useItem(hand);
-				}
-				await new Promise((resolve) => setTimeout(resolve, EFFECT_WINDOW_MS));
-				const after = await readInventory(scope.world);
-				const consumed = diffCounts(before.counts, after.counts);
-				if (Object.keys(consumed).length === 0) {
-					fail("TARGET_NOT_MET", "no observable effect from using the held item", {
-						hint: "this item may need a target block/entity; pass at or entity",
-						dispatch: "sent",
-					});
-				}
-				return plain({ effect: "item_used", changed: consumed });
-			});
-		},
-	};
-}
-
 function changeOf(before: BlockStateValue, after: BlockStateValue | null): Record<string, JsonValue> | null {
 	if (after == null) return null;
 	if (before.name !== after.name) return { block: { from: before.name, to: after.name } };
@@ -347,3 +249,108 @@ function placeOf(self: SelfState, position: Vec3) {
 		position,
 	};
 }
+
+export const interactionModule: MinecraftCapabilityModule = {
+	id: "interaction",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as UseInput;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					if (raw.text != null) return await writeSign(ctx, self, raw);
+					const hand = raw.hand ?? "main";
+					const times = raw.times ?? 1;
+
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						if (raw.item != null) {
+							const selector: ItemSelector = typeof raw.item === "string" ? { name: raw.item } : raw.item;
+							const receipt = await scope.player.equip(selector, hand === "main" ? "hand" : "offhand");
+							if (receipt.completion === "unknown") {
+								fail("TARGET_NOT_MET", "the requested item could not be equipped into the hand", {
+									dispatch: receipt.dispatch,
+									effects: [receipt.effect],
+								});
+							}
+						}
+
+						if (raw.at != null) {
+							const point = resolvePoint(raw.at, self);
+							if (point.dimension !== self.place.dimension) {
+								fail("WRONG_STATE", `target is in ${point.dimension}, current dimension is ${self.place.dimension}`);
+							}
+							const position = resolveGrid(raw.at, self);
+							const targetReach = blockReach(self, position);
+							if (targetReach > BLOCK_REACH) {
+								fail("UNREACHABLE", `target is out of reach (${round2(targetReach)} > ${BLOCK_REACH})`, {
+									hint: "goto@1 closer first; use does not path",
+								});
+							}
+							const block = await readBlockAt(scope.world, position);
+							if (block == null) fail("NOT_FOUND", `no block at ${position.x},${position.y},${position.z}`);
+							if (block.name === "air") fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is air`);
+							if (WINDOW_BLOCKS.has(block.name)) {
+								fail("WRONG_STATE", `${block.name} opens a window; use container@1/craft@1/smelt@1`, {
+									hint: "use only covers effects observable without a window",
+								});
+							}
+							const face = raw.face != null ? faceVector(raw.face) : faceToward(self, position);
+							for (let time = 0; time < times; time++) {
+								await scope.player.interact({
+									target: { place: placeOf(self, position), block: position },
+									hand,
+									face,
+								});
+							}
+							await new Promise((resolve) => setTimeout(resolve, EFFECT_WINDOW_MS));
+							const after = await readBlockAt(scope.world, position);
+							const changed = changeOf(block as BlockStateValue, after as BlockStateValue | null);
+							if (changed == null) {
+								fail("TARGET_NOT_MET", `no observable change on ${block.name}`, {
+									hint: "this (item, target) combination may have no effect in this version",
+									dispatch: "sent",
+								});
+							}
+							return plain({
+								effect: "block_used",
+								at: { position, dimension: self.place.dimension },
+								changed,
+							});
+						}
+
+						if (raw.entity != null) {
+							const entity = await resolveEntity(ctx.world, raw.entity);
+							if (entity.distance > ENTITY_REACH) {
+								fail("UNREACHABLE", `${entity.name} is ${entity.distance} blocks away`, {
+									hint: "goto@1 closer first",
+								});
+							}
+							for (let time = 0; time < times; time++) {
+								await scope.player.interact({ target: entity.ref, hand });
+							}
+							return plain({ effect: "entity_used", entity: { name: entity.name, networkId: entity.ref.networkId } });
+						}
+
+						// 空手/手持物品右键：激活一次；可观察的变化是物品数量（例如投掷/放置/消耗）。
+						const before = await readInventory(scope.world);
+						for (let time = 0; time < times; time++) {
+							await scope.player.useItem(hand);
+						}
+						await new Promise((resolve) => setTimeout(resolve, EFFECT_WINDOW_MS));
+						const after = await readInventory(scope.world);
+						const consumed = diffCounts(before.counts, after.counts);
+						if (Object.keys(consumed).length === 0) {
+							fail("TARGET_NOT_MET", "no observable effect from using the held item", {
+								hint: "this item may need a target block/entity; pass at or entity",
+								dispatch: "sent",
+							});
+						}
+						return plain({ effect: "item_used", changed: consumed });
+					});
+				},
+		},
+	],
+};

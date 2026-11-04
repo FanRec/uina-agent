@@ -8,9 +8,10 @@
  * 需要新画面时显式重新查询，不为 PNG 缓存建响应式依赖图。
  */
 
-import type { QuerySpec } from "../shared/query.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 
-const mapQuery: QuerySpec = {
+const mapDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "map@1",
 		summary:
@@ -55,8 +56,10 @@ const mapQuery: QuerySpec = {
 			{ input: { image: false }, output: { value: { id: 3, receivedPixels: 8448, paintedPixels: 6271, image: null } } },
 		],
 	},
+	bind: () => null,
 };
 
-export function mapQueries(): QuerySpec[] {
-	return [mapQuery];
-}
+export const mapModule: MinecraftCapabilityModule = {
+	id: "map",
+	definitions: [mapDefinition],
+};

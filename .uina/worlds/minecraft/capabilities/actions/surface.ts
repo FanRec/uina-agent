@@ -11,9 +11,10 @@
  */
 
 import type { ControlOwner, SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { sleepAbortable } from "../shared/mobility.js";
 import { readValue } from "../shared/observe.js";
@@ -99,23 +100,6 @@ interface LegRequest {
 interface LegPlan {
 	request: LegRequest;
 	reason: string;
-}
-
-export function surfaceCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as SurfaceInput;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 120000);
-			const outcome = await escapeToSurface(deps, ctx, deadline);
-			const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			return plain({
-				at: { position: outcome.at, dimension: final.place.dimension },
-				escaped: true,
-				reason: outcome.reason,
-			});
-		},
-	};
 }
 
 /**
@@ -302,3 +286,26 @@ async function landLeg(
 function leg(at: Vec3, tolerance: number, sprint: boolean, digThrough: boolean, placeToReach: boolean): LegRequest {
 	return { at, tolerance, sprint, digThrough, placeToReach };
 }
+
+export const surfaceModule: MinecraftCapabilityModule = {
+	id: "surface",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as SurfaceInput;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 120000);
+					const outcome = await escapeToSurface(deps, ctx, deadline);
+					const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					return plain({
+						at: { position: outcome.at, dimension: final.place.dimension },
+						escaped: true,
+						reason: outcome.reason,
+					});
+				},
+		},
+	],
+};

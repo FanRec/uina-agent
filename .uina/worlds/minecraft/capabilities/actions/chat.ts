@@ -6,15 +6,16 @@
  * 不占 Body，但仍服从当前 run 的取消（signal）与连接门。
  */
 
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { fail } from "../shared/targets.js";
 
 /** 版本聊天上限：1.21 客户端单条 256 字符；Driver 不拆分、不截断。 */
 const CHAT_LIMIT = 256;
 
-const descriptor: CallableDescriptor = {
+export const descriptor: CallableDescriptor = {
 	ref: "chat@1",
 	summary: "Send one chat line (or slash command) as the client; no body qualification required",
 	tags: ["body", "communication"],
@@ -57,34 +58,44 @@ const descriptor: CallableDescriptor = {
 	implementation: "native",
 };
 
-export function chatCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const text = (input as { text: string }).text;
-			if (text.trim().length === 0) {
-				fail("INVALID_INPUT", "chat text is blank", { hint: "send a non-empty line; the driver does not trim" });
-			}
-			if (/[\r\n]/.test(text)) {
-				fail("INVALID_INPUT", "chat text contains a line break", { hint: "one call sends exactly one line" });
-			}
-			if (text.includes("\u0000")) {
-				fail("INVALID_INPUT", "chat text contains a NUL byte");
-			}
-			if (text.length > CHAT_LIMIT) {
-				fail("INVALID_INPUT", `chat text is ${text.length} UTF-16 units, limit is ${CHAT_LIMIT}`, {
-					hint: "the driver does not split or truncate messages",
-				});
-			}
-			const receipt = await deps.runtime().chat(text, ctx.signal);
-			if (receipt.dispatch !== "sent") {
-				fail("INTERNAL", `chat was not dispatched (dispatch=${receipt.dispatch})`, {
-					dispatch: receipt.dispatch,
-					effects: [receipt.effect],
-					recoverable: false,
-				});
-			}
-			return { sent: true, kind: text.startsWith("/") ? "command" : "message" };
+export const chatModule: MinecraftCapabilityModule = {
+	id: "chat",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const text = (input as { text: string }).text;
+					if (text.trim().length === 0) {
+						fail("INVALID_INPUT", "chat text is blank", {
+							hint: "send a non-empty line; the driver does not trim",
+						});
+					}
+					if (/[\r\n]/.test(text)) {
+						fail("INVALID_INPUT", "chat text contains a line break", {
+							hint: "one call sends exactly one line",
+						});
+					}
+					if (text.includes("\u0000")) {
+						fail("INVALID_INPUT", "chat text contains a NUL byte");
+					}
+					if (text.length > CHAT_LIMIT) {
+						fail("INVALID_INPUT", `chat text is ${text.length} UTF-16 units, limit is ${CHAT_LIMIT}`, {
+							hint: "the driver does not split or truncate messages",
+						});
+					}
+					const receipt = await deps.runtime().chat(text, ctx.signal);
+					if (receipt.dispatch !== "sent") {
+						fail("INTERNAL", `chat was not dispatched (dispatch=${receipt.dispatch})`, {
+							dispatch: receipt.dispatch,
+							effects: [receipt.effect],
+							recoverable: false,
+						});
+					}
+					return { sent: true, kind: text.startsWith("/") ? "command" : "message" };
+				},
 		},
-	};
-}
+	],
+};

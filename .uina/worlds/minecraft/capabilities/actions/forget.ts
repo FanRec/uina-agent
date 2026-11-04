@@ -5,11 +5,11 @@
  * 删除走 WorldPort.removeRecord（按当前绑定分区）；记录不存在如实 NOT_FOUND。
  */
 
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { placeRef } from "../../world/places.js";
-import type { CapabilityDeps } from "../deps.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import { fail } from "../shared/targets.js";
 import { normalizePlaceName } from "./remember.js";
 
@@ -40,20 +40,25 @@ const descriptor: CallableDescriptor = {
 	implementation: "native",
 };
 
-export function forgetCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void _deps;
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as { name: string };
-			const name = normalizePlaceName(raw.name);
-			const { removed } = await ctx.world.removeRecord(placeRef(name));
-			if (!removed) {
-				fail("NOT_FOUND", `no remembered place named ${JSON.stringify(name)}`, {
-					hint: "read places@1 to list the current names",
-				});
-			}
-			return plain({ removed: true });
+export const forgetModule: MinecraftCapabilityModule = {
+	id: "forget",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as { name: string };
+					const name = normalizePlaceName(raw.name);
+					const { removed } = await ctx.world.removeRecord(placeRef(name));
+					if (!removed) {
+						fail("NOT_FOUND", `no remembered place named ${JSON.stringify(name)}`, {
+							hint: "read places@1 to list the current names",
+						});
+					}
+					return plain({ removed: true });
+				},
 		},
-	};
-}
+	],
+};

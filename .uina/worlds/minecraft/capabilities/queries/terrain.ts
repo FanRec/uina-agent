@@ -9,15 +9,11 @@
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue, Vec3 } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import type { QuerySpec } from "../shared/query.js";
 import { BLOCK_SPEC_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import { resolveGrid, resolvePoint, specName, stripNamespace } from "../shared/targets.js";
 import { canHarvest, harvestRequirement } from "../shared/tools.js";
-
-export interface TerrainDeps {
-	knowledge: () => RegistryKnowledge | null;
-}
 
 /** 可采性：手头最好的工具能不能让这格掉落（capabilities §3 block.harvest）。 */
 function harvestOf(
@@ -42,7 +38,8 @@ function harvestOf(
 	};
 }
 
-const blockQuery = (deps: TerrainDeps): QuerySpec => ({
+const blockDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "block@1",
 		// 目标格、脚下支撑与手持工具（可挖掘性）都进入判定。
@@ -75,7 +72,7 @@ const blockQuery = (deps: TerrainDeps): QuerySpec => ({
 			},
 		],
 	},
-	reader: {
+	bind: (deps) => ({
 		kind: "current",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const raw = input as { at?: unknown; below?: number };
@@ -137,10 +134,11 @@ const blockQuery = (deps: TerrainDeps): QuerySpec => ({
 			};
 			return factOf(value, { unknown, source: block.source });
 		},
-	},
-});
+	}),
+};
 
-const blocksQuery: QuerySpec = {
+const blocksDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "blocks@1",
 		facts: ["blocks"],
@@ -169,7 +167,7 @@ const blocksQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const raw = input as unknown as {
@@ -194,9 +192,10 @@ const blocksQuery: QuerySpec = {
 			const truncated = search.value.capped || count > limit;
 			return factOf({ blocks, count, truncated, scanned: search.value.scanned }, { unknown, source: search.source });
 		},
-	},
+	}),
 };
 
-export function terrainQueries(deps: TerrainDeps): QuerySpec[] {
-	return [blockQuery(deps), blocksQuery];
-}
+export const terrainModule: MinecraftCapabilityModule = {
+	id: "terrain",
+	definitions: [blockDefinition, blocksDefinition],
+};

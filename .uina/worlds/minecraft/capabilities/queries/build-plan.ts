@@ -8,12 +8,13 @@
  */
 
 import type { JsonSchema } from "../../contracts/values.js";
-import type { QuerySpec } from "../shared/query.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { buildTargetSchema } from "../shared/schema.js";
 
 const BUILD_PLAN_INPUT: JsonSchema = buildTargetSchema();
 
-export const buildPlanQuery: QuerySpec = {
+const buildPlanDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "build.plan@1",
 		summary:
@@ -44,4 +45,10 @@ export const buildPlanQuery: QuerySpec = {
 			},
 		],
 	},
+	bind: () => null,
+};
+
+export const buildPlanModule: MinecraftCapabilityModule = {
+	id: "build-plan",
+	definitions: [buildPlanDefinition],
 };

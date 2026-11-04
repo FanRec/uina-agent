@@ -11,9 +11,10 @@
  */
 
 import type { ControlOwner, SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
 	type Direction,
@@ -202,82 +203,88 @@ function interrupted(traveled: number, scanned: number): never {
 	});
 }
 
-export function exploreCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as ExploreInput;
-			const until = raw.until;
-			const maxTimeMs = raw.maxTimeMs ?? 180000;
-			const deadline = Date.now() + maxTimeMs;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			let traveled = 0;
-			let scanned = 1;
-			let previous = self.place.position;
-			const initial = await scanCurrent(ctx, until, self);
-			if (initial != null) return plain({ found: initial, traveled: 0, scanned: 1 });
-			const cursor = new ExploreCursor(raw.direction ?? "any");
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-			const outcome = await deps.runtime().navigate(owner, async (): Promise<ExploreFound> => {
-				for (;;) {
-					if (ctx.signal.aborted) interrupted(traveled, scanned);
-					const remaining = deadline - Date.now();
-					if (remaining <= 0) {
-						fail("TIMEOUT", "explore budget exhausted while unvisited directions remain", {
-							dispatch: "sent",
-							progress: { traveled, scanned },
-							recoverable: true,
-						});
-					}
-					const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					const leg = cursor.nextLeg(here.place.position);
-					if (leg == null) {
-						// 失败映射（capabilities.md 冻结）：一步都没走成 = 起步不可达 UNREACHABLE；
-						// 真实移动过之后空间穷尽 = NOT_FOUND。progress 都保留 traveled/scanned。
-						if (traveled <= 0) {
-							fail("UNREACHABLE", `no walkable direction exists from the starting position (${scanned} scans)`, {
-								dispatch: "sent",
-								progress: { traveled, scanned },
-								recoverable: true,
-							});
+export const exploreModule: MinecraftCapabilityModule = {
+	id: "explore",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as ExploreInput;
+					const until = raw.until;
+					const maxTimeMs = raw.maxTimeMs ?? 180000;
+					const deadline = Date.now() + maxTimeMs;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					let traveled = 0;
+					let scanned = 1;
+					let previous = self.place.position;
+					const initial = await scanCurrent(ctx, until, self);
+					if (initial != null) return plain({ found: initial, traveled: 0, scanned: 1 });
+					const cursor = new ExploreCursor(raw.direction ?? "any");
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					const outcome = await deps.runtime().navigate(owner, async (): Promise<ExploreFound> => {
+						for (;;) {
+							if (ctx.signal.aborted) interrupted(traveled, scanned);
+							const remaining = deadline - Date.now();
+							if (remaining <= 0) {
+								fail("TIMEOUT", "explore budget exhausted while unvisited directions remain", {
+									dispatch: "sent",
+									progress: { traveled, scanned },
+									recoverable: true,
+								});
+							}
+							const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							const leg = cursor.nextLeg(here.place.position);
+							if (leg == null) {
+								// 失败映射（capabilities.md 冻结）：一步都没走成 = 起步不可达 UNREACHABLE；
+								// 真实移动过之后空间穷尽 = NOT_FOUND。progress 都保留 traveled/scanned。
+								if (traveled <= 0) {
+									fail("UNREACHABLE", `no walkable direction exists from the starting position (${scanned} scans)`, {
+										dispatch: "sent",
+										progress: { traveled, scanned },
+										recoverable: true,
+									});
+								}
+								fail("NOT_FOUND", `no unvisited walkable direction remains after ${scanned} scans`, {
+									dispatch: "sent",
+									progress: { traveled, scanned },
+									recoverable: true,
+								});
+							}
+							try {
+								await deps.gotoDirector.goto(
+									{
+										at: leg.at,
+										tolerance: LEG_TOLERANCE,
+										sprint: true,
+										digThrough: false,
+										placeToReach: false,
+										timeoutMs: Math.min(LEG_MAX_TIME_MS, remaining),
+									},
+									ctx.signal,
+								);
+							} catch (err) {
+								if (ctx.signal.aborted) interrupted(traveled, scanned);
+								const code = (err as { code?: string }).code;
+								// 方向性失败：UNREACHABLE 标死该方向；段超时换向续跑（预算由外层统一结算）。
+								// 控制/连接/内部失败不是方向信息，如实上抛。
+								if (code === "UNREACHABLE") cursor.markDead(leg.direction);
+								else if (code !== "TIMEOUT") throw err;
+							}
+							const stop = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							traveled += distance(previous, stop.place.position);
+							previous = stop.place.position;
+							cursor.markVisited(stop.place.position);
+							scanned += 1;
+							await ctx.progress({ traveled: Math.round(traveled * 100) / 100, scanned });
+							const hit = await scanCurrent(ctx, until, stop);
+							if (hit != null) return hit;
 						}
-						fail("NOT_FOUND", `no unvisited walkable direction remains after ${scanned} scans`, {
-							dispatch: "sent",
-							progress: { traveled, scanned },
-							recoverable: true,
-						});
-					}
-					try {
-						await deps.gotoDirector.goto(
-							{
-								at: leg.at,
-								tolerance: LEG_TOLERANCE,
-								sprint: true,
-								digThrough: false,
-								placeToReach: false,
-								timeoutMs: Math.min(LEG_MAX_TIME_MS, remaining),
-							},
-							ctx.signal,
-						);
-					} catch (err) {
-						if (ctx.signal.aborted) interrupted(traveled, scanned);
-						const code = (err as { code?: string }).code;
-						// 方向性失败：UNREACHABLE 标死该方向；段超时换向续跑（预算由外层统一结算）。
-						// 控制/连接/内部失败不是方向信息，如实上抛。
-						if (code === "UNREACHABLE") cursor.markDead(leg.direction);
-						else if (code !== "TIMEOUT") throw err;
-					}
-					const stop = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					traveled += distance(previous, stop.place.position);
-					previous = stop.place.position;
-					cursor.markVisited(stop.place.position);
-					scanned += 1;
-					await ctx.progress({ traveled: Math.round(traveled * 100) / 100, scanned });
-					const hit = await scanCurrent(ctx, until, stop);
-					if (hit != null) return hit;
-				}
-			});
-			return plain({ found: outcome, traveled: Math.round(traveled * 100) / 100, scanned });
+					});
+					return plain({ found: outcome, traveled: Math.round(traveled * 100) / 100, scanned });
+				},
 		},
-	};
-}
+	],
+};

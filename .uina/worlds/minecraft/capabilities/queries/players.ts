@@ -10,8 +10,8 @@
 import type { EntityRef } from "../../contracts/body.js";
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { Fact, JsonValue, Vec3 } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import type { QuerySpec } from "../shared/query.js";
 import { distance } from "../shared/targets.js";
 
 interface RosterRow {
@@ -23,7 +23,8 @@ interface RosterRow {
 	entity: EntityRef | null;
 }
 
-const playersQuery: QuerySpec = {
+const playersDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "players@1",
 		// 名单为主体，tracked 实体与自身排除也参与。
@@ -65,7 +66,7 @@ const playersQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const raw = input as { name?: string; limit?: number };
@@ -131,9 +132,10 @@ const playersQuery: QuerySpec = {
 				{ unknown, source: "server" },
 			);
 		},
-	},
+	}),
 };
 
-export function playerQueries(): QuerySpec[] {
-	return [playersQuery];
-}
+export const playersModule: MinecraftCapabilityModule = {
+	id: "players",
+	definitions: [playersDefinition],
+};

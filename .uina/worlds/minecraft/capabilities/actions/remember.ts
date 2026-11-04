@@ -9,12 +9,12 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { DomainRecord } from "../../contracts/world.js";
 import { PLACE_SCHEMA, type PlaceKind, type PlaceValue, placeRef } from "../../world/places.js";
-import type { CapabilityDeps } from "../deps.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import { readValue } from "../shared/observe.js";
 import { POS_SCHEMA } from "../shared/schema.js";
 import { fail, resolvePoint } from "../shared/targets.js";
@@ -112,29 +112,39 @@ export async function upsertPlaceRecord(
 	});
 }
 
-export function rememberCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void _deps;
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as {
-				name: string;
-				at?: unknown;
-				kind?: PlaceKind;
-				note?: string;
-			};
-			const name = normalizePlaceName(raw.name);
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const target = resolvePoint(raw.at ?? self.place.position, self);
-			const value: PlaceValue = {
-				name,
-				at: { position: target.position, dimension: target.dimension },
-				kind: raw.kind ?? "other",
-				savedAt: new Date().toISOString(),
-			};
-			if (raw.note != null) value.note = raw.note;
-			await upsertPlaceRecord(ctx, { world: self.place.world, worldRevision: self.place.worldRevision }, name, value);
-			return plain({ name, at: { position: target.position, dimension: target.dimension }, kind: value.kind });
+export const rememberModule: MinecraftCapabilityModule = {
+	id: "remember",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as {
+						name: string;
+						at?: unknown;
+						kind?: PlaceKind;
+						note?: string;
+					};
+					const name = normalizePlaceName(raw.name);
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const target = resolvePoint(raw.at ?? self.place.position, self);
+					const value: PlaceValue = {
+						name,
+						at: { position: target.position, dimension: target.dimension },
+						kind: raw.kind ?? "other",
+						savedAt: new Date().toISOString(),
+					};
+					if (raw.note != null) value.note = raw.note;
+					await upsertPlaceRecord(
+						ctx,
+						{ world: self.place.world, worldRevision: self.place.worldRevision },
+						name,
+						value,
+					);
+					return plain({ name, at: { position: target.position, dimension: target.dimension }, kind: value.kind });
+				},
 		},
-	};
-}
+	],
+};

@@ -23,10 +23,11 @@
 
 import { isReplaceableName, matchesDeclared, specBlockName } from "../../construction/target.js";
 import type { BlockSpec, ControlOwner, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { ExactRef, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/world.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
@@ -144,224 +145,6 @@ function targetLabel(cell: ConstructionTargetCell): string {
 
 function cellKey(at: Vec3): string {
 	return `${at.x},${at.y},${at.z}`;
-}
-
-export function buildCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as BuildInput;
-			const budget = raw.maxTimeMs ?? DEFAULT_MAX_TIME_MS;
-			const deadline = Date.now() + budget;
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-
-			// 1. 读一次计划（同一份输入，去掉执行期限）。蓝图缺失 / digest 不符 / airPolicy 缺失
-			//    都在这里抛出，不消耗任何游戏动作。
-			const { maxTimeMs: _ignored, ...planInput } = raw as BuildInput & Record<string, JsonValue>;
-			void _ignored;
-			const observation = await ctx.world.read<BuildPlanValue>({
-				ref: BUILD_PLAN_REF,
-				input: planInput as JsonValue,
-			});
-			const plan = observation.value;
-			if (plan == null) {
-				fail("NOT_FOUND", "build.plan@1 returned no design", { hint: observation.unknown.join("; ") });
-			}
-			const blueprint = plan.blueprint != null ? { ref: plan.blueprint.ref, digest: plan.blueprint.digest } : null;
-
-			// 2. 派发前的全部拒绝。
-			if (plan.blocked.length > 0) {
-				const first = plan.blocked[0]!;
-				fail(
-					"CONFLICT",
-					`${plan.blocked.length} target cell(s) are occupied, first at ${first.at.x},${first.at.y},${first.at.z} by ${first.by}`,
-					{
-						hint: "pass replace=true only when the design explicitly allows clearing that cell",
-						progress: { blocked: plan.blocked.length },
-					},
-				);
-			}
-			const shortNames = Object.keys(plan.missing);
-			if (shortNames.length > 0) {
-				fail("MISSING_MATERIAL", `the design is short ${shortNames.length} material(s)`, {
-					hint: shortNames.map((name) => `${name}+${plan.missing[name]}`).join(", "),
-					progress: { missing: plan.missing, need: plan.need },
-				});
-			}
-
-			const clears = plan.targets.filter((cell) => cell.kind === "clear").sort((a, b) => b.at.y - a.at.y);
-			const sets = plan.targets.filter((cell) => cell.kind === "set");
-			const byKey = new Map(plan.targets.map((cell) => [cellKey(cell.at), cell]));
-
-			let placed = 0;
-			let cleared = 0;
-			let skipped = plan.targets.length - clears.length - sets.length;
-			let processed = 0;
-			/** 试过但没成：带原因。 */
-			const unfinished = new Map<string, Unfinished>();
-			/** 已结算（placed/cleared/skipped），不再出现在 remaining 里。 */
-			const accounted = new Set<string>();
-			/** 真正要动的格，按设计顺序——remaining 的补全按它的顺序走，读数才稳定。 */
-			const actionable = [...clears, ...sets];
-
-			const progress = (): Progress => {
-				// remaining 必须包含**从没轮到过**的格：预算耗尽时队列只走了一小段，
-				// 只报 unfinished 会让"还剩 67 格"说成"什么都不剩"（真服踩过）。
-				const remaining = [...unfinished.values()];
-				for (const cell of actionable) {
-					const key = cellKey(cell.at);
-					if (accounted.has(key) || unfinished.has(key)) continue;
-					remaining.push({ at: cell.at, target: targetLabel(cell), reason: "not attempted yet" });
-				}
-				return {
-					placed,
-					cleared,
-					skipped,
-					remainingCount: remaining.length,
-					remaining: remaining.slice(0, REMAINING_DETAIL_LIMIT) as unknown as JsonValue,
-					...(blueprint != null ? { blueprint } : {}),
-				};
-			};
-			const stopIfDone = (what: string): void => {
-				if (ctx.signal.aborted) {
-					fail("INTERRUPTED", `${what} was interrupted`, { progress: progress(), recoverable: true });
-				}
-				if (Date.now() >= deadline) {
-					fail("TIMEOUT", `build budget of ${budget}ms ran out`, { progress: progress(), recoverable: true });
-				}
-			};
-			const account = (cell: ConstructionTargetCell, result: CellResult): void => {
-				processed += 1;
-				const key = cellKey(cell.at);
-				if (result.kind === "done") {
-					accounted.add(key);
-					if (result.counted === "placed") placed += 1;
-					else if (result.counted === "cleared") cleared += 1;
-					else skipped += 1;
-					return;
-				}
-				unfinished.set(key, { at: cell.at, target: targetLabel(cell), reason: result.reason });
-			};
-
-			// 3. 清空阶段：自上而下。
-			for (const cell of clears) {
-				stopIfDone("clearing");
-				account(cell, await clearCell(deps, ctx, owner, cell.at));
-				if (processed % PROGRESS_EVERY === 0) await ctx.progress(progress());
-			}
-
-			// 4. 放置阶段：**按列自下而上**，多轮。
-			//
-			//    两件事必须一起做，否则真服上根本建不完：
-			//    a) 上层的格子常常要等邻居先放好才有可点的面（屋顶内圈、悬挑），一轮到底必然漏格；
-			//    b) 列内自下而上，任何已完成的列都是 ≥3 高的墙，寻路只能绕行。
-			//       按层铺会让"1 格高的成品面"连成片，寻路会尝试跨上去，而 1 格上坡在
-			//       本机是已知未修的 Driver 缺口（G21 贴面起跳楔死）——整批走位都会 TIMEOUT。
-			//
-			//    某一轮什么都没建成即停：剩下的确实是当前做不了的。
-			const box = boxOf(plan.targets);
-			const boxCenter = {
-				x: (box.min.x + box.max.x) / 2,
-				z: (box.min.z + box.max.z) / 2,
-			};
-			const walked = new Set<string>();
-			let queue = sets;
-			for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
-				const deferred: ConstructionTargetCell[] = [];
-				const columns = new Map<string, ConstructionTargetCell[]>();
-				for (const cell of queue) {
-					const key = `${cell.at.x},${cell.at.z}`;
-					const column = columns.get(key);
-					if (column == null) columns.set(key, [cell]);
-					else column.push(cell);
-				}
-				// 由盒中心向外：先把智能体送进空盒，再一圈一圈往外建。
-				// 按"离玩家远近"排序会把外墙先立起来，随后中心就被自己封死——
-				// 真服实测：走进去的最后一次机会在墙合拢之前，之后每一次 goto 都是 TIMEOUT。
-				const anchors = [...columns.values()]
-					.map((column) => column[0]!.at)
-					.sort(
-						(a, b) =>
-							Math.abs(a.x - boxCenter.x) +
-								Math.abs(a.z - boxCenter.z) -
-								(Math.abs(b.x - boxCenter.x) + Math.abs(b.z - boxCenter.z)) ||
-							a.y - b.y ||
-							a.x - b.x ||
-							a.z - b.z,
-					);
-				let builtThisPass = 0;
-				for (const anchor of anchors) {
-					const column = columns.get(`${anchor.x},${anchor.z}`)!;
-					column.sort((a, b) => a.at.y - b.at.y);
-					for (const cell of column) {
-						stopIfDone("building");
-						const result = await placeCellTarget(
-							deps,
-							ctx,
-							owner,
-							cell.at,
-							cell.block as BlockSpec,
-							raw.replace === true,
-							box,
-							walked,
-						);
-						if (result.kind === "defer") deferred.push(cell);
-						else {
-							account(cell, result);
-							if (result.kind === "done") builtThisPass += 1;
-						}
-						if (processed % PROGRESS_EVERY === 0) await ctx.progress(progress());
-					}
-				}
-				queue = deferred;
-				if (builtThisPass === 0) break;
-			}
-			for (const cell of queue) {
-				unfinished.set(cellKey(cell.at), {
-					at: cell.at,
-					target: targetLabel(cell),
-					reason: "no clickable support face appeared after several passes",
-				});
-			}
-
-			// 5. 收尾核验：未完成格按世界读数再判一次。
-			for (const [key, pending] of [...unfinished.entries()]) {
-				const cell = byKey.get(key)!;
-				const current = await readBlockAt(ctx.world, pending.at);
-				if (cell.kind === "clear") {
-					if (current != null && current.name === "air") {
-						cleared += 1;
-						unfinished.delete(key);
-						accounted.add(key);
-					}
-				} else if (matchesDeclared(cell.block as BlockSpec, current)) {
-					placed += 1;
-					unfinished.delete(key);
-					accounted.add(key);
-				}
-			}
-
-			if (unfinished.size > 0) {
-				const remaining = [...unfinished.values()];
-				fail("TARGET_NOT_MET", `${remaining.length} of ${plan.targets.length} target cell(s) do not match the design`, {
-					hint: remaining
-						.slice(0, 4)
-						.map((entry) => `${entry.at.x},${entry.at.y},${entry.at.z} ${entry.target}: ${entry.reason}`)
-						.join("; "),
-					dispatch: "sent",
-					progress: progress(),
-				});
-			}
-
-			return plain({
-				placed,
-				cleared,
-				skipped,
-				remaining: [],
-				...(blueprint != null ? { blueprint } : {}),
-			});
-		},
-	};
 }
 
 /** 挖掉一格；走不过去就先走近一次，再如实结算。 */
@@ -527,3 +310,231 @@ async function walkToward(
 		return `${failure.code ?? "WALK_FAILED"}: ${failure.message ?? String(error)}`;
 	}
 }
+
+export const buildModule: MinecraftCapabilityModule = {
+	id: "build",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as BuildInput;
+					const budget = raw.maxTimeMs ?? DEFAULT_MAX_TIME_MS;
+					const deadline = Date.now() + budget;
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+
+					// 1. 读一次计划（同一份输入，去掉执行期限）。蓝图缺失 / digest 不符 / airPolicy 缺失
+					//    都在这里抛出，不消耗任何游戏动作。
+					const { maxTimeMs: _ignored, ...planInput } = raw as BuildInput & Record<string, JsonValue>;
+					void _ignored;
+					const observation = await ctx.world.read<BuildPlanValue>({
+						ref: BUILD_PLAN_REF,
+						input: planInput as JsonValue,
+					});
+					const plan = observation.value;
+					if (plan == null) {
+						fail("NOT_FOUND", "build.plan@1 returned no design", { hint: observation.unknown.join("; ") });
+					}
+					const blueprint = plan.blueprint != null ? { ref: plan.blueprint.ref, digest: plan.blueprint.digest } : null;
+
+					// 2. 派发前的全部拒绝。
+					if (plan.blocked.length > 0) {
+						const first = plan.blocked[0]!;
+						fail(
+							"CONFLICT",
+							`${plan.blocked.length} target cell(s) are occupied, first at ${first.at.x},${first.at.y},${first.at.z} by ${first.by}`,
+							{
+								hint: "pass replace=true only when the design explicitly allows clearing that cell",
+								progress: { blocked: plan.blocked.length },
+							},
+						);
+					}
+					const shortNames = Object.keys(plan.missing);
+					if (shortNames.length > 0) {
+						fail("MISSING_MATERIAL", `the design is short ${shortNames.length} material(s)`, {
+							hint: shortNames.map((name) => `${name}+${plan.missing[name]}`).join(", "),
+							progress: { missing: plan.missing, need: plan.need },
+						});
+					}
+
+					const clears = plan.targets.filter((cell) => cell.kind === "clear").sort((a, b) => b.at.y - a.at.y);
+					const sets = plan.targets.filter((cell) => cell.kind === "set");
+					const byKey = new Map(plan.targets.map((cell) => [cellKey(cell.at), cell]));
+
+					let placed = 0;
+					let cleared = 0;
+					let skipped = plan.targets.length - clears.length - sets.length;
+					let processed = 0;
+					/** 试过但没成：带原因。 */
+					const unfinished = new Map<string, Unfinished>();
+					/** 已结算（placed/cleared/skipped），不再出现在 remaining 里。 */
+					const accounted = new Set<string>();
+					/** 真正要动的格，按设计顺序——remaining 的补全按它的顺序走，读数才稳定。 */
+					const actionable = [...clears, ...sets];
+
+					const progress = (): Progress => {
+						// remaining 必须包含**从没轮到过**的格：预算耗尽时队列只走了一小段，
+						// 只报 unfinished 会让"还剩 67 格"说成"什么都不剩"（真服踩过）。
+						const remaining = [...unfinished.values()];
+						for (const cell of actionable) {
+							const key = cellKey(cell.at);
+							if (accounted.has(key) || unfinished.has(key)) continue;
+							remaining.push({ at: cell.at, target: targetLabel(cell), reason: "not attempted yet" });
+						}
+						return {
+							placed,
+							cleared,
+							skipped,
+							remainingCount: remaining.length,
+							remaining: remaining.slice(0, REMAINING_DETAIL_LIMIT) as unknown as JsonValue,
+							...(blueprint != null ? { blueprint } : {}),
+						};
+					};
+					const stopIfDone = (what: string): void => {
+						if (ctx.signal.aborted) {
+							fail("INTERRUPTED", `${what} was interrupted`, { progress: progress(), recoverable: true });
+						}
+						if (Date.now() >= deadline) {
+							fail("TIMEOUT", `build budget of ${budget}ms ran out`, { progress: progress(), recoverable: true });
+						}
+					};
+					const account = (cell: ConstructionTargetCell, result: CellResult): void => {
+						processed += 1;
+						const key = cellKey(cell.at);
+						if (result.kind === "done") {
+							accounted.add(key);
+							if (result.counted === "placed") placed += 1;
+							else if (result.counted === "cleared") cleared += 1;
+							else skipped += 1;
+							return;
+						}
+						unfinished.set(key, { at: cell.at, target: targetLabel(cell), reason: result.reason });
+					};
+
+					// 3. 清空阶段：自上而下。
+					for (const cell of clears) {
+						stopIfDone("clearing");
+						account(cell, await clearCell(deps, ctx, owner, cell.at));
+						if (processed % PROGRESS_EVERY === 0) await ctx.progress(progress());
+					}
+
+					// 4. 放置阶段：**按列自下而上**，多轮。
+					//
+					//    两件事必须一起做，否则真服上根本建不完：
+					//    a) 上层的格子常常要等邻居先放好才有可点的面（屋顶内圈、悬挑），一轮到底必然漏格；
+					//    b) 列内自下而上，任何已完成的列都是 ≥3 高的墙，寻路只能绕行。
+					//       按层铺会让"1 格高的成品面"连成片，寻路会尝试跨上去，而 1 格上坡在
+					//       本机是已知未修的 Driver 缺口（G21 贴面起跳楔死）——整批走位都会 TIMEOUT。
+					//
+					//    某一轮什么都没建成即停：剩下的确实是当前做不了的。
+					const box = boxOf(plan.targets);
+					const boxCenter = {
+						x: (box.min.x + box.max.x) / 2,
+						z: (box.min.z + box.max.z) / 2,
+					};
+					const walked = new Set<string>();
+					let queue = sets;
+					for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
+						const deferred: ConstructionTargetCell[] = [];
+						const columns = new Map<string, ConstructionTargetCell[]>();
+						for (const cell of queue) {
+							const key = `${cell.at.x},${cell.at.z}`;
+							const column = columns.get(key);
+							if (column == null) columns.set(key, [cell]);
+							else column.push(cell);
+						}
+						// 由盒中心向外：先把智能体送进空盒，再一圈一圈往外建。
+						// 按"离玩家远近"排序会把外墙先立起来，随后中心就被自己封死——
+						// 真服实测：走进去的最后一次机会在墙合拢之前，之后每一次 goto 都是 TIMEOUT。
+						const anchors = [...columns.values()]
+							.map((column) => column[0]!.at)
+							.sort(
+								(a, b) =>
+									Math.abs(a.x - boxCenter.x) +
+										Math.abs(a.z - boxCenter.z) -
+										(Math.abs(b.x - boxCenter.x) + Math.abs(b.z - boxCenter.z)) ||
+									a.y - b.y ||
+									a.x - b.x ||
+									a.z - b.z,
+							);
+						let builtThisPass = 0;
+						for (const anchor of anchors) {
+							const column = columns.get(`${anchor.x},${anchor.z}`)!;
+							column.sort((a, b) => a.at.y - b.at.y);
+							for (const cell of column) {
+								stopIfDone("building");
+								const result = await placeCellTarget(
+									deps,
+									ctx,
+									owner,
+									cell.at,
+									cell.block as BlockSpec,
+									raw.replace === true,
+									box,
+									walked,
+								);
+								if (result.kind === "defer") deferred.push(cell);
+								else {
+									account(cell, result);
+									if (result.kind === "done") builtThisPass += 1;
+								}
+								if (processed % PROGRESS_EVERY === 0) await ctx.progress(progress());
+							}
+						}
+						queue = deferred;
+						if (builtThisPass === 0) break;
+					}
+					for (const cell of queue) {
+						unfinished.set(cellKey(cell.at), {
+							at: cell.at,
+							target: targetLabel(cell),
+							reason: "no clickable support face appeared after several passes",
+						});
+					}
+
+					// 5. 收尾核验：未完成格按世界读数再判一次。
+					for (const [key, pending] of [...unfinished.entries()]) {
+						const cell = byKey.get(key)!;
+						const current = await readBlockAt(ctx.world, pending.at);
+						if (cell.kind === "clear") {
+							if (current != null && current.name === "air") {
+								cleared += 1;
+								unfinished.delete(key);
+								accounted.add(key);
+							}
+						} else if (matchesDeclared(cell.block as BlockSpec, current)) {
+							placed += 1;
+							unfinished.delete(key);
+							accounted.add(key);
+						}
+					}
+
+					if (unfinished.size > 0) {
+						const remaining = [...unfinished.values()];
+						fail(
+							"TARGET_NOT_MET",
+							`${remaining.length} of ${plan.targets.length} target cell(s) do not match the design`,
+							{
+								hint: remaining
+									.slice(0, 4)
+									.map((entry) => `${entry.at.x},${entry.at.y},${entry.at.z} ${entry.target}: ${entry.reason}`)
+									.join("; "),
+								dispatch: "sent",
+								progress: progress(),
+							},
+						);
+					}
+
+					return plain({
+						placed,
+						cleared,
+						skipped,
+						remaining: [],
+						...(blueprint != null ? { blueprint } : {}),
+					});
+				},
+		},
+	],
+};

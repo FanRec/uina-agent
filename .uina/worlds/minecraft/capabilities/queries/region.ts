@@ -14,8 +14,8 @@
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { Fact, FactSource, JsonSchema, JsonValue, Vec3 } from "../../contracts/values.js";
 import { callFailure } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import type { QuerySpec } from "../shared/query.js";
 import { GRID_POS_SCHEMA, GRID_VEC_SCHEMA } from "../shared/schema.js";
 import { resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 
@@ -51,7 +51,8 @@ function invalid(message: string, hint?: string): never {
 	});
 }
 
-export const regionQuery: QuerySpec = {
+const regionDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "region@1",
 		// 原点来自 self；体素读 block。
@@ -83,7 +84,7 @@ export const regionQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		cursor: "observed",
 		read: (view: ClientFactView, input: JsonValue) => {
@@ -183,5 +184,10 @@ export const regionQuery: QuerySpec = {
 				{ unknown, source: source ?? "server" },
 			);
 		},
-	},
+	}),
+};
+
+export const regionModule: MinecraftCapabilityModule = {
+	id: "region",
+	definitions: [regionDefinition],
 };

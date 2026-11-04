@@ -7,7 +7,7 @@
 import { describe, expect, test } from "vitest";
 import type { ClientFactView } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { Fact, JsonValue, Vec3 } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { regionQuery } from "../../.uina/worlds/minecraft/capabilities/queries/region.js";
+import { regionModule } from "../../.uina/worlds/minecraft/capabilities/queries/region.js";
 import { self } from "./mc-capability-harness.js";
 
 interface ScriptedBlock {
@@ -42,7 +42,9 @@ function viewWith(world: Map<string, ScriptedBlock | null>): ClientFactView {
 }
 
 function read(view: ClientFactView, input: JsonValue) {
-	const reader = regionQuery.reader as { read: (view: ClientFactView, input: JsonValue) => unknown };
+	const definition = regionModule.definitions[0];
+	if (definition.kind !== "query") throw new Error("region definition must be a query");
+	const reader = definition.bind({} as never) as { read: (view: ClientFactView, input: JsonValue) => unknown };
 	return reader.read(view, input) as {
 		value: {
 			origin: Vec3;

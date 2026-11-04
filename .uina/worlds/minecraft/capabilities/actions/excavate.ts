@@ -11,9 +11,10 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
@@ -150,169 +151,175 @@ function interrupted(progress: ExcavateProgress, remaining: { at: Vec3; reason: 
 	});
 }
 
-export function excavateCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as ExcavateInput;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 300000);
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			// 异维度区域如实拒绝（resolveGrid 会丢掉 dimension，必须在解析后核对）。
-			const fromTarget = resolvePoint(raw.region.from, self);
-			const toTarget = resolvePoint(raw.region.to, self);
-			if (fromTarget.dimension !== self.place.dimension || toTarget.dimension !== self.place.dimension) {
-				fail(
-					"WRONG_STATE",
-					`region is in ${fromTarget.dimension}/${toTarget.dimension}, current is ${self.place.dimension}`,
-				);
-			}
-			const from = resolveGrid(raw.region.from, self);
-			const to = resolveGrid(raw.region.to, self);
-			const box = normalizeBox(from, to);
-			if (box.voxels > EXCAVATE_MAX_VOXELS) {
-				fail("INVALID_INPUT", `region covers ${box.voxels} voxels (limit ${EXCAVATE_MAX_VOXELS})`, {
-					hint: "split the region into smaller boxes, e.g. one y-layer slab at a time",
-					dispatch: "not_sent",
-					recoverable: true,
-				});
-			}
-			const keep = new Set(raw.keep ?? DEFAULT_EXCAVATE_KEEP);
-			const layers = planExcavation(box.min, box.max);
-			const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
-			const progress: ExcavateProgress = { dug: 0, drops: {} };
-			const kept: { at: Vec3; name: string }[] = [];
-			const remaining: { at: Vec3; reason: string }[] = [];
-
-			const observeDrop = async (before: InventorySnapshot): Promise<void> => {
-				const polled = await pollUntil(
-					async () => await readInventory(ctx.world),
-					(inv) => Object.keys(positiveDelta(before, inv)).length > 0,
-					{ timeoutMs: DROP_WINDOW_MS, intervalMs: DROP_INTERVAL_MS, signal: ctx.signal },
-				);
-				const after = polled.ok && polled.last != null ? polled.last : await readInventory(ctx.world);
-				for (const [name, delta] of Object.entries(positiveDelta(before, after))) {
-					progress.drops[name] = (progress.drops[name] ?? 0) + delta;
-				}
-			};
-
-			for (const layer of layers) {
-				const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-				for (const cell of orderNear(layer, here.place.position)) {
-					if (ctx.signal.aborted) interrupted(progress, remaining);
-					if (Date.now() >= deadline) {
-						fail("TIMEOUT", `excavate budget exhausted with ${remaining.length} uncleared cell(s)`, {
-							dispatch: "sent",
-							progress: progressSnapshot(progress, remaining, false),
+export const excavateModule: MinecraftCapabilityModule = {
+	id: "excavate",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as ExcavateInput;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 300000);
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					// 异维度区域如实拒绝（resolveGrid 会丢掉 dimension，必须在解析后核对）。
+					const fromTarget = resolvePoint(raw.region.from, self);
+					const toTarget = resolvePoint(raw.region.to, self);
+					if (fromTarget.dimension !== self.place.dimension || toTarget.dimension !== self.place.dimension) {
+						fail(
+							"WRONG_STATE",
+							`region is in ${fromTarget.dimension}/${toTarget.dimension}, current is ${self.place.dimension}`,
+						);
+					}
+					const from = resolveGrid(raw.region.from, self);
+					const to = resolveGrid(raw.region.to, self);
+					const box = normalizeBox(from, to);
+					if (box.voxels > EXCAVATE_MAX_VOXELS) {
+						fail("INVALID_INPUT", `region covers ${box.voxels} voxels (limit ${EXCAVATE_MAX_VOXELS})`, {
+							hint: "split the region into smaller boxes, e.g. one y-layer slab at a time",
+							dispatch: "not_sent",
 							recoverable: true,
 						});
 					}
-					const block = await readBlockAt(ctx.world, cell);
-					if (block == null) {
-						remaining.push({ at: cell, reason: "not_loaded" });
-						continue;
-					}
-					if (keep.has(block.name)) {
-						kept.push({ at: cell, name: block.name });
-						continue;
-					}
-					if (block.name === "air") continue;
-					// 容器先收内容再挖（不在 keep 时）：transfer@1 自己完成开箱/搬运/关窗。
-					// 不再先 container@1 再 transfer——连续开合同一窗口在真服上会搬不动（批13 实测）。
-					if (isContainerBlock(block.name)) {
-						await ctx.call("transfer@1", { from: { x: cell.x, y: cell.y, z: cell.z }, all: true });
-					}
-					// 站位管理（MC-WORLD.md 经验 22）：近距 drive 步进（持身体）优先，
-					// 失败退回受控寻路（不持身体）；目标脚位 = 目标格上方一格。
-					const vantage = { x: cell.x, y: cell.y + 1, z: cell.z };
-					let inReach = false;
-					await ctx.withBody(async (scope) => {
-						const standing = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-						if (blockReach(standing, cell) <= BLOCK_REACH - 0.25) {
-							inReach = true;
-							return;
+					const keep = new Set(raw.keep ?? DEFAULT_EXCAVATE_KEEP);
+					const layers = planExcavation(box.min, box.max);
+					const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
+					const progress: ExcavateProgress = { dug: 0, drops: {} };
+					const kept: { at: Vec3; name: string }[] = [];
+					const remaining: { at: Vec3; reason: string }[] = [];
+
+					const observeDrop = async (before: InventorySnapshot): Promise<void> => {
+						const polled = await pollUntil(
+							async () => await readInventory(ctx.world),
+							(inv) => Object.keys(positiveDelta(before, inv)).length > 0,
+							{ timeoutMs: DROP_WINDOW_MS, intervalMs: DROP_INTERVAL_MS, signal: ctx.signal },
+						);
+						const after = polled.ok && polled.last != null ? polled.last : await readInventory(ctx.world);
+						for (const [name, delta] of Object.entries(positiveDelta(before, after))) {
+							progress.drops[name] = (progress.drops[name] ?? 0) + delta;
 						}
-						inReach = await stepTo(ctx, scope, vantage, { maxMs: 4000 });
-					});
-					if (!inReach) {
-						if (ctx.signal.aborted) interrupted(progress, remaining);
-						try {
-							await walkLeg(deps, ctx, owner, vantage, {
-								tolerance: 1,
-								timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
-								digThrough: true,
-							});
-						} catch (error) {
+					};
+
+					for (const layer of layers) {
+						const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+						for (const cell of orderNear(layer, here.place.position)) {
 							if (ctx.signal.aborted) interrupted(progress, remaining);
-							const code = (error as { code?: string }).code;
-							if (code === "UNREACHABLE" || code === "TIMEOUT") {
-								// 走不到位不等于挖不到（如箱子正下方的格子：vantage 是箱子本身）。
-								// 失败后的实际站位可能已进入射程，复核后再定。
-								const landed = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-								if (blockReach(landed, cell) > BLOCK_REACH - 0.25) {
-									remaining.push({ at: cell, reason: "unreachable" });
-									continue;
-								}
-							} else {
-								throw error;
+							if (Date.now() >= deadline) {
+								fail("TIMEOUT", `excavate budget exhausted with ${remaining.length} uncleared cell(s)`, {
+									dispatch: "sent",
+									progress: progressSnapshot(progress, remaining, false),
+									recoverable: true,
+								});
 							}
+							const block = await readBlockAt(ctx.world, cell);
+							if (block == null) {
+								remaining.push({ at: cell, reason: "not_loaded" });
+								continue;
+							}
+							if (keep.has(block.name)) {
+								kept.push({ at: cell, name: block.name });
+								continue;
+							}
+							if (block.name === "air") continue;
+							// 容器先收内容再挖（不在 keep 时）：transfer@1 自己完成开箱/搬运/关窗。
+							// 不再先 container@1 再 transfer——连续开合同一窗口在真服上会搬不动（批13 实测）。
+							if (isContainerBlock(block.name)) {
+								await ctx.call("transfer@1", { from: { x: cell.x, y: cell.y, z: cell.z }, all: true });
+							}
+							// 站位管理（MC-WORLD.md 经验 22）：近距 drive 步进（持身体）优先，
+							// 失败退回受控寻路（不持身体）；目标脚位 = 目标格上方一格。
+							const vantage = { x: cell.x, y: cell.y + 1, z: cell.z };
+							let inReach = false;
+							await ctx.withBody(async (scope) => {
+								const standing = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+								if (blockReach(standing, cell) <= BLOCK_REACH - 0.25) {
+									inReach = true;
+									return;
+								}
+								inReach = await stepTo(ctx, scope, vantage, { maxMs: 4000 });
+							});
+							if (!inReach) {
+								if (ctx.signal.aborted) interrupted(progress, remaining);
+								try {
+									await walkLeg(deps, ctx, owner, vantage, {
+										tolerance: 1,
+										timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
+										digThrough: true,
+									});
+								} catch (error) {
+									if (ctx.signal.aborted) interrupted(progress, remaining);
+									const code = (error as { code?: string }).code;
+									if (code === "UNREACHABLE" || code === "TIMEOUT") {
+										// 走不到位不等于挖不到（如箱子正下方的格子：vantage 是箱子本身）。
+										// 失败后的实际站位可能已进入射程，复核后再定。
+										const landed = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+										if (blockReach(landed, cell) > BLOCK_REACH - 0.25) {
+											remaining.push({ at: cell, reason: "unreachable" });
+											continue;
+										}
+									} else {
+										throw error;
+									}
+								}
+							}
+							const before = await readInventory(ctx.world);
+							await ctx.withBody(async (scope) => {
+								const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+								const result = await digCell(deps, scope, selfNow, cell);
+								switch (result.kind) {
+									case "dug":
+										progress.dug += 1;
+										await observeDrop(before);
+										break;
+									case "open":
+										break;
+									case "not_loaded":
+										remaining.push({ at: cell, reason: "not_loaded" });
+										break;
+									case "liquid":
+										remaining.push({ at: cell, reason: "liquid" });
+										break;
+									case "unbreakable":
+										remaining.push({ at: cell, reason: "unbreakable" });
+										break;
+									case "unreachable":
+										remaining.push({ at: cell, reason: "unreachable" });
+										break;
+									case "not_met": {
+										// 回执未确认（确认窗边界竞态）：以世界读数为准再核一次。
+										const after = await readBlockAt(scope.world, cell);
+										if (after != null && after.name === "air") {
+											progress.dug += 1;
+										} else {
+											remaining.push({ at: cell, reason: "unconfirmed" });
+										}
+										break;
+									}
+								}
+							});
 						}
 					}
-					const before = await readInventory(ctx.world);
-					await ctx.withBody(async (scope) => {
-						const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-						const result = await digCell(deps, scope, selfNow, cell);
-						switch (result.kind) {
-							case "dug":
-								progress.dug += 1;
-								await observeDrop(before);
-								break;
-							case "open":
-								break;
-							case "not_loaded":
-								remaining.push({ at: cell, reason: "not_loaded" });
-								break;
-							case "liquid":
-								remaining.push({ at: cell, reason: "liquid" });
-								break;
-							case "unbreakable":
-								remaining.push({ at: cell, reason: "unbreakable" });
-								break;
-							case "unreachable":
-								remaining.push({ at: cell, reason: "unreachable" });
-								break;
-							case "not_met": {
-								// 回执未确认（确认窗边界竞态）：以世界读数为准再核一次。
-								const after = await readBlockAt(scope.world, cell);
-								if (after != null && after.name === "air") {
-									progress.dug += 1;
-								} else {
-									remaining.push({ at: cell, reason: "unconfirmed" });
-								}
-								break;
-							}
+					if (remaining.length > 0) {
+						// 收尾复核：行走腿（digThrough 兜底）可能顺带挖开了记入 remaining 的格子，
+						// 以世界读数为准再核一遍——空气即计入 dug，其余保留 remaining。
+						const still: { at: Vec3; reason: string }[] = [];
+						for (const entry of remaining) {
+							const after = await readBlockAt(ctx.world, entry.at);
+							if (after != null && after.name === "air") progress.dug += 1;
+							else still.push(entry);
 						}
-					});
-				}
-			}
-			if (remaining.length > 0) {
-				// 收尾复核：行走腿（digThrough 兜底）可能顺带挖开了记入 remaining 的格子，
-				// 以世界读数为准再核一遍——空气即计入 dug，其余保留 remaining。
-				const still: { at: Vec3; reason: string }[] = [];
-				for (const entry of remaining) {
-					const after = await readBlockAt(ctx.world, entry.at);
-					if (after != null && after.name === "air") progress.dug += 1;
-					else still.push(entry);
-				}
-				if (still.length > 0) {
-					fail("TARGET_NOT_MET", `${still.length} target cell(s) could not be cleared`, {
-						dispatch: "sent",
-						effects: [],
-						progress: progressSnapshot(progress, still, true),
-						recoverable: true,
-					});
-				}
-			}
-			return plain({ dug: progress.dug, kept, drops: progress.drops, remaining: [] });
+						if (still.length > 0) {
+							fail("TARGET_NOT_MET", `${still.length} target cell(s) could not be cleared`, {
+								dispatch: "sent",
+								effects: [],
+								progress: progressSnapshot(progress, still, true),
+								recoverable: true,
+							});
+						}
+					}
+					return plain({ dug: progress.dug, kept, drops: progress.drops, remaining: [] });
+				},
 		},
-	};
-}
+	],
+};

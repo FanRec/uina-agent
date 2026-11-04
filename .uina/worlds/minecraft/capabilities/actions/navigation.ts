@@ -13,9 +13,10 @@
  */
 
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
 	FLEE_BEARING_OFFSETS,
@@ -96,43 +97,6 @@ interface GotoInput {
 	placeToReach?: boolean;
 	sprint?: boolean;
 	maxTimeMs?: number;
-}
-
-export function gotoCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as GotoInput;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const target = resolvePoint(raw.at, self);
-			if (target.dimension !== self.place.dimension) {
-				fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`, {
-					hint: "goto stays inside the current dimension; transit@1 will handle portals",
-				});
-			}
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-			const outcome = await deps.runtime().navigate(owner, () =>
-				deps.gotoDirector.goto(
-					{
-						at: target.position,
-						tolerance: raw.tolerance ?? 2,
-						sprint: raw.sprint ?? true,
-						digThrough: raw.digThrough ?? false,
-						placeToReach: raw.placeToReach ?? true,
-						timeoutMs: raw.maxTimeMs ?? 120000,
-					},
-					ctx.signal,
-				),
-			);
-			return plain({
-				at: outcome.at,
-				distance: Math.round(distance(outcome.at, target.position) * 100) / 100,
-				ticks: outcome.ticks,
-				dug: outcome.dug,
-				placed: outcome.placed,
-			});
-		},
-	};
 }
 
 /** 供 mine/place 复用：目标与当前位置的直线距离。 */
@@ -251,87 +215,6 @@ interface FollowInput {
 	maxTimeMs?: number;
 }
 
-export function followCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: followDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as FollowInput;
-			const keep = raw.distance ?? 3;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 120000);
-			// 起点必须在跟踪范围内解析（§11.4：不自动等待离线玩家）。
-			const initial = await matchFollowTarget(await scanEntities(ctx, FOLLOW_SCAN_RADIUS), raw.target);
-			if (initial === null) {
-				if (typeof raw.target === "string") {
-					fail(
-						"NOT_FOUND",
-						`no tracked entity named ${raw.target.replace(/^minecraft:/, "")} within ${FOLLOW_SCAN_RADIUS} blocks`,
-						{
-							hint: "read entities@1 first; listing is not proof of absence beyond the radius",
-						},
-					);
-				}
-				fail("REFERENCE_STALE", `entity ${raw.target.networkId} is not tracked within ${FOLLOW_SCAN_RADIUS} blocks`, {
-					hint: "re-read entities@1; out of range is not proof of absence",
-					recoverable: false,
-				});
-			}
-			if ("ambiguous" in initial) ambiguousFailure(String(raw.target), initial.ambiguous);
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-			const start = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			// 起点取值快照：后续读数可能复用同一可变事实对象，比较必须对值。
-			const startPosition = { ...start.place.position };
-			let moved = false;
-			let lastSelf = start;
-			const ended = await deps.runtime().navigate(owner, async (): Promise<"target_lost" | "timeout"> => {
-				let lost = 0;
-				for (;;) {
-					if (ctx.signal.aborted) sessionInterrupted("follow", { moved });
-					if (Date.now() >= deadline) return "timeout";
-					const match = matchFollowTarget(await scanEntities(ctx, FOLLOW_SCAN_RADIUS), raw.target);
-					if (match === null) {
-						lost += 1;
-						if (lost >= FOLLOW_LOST_SCANS) return "target_lost";
-					} else if ("ambiguous" in match) {
-						ambiguousFailure(String(raw.target), match.ambiguous);
-					} else {
-						lost = 0;
-						const gap = distance(lastSelf.place.position, match.found.position);
-						if (gap > keep) {
-							try {
-								await deps.gotoDirector.goto(
-									{
-										at: match.found.position,
-										tolerance: keep,
-										sprint: true,
-										digThrough: false,
-										placeToReach: false,
-										timeoutMs: Math.min(FOLLOW_LEG_TIMEOUT_MS, deadline - Date.now()),
-									},
-									ctx.signal,
-								);
-							} catch (error) {
-								if (ctx.signal.aborted) sessionInterrupted("follow", { moved });
-								const code = (error as { code?: string }).code;
-								// 段失败不是会话失败：目标仍在跟踪范围，下一轮重新瞄准。
-								if (code !== "TIMEOUT" && code !== "UNREACHABLE") throw error;
-							}
-						}
-					}
-					lastSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					if (distance(startPosition, lastSelf.place.position) > 0.75) moved = true;
-					await sleepAbortable(FOLLOW_IDLE_MS, ctx.signal);
-				}
-			});
-			return plain({
-				target: { name: initial.found.name },
-				moved,
-				ended,
-				at: { position: { ...lastSelf.place.position }, dimension: lastSelf.place.dimension },
-			});
-		},
-	};
-}
-
 // ---- flee@1 ----
 
 const fleeDescriptor: CallableDescriptor = {
@@ -393,117 +276,245 @@ interface FleeInput {
 	maxTimeMs?: number;
 }
 
-export function fleeCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: fleeDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as FleeInput;
-			const declared = raw.distance ?? 24;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 30000);
-			// 威胁解析：显式 from（名字/ref），缺省取最近敌对生物。
-			let threat: EntityEntryView;
-			if (raw.from != null) {
-				const match = matchFollowTarget(await scanEntities(ctx, FLEE_SCAN_RADIUS), raw.from);
-				if (match === null) {
-					if (typeof raw.from === "string") {
-						fail(
-							"NOT_FOUND",
-							`no tracked entity named ${String(raw.from).replace(/^minecraft:/, "")} within ${FLEE_SCAN_RADIUS} blocks`,
-							{
-								hint: "read entities@1 first; listing is not proof of absence beyond the radius",
-							},
-						);
-					}
-					fail("REFERENCE_STALE", `entity ${raw.from.networkId} is not tracked within ${FLEE_SCAN_RADIUS} blocks`, {
-						hint: "re-read entities@1; out of range is not proof of absence",
-						recoverable: false,
-					});
-				}
-				if ("ambiguous" in match) ambiguousFailure(String(raw.from), match.ambiguous);
-				threat = match.found;
-			} else {
-				const hostiles = await scanEntities(ctx, FLEE_SCAN_RADIUS, "hostile");
-				if (hostiles.length === 0) {
-					fail("NOT_FOUND", `no hostile entity within ${FLEE_SCAN_RADIUS} blocks`, {
-						hint: "nothing to flee from; listing is not proof of absence beyond the radius",
-					});
-				}
-				threat = hostiles[0]!;
-			}
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-			const start = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const startPosition = { ...start.place.position };
-			let moved = false;
-			let lastGap = distance(start.place.position, threat.position);
-			const ended = await deps.runtime().navigate(owner, async (): Promise<{ safe: boolean; distance: number }> => {
-				let bearingIdx = 0;
-				let consecutiveBlocked = 0;
-				for (;;) {
-					if (ctx.signal.aborted) sessionInterrupted("flee", { moved });
-					if (Date.now() >= deadline) {
-						fail("TIMEOUT", `flee budget exhausted at ${Math.round(lastGap * 100) / 100} blocks from the threat`, {
-							dispatch: "sent",
-							progress: { moved, distance: Math.round(lastGap * 100) / 100 },
-							recoverable: true,
+export const navigationModule: MinecraftCapabilityModule = {
+	id: "navigation",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as GotoInput;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const target = resolvePoint(raw.at, self);
+					if (target.dimension !== self.place.dimension) {
+						fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`, {
+							hint: "goto stays inside the current dimension; transit@1 will handle portals",
 						});
 					}
-					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					// 威胁按初始 EntityRef 跟踪（威胁是具体实体，名字会引入新歧义）；
-					// 失联按最后已知差距结算，不冒认更远的逃离。
-					const match = (await scanEntities(ctx, FLEE_SCAN_RADIUS)).find(
-						(entity) => entity.ref.networkId === threat.ref.networkId,
-					);
-					if (match != null) {
-						lastGap = distance(self.place.position, match.position);
-						if (lastGap >= declared) return { safe: true, distance: lastGap };
-					} else {
-						return { safe: lastGap >= declared, distance: lastGap };
-					}
-					const target = fleeLegTarget(
-						self.place.position,
-						match.position,
-						FLEE_BEARING_OFFSETS[bearingIdx % FLEE_BEARING_OFFSETS.length]!,
-						FLEE_LEG_STEP,
-					);
-					try {
-						await deps.gotoDirector.goto(
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					const outcome = await deps.runtime().navigate(owner, () =>
+						deps.gotoDirector.goto(
 							{
-								at: target,
-								tolerance: 2,
-								sprint: true,
-								digThrough: false,
-								placeToReach: false,
-								timeoutMs: Math.min(FLEE_LEG_TIMEOUT_MS, deadline - Date.now()),
+								at: target.position,
+								tolerance: raw.tolerance ?? 2,
+								sprint: raw.sprint ?? true,
+								digThrough: raw.digThrough ?? false,
+								placeToReach: raw.placeToReach ?? true,
+								timeoutMs: raw.maxTimeMs ?? 120000,
 							},
 							ctx.signal,
+						),
+					);
+					return plain({
+						at: outcome.at,
+						distance: Math.round(distance(outcome.at, target.position) * 100) / 100,
+						ticks: outcome.ticks,
+						dug: outcome.dug,
+						placed: outcome.placed,
+					});
+				},
+		},
+		{
+			kind: "action",
+			descriptor: followDescriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as FollowInput;
+					const keep = raw.distance ?? 3;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 120000);
+					// 起点必须在跟踪范围内解析（§11.4：不自动等待离线玩家）。
+					const initial = await matchFollowTarget(await scanEntities(ctx, FOLLOW_SCAN_RADIUS), raw.target);
+					if (initial === null) {
+						if (typeof raw.target === "string") {
+							fail(
+								"NOT_FOUND",
+								`no tracked entity named ${raw.target.replace(/^minecraft:/, "")} within ${FOLLOW_SCAN_RADIUS} blocks`,
+								{
+									hint: "read entities@1 first; listing is not proof of absence beyond the radius",
+								},
+							);
+						}
+						fail(
+							"REFERENCE_STALE",
+							`entity ${raw.target.networkId} is not tracked within ${FOLLOW_SCAN_RADIUS} blocks`,
+							{
+								hint: "re-read entities@1; out of range is not proof of absence",
+								recoverable: false,
+							},
 						);
-						consecutiveBlocked = 0;
-					} catch (error) {
-						if (ctx.signal.aborted) sessionInterrupted("flee", { moved });
-						const code = (error as { code?: string }).code;
-						if (code === "UNREACHABLE") {
-							bearingIdx += 1;
-							consecutiveBlocked += 1;
-							if (consecutiveBlocked >= FLEE_BEARING_OFFSETS.length) {
-								fail("UNREACHABLE", "every escape bearing is blocked", {
+					}
+					if ("ambiguous" in initial) ambiguousFailure(String(raw.target), initial.ambiguous);
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					const start = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					// 起点取值快照：后续读数可能复用同一可变事实对象，比较必须对值。
+					const startPosition = { ...start.place.position };
+					let moved = false;
+					let lastSelf = start;
+					const ended = await deps.runtime().navigate(owner, async (): Promise<"target_lost" | "timeout"> => {
+						let lost = 0;
+						for (;;) {
+							if (ctx.signal.aborted) sessionInterrupted("follow", { moved });
+							if (Date.now() >= deadline) return "timeout";
+							const match = matchFollowTarget(await scanEntities(ctx, FOLLOW_SCAN_RADIUS), raw.target);
+							if (match === null) {
+								lost += 1;
+								if (lost >= FOLLOW_LOST_SCANS) return "target_lost";
+							} else if ("ambiguous" in match) {
+								ambiguousFailure(String(raw.target), match.ambiguous);
+							} else {
+								lost = 0;
+								const gap = distance(lastSelf.place.position, match.found.position);
+								if (gap > keep) {
+									try {
+										await deps.gotoDirector.goto(
+											{
+												at: match.found.position,
+												tolerance: keep,
+												sprint: true,
+												digThrough: false,
+												placeToReach: false,
+												timeoutMs: Math.min(FOLLOW_LEG_TIMEOUT_MS, deadline - Date.now()),
+											},
+											ctx.signal,
+										);
+									} catch (error) {
+										if (ctx.signal.aborted) sessionInterrupted("follow", { moved });
+										const code = (error as { code?: string }).code;
+										// 段失败不是会话失败：目标仍在跟踪范围，下一轮重新瞄准。
+										if (code !== "TIMEOUT" && code !== "UNREACHABLE") throw error;
+									}
+								}
+							}
+							lastSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							if (distance(startPosition, lastSelf.place.position) > 0.75) moved = true;
+							await sleepAbortable(FOLLOW_IDLE_MS, ctx.signal);
+						}
+					});
+					return plain({
+						target: { name: initial.found.name },
+						moved,
+						ended,
+						at: { position: { ...lastSelf.place.position }, dimension: lastSelf.place.dimension },
+					});
+				},
+		},
+		{
+			kind: "action",
+			descriptor: fleeDescriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as FleeInput;
+					const declared = raw.distance ?? 24;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 30000);
+					// 威胁解析：显式 from（名字/ref），缺省取最近敌对生物。
+					let threat: EntityEntryView;
+					if (raw.from != null) {
+						const match = matchFollowTarget(await scanEntities(ctx, FLEE_SCAN_RADIUS), raw.from);
+						if (match === null) {
+							if (typeof raw.from === "string") {
+								fail(
+									"NOT_FOUND",
+									`no tracked entity named ${String(raw.from).replace(/^minecraft:/, "")} within ${FLEE_SCAN_RADIUS} blocks`,
+									{
+										hint: "read entities@1 first; listing is not proof of absence beyond the radius",
+									},
+								);
+							}
+							fail("REFERENCE_STALE", `entity ${raw.from.networkId} is not tracked within ${FLEE_SCAN_RADIUS} blocks`, {
+								hint: "re-read entities@1; out of range is not proof of absence",
+								recoverable: false,
+							});
+						}
+						if ("ambiguous" in match) ambiguousFailure(String(raw.from), match.ambiguous);
+						threat = match.found;
+					} else {
+						const hostiles = await scanEntities(ctx, FLEE_SCAN_RADIUS, "hostile");
+						if (hostiles.length === 0) {
+							fail("NOT_FOUND", `no hostile entity within ${FLEE_SCAN_RADIUS} blocks`, {
+								hint: "nothing to flee from; listing is not proof of absence beyond the radius",
+							});
+						}
+						threat = hostiles[0]!;
+					}
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					const start = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const startPosition = { ...start.place.position };
+					let moved = false;
+					let lastGap = distance(start.place.position, threat.position);
+					const ended = await deps.runtime().navigate(owner, async (): Promise<{ safe: boolean; distance: number }> => {
+						let bearingIdx = 0;
+						let consecutiveBlocked = 0;
+						for (;;) {
+							if (ctx.signal.aborted) sessionInterrupted("flee", { moved });
+							if (Date.now() >= deadline) {
+								fail("TIMEOUT", `flee budget exhausted at ${Math.round(lastGap * 100) / 100} blocks from the threat`, {
 									dispatch: "sent",
-									progress: { moved },
+									progress: { moved, distance: Math.round(lastGap * 100) / 100 },
 									recoverable: true,
 								});
 							}
-						} else if (code !== "TIMEOUT") {
-							throw error;
+							const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							// 威胁按初始 EntityRef 跟踪（威胁是具体实体，名字会引入新歧义）；
+							// 失联按最后已知差距结算，不冒认更远的逃离。
+							const match = (await scanEntities(ctx, FLEE_SCAN_RADIUS)).find(
+								(entity) => entity.ref.networkId === threat.ref.networkId,
+							);
+							if (match != null) {
+								lastGap = distance(self.place.position, match.position);
+								if (lastGap >= declared) return { safe: true, distance: lastGap };
+							} else {
+								return { safe: lastGap >= declared, distance: lastGap };
+							}
+							const target = fleeLegTarget(
+								self.place.position,
+								match.position,
+								FLEE_BEARING_OFFSETS[bearingIdx % FLEE_BEARING_OFFSETS.length]!,
+								FLEE_LEG_STEP,
+							);
+							try {
+								await deps.gotoDirector.goto(
+									{
+										at: target,
+										tolerance: 2,
+										sprint: true,
+										digThrough: false,
+										placeToReach: false,
+										timeoutMs: Math.min(FLEE_LEG_TIMEOUT_MS, deadline - Date.now()),
+									},
+									ctx.signal,
+								);
+								consecutiveBlocked = 0;
+							} catch (error) {
+								if (ctx.signal.aborted) sessionInterrupted("flee", { moved });
+								const code = (error as { code?: string }).code;
+								if (code === "UNREACHABLE") {
+									bearingIdx += 1;
+									consecutiveBlocked += 1;
+									if (consecutiveBlocked >= FLEE_BEARING_OFFSETS.length) {
+										fail("UNREACHABLE", "every escape bearing is blocked", {
+											dispatch: "sent",
+											progress: { moved },
+											recoverable: true,
+										});
+									}
+								} else if (code !== "TIMEOUT") {
+									throw error;
+								}
+							}
+							const stop = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							if (distance(startPosition, stop.place.position) > 0.75) moved = true;
 						}
-					}
-					const stop = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					if (distance(startPosition, stop.place.position) > 0.75) moved = true;
-				}
-			});
-			return plain({
-				moved,
-				distance: Math.round(ended.distance * 100) / 100,
-				safe: ended.safe,
-			});
+					});
+					return plain({
+						moved,
+						distance: Math.round(ended.distance * 100) / 100,
+						safe: ended.safe,
+					});
+				},
 		},
-	};
-}
+	],
+};

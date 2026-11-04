@@ -10,9 +10,10 @@
  */
 
 import type { SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { POS_SCHEMA } from "../shared/schema.js";
@@ -146,174 +147,185 @@ async function settle(ctx: CallContext): Promise<void> {
 	}
 }
 
-export function tunnelCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as TunnelInput;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 180000);
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const target = resolvePoint(raw.to, self);
-			if (target.dimension !== self.place.dimension) {
-				fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`);
-			}
-			const to = resolveGrid(raw.to, self);
-			const from = {
-				x: Math.floor(self.place.position.x),
-				y: Math.floor(self.place.position.y),
-				z: Math.floor(self.place.position.z),
-			};
-			const columns = planCorridor(from, to, raw.size ?? "1x2", raw.stairs ?? "auto");
-			const support = raw.support !== false;
-			const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
-			let dug = 0;
-			const path: { at: Vec3; name: string }[] = [];
-			let stopped: "unbreakable" | null = null;
+export const tunnelModule: MinecraftCapabilityModule = {
+	id: "tunnel",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as TunnelInput;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 180000);
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const target = resolvePoint(raw.to, self);
+					if (target.dimension !== self.place.dimension) {
+						fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`);
+					}
+					const to = resolveGrid(raw.to, self);
+					const from = {
+						x: Math.floor(self.place.position.x),
+						y: Math.floor(self.place.position.y),
+						z: Math.floor(self.place.position.z),
+					};
+					const columns = planCorridor(from, to, raw.size ?? "1x2", raw.stairs ?? "auto");
+					const support = raw.support !== false;
+					const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
+					let dug = 0;
+					const path: { at: Vec3; name: string }[] = [];
+					let stopped: "unbreakable" | null = null;
 
-			// 执行节拍：挖 ahead 列（reach 内）→ goto 走到已挖到的最远列（≥2 格走寻路，
-			// 经验 22：近距 1-2 格寻路不可靠，尾巴短腿用 drive 步进）。挖与走不嵌套租赁。
-			let cursor = 0;
-			let stoodIndex = -1;
-			for (;;) {
-				if (ctx.signal.aborted) {
-					fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
-						dispatch: "sent",
-						progress: { dug },
-						recoverable: true,
-					});
-				}
-				if (Date.now() >= deadline) {
-					fail("TIMEOUT", `tunnel budget exhausted after ${dug} digs`, {
-						dispatch: "sent",
-						progress: { dug },
-						recoverable: true,
-					});
-				}
-				// 挖拍：从当前站位向前挖 reach 内的列（ ceiling 格 3D 距离超界即停）。
-				await ctx.withBody(async (scope) => {
-					const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					const eye = { x: selfNow.place.position.x, y: selfNow.place.position.y + 1.62, z: selfNow.place.position.z };
-					while (cursor < columns.length) {
-						const column = columns[cursor]!;
-						// 降坡列最远格是 floor（在下方），升坡列是 ceiling（在上方）——取两者最大。
-						const spanOf = (at: Vec3): number => Math.hypot(at.x + 0.5 - eye.x, at.y + 0.5 - eye.y, at.z + 0.5 - eye.z);
-						const span = Math.max(spanOf(column.floor), spanOf(column.ceiling));
-						if (cursor > stoodIndex + 1 && span > DIG_REACH_LIMIT) break;
-						for (const position of await columnDigList(scope, column, support)) {
-							const result = await digCell(deps, scope, selfNow, position);
-							switch (result.kind) {
-								case "dug":
-									dug += 1;
-									path.push({ at: position, name: result.name });
-									break;
-								case "open":
-									break;
-								case "not_loaded":
-									fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} is not loaded`, {
-										hint: "tunnel does not guess across unloaded chunks; goto@1 closer to load them first",
-										dispatch: "sent",
-										progress: { dug },
-										recoverable: true,
-									});
-								case "liquid":
-									fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} holds water/lava`, {
-										hint: "tunnel cannot cross fluids without a bucket; route around or drain first",
-										dispatch: "sent",
-										progress: { dug },
-										recoverable: true,
-									});
-								case "unbreakable":
-									stopped = "unbreakable";
-									break;
-								case "unreachable":
-									fail("UNREACHABLE", reachHint(result.distance, position), {
-										hint: "the corridor cell is out of reach from the current station",
-										dispatch: "sent",
-										progress: { dug },
-										recoverable: true,
-									});
-								case "not_met":
-									fail("TARGET_NOT_MET", "the server did not confirm a corridor cell was broken", {
-										dispatch: result.dispatch,
-										effects: [result.effect],
-										progress: { dug },
-										recoverable: true,
-									});
-							}
-							if (stopped != null) return;
+					// 执行节拍：挖 ahead 列（reach 内）→ goto 走到已挖到的最远列（≥2 格走寻路，
+					// 经验 22：近距 1-2 格寻路不可靠，尾巴短腿用 drive 步进）。挖与走不嵌套租赁。
+					let cursor = 0;
+					let stoodIndex = -1;
+					for (;;) {
+						if (ctx.signal.aborted) {
+							fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
+								dispatch: "sent",
+								progress: { dug },
+								recoverable: true,
+							});
 						}
-						if (stopped != null) return;
-						cursor += 1;
-					}
-				});
-				if (stopped != null) break;
-				// 走拍：目标 = 已挖到的最远列脚位。goto 先行（会爬台阶/转弯），但
-				// "空路径假成功"（经验 19/22）与 NoPath 都要用实际落点复核，未到位再 drive 步进。
-				// 目标至少跨 2 列（有余量时）：GoalNear 的 range-1 邻域包含"目标正下方一格"，
-				// 只跨 1 列的上坡腿会在目标正下方被当成已到达，寻路不爬台阶。
-				const targetIndex = Math.min(
-					Math.max(Math.min(cursor, columns.length) - 1, stoodIndex + 2),
-					columns.length - 1,
-				);
-				if (targetIndex <= stoodIndex) break;
-				const legTo = columns[targetIndex]!.floor;
-				const trace: string[] = [];
-				try {
-					// digThrough:true（surface@1 同款，真服已验证）：让寻路消化客户端/服务端
-					// 方块状态的细微不一致——走廊本体已由挖拍挖开，这里只是兜底。
-					await walkLeg(deps, ctx, owner, legTo, {
-						tolerance: 1,
-						timeoutMs: Math.min(LEG_TIMEOUT_MS, Math.max(1000, deadline - Date.now())),
-						digThrough: true,
-					});
-				} catch (error) {
-					if (ctx.signal.aborted) {
-						fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
-							dispatch: "sent",
-							progress: { dug },
-							recoverable: true,
+						if (Date.now() >= deadline) {
+							fail("TIMEOUT", `tunnel budget exhausted after ${dug} digs`, {
+								dispatch: "sent",
+								progress: { dug },
+								recoverable: true,
+							});
+						}
+						// 挖拍：从当前站位向前挖 reach 内的列（ ceiling 格 3D 距离超界即停）。
+						await ctx.withBody(async (scope) => {
+							const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							const eye = {
+								x: selfNow.place.position.x,
+								y: selfNow.place.position.y + 1.62,
+								z: selfNow.place.position.z,
+							};
+							while (cursor < columns.length) {
+								const column = columns[cursor]!;
+								// 降坡列最远格是 floor（在下方），升坡列是 ceiling（在上方）——取两者最大。
+								const spanOf = (at: Vec3): number =>
+									Math.hypot(at.x + 0.5 - eye.x, at.y + 0.5 - eye.y, at.z + 0.5 - eye.z);
+								const span = Math.max(spanOf(column.floor), spanOf(column.ceiling));
+								if (cursor > stoodIndex + 1 && span > DIG_REACH_LIMIT) break;
+								for (const position of await columnDigList(scope, column, support)) {
+									const result = await digCell(deps, scope, selfNow, position);
+									switch (result.kind) {
+										case "dug":
+											dug += 1;
+											path.push({ at: position, name: result.name });
+											break;
+										case "open":
+											break;
+										case "not_loaded":
+											fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} is not loaded`, {
+												hint: "tunnel does not guess across unloaded chunks; goto@1 closer to load them first",
+												dispatch: "sent",
+												progress: { dug },
+												recoverable: true,
+											});
+										case "liquid":
+											fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} holds water/lava`, {
+												hint: "tunnel cannot cross fluids without a bucket; route around or drain first",
+												dispatch: "sent",
+												progress: { dug },
+												recoverable: true,
+											});
+										case "unbreakable":
+											stopped = "unbreakable";
+											break;
+										case "unreachable":
+											fail("UNREACHABLE", reachHint(result.distance, position), {
+												hint: "the corridor cell is out of reach from the current station",
+												dispatch: "sent",
+												progress: { dug },
+												recoverable: true,
+											});
+										case "not_met":
+											fail("TARGET_NOT_MET", "the server did not confirm a corridor cell was broken", {
+												dispatch: result.dispatch,
+												effects: [result.effect],
+												progress: { dug },
+												recoverable: true,
+											});
+									}
+									if (stopped != null) return;
+								}
+								if (stopped != null) return;
+								cursor += 1;
+							}
 						});
+						if (stopped != null) break;
+						// 走拍：目标 = 已挖到的最远列脚位。goto 先行（会爬台阶/转弯），但
+						// "空路径假成功"（经验 19/22）与 NoPath 都要用实际落点复核，未到位再 drive 步进。
+						// 目标至少跨 2 列（有余量时）：GoalNear 的 range-1 邻域包含"目标正下方一格"，
+						// 只跨 1 列的上坡腿会在目标正下方被当成已到达，寻路不爬台阶。
+						const targetIndex = Math.min(
+							Math.max(Math.min(cursor, columns.length) - 1, stoodIndex + 2),
+							columns.length - 1,
+						);
+						if (targetIndex <= stoodIndex) break;
+						const legTo = columns[targetIndex]!.floor;
+						const trace: string[] = [];
+						try {
+							// digThrough:true（surface@1 同款，真服已验证）：让寻路消化客户端/服务端
+							// 方块状态的细微不一致——走廊本体已由挖拍挖开，这里只是兜底。
+							await walkLeg(deps, ctx, owner, legTo, {
+								tolerance: 1,
+								timeoutMs: Math.min(LEG_TIMEOUT_MS, Math.max(1000, deadline - Date.now())),
+								digThrough: true,
+							});
+						} catch (error) {
+							if (ctx.signal.aborted) {
+								fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
+									dispatch: "sent",
+									progress: { dug },
+									recoverable: true,
+								});
+							}
+							const code = (error as { code?: string }).code;
+							if (code !== "TIMEOUT" && code !== "UNREACHABLE") throw error;
+						}
+						// 等落定（onGround 且位置稳定）：悬空状态下挖下一拍会用错站位。
+						await settle(ctx);
+						const arrived = await (async (): Promise<boolean> => {
+							const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							const here = selfNow.place.position;
+							// 到位 = 站在目标列且脚在目标层；GoalNear 的邻域含"正下方一格"，
+							// 3D 距离会把"贴在走廊底下"误判为到达（上坡腿的假到达陷阱）。
+							const flat = Math.hypot(Math.floor(here.x) - legTo.x, Math.floor(here.z) - legTo.z);
+							if (flat <= 1 && Math.floor(here.y) === legTo.y) return true;
+							return await ctx.withBody((scope) => stepTo(ctx, scope, legTo, { maxMs: STEP_MAX_MS, trace }));
+						})();
+						if (!arrived) {
+							const stuck = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							const stuckAt = stuck.place.position;
+							if (ctx.signal.aborted) {
+								fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
+									dispatch: "sent",
+									progress: { dug },
+									recoverable: true,
+								});
+							}
+							fail(
+								"UNREACHABLE",
+								`could not advance: stuck at ${stuckAt.x.toFixed(2)},${stuckAt.y.toFixed(2)},${stuckAt.z.toFixed(2)}, want ${legTo.x},${legTo.y},${legTo.z} (dug=${dug}) path=[${trace.join(" -> ")}]`,
+								{
+									hint: "the bot did not reach the next station by walking; the corridor may be blocked",
+									dispatch: "sent",
+									progress: { dug },
+									recoverable: true,
+								},
+							);
+						}
+						stoodIndex = targetIndex;
+						await ctx.progress({ dug });
+						if (stoodIndex >= columns.length - 1) break;
 					}
-					const code = (error as { code?: string }).code;
-					if (code !== "TIMEOUT" && code !== "UNREACHABLE") throw error;
-				}
-				// 等落定（onGround 且位置稳定）：悬空状态下挖下一拍会用错站位。
-				await settle(ctx);
-				const arrived = await (async (): Promise<boolean> => {
-					const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					const here = selfNow.place.position;
-					// 到位 = 站在目标列且脚在目标层；GoalNear 的邻域含"正下方一格"，
-					// 3D 距离会把"贴在走廊底下"误判为到达（上坡腿的假到达陷阱）。
-					const flat = Math.hypot(Math.floor(here.x) - legTo.x, Math.floor(here.z) - legTo.z);
-					if (flat <= 1 && Math.floor(here.y) === legTo.y) return true;
-					return await ctx.withBody((scope) => stepTo(ctx, scope, legTo, { maxMs: STEP_MAX_MS, trace }));
-				})();
-				if (!arrived) {
-					const stuck = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-					const stuckAt = stuck.place.position;
-					if (ctx.signal.aborted) {
-						fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
-							dispatch: "sent",
-							progress: { dug },
-							recoverable: true,
-						});
-					}
-					fail(
-						"UNREACHABLE",
-						`could not advance: stuck at ${stuckAt.x.toFixed(2)},${stuckAt.y.toFixed(2)},${stuckAt.z.toFixed(2)}, want ${legTo.x},${legTo.y},${legTo.z} (dug=${dug}) path=[${trace.join(" -> ")}]`,
-						{
-							hint: "the bot did not reach the next station by walking; the corridor may be blocked",
-							dispatch: "sent",
-							progress: { dug },
-							recoverable: true,
-						},
-					);
-				}
-				stoodIndex = targetIndex;
-				await ctx.progress({ dug });
-				if (stoodIndex >= columns.length - 1) break;
-			}
-			return plain({ dug, path, ...(stopped != null ? { stopped } : {}) });
+					return plain({ dug, path, ...(stopped != null ? { stopped } : {}) });
+				},
 		},
-	};
-}
+	],
+};

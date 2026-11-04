@@ -1,10 +1,10 @@
 /** 容器动作：导航在自有身体之外，窗口与槽位搬移在同一身体作用域内。 */
 
 import type { BlockTarget, EntityRef, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { CallFailure, JsonSchema, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
-import type { CapabilityDeps } from "../deps.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import { approachBlock, delegated } from "../shared/approach.js";
 import { readValue } from "../shared/observe.js";
 import { ENTITY_REACH } from "../shared/reach.js";
@@ -233,35 +233,6 @@ const containerDescriptor: CallableDescriptor = {
 	],
 };
 
-export function containerCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: containerDescriptor,
-		async invoke(ctx, input) {
-			const candidate = await explicitCandidate(ctx, (input as { at: unknown }).at);
-			return withWindow(ctx, candidate, async (window) => {
-				const snapshot = (await window.snapshot()).value;
-				// 业务槽 = 除玩家区以外的全部区域：普通容器是 container，熔炉是 input/fuel/result。
-				const regions = snapshot.layout.regions.filter((region) => region.name !== "player");
-				const slots = snapshot.slots
-					.filter((slot) => slot.item != null && regions.some((region) => region.slots.includes(slot.slot)))
-					.map((slot) => {
-						const item = windowItem(slot.item);
-						const region = regions.find((entry) => entry.slots.includes(slot.slot));
-						return { region: region?.name, slot: slot.slot, name: item?.name, count: item?.count };
-					});
-				const total = regions.reduce((sum, region) => sum + region.slots.length, 0);
-				return plain({
-					at: candidate.endpoint,
-					type: snapshot.type,
-					slots,
-					freeSlots: total - slots.length,
-					properties: snapshot.properties,
-				});
-			});
-		},
-	};
-}
-
 const transferDescriptor: CallableDescriptor = {
 	ref: "transfer@1",
 	summary:
@@ -345,77 +316,112 @@ function candidateFailure(err: unknown): boolean {
 	);
 }
 
-export function transferCallable(_deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: transferDescriptor,
-		async invoke(ctx, input) {
-			const raw = input as unknown as TransferInput;
-			const direction = raw.from !== undefined ? "from" : "to";
-			const endpoint = raw.from ?? raw.to;
-			const selection: TransferSelection = {
-				direction,
-				...(raw.all ? { all: true } : { item: raw.item, count: raw.count }),
-			};
-			let checked = 0;
-			let selected: Candidate | undefined;
-			if (endpoint === "nearest") {
-				const candidates = await nearbyCandidates(ctx);
-				let fallback: Candidate | undefined;
-				for (const candidate of candidates) {
-					if (checked >= 3) break;
-					try {
-						const suitability = await withWindow(ctx, candidate, async (window) => {
-							checked++;
-							return transferRoom((await window.snapshot()).value, selection);
-						});
-						if (!suitability.matches) continue;
-						if (direction === "from" || suitability.same) {
-							selected = candidate;
-							break;
-						}
-						if (suitability.room) fallback ??= candidate;
-					} catch (err) {
-						if (!candidateFailure(err)) throw err;
-					}
-				}
-				selected ??= fallback;
-				if (selected == null)
-					fail("NOT_FOUND", "no suitable container found within 16 blocks", {
-						progress: { containersChecked: checked },
-					});
-			} else {
-				selected = await explicitCandidate(ctx, endpoint);
-				checked = 1;
-			}
-			if (selected.block === "furnace" && direction === "to") {
-				fail("WRONG_STATE", "furnace input and fuel slots are loaded by smelt@1, not transfer@1", {
-					hint: "transfer@1 only takes a furnace result out: {from:{position}, item}; use smelt@1 to load",
-				});
-			}
-			// 炉子只有结果槽是纯交换格：input/fuel 由 smelt@1 按槽位语义写入。
-			const regions = selected.block === "furnace" ? { block: "result", player: "player" } : undefined;
-			const identity = {
-				from: direction === "from" ? selected.endpoint : "inventory",
-				to: direction === "to" ? selected.endpoint : "inventory",
-				containersChecked: checked,
-			};
-			try {
-				return await withWindow(ctx, selected, async (window) => {
-					const amounts = await transferWindow(window, selection, {
-						regions,
-						onProgress: async (progress) => ctx.progress(plain({ ...identity, ...progress }) as never),
-					});
-					return plain({ ...identity, ...amounts });
-				});
-			} catch (err) {
-				if (err instanceof Error && err.name === "CallFailure") {
-					const failure = err as CallFailure;
-					failure.progress = plain({ ...identity, ...failure.progress }) as CallFailure["progress"];
-				}
-				throw err;
-			}
-		},
-	};
-}
-
 export type { WindowSnapshot };
+
+export const containersModule: MinecraftCapabilityModule = {
+	id: "containers",
+	definitions: [
+		{
+			kind: "action",
+			descriptor: containerDescriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const candidate = await explicitCandidate(ctx, (input as { at: unknown }).at);
+					return withWindow(ctx, candidate, async (window) => {
+						const snapshot = (await window.snapshot()).value;
+						// 业务槽 = 除玩家区以外的全部区域：普通容器是 container，熔炉是 input/fuel/result。
+						const regions = snapshot.layout.regions.filter((region) => region.name !== "player");
+						const slots = snapshot.slots
+							.filter((slot) => slot.item != null && regions.some((region) => region.slots.includes(slot.slot)))
+							.map((slot) => {
+								const item = windowItem(slot.item);
+								const region = regions.find((entry) => entry.slots.includes(slot.slot));
+								return { region: region?.name, slot: slot.slot, name: item?.name, count: item?.count };
+							});
+						const total = regions.reduce((sum, region) => sum + region.slots.length, 0);
+						return plain({
+							at: candidate.endpoint,
+							type: snapshot.type,
+							slots,
+							freeSlots: total - slots.length,
+							properties: snapshot.properties,
+						});
+					});
+				},
+		},
+		{
+			kind: "action",
+			descriptor: transferDescriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as TransferInput;
+					const direction = raw.from !== undefined ? "from" : "to";
+					const endpoint = raw.from ?? raw.to;
+					const selection: TransferSelection = {
+						direction,
+						...(raw.all ? { all: true } : { item: raw.item, count: raw.count }),
+					};
+					let checked = 0;
+					let selected: Candidate | undefined;
+					if (endpoint === "nearest") {
+						const candidates = await nearbyCandidates(ctx);
+						let fallback: Candidate | undefined;
+						for (const candidate of candidates) {
+							if (checked >= 3) break;
+							try {
+								const suitability = await withWindow(ctx, candidate, async (window) => {
+									checked++;
+									return transferRoom((await window.snapshot()).value, selection);
+								});
+								if (!suitability.matches) continue;
+								if (direction === "from" || suitability.same) {
+									selected = candidate;
+									break;
+								}
+								if (suitability.room) fallback ??= candidate;
+							} catch (err) {
+								if (!candidateFailure(err)) throw err;
+							}
+						}
+						selected ??= fallback;
+						if (selected == null)
+							fail("NOT_FOUND", "no suitable container found within 16 blocks", {
+								progress: { containersChecked: checked },
+							});
+					} else {
+						selected = await explicitCandidate(ctx, endpoint);
+						checked = 1;
+					}
+					if (selected.block === "furnace" && direction === "to") {
+						fail("WRONG_STATE", "furnace input and fuel slots are loaded by smelt@1, not transfer@1", {
+							hint: "transfer@1 only takes a furnace result out: {from:{position}, item}; use smelt@1 to load",
+						});
+					}
+					// 炉子只有结果槽是纯交换格：input/fuel 由 smelt@1 按槽位语义写入。
+					const regions = selected.block === "furnace" ? { block: "result", player: "player" } : undefined;
+					const identity = {
+						from: direction === "from" ? selected.endpoint : "inventory",
+						to: direction === "to" ? selected.endpoint : "inventory",
+						containersChecked: checked,
+					};
+					try {
+						return await withWindow(ctx, selected, async (window) => {
+							const amounts = await transferWindow(window, selection, {
+								regions,
+								onProgress: async (progress) => ctx.progress(plain({ ...identity, ...progress }) as never),
+							});
+							return plain({ ...identity, ...amounts });
+						});
+					} catch (err) {
+						if (err instanceof Error && err.name === "CallFailure") {
+							const failure = err as CallFailure;
+							failure.progress = plain({ ...identity, ...failure.progress }) as CallFailure["progress"];
+						}
+						throw err;
+					}
+				},
+		},
+	],
+};

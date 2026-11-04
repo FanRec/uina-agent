@@ -7,9 +7,10 @@
  */
 
 import type { EquipSlot, ItemSelector, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
@@ -103,59 +104,6 @@ const equipDescriptor: CallableDescriptor = {
 	],
 	implementation: "native",
 };
-
-export function equipCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void deps;
-	return {
-		descriptor: equipDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as EquipInput;
-			const slot: EquipSlot = raw.slot ?? "hand";
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			void self;
-			const before = await readInventory(ctx.world);
-			const previous = itemInSlot(before, slot);
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				if (raw.item == null) {
-					const receipt = await scope.player.equip(null, slot);
-					if (receipt.completion !== "met")
-						fail("TARGET_NOT_MET", `emptying slot ${slot} has no confirmed server result`, {
-							dispatch: receipt.dispatch,
-							effects: [receipt.effect],
-						});
-					const after = await readInventory(scope.world);
-					const current = itemInSlot(after, slot);
-					if (current != null) {
-						fail("TARGET_NOT_MET", `slot ${slot} still holds ${current.name}`, {
-							hint: "another item may have been moved into the slot",
-							dispatch: "sent",
-						});
-					}
-					return plain({ slot, item: null, ...(previous != null ? { previous } : {}) });
-				}
-				const selector: ItemSelector = typeof raw.item === "string" ? { name: raw.item } : raw.item;
-				const receipt = await scope.player.equip(selector, slot);
-				if (receipt.completion !== "met") {
-					fail("TARGET_NOT_MET", `equip dispatched but slot ${slot} was not confirmed`, {
-						hint: "read inventory@1 to see the current slot content",
-						dispatch: receipt.dispatch,
-						effects: [receipt.effect],
-					});
-				}
-				const after = await readInventory(scope.world);
-				const current = itemInSlot(after, slot);
-				const wanted = typeof raw.item === "string" ? stripNamespace(raw.item) : stripNamespace(raw.item.name);
-				if (current == null || !matchesItem(selector, current)) {
-					fail("TARGET_NOT_MET", `slot ${slot} holds ${current?.name ?? "nothing"}, expected ${wanted}`, {
-						dispatch: "sent",
-						effects: [receipt.effect],
-					});
-				}
-				return plain({ slot, item: current, ...(previous != null ? { previous } : {}) });
-			});
-		},
-	};
-}
 
 // ---- eat ----
 
@@ -252,84 +200,144 @@ const eatDescriptor: CallableDescriptor = {
 	implementation: "native",
 };
 
-export function eatCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: eatDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as EatInput;
-			const knowledge = deps.knowledge();
-			if (knowledge == null) {
-				fail("WRONG_STATE", "game knowledge is not available yet", {
-					hint: "food ranking needs the version registry (connection handshake)",
-				});
-			}
-			const before = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const until = raw.until ?? "full";
-			const target = until === "count" ? (raw.count ?? 1) : MAX_BITES;
-			const inventory = await readInventory(ctx.world);
-			// 顺序是有意的：点名的东西不是食物属于输入错误，先说它；吃饱与否是状态事实。
-			const requested = raw.food == null ? null : requestedFood(inventory, knowledge, raw.food);
-			if (until === "full" && before.food != null && before.food >= 20) {
-				fail("WRONG_STATE", "food is already full", { hint: "eating would waste the item" });
-			}
-			const food = requested ?? bestFood(inventory, knowledge);
-			if (food == null) {
-				fail("NOT_FOUND", "no edible item in the inventory", {
-					hint: `inventory holds: ${inventory.slots.map((slot) => slot.name).join(", ") || "nothing"}`,
-				});
-			}
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				const eaten: { name: string; count: number }[] = [];
-				let current = before;
-				try {
-					for (let bite = 0; bite < target; bite++) {
-						if (until === "full" && current.food != null && current.food >= 20) break;
-						const held = await readInventory(scope.world);
-						const selector: ItemSelector = {
-							...(typeof raw.food === "object" ? raw.food : {}),
-							name: food.name,
-							substitutions: [],
-						};
-						const currentHeld =
-							held.selectedSlot == null ? held.held : held.slots.find((slot) => slot.slot === held.selectedSlot! + 36);
-						if (currentHeld == null || !matchesItem(selector, currentHeld)) {
-							const receipt = await scope.player.equip(selector, "hand");
+export const itemsModule: MinecraftCapabilityModule = {
+	id: "items",
+	definitions: [
+		{
+			kind: "action",
+			descriptor: equipDescriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as EquipInput;
+					const slot: EquipSlot = raw.slot ?? "hand";
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					void self;
+					const before = await readInventory(ctx.world);
+					const previous = itemInSlot(before, slot);
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						if (raw.item == null) {
+							const receipt = await scope.player.equip(null, slot);
 							if (receipt.completion !== "met")
-								fail("TARGET_NOT_MET", "food equipment has no confirmed server result", {
+								fail("TARGET_NOT_MET", `emptying slot ${slot} has no confirmed server result`, {
 									dispatch: receipt.dispatch,
 									effects: [receipt.effect],
-									progress: { eaten },
 								});
+							const after = await readInventory(scope.world);
+							const current = itemInSlot(after, slot);
+							if (current != null) {
+								fail("TARGET_NOT_MET", `slot ${slot} still holds ${current.name}`, {
+									hint: "another item may have been moved into the slot",
+									dispatch: "sent",
+								});
+							}
+							return plain({ slot, item: null, ...(previous != null ? { previous } : {}) });
 						}
-						const foodBefore = current.food;
-						await scope.player.drive({ keys: {}, use: { mode: "hold", hand: "main" } }, BITE_TICKS);
-						const settled = await pollUntil(
-							async () => await readValue<SelfState>(scope.world, "self@1", {}, ctx.signal, "self state"),
-							(state) => state.food != null && foodBefore != null && state.food > foodBefore,
-							{ timeoutMs: BITE_TIMEOUT_MS, intervalMs: BITE_INTERVAL_MS, signal: ctx.signal },
-						);
-						if (!settled.ok || settled.last == null) {
-							fail("TARGET_NOT_MET", `food did not increase after biting ${food.name}`, {
-								hint: "the item may not be edible in this state, or the server rejected it",
-								dispatch: "sent",
-								progress: { eaten },
+						const selector: ItemSelector = typeof raw.item === "string" ? { name: raw.item } : raw.item;
+						const receipt = await scope.player.equip(selector, slot);
+						if (receipt.completion !== "met") {
+							fail("TARGET_NOT_MET", `equip dispatched but slot ${slot} was not confirmed`, {
+								hint: "read inventory@1 to see the current slot content",
+								dispatch: receipt.dispatch,
+								effects: [receipt.effect],
 							});
 						}
-						current = settled.last;
-						const last = eaten[eaten.length - 1];
-						if (last != null && last.name === food.name) last.count++;
-						else eaten.push({ name: food.name, count: 1 });
-					}
-				} finally {
-					// 释放使用状态：不给未结束的 use 留钩子。
-					await scope.player.endUse().catch(() => undefined);
-				}
-				return plain({
-					eaten,
-					food: { before: before.food, after: current.food },
-					saturation: { before: before.saturation, after: current.saturation },
-				});
-			});
+						const after = await readInventory(scope.world);
+						const current = itemInSlot(after, slot);
+						const wanted = typeof raw.item === "string" ? stripNamespace(raw.item) : stripNamespace(raw.item.name);
+						if (current == null || !matchesItem(selector, current)) {
+							fail("TARGET_NOT_MET", `slot ${slot} holds ${current?.name ?? "nothing"}, expected ${wanted}`, {
+								dispatch: "sent",
+								effects: [receipt.effect],
+							});
+						}
+						return plain({ slot, item: current, ...(previous != null ? { previous } : {}) });
+					});
+				},
 		},
-	};
-}
+		{
+			kind: "action",
+			descriptor: eatDescriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as EatInput;
+					const knowledge = deps.knowledge();
+					if (knowledge == null) {
+						fail("WRONG_STATE", "game knowledge is not available yet", {
+							hint: "food ranking needs the version registry (connection handshake)",
+						});
+					}
+					const before = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const until = raw.until ?? "full";
+					const target = until === "count" ? (raw.count ?? 1) : MAX_BITES;
+					const inventory = await readInventory(ctx.world);
+					// 顺序是有意的：点名的东西不是食物属于输入错误，先说它；吃饱与否是状态事实。
+					const requested = raw.food == null ? null : requestedFood(inventory, knowledge, raw.food);
+					if (until === "full" && before.food != null && before.food >= 20) {
+						fail("WRONG_STATE", "food is already full", { hint: "eating would waste the item" });
+					}
+					const food = requested ?? bestFood(inventory, knowledge);
+					if (food == null) {
+						fail("NOT_FOUND", "no edible item in the inventory", {
+							hint: `inventory holds: ${inventory.slots.map((slot) => slot.name).join(", ") || "nothing"}`,
+						});
+					}
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						const eaten: { name: string; count: number }[] = [];
+						let current = before;
+						try {
+							for (let bite = 0; bite < target; bite++) {
+								if (until === "full" && current.food != null && current.food >= 20) break;
+								const held = await readInventory(scope.world);
+								const selector: ItemSelector = {
+									...(typeof raw.food === "object" ? raw.food : {}),
+									name: food.name,
+									substitutions: [],
+								};
+								const currentHeld =
+									held.selectedSlot == null
+										? held.held
+										: held.slots.find((slot) => slot.slot === held.selectedSlot! + 36);
+								if (currentHeld == null || !matchesItem(selector, currentHeld)) {
+									const receipt = await scope.player.equip(selector, "hand");
+									if (receipt.completion !== "met")
+										fail("TARGET_NOT_MET", "food equipment has no confirmed server result", {
+											dispatch: receipt.dispatch,
+											effects: [receipt.effect],
+											progress: { eaten },
+										});
+								}
+								const foodBefore = current.food;
+								await scope.player.drive({ keys: {}, use: { mode: "hold", hand: "main" } }, BITE_TICKS);
+								const settled = await pollUntil(
+									async () => await readValue<SelfState>(scope.world, "self@1", {}, ctx.signal, "self state"),
+									(state) => state.food != null && foodBefore != null && state.food > foodBefore,
+									{ timeoutMs: BITE_TIMEOUT_MS, intervalMs: BITE_INTERVAL_MS, signal: ctx.signal },
+								);
+								if (!settled.ok || settled.last == null) {
+									fail("TARGET_NOT_MET", `food did not increase after biting ${food.name}`, {
+										hint: "the item may not be edible in this state, or the server rejected it",
+										dispatch: "sent",
+										progress: { eaten },
+									});
+								}
+								current = settled.last;
+								const last = eaten[eaten.length - 1];
+								if (last != null && last.name === food.name) last.count++;
+								else eaten.push({ name: food.name, count: 1 });
+							}
+						} finally {
+							// 释放使用状态：不给未结束的 use 留钩子。
+							await scope.player.endUse().catch(() => undefined);
+						}
+						return plain({
+							eaten,
+							food: { before: before.food, after: current.food },
+							saturation: { before: before.saturation, after: current.saturation },
+						});
+					});
+				},
+		},
+	],
+};

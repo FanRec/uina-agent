@@ -1,10 +1,11 @@
 /** Craft one server-confirmed batch at a time; retain confirmed consumption and inventory receipts. */
 
 import type { BlockTarget, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { KnowledgeRecipe, RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { approachBlock } from "../shared/approach.js";
 import { requireKnowledge } from "../shared/knowledge.js";
@@ -280,101 +281,107 @@ const craftDescriptor: CallableDescriptor = {
 	],
 };
 
-export function craftCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: craftDescriptor,
-		async invoke(ctx, raw) {
-			const input = raw as { item: string; count?: number; station?: "auto" | "hand" | "crafting_table" };
-			const knowledge = requireKnowledge(deps);
-			const name = stripNamespace(input.item);
-			const wanted = input.count ?? 1;
-			const station = input.station ?? "auto";
-			if (knowledge.item(name) == null) {
-				fail("NOT_FOUND", `unknown item: ${name}`, {
-					hint: `data version ${knowledge.dataVersion}; use registry ids like oak_log`,
-				});
-			}
-			const before = await readInventory(ctx.world);
-			const choices = craftChoices(knowledge, name, wanted, before.counts, station);
-			if (choices.length === 0) {
-				fail("NOT_FOUND", `no ${station === "auto" ? "" : `${station} `}crafting recipe for ${name}`, {
-					hint:
-						knowledge.recipesFor(name).length > 0
-							? "only smelting recipes exist for this item; use smelt@1"
-							: "this data version has no recipe for it",
-				});
-			}
-			const best = choices[0];
-			const short = Object.entries(best.missing);
-			if (short.length > 0) {
-				fail("MISSING_MATERIAL", `missing materials for ${name}`, {
-					hint: short.map(([item, count]) => `${item} x${count}`).join(", "),
-					progress: plain({ missing: best.missing }) as never,
-				});
-			}
-			if (best.recipe.station === "furnace")
-				fail("WRONG_STATE", "internal: a furnace recipe was selected for crafting");
-			const gridStation = station === "crafting_table" ? "crafting_table" : best.recipe.station;
-			const produced: Record<string, number> = {};
-			const consumed: Record<string, number> = {};
-			let state: WindowMoveState | undefined;
-			const progress = () => ({
-				crafted: produced[name] ?? 0,
-				produced: { ...produced },
-				consumed: { ...consumed },
-				remaining: Math.max(0, wanted - (produced[name] ?? 0)),
-			});
-			let at: { position: Vec3; dimension: string } | null;
-			try {
-				at = await withCraftWindow(ctx, gridStation, async (window) => {
-					state = moveState((await window.snapshot()).value);
-					const grid = windowRegion(state.snapshot, "crafting");
-					const resultSlot = windowRegion(state.snapshot, "result")[0];
-					const cells = placementOf(best.recipe, grid);
-					for (let batch = 0; batch < best.batches; batch++) {
-						interrupted(ctx, "craft");
-						await craftBatch(
-							window,
-							state,
-							grid,
-							resultSlot,
-							cells,
-							best.recipe.output,
-							async (items) => {
-								for (const [item, count] of Object.entries(items)) consumed[item] = (consumed[item] ?? 0) + count;
-								await ctx.progress(plain(progress()) as never);
-								interrupted(ctx, "craft");
-							},
-							async (item, count) => {
-								produced[item] = (produced[item] ?? 0) + count;
-								await ctx.progress(plain(progress()) as never);
-								interrupted(ctx, "craft");
-							},
-						);
+export const craftModule: MinecraftCapabilityModule = {
+	id: "craft",
+	definitions: [
+		{
+			kind: "action",
+			descriptor: craftDescriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, raw: JsonValue): Promise<JsonValue> => {
+					const input = raw as { item: string; count?: number; station?: "auto" | "hand" | "crafting_table" };
+					const knowledge = requireKnowledge(deps);
+					const name = stripNamespace(input.item);
+					const wanted = input.count ?? 1;
+					const station = input.station ?? "auto";
+					if (knowledge.item(name) == null) {
+						fail("NOT_FOUND", `unknown item: ${name}`, {
+							hint: `data version ${knowledge.dataVersion}; use registry ids like oak_log`,
+						});
 					}
-				});
-			} catch (error) {
-				if (error instanceof Error && error.name === "CallFailure") {
-					const failure = error as CallFailure;
-					if (state?.dispatched && failure.dispatch === "not_sent") failure.dispatch = "sent";
-					failure.progress = plain({ ...failure.progress, ...progress() }) as CallFailure["progress"];
-				}
-				throw error;
-			}
-			const gained = produced[name] ?? 0;
-			if (gained < wanted) {
-				fail("TARGET_NOT_MET", `crafted ${gained} of ${name}, expected ${wanted}`, {
-					dispatch: "sent",
-					progress: plain(progress()) as never,
-				});
-			}
-			return plain({
-				crafted: gained,
-				produced,
-				consumed,
-				remaining: 0,
-				...(at == null ? {} : { at: plain({ position: at.position, dimension: at.dimension }) }),
-			}) as JsonValue;
+					const before = await readInventory(ctx.world);
+					const choices = craftChoices(knowledge, name, wanted, before.counts, station);
+					if (choices.length === 0) {
+						fail("NOT_FOUND", `no ${station === "auto" ? "" : `${station} `}crafting recipe for ${name}`, {
+							hint:
+								knowledge.recipesFor(name).length > 0
+									? "only smelting recipes exist for this item; use smelt@1"
+									: "this data version has no recipe for it",
+						});
+					}
+					const best = choices[0];
+					const short = Object.entries(best.missing);
+					if (short.length > 0) {
+						fail("MISSING_MATERIAL", `missing materials for ${name}`, {
+							hint: short.map(([item, count]) => `${item} x${count}`).join(", "),
+							progress: plain({ missing: best.missing }) as never,
+						});
+					}
+					if (best.recipe.station === "furnace")
+						fail("WRONG_STATE", "internal: a furnace recipe was selected for crafting");
+					const gridStation = station === "crafting_table" ? "crafting_table" : best.recipe.station;
+					const produced: Record<string, number> = {};
+					const consumed: Record<string, number> = {};
+					let state: WindowMoveState | undefined;
+					const progress = () => ({
+						crafted: produced[name] ?? 0,
+						produced: { ...produced },
+						consumed: { ...consumed },
+						remaining: Math.max(0, wanted - (produced[name] ?? 0)),
+					});
+					let at: { position: Vec3; dimension: string } | null;
+					try {
+						at = await withCraftWindow(ctx, gridStation, async (window) => {
+							state = moveState((await window.snapshot()).value);
+							const grid = windowRegion(state.snapshot, "crafting");
+							const resultSlot = windowRegion(state.snapshot, "result")[0];
+							const cells = placementOf(best.recipe, grid);
+							for (let batch = 0; batch < best.batches; batch++) {
+								interrupted(ctx, "craft");
+								await craftBatch(
+									window,
+									state,
+									grid,
+									resultSlot,
+									cells,
+									best.recipe.output,
+									async (items) => {
+										for (const [item, count] of Object.entries(items)) consumed[item] = (consumed[item] ?? 0) + count;
+										await ctx.progress(plain(progress()) as never);
+										interrupted(ctx, "craft");
+									},
+									async (item, count) => {
+										produced[item] = (produced[item] ?? 0) + count;
+										await ctx.progress(plain(progress()) as never);
+										interrupted(ctx, "craft");
+									},
+								);
+							}
+						});
+					} catch (error) {
+						if (error instanceof Error && error.name === "CallFailure") {
+							const failure = error as CallFailure;
+							if (state?.dispatched && failure.dispatch === "not_sent") failure.dispatch = "sent";
+							failure.progress = plain({ ...failure.progress, ...progress() }) as CallFailure["progress"];
+						}
+						throw error;
+					}
+					const gained = produced[name] ?? 0;
+					if (gained < wanted) {
+						fail("TARGET_NOT_MET", `crafted ${gained} of ${name}, expected ${wanted}`, {
+							dispatch: "sent",
+							progress: plain(progress()) as never,
+						});
+					}
+					return plain({
+						crafted: gained,
+						produced,
+						consumed,
+						remaining: 0,
+						...(at == null ? {} : { at: plain({ position: at.position, dimension: at.dimension }) }),
+					}) as JsonValue;
+				},
 		},
-	};
-}
+	],
+};

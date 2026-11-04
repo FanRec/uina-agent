@@ -1,9 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { containerCallable, transferCallable } from "../../.uina/worlds/minecraft/capabilities/actions/containers.js";
+import { containersModule } from "../../.uina/worlds/minecraft/capabilities/actions/containers.js";
 import type { CapabilityDeps } from "../../.uina/worlds/minecraft/capabilities/deps.js";
 import { transferWindow } from "../../.uina/worlds/minecraft/capabilities/shared/window-transfer.js";
 import type { ItemValue, WindowSession, WindowSnapshot } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
+import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { fact, self } from "./mc-capability-harness.js";
 
 function stack(name: string, count: number, stackSize = 64): ItemValue {
@@ -247,10 +248,17 @@ function capabilityFixture() {
 	return { ctx, player, opened, windows, closed: () => closed, navigation: () => navigation };
 }
 
+/** 容器模块的绑定入口：按 ref 取 definition 并绑定空 deps（这些 invoke 不读 deps）。 */
+function callableOf(ref: string): { invoke: (ctx: CallContext, input: JsonValue) => Promise<JsonValue> } {
+	const definition = containersModule.definitions.find((entry) => entry.descriptor.ref === ref);
+	if (definition?.kind !== "action") throw new Error(`missing action definition ${ref}`);
+	return { invoke: definition.bind({} as CapabilityDeps) };
+}
+
 describe("容器能力接线", () => {
 	test("nearest 存物先核验后选择已有同类的箱子，窗口全部关闭", async () => {
 		const f = capabilityFixture();
-		const value = await transferCallable({} as CapabilityDeps).invoke(f.ctx, { to: "nearest", item: "dirt", count: 1 });
+		const value = await callableOf("transfer@1").invoke(f.ctx, { to: "nearest", item: "dirt", count: 1 });
 		expect(value).toMatchObject({ moved: { dirt: 1 }, remaining: {}, containersChecked: 2 });
 		expect(f.opened).toEqual([11, 12, 12]);
 		expect(f.closed()).toBe(3);
@@ -258,7 +266,7 @@ describe("容器能力接线", () => {
 	test("近距祖先身体复用，不启动独立导航", async () => {
 		const f = capabilityFixture();
 		Object.assign(f.ctx, { player: f.player });
-		await containerCallable({} as CapabilityDeps).invoke(f.ctx, { at: { x: 11, y: 64, z: 10 } });
+		await callableOf("container@1").invoke(f.ctx, { at: { x: 11, y: 64, z: 10 } });
 		expect(f.navigation()).toBe(0);
 		expect(f.opened).toEqual([11]);
 		expect(f.closed()).toBe(1);
@@ -266,9 +274,10 @@ describe("容器能力接线", () => {
 	test("远距祖先身体在新副作用前拒绝，资格保持调用方持有", async () => {
 		const f = capabilityFixture();
 		Object.assign(f.ctx, { player: f.player });
-		await expect(
-			containerCallable({} as CapabilityDeps).invoke(f.ctx, { at: { x: 30, y: 64, z: 10 } }),
-		).rejects.toMatchObject({ code: "CONTROL_CONFLICT", dispatch: "not_sent" });
+		await expect(callableOf("container@1").invoke(f.ctx, { at: { x: 30, y: 64, z: 10 } })).rejects.toMatchObject({
+			code: "CONTROL_CONFLICT",
+			dispatch: "not_sent",
+		});
 		expect(f.opened).toEqual([]);
 		expect(f.navigation()).toBe(0);
 		expect((f.ctx as unknown as { player: unknown }).player).toBe(f.player);
@@ -276,9 +285,9 @@ describe("容器能力接线", () => {
 	test("预取消不导航、不开窗口", async () => {
 		const f = capabilityFixture();
 		Object.assign(f.ctx, { signal: AbortSignal.abort() });
-		await expect(
-			containerCallable({} as CapabilityDeps).invoke(f.ctx, { at: { x: 11, y: 64, z: 10 } }),
-		).rejects.toMatchObject({ code: "INTERRUPTED" });
+		await expect(callableOf("container@1").invoke(f.ctx, { at: { x: 11, y: 64, z: 10 } })).rejects.toMatchObject({
+			code: "INTERRUPTED",
+		});
 		expect(f.opened).toEqual([]);
 	});
 });

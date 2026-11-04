@@ -1,7 +1,7 @@
 /** Game-side composition root shared by bootstrap and development scenarios. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { buildCapabilities } from "../capabilities/index.js";
+import { builtinCatalog } from "../capabilities/index.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
@@ -140,7 +140,7 @@ export async function openExecutionSide(
 				options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
 		}
 	});
-	const capabilities = buildCapabilities({
+	const capabilities = builtinCatalog.bind({
 		runtime: getRuntime,
 		gotoDirector,
 		knowledge: () => facts.knowledge(),
@@ -418,7 +418,7 @@ export async function openExecutionSide(
 					value = await getRuntime().stop(payload as unknown as StopCommand);
 					break;
 				case "describe":
-					value = await describeDirectory(capabilities, library, p as DescribeParams);
+					value = await describeDirectory(builtinCatalog, library, p as DescribeParams);
 					break;
 				case "library": {
 					const request = payload as unknown as LibraryRequest;

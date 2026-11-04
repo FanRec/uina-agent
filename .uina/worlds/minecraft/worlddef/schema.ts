@@ -1,4 +1,5 @@
 /** Facade shapes only; native capability input schemas remain with their descriptors. */
+import { descriptor as chatDescriptor } from "../capabilities/actions/chat.js";
 import { librarySchema } from "../library/schema.js";
 
 const text = { type: "string", minLength: 1 };
@@ -38,7 +39,8 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
 		],
 	},
 	run: entry({ schedule, wait }),
-	chat: object({ text: { type: "string", minLength: 1 } }),
+	// 与 chat@1 descriptor 同源：facade 工具参数就是该能力的输入合同。
+	chat: chatDescriptor.input,
 	library: librarySchema,
 	runs: {
 		oneOf: [

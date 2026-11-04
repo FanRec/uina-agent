@@ -7,7 +7,7 @@
  */
 
 import type { JsonSchema } from "../../contracts/values.js";
-import type { QuerySpec } from "../shared/query.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 
 const PLACES_INPUT: JsonSchema = {
 	type: "object",
@@ -23,7 +23,8 @@ const PLACES_INPUT: JsonSchema = {
 	additionalProperties: false,
 };
 
-export const placesQuery: QuerySpec = {
+const placesDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "places@1",
 		summary:
@@ -52,4 +53,10 @@ export const placesQuery: QuerySpec = {
 			},
 		],
 	},
+	bind: () => null,
+};
+
+export const placesModule: MinecraftCapabilityModule = {
+	id: "places",
+	definitions: [placesDefinition],
 };

@@ -10,8 +10,8 @@ import type { ItemValue } from "../../contracts/body.js";
 import type { ClientFactView, ClientInventoryValue } from "../../contracts/client-facts.js";
 import type { Fact, JsonSchema, JsonValue } from "../../contracts/values.js";
 import { callFailure } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import type { QuerySpec } from "../shared/query.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 
 type SlotItem = ItemValue;
@@ -44,7 +44,8 @@ function gearOf(inventory: ClientInventoryValue): GearView {
 	return held == null ? { armor } : { held, armor };
 }
 
-const selfQuery: QuerySpec = {
+const selfDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "self@1",
 		// 手持/护甲切自同一份库存快照：库存修订也参与 self@1 的游标。
@@ -73,7 +74,7 @@ const selfQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		read: (view: ClientFactView): Fact<unknown> => {
 			const self = view.self();
@@ -88,7 +89,7 @@ const selfQuery: QuerySpec = {
 
 			return factOf({ ...self.value, ...gear }, { unknown, source: self.source, basis: self.basis });
 		},
-	},
+	}),
 };
 
 const INVENTORY_INPUT: JsonSchema = {
@@ -138,7 +139,8 @@ function fullInventoryFact(
 	);
 }
 
-const inventoryQuery: QuerySpec = {
+const inventoryDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "inventory@1",
 		facts: ["inventory"],
@@ -181,7 +183,7 @@ const inventoryQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const inventory = view.inventory();
@@ -209,9 +211,10 @@ const inventoryQuery: QuerySpec = {
 				return fullInventoryFact(value, meta, summary, ["slot change marks unavailable; returning full inventory"]);
 			return factOf({ revision: value.revision, changes, ...summary, selectedSlot: value.selectedSlot }, meta);
 		},
-	},
+	}),
 };
 
-export function bodyQueries(): QuerySpec[] {
-	return [selfQuery, inventoryQuery];
-}
+export const bodyModule: MinecraftCapabilityModule = {
+	id: "body",
+	definitions: [selfDefinition, inventoryDefinition],
+};

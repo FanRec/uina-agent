@@ -15,9 +15,10 @@
  */
 
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { resolveEntity } from "../shared/entities.js";
 import {
@@ -99,30 +100,6 @@ const descriptor: CallableDescriptor = {
 	examples: [{ input: { target: "zombie" }, output: { hit: true, target: { name: "zombie", health: null } } }],
 	implementation: "native",
 };
-
-export function attackCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void deps;
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as { target: string | EntityRef };
-			await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const entity = await resolveEntity(ctx.world, raw.target);
-			if (entity.distance > ENTITY_REACH) {
-				fail("UNREACHABLE", `${entity.name} is ${entity.distance} blocks away`, {
-					hint: "goto@1 closer first; attack does not path",
-				});
-			}
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				const outcome = await scope.player.attack(entity.ref, { evidenceMs: EVIDENCE_MS });
-				return plain({
-					hit: outcome.hit,
-					target: { name: entity.name, health: null },
-				});
-			});
-		},
-	};
-}
 
 // ---- fight@1 ----
 
@@ -255,290 +232,6 @@ async function dropsNear(
 		drops[entry.item.name] = (drops[entry.item.name] ?? 0) + entry.item.count;
 	}
 	return drops;
-}
-
-export function fightCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: fightDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as FightInput;
-			const stance = raw.stance ?? "balanced";
-			const params = stanceParams(stance);
-			const radius = raw.radius ?? 16;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 30000);
-			const probe = deps.surface();
-			const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
-			// 掉落物身份差集基线：会话内见过的 item 实体不归属给后续击杀。
-			const seenItems = new Set<number>();
-
-			const first = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const hpBefore = first.health;
-			const maxHealth = first.maxHealth;
-			const retreatHealth = effectiveRetreatHealth(stance, raw.retreatHealth, maxHealth);
-			// 接战门（§4 stance 接战血量）：低于接战线不获取目标；血量/maxHealth 未知不猜，放行接战。
-			const engageFloor = maxHealth != null ? Math.floor(maxHealth * params.engageRatio) : null;
-			const canAcquire = hpBefore == null || engageFloor == null || hpBefore >= engageFloor;
-
-			const scan0 = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
-			for (const entry of scan0) if (entry.item != null) seenItems.add(entry.ref.networkId);
-			const targets: TargetState[] = [];
-			let retreatAnchor: Vec3 = first.place.position;
-			if (raw.target != null) {
-				const match = matchFollowTarget(scan0, raw.target);
-				if (match === null) {
-					if (typeof raw.target === "string") {
-						fail(
-							"NOT_FOUND",
-							`no tracked entity named ${String(raw.target).replace(/^minecraft:/, "")} within ${radius + FIGHT_SCAN_MARGIN} blocks`,
-							{
-								hint: "read entities@1 first; listing is not proof of absence beyond the radius",
-							},
-						);
-					}
-					fail(
-						"REFERENCE_STALE",
-						`entity ${raw.target.networkId} is not tracked within ${radius + FIGHT_SCAN_MARGIN} blocks`,
-						{
-							hint: "re-read entities@1; out of range is not proof of absence",
-							recoverable: false,
-						},
-					);
-				}
-				if ("ambiguous" in match) {
-					const names = [...new Set(match.ambiguous.map((entity) => entity.name))].join(", ");
-					fail("INVALID_INPUT", `name ${String(raw.target)} matches several distinct entity names: ${names}`, {
-						hint: "pass the exact name or an EntityRef from entities@1",
-					});
-				}
-				retreatAnchor = match.found.position;
-				if (canAcquire && match.found.distance <= radius) targets.push(toTarget(match.found));
-			} else {
-				// 获取按声明 radius；扫描面带 FIGHT_SCAN_MARGIN 只为会话内的跟踪余量。
-				const hostiles = scan0.filter((entry) => entry.kind === "hostile" && entry.distance <= radius);
-				if (hostiles.length === 0) {
-					fail("NOT_FOUND", `no hostile entity within ${radius} blocks`, {
-						hint: "read entities@1 first; listing is not proof of absence beyond the radius",
-					});
-				}
-				retreatAnchor = hostiles[0]!.position;
-				if (canAcquire) {
-					for (const entry of hostiles.slice(0, params.maxTargets)) targets.push(toTarget(entry));
-				}
-			}
-
-			const kills: KillRecord[] = [];
-			let hpAfter = hpBefore;
-			// 会话中断统一走这里：INTERRUPTED 必须带 kills/hp（§2.7 中断保留已发生的事）。
-			const onInterrupted = (): never => interrupted(kills, hpBefore, hpAfter);
-			// 开场血量低于接战线：不接战，按血量撤退结算（有 anchor 就背向它拉开）。
-			if (targets.length === 0) {
-				const at = await withdraw(
-					deps,
-					ctx,
-					owner,
-					probe,
-					params.surfaceBeforeFlee,
-					deadline,
-					retreatAnchor,
-					onInterrupted,
-				);
-				const finalSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-				return plain({
-					ended: "retreated",
-					kills,
-					hp: { before: hpBefore, after: finalSelf.health },
-					retreated: "low_health",
-					stance,
-					retreatHealth,
-					at,
-				});
-			}
-
-			// 武器/盾装备拍：一次会话换装一次。
-			const inventory = await readInventory(ctx.world);
-			const weaponMode = pickWeaponMode(raw.weapon ?? "auto", params.ranged, inventory, hpBefore, maxHealth, targets);
-			await ctx.withBody(async (scope: BodyCallScope) => {
-				if (weaponMode === "ranged") {
-					const bowName = (inventory.counts.bow ?? 0) > 0 ? "bow" : "crossbow";
-					await scope.player.equip({ name: bowName }, "hand");
-				} else {
-					const weapon = bestMeleeWeapon(inventory.counts);
-					if (weapon != null) await scope.player.equip({ name: weapon }, "hand");
-				}
-				if (stance !== "aggressive" && (inventory.counts.shield ?? 0) > 0) {
-					// 盾是机会装备：装备失败不阻止战斗（背包/资格态可经 inventory@1 观察）。
-					try {
-						await scope.player.equip({ name: "shield" }, "offhand");
-					} catch {
-						/* proceed without shield */
-					}
-				}
-			});
-
-			let ended: "targets_cleared" | "retreated" | "target_lost" | "timeout" = "timeout";
-			let retreatedReason: "low_health" | "no_progress" | null = null;
-			let lastProgressAt = Date.now();
-			let bestGap = Number.POSITIVE_INFINITY;
-			let nearestId = -1;
-			for (;;) {
-				if (ctx.signal.aborted) onInterrupted();
-				if (Date.now() >= deadline) {
-					ended = "timeout";
-					break;
-				}
-				const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-				hpAfter = self.health;
-				if (retreatHealth != null && self.health != null && self.health < retreatHealth) {
-					await withdraw(
-						deps,
-						ctx,
-						owner,
-						probe,
-						params.surfaceBeforeFlee,
-						deadline,
-						nearestAnchor(targets, self.place.position),
-						onInterrupted,
-					);
-					ended = "retreated";
-					retreatedReason = "low_health";
-					break;
-				}
-				const scan = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
-				for (const entry of scan) if (entry.item != null) seenItems.add(entry.ref.networkId);
-				let liveCount = 0;
-				let nearest: TargetState | null = null;
-				let nearestGap = Number.POSITIVE_INFINITY;
-				for (const target of targets) {
-					if (target.killed || target.lost) continue;
-					const found = scan.find((entry) => entry.ref.networkId === target.ref.networkId);
-					if (found == null) {
-						// 无死亡证据的消失：target_lost，不冒认击杀（§4）。
-						target.lost = true;
-						continue;
-					}
-					target.lastPosition = found.position;
-					liveCount += 1;
-					const gap = distance(self.place.position, found.position);
-					if (gap < nearestGap) {
-						nearestGap = gap;
-						nearest = target;
-					}
-				}
-				if (targets.every((target) => target.killed)) {
-					ended = "targets_cleared";
-					break;
-				}
-				if (liveCount === 0) {
-					ended = "target_lost";
-					break;
-				}
-				// no_progress：迟迟无法接近也无法命中，主动脱离（retreated 是成功返回值）。
-				// bestGap 按目标身份跟踪：击杀后 nearest 换人，距离正常变大不是停滞。
-				if (nearest!.ref.networkId !== nearestId) {
-					nearestId = nearest!.ref.networkId;
-					bestGap = Number.POSITIVE_INFINITY;
-				}
-				if (nearestGap < bestGap - 0.5) {
-					bestGap = nearestGap;
-					lastProgressAt = Date.now();
-				} else if (Date.now() - lastProgressAt > NO_PROGRESS_MS_VALUE) {
-					await withdraw(
-						deps,
-						ctx,
-						owner,
-						probe,
-						params.surfaceBeforeFlee,
-						deadline,
-						nearest!.lastPosition,
-						onInterrupted,
-					);
-					ended = "retreated";
-					retreatedReason = "no_progress";
-					break;
-				}
-				if (nearest == null) continue;
-				if (weaponMode === "ranged") {
-					if (nearestGap > RANGED_STANDOFF_MAX) {
-						await chaseLeg(deps, ctx, owner, nearest.lastPosition, 2, deadline, onInterrupted);
-					} else if (nearestGap < RANGED_STANDOFF_MIN) {
-						// 拉开半段：背向目标小步退。
-						const away = fleeLegTarget(self.place.position, nearest.lastPosition, 0, 6);
-						await chaseLeg(deps, ctx, owner, away, 2, deadline, onInterrupted);
-					} else {
-						const kill = await shootBeat(ctx, nearest, radius, seenItems);
-						if (kill != null) {
-							nearest.killed = true;
-							kills.push(kill);
-						}
-						await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
-					}
-				} else {
-					if (nearestGap > params.engageDistance + 0.6) {
-						await chaseLeg(deps, ctx, owner, nearest.lastPosition, 1, deadline, onInterrupted);
-					} else {
-						await ctx.withBody(async (scope: BodyCallScope) => {
-							let outcome: { dead: boolean | null; hit: boolean | null };
-							try {
-								outcome = await scope.player.attack(nearest!.ref, { evidenceMs: EVIDENCE_MS });
-							} catch (error) {
-								// 扫描与派发之间目标失联（被打落平台/被移走）：本拍放弃，
-								// 下一轮扫描按事实结算——还在就继续打，不在就是 target_lost。
-								if ((error as { code?: string }).code === "REFERENCE_STALE") return;
-								throw error;
-							}
-							if (outcome.dead === true) {
-								nearest!.killed = true;
-								kills.push({
-									name: nearest!.name,
-									drops: await dropsNear(ctx, nearest!.lastPosition, radius, seenItems),
-								});
-							}
-							// 冷却期举盾格挡（盾在 offhand、主手是武器时右键即举盾）：无格挡时
-							// 3 僵尸的承伤速度会压过任何循环粒度的撤退检查（真服实测）。
-							// 格挡是机会动作：目标恰好失联就跳过，不让它炸掉会话。
-							if (stance !== "aggressive" && !nearest!.killed) {
-								try {
-									await scope.player.drive({ keys: {}, lookAt: nearest!.ref, use: { mode: "hold", hand: "off" } }, 13);
-								} catch (error) {
-									if ((error as { code?: string }).code !== "REFERENCE_STALE") throw error;
-								}
-							}
-						});
-						await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
-						// 攻击后的即时血量复查：循环顶的检查节奏 (~1.3s) 接不住
-						// "撤退线 8 → 安全线 6" 的 2 格血窗，挨打后必须马上看一眼（真服实测）。
-						const fresh = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-						hpAfter = fresh.health;
-						if (retreatHealth != null && fresh.health != null && fresh.health < retreatHealth) {
-							await withdraw(
-								deps,
-								ctx,
-								owner,
-								probe,
-								params.surfaceBeforeFlee,
-								deadline,
-								nearestAnchor(targets, fresh.place.position),
-								onInterrupted,
-							);
-							ended = "retreated";
-							retreatedReason = "low_health";
-							break;
-						}
-					}
-				}
-			}
-			const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			return plain({
-				ended,
-				kills,
-				hp: { before: hpBefore, after: ended === "retreated" ? final.health : hpAfter },
-				...(retreatedReason != null ? { retreated: retreatedReason } : {}),
-				stance,
-				retreatHealth,
-				at: { position: final.place.position, dimension: final.place.dimension },
-			});
-		},
-	};
 }
 
 // ---- fight@1 会话内共享 ----
@@ -713,3 +406,326 @@ async function withdraw(
 	const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 	return final.place.position;
 }
+
+export const combatModule: MinecraftCapabilityModule = {
+	id: "combat",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as { target: string | EntityRef };
+					await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const entity = await resolveEntity(ctx.world, raw.target);
+					if (entity.distance > ENTITY_REACH) {
+						fail("UNREACHABLE", `${entity.name} is ${entity.distance} blocks away`, {
+							hint: "goto@1 closer first; attack does not path",
+						});
+					}
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						const outcome = await scope.player.attack(entity.ref, { evidenceMs: EVIDENCE_MS });
+						return plain({
+							hit: outcome.hit,
+							target: { name: entity.name, health: null },
+						});
+					});
+				},
+		},
+		{
+			kind: "action",
+			descriptor: fightDescriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as FightInput;
+					const stance = raw.stance ?? "balanced";
+					const params = stanceParams(stance);
+					const radius = raw.radius ?? 16;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 30000);
+					const probe = deps.surface();
+					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					// 掉落物身份差集基线：会话内见过的 item 实体不归属给后续击杀。
+					const seenItems = new Set<number>();
+
+					const first = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const hpBefore = first.health;
+					const maxHealth = first.maxHealth;
+					const retreatHealth = effectiveRetreatHealth(stance, raw.retreatHealth, maxHealth);
+					// 接战门（§4 stance 接战血量）：低于接战线不获取目标；血量/maxHealth 未知不猜，放行接战。
+					const engageFloor = maxHealth != null ? Math.floor(maxHealth * params.engageRatio) : null;
+					const canAcquire = hpBefore == null || engageFloor == null || hpBefore >= engageFloor;
+
+					const scan0 = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
+					for (const entry of scan0) if (entry.item != null) seenItems.add(entry.ref.networkId);
+					const targets: TargetState[] = [];
+					let retreatAnchor: Vec3 = first.place.position;
+					if (raw.target != null) {
+						const match = matchFollowTarget(scan0, raw.target);
+						if (match === null) {
+							if (typeof raw.target === "string") {
+								fail(
+									"NOT_FOUND",
+									`no tracked entity named ${String(raw.target).replace(/^minecraft:/, "")} within ${radius + FIGHT_SCAN_MARGIN} blocks`,
+									{
+										hint: "read entities@1 first; listing is not proof of absence beyond the radius",
+									},
+								);
+							}
+							fail(
+								"REFERENCE_STALE",
+								`entity ${raw.target.networkId} is not tracked within ${radius + FIGHT_SCAN_MARGIN} blocks`,
+								{
+									hint: "re-read entities@1; out of range is not proof of absence",
+									recoverable: false,
+								},
+							);
+						}
+						if ("ambiguous" in match) {
+							const names = [...new Set(match.ambiguous.map((entity) => entity.name))].join(", ");
+							fail("INVALID_INPUT", `name ${String(raw.target)} matches several distinct entity names: ${names}`, {
+								hint: "pass the exact name or an EntityRef from entities@1",
+							});
+						}
+						retreatAnchor = match.found.position;
+						if (canAcquire && match.found.distance <= radius) targets.push(toTarget(match.found));
+					} else {
+						// 获取按声明 radius；扫描面带 FIGHT_SCAN_MARGIN 只为会话内的跟踪余量。
+						const hostiles = scan0.filter((entry) => entry.kind === "hostile" && entry.distance <= radius);
+						if (hostiles.length === 0) {
+							fail("NOT_FOUND", `no hostile entity within ${radius} blocks`, {
+								hint: "read entities@1 first; listing is not proof of absence beyond the radius",
+							});
+						}
+						retreatAnchor = hostiles[0]!.position;
+						if (canAcquire) {
+							for (const entry of hostiles.slice(0, params.maxTargets)) targets.push(toTarget(entry));
+						}
+					}
+
+					const kills: KillRecord[] = [];
+					let hpAfter = hpBefore;
+					// 会话中断统一走这里：INTERRUPTED 必须带 kills/hp（§2.7 中断保留已发生的事）。
+					const onInterrupted = (): never => interrupted(kills, hpBefore, hpAfter);
+					// 开场血量低于接战线：不接战，按血量撤退结算（有 anchor 就背向它拉开）。
+					if (targets.length === 0) {
+						const at = await withdraw(
+							deps,
+							ctx,
+							owner,
+							probe,
+							params.surfaceBeforeFlee,
+							deadline,
+							retreatAnchor,
+							onInterrupted,
+						);
+						const finalSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+						return plain({
+							ended: "retreated",
+							kills,
+							hp: { before: hpBefore, after: finalSelf.health },
+							retreated: "low_health",
+							stance,
+							retreatHealth,
+							at,
+						});
+					}
+
+					// 武器/盾装备拍：一次会话换装一次。
+					const inventory = await readInventory(ctx.world);
+					const weaponMode = pickWeaponMode(
+						raw.weapon ?? "auto",
+						params.ranged,
+						inventory,
+						hpBefore,
+						maxHealth,
+						targets,
+					);
+					await ctx.withBody(async (scope: BodyCallScope) => {
+						if (weaponMode === "ranged") {
+							const bowName = (inventory.counts.bow ?? 0) > 0 ? "bow" : "crossbow";
+							await scope.player.equip({ name: bowName }, "hand");
+						} else {
+							const weapon = bestMeleeWeapon(inventory.counts);
+							if (weapon != null) await scope.player.equip({ name: weapon }, "hand");
+						}
+						if (stance !== "aggressive" && (inventory.counts.shield ?? 0) > 0) {
+							// 盾是机会装备：装备失败不阻止战斗（背包/资格态可经 inventory@1 观察）。
+							try {
+								await scope.player.equip({ name: "shield" }, "offhand");
+							} catch {
+								/* proceed without shield */
+							}
+						}
+					});
+
+					let ended: "targets_cleared" | "retreated" | "target_lost" | "timeout" = "timeout";
+					let retreatedReason: "low_health" | "no_progress" | null = null;
+					let lastProgressAt = Date.now();
+					let bestGap = Number.POSITIVE_INFINITY;
+					let nearestId = -1;
+					for (;;) {
+						if (ctx.signal.aborted) onInterrupted();
+						if (Date.now() >= deadline) {
+							ended = "timeout";
+							break;
+						}
+						const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+						hpAfter = self.health;
+						if (retreatHealth != null && self.health != null && self.health < retreatHealth) {
+							await withdraw(
+								deps,
+								ctx,
+								owner,
+								probe,
+								params.surfaceBeforeFlee,
+								deadline,
+								nearestAnchor(targets, self.place.position),
+								onInterrupted,
+							);
+							ended = "retreated";
+							retreatedReason = "low_health";
+							break;
+						}
+						const scan = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
+						for (const entry of scan) if (entry.item != null) seenItems.add(entry.ref.networkId);
+						let liveCount = 0;
+						let nearest: TargetState | null = null;
+						let nearestGap = Number.POSITIVE_INFINITY;
+						for (const target of targets) {
+							if (target.killed || target.lost) continue;
+							const found = scan.find((entry) => entry.ref.networkId === target.ref.networkId);
+							if (found == null) {
+								// 无死亡证据的消失：target_lost，不冒认击杀（§4）。
+								target.lost = true;
+								continue;
+							}
+							target.lastPosition = found.position;
+							liveCount += 1;
+							const gap = distance(self.place.position, found.position);
+							if (gap < nearestGap) {
+								nearestGap = gap;
+								nearest = target;
+							}
+						}
+						if (targets.every((target) => target.killed)) {
+							ended = "targets_cleared";
+							break;
+						}
+						if (liveCount === 0) {
+							ended = "target_lost";
+							break;
+						}
+						// no_progress：迟迟无法接近也无法命中，主动脱离（retreated 是成功返回值）。
+						// bestGap 按目标身份跟踪：击杀后 nearest 换人，距离正常变大不是停滞。
+						if (nearest!.ref.networkId !== nearestId) {
+							nearestId = nearest!.ref.networkId;
+							bestGap = Number.POSITIVE_INFINITY;
+						}
+						if (nearestGap < bestGap - 0.5) {
+							bestGap = nearestGap;
+							lastProgressAt = Date.now();
+						} else if (Date.now() - lastProgressAt > NO_PROGRESS_MS_VALUE) {
+							await withdraw(
+								deps,
+								ctx,
+								owner,
+								probe,
+								params.surfaceBeforeFlee,
+								deadline,
+								nearest!.lastPosition,
+								onInterrupted,
+							);
+							ended = "retreated";
+							retreatedReason = "no_progress";
+							break;
+						}
+						if (nearest == null) continue;
+						if (weaponMode === "ranged") {
+							if (nearestGap > RANGED_STANDOFF_MAX) {
+								await chaseLeg(deps, ctx, owner, nearest.lastPosition, 2, deadline, onInterrupted);
+							} else if (nearestGap < RANGED_STANDOFF_MIN) {
+								// 拉开半段：背向目标小步退。
+								const away = fleeLegTarget(self.place.position, nearest.lastPosition, 0, 6);
+								await chaseLeg(deps, ctx, owner, away, 2, deadline, onInterrupted);
+							} else {
+								const kill = await shootBeat(ctx, nearest, radius, seenItems);
+								if (kill != null) {
+									nearest.killed = true;
+									kills.push(kill);
+								}
+								await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
+							}
+						} else {
+							if (nearestGap > params.engageDistance + 0.6) {
+								await chaseLeg(deps, ctx, owner, nearest.lastPosition, 1, deadline, onInterrupted);
+							} else {
+								await ctx.withBody(async (scope: BodyCallScope) => {
+									let outcome: { dead: boolean | null; hit: boolean | null };
+									try {
+										outcome = await scope.player.attack(nearest!.ref, { evidenceMs: EVIDENCE_MS });
+									} catch (error) {
+										// 扫描与派发之间目标失联（被打落平台/被移走）：本拍放弃，
+										// 下一轮扫描按事实结算——还在就继续打，不在就是 target_lost。
+										if ((error as { code?: string }).code === "REFERENCE_STALE") return;
+										throw error;
+									}
+									if (outcome.dead === true) {
+										nearest!.killed = true;
+										kills.push({
+											name: nearest!.name,
+											drops: await dropsNear(ctx, nearest!.lastPosition, radius, seenItems),
+										});
+									}
+									// 冷却期举盾格挡（盾在 offhand、主手是武器时右键即举盾）：无格挡时
+									// 3 僵尸的承伤速度会压过任何循环粒度的撤退检查（真服实测）。
+									// 格挡是机会动作：目标恰好失联就跳过，不让它炸掉会话。
+									if (stance !== "aggressive" && !nearest!.killed) {
+										try {
+											await scope.player.drive(
+												{ keys: {}, lookAt: nearest!.ref, use: { mode: "hold", hand: "off" } },
+												13,
+											);
+										} catch (error) {
+											if ((error as { code?: string }).code !== "REFERENCE_STALE") throw error;
+										}
+									}
+								});
+								await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
+								// 攻击后的即时血量复查：循环顶的检查节奏 (~1.3s) 接不住
+								// "撤退线 8 → 安全线 6" 的 2 格血窗，挨打后必须马上看一眼（真服实测）。
+								const fresh = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+								hpAfter = fresh.health;
+								if (retreatHealth != null && fresh.health != null && fresh.health < retreatHealth) {
+									await withdraw(
+										deps,
+										ctx,
+										owner,
+										probe,
+										params.surfaceBeforeFlee,
+										deadline,
+										nearestAnchor(targets, fresh.place.position),
+										onInterrupted,
+									);
+									ended = "retreated";
+									retreatedReason = "low_health";
+									break;
+								}
+							}
+						}
+					}
+					const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					return plain({
+						ended,
+						kills,
+						hp: { before: hpBefore, after: ended === "retreated" ? final.health : hpAfter },
+						...(retreatedReason != null ? { retreated: retreatedReason } : {}),
+						stance,
+						retreatHealth,
+						at: { position: final.place.position, dimension: final.place.dimension },
+					});
+				},
+		},
+	],
+};

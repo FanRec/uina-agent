@@ -8,7 +8,7 @@
  */
 
 import type { JsonSchema } from "../../contracts/values.js";
-import type { QuerySpec } from "../shared/query.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { POS_SCHEMA } from "../shared/schema.js";
 
 const ROUTE_PLAN_INPUT: JsonSchema = {
@@ -24,7 +24,8 @@ const ROUTE_PLAN_INPUT: JsonSchema = {
 	additionalProperties: false,
 };
 
-export const routePlanQuery: QuerySpec = {
+const routePlanDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "route.plan@1",
 		summary:
@@ -50,4 +51,10 @@ export const routePlanQuery: QuerySpec = {
 			},
 		],
 	},
+	bind: () => null,
+};
+
+export const routePlanModule: MinecraftCapabilityModule = {
+	id: "route-plan",
+	definitions: [routePlanDefinition],
 };

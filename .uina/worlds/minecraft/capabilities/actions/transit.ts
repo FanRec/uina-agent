@@ -13,9 +13,10 @@
 
 import { isReplaceableName, resolvePoint } from "../../construction/target.js";
 import type { ControlOwner, SelfState } from "../../contracts/body.js";
-import type { CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { sleepAbortable } from "../shared/mobility.js";
 import { readValue } from "../shared/observe.js";
@@ -161,70 +162,6 @@ interface PortalPlace {
 	entrance: Vec3;
 	/** 进门那一拍要不要按 jump（门立在平地上时，门内比脚下高一格）。 */
 	stepUp: boolean;
-}
-
-export function transitCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as TransitInput;
-			const deadline = Date.now() + (raw.maxTimeMs ?? 600000);
-			const target = bareDimension(raw.destination.dimension);
-			if (!KNOWN_DIMENSIONS.has(target)) {
-				fail("INVALID_INPUT", `unknown dimension ${raw.destination.dimension}`, {
-					hint: `expected one of ${[...KNOWN_DIMENSIONS].join(", ")}`,
-				});
-			}
-			const allow = raw.allow ?? ["portal"];
-			let self = await readSelf(ctx);
-			const destinationAt = resolveDestinationAt(raw.destination.at, target, self);
-			const stages: Stage[] = [];
-			const current = bareDimension(self.place.dimension);
-
-			if (current === target) {
-				if (destinationAt != null) {
-					await leg(deps, ctx, destinationAt, 2, deadline, stages);
-					self = await readSelf(ctx);
-				}
-				return report(self, stages);
-			}
-			// 末地门是另一种结构：不在这里建，也不该先建一扇下界门再等 60s 超时。
-			if (!PORTAL_DIMENSIONS.has(current) || !PORTAL_DIMENSIONS.has(target)) {
-				fail("UNREACHABLE", `a nether portal cannot connect ${current} and ${target}`, {
-					hint: "stage: plan — the_end needs an end portal frame, which transit@1 does not build",
-					progress: { stage: "plan", from: current, to: target },
-				});
-			}
-			if (!allow.includes("portal")) {
-				fail(
-					"UNREACHABLE",
-					`crossing from ${current} to ${target} needs a portal, but allow is [${allow.join(", ")}]`,
-					{
-						hint: "stage: plan — no transport in allow can cross dimensions",
-						progress: { stage: "plan", furthest: self.place.position, from: current, to: target, allow },
-					},
-				);
-			}
-
-			const place = await ensurePortal(deps, ctx, self, target, destinationAt, deadline, stages);
-			await enterPortal(deps, ctx, place, current, deadline, stages);
-			self = await waitForDimension(ctx, target, deadline);
-			await leavePortal(ctx, stages);
-			if (destinationAt != null) {
-				await leg(deps, ctx, destinationAt, 2, deadline, stages);
-				self = await readSelf(ctx);
-			}
-			// 只在走过 destinationAt 之后可达：那一段步行可能自己穿回另一扇门。
-			if (bareDimension(self.place.dimension) !== target) {
-				fail("WRONG_STATE", `still in ${self.place.dimension} after travelling to ${target}`, {
-					hint: "the walking leg ended in another dimension; re-read self before retrying",
-					dispatch: "sent",
-					progress: { stage: "goto", at: self.place.position, dimension: bareDimension(self.place.dimension) },
-				});
-			}
-			return report(self, stages);
-		},
-	};
 }
 
 function report(self: SelfState, stages: Stage[]): JsonValue {
@@ -580,3 +517,73 @@ async function leavePortal(ctx: CallContext, stages: Stage[]): Promise<void> {
 		stages.push({ kind: "leave", ok: false, reason: code ?? "walk-out failed" });
 	}
 }
+
+export const transitModule: MinecraftCapabilityModule = {
+	id: "transit",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as TransitInput;
+					const deadline = Date.now() + (raw.maxTimeMs ?? 600000);
+					const target = bareDimension(raw.destination.dimension);
+					if (!KNOWN_DIMENSIONS.has(target)) {
+						fail("INVALID_INPUT", `unknown dimension ${raw.destination.dimension}`, {
+							hint: `expected one of ${[...KNOWN_DIMENSIONS].join(", ")}`,
+						});
+					}
+					const allow = raw.allow ?? ["portal"];
+					let self = await readSelf(ctx);
+					const destinationAt = resolveDestinationAt(raw.destination.at, target, self);
+					const stages: Stage[] = [];
+					const current = bareDimension(self.place.dimension);
+
+					if (current === target) {
+						if (destinationAt != null) {
+							await leg(deps, ctx, destinationAt, 2, deadline, stages);
+							self = await readSelf(ctx);
+						}
+						return report(self, stages);
+					}
+					// 末地门是另一种结构：不在这里建，也不该先建一扇下界门再等 60s 超时。
+					if (!PORTAL_DIMENSIONS.has(current) || !PORTAL_DIMENSIONS.has(target)) {
+						fail("UNREACHABLE", `a nether portal cannot connect ${current} and ${target}`, {
+							hint: "stage: plan — the_end needs an end portal frame, which transit@1 does not build",
+							progress: { stage: "plan", from: current, to: target },
+						});
+					}
+					if (!allow.includes("portal")) {
+						fail(
+							"UNREACHABLE",
+							`crossing from ${current} to ${target} needs a portal, but allow is [${allow.join(", ")}]`,
+							{
+								hint: "stage: plan — no transport in allow can cross dimensions",
+								progress: { stage: "plan", furthest: self.place.position, from: current, to: target, allow },
+							},
+						);
+					}
+
+					const place = await ensurePortal(deps, ctx, self, target, destinationAt, deadline, stages);
+					await enterPortal(deps, ctx, place, current, deadline, stages);
+					self = await waitForDimension(ctx, target, deadline);
+					await leavePortal(ctx, stages);
+					if (destinationAt != null) {
+						await leg(deps, ctx, destinationAt, 2, deadline, stages);
+						self = await readSelf(ctx);
+					}
+					// 只在走过 destinationAt 之后可达：那一段步行可能自己穿回另一扇门。
+					if (bareDimension(self.place.dimension) !== target) {
+						fail("WRONG_STATE", `still in ${self.place.dimension} after travelling to ${target}`, {
+							hint: "the walking leg ended in another dimension; re-read self before retrying",
+							dispatch: "sent",
+							progress: { stage: "goto", at: self.place.position, dimension: bareDimension(self.place.dimension) },
+						});
+					}
+					return report(self, stages);
+				},
+		},
+	],
+};

@@ -10,12 +10,13 @@
 import type { ClientFactView } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import { type KnowledgeDeps, requireKnowledge } from "../shared/knowledge.js";
-import type { QuerySpec } from "../shared/query.js";
+import { requireKnowledge } from "../shared/knowledge.js";
 import { fail, stripNamespace } from "../shared/targets.js";
 
-const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
+const itemDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "item@1",
 		summary: "Static item knowledge: stack size, food, tool, placement and how the item can be obtained",
@@ -44,7 +45,7 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			},
 		],
 	},
-	reader: {
+	bind: (deps) => ({
 		kind: "static",
 		read: (input: JsonValue): Fact<unknown> => {
 			const name = stripNamespace((input as { name: string }).name);
@@ -62,10 +63,11 @@ const itemQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			if (item.fuel == null) unknown.push("fuel burn time is unknown for this item");
 			return factOf({ ...item, dataVersion: knowledge.dataVersion }, { unknown, source: "derived" });
 		},
-	},
-});
+	}),
+};
 
-const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
+const recipeDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "recipe@1",
 		facts: ["inventory"],
@@ -114,7 +116,7 @@ const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			},
 		],
 	},
-	reader: {
+	bind: (deps) => ({
 		kind: "current",
 		cursor: "none",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
@@ -138,8 +140,8 @@ const recipeQuery = (deps: KnowledgeDeps): QuerySpec => ({
 			}
 			return factOf({ recipes, ...(plan == null ? {} : { plan }) }, { unknown, source: "derived" });
 		},
-	},
-});
+	}),
+};
 
 /** 选"缺得最少"的配方：先看缺料种类数，再看缺料总量；steps 只列本版本能合成的中间物。 */
 function planOf(
@@ -192,6 +194,7 @@ function planOf(
 	return { steps, need: best.need, have, missing: best.missing };
 }
 
-export function knowledgeQueries(deps: KnowledgeDeps): QuerySpec[] {
-	return [itemQuery(deps), recipeQuery(deps)];
-}
+export const knowledgeModule: MinecraftCapabilityModule = {
+	id: "knowledge",
+	definitions: [itemDefinition, recipeDefinition],
+};

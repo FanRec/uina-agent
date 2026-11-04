@@ -8,9 +8,10 @@
  */
 
 import type { ItemSelector, SelfState } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
@@ -92,83 +93,6 @@ function dropDelta(
 	return null;
 }
 
-export function mineCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as MineInput;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const target = resolvePoint(raw.at, self);
-			if (target.dimension !== self.place.dimension) {
-				fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`);
-			}
-			const position = resolveGrid(raw.at, self);
-			const block = await readBlockAt(ctx.world, position);
-			if (block == null) {
-				fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is not loaded or is air`, {
-					hint: "read block@1 first; unloaded chunks are not holes",
-				});
-			}
-			if (block.name === "air") {
-				fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is already air`);
-			}
-			const reach = blockReach(self, position);
-			if (reach > BLOCK_REACH) {
-				fail("UNREACHABLE", `${block.name} at ${position.x},${position.y},${position.z} is out of reach`, {
-					hint: `goto@1 closer first; mine does not path (need <= ${BLOCK_REACH}, was ${round2(reach)})`,
-				});
-			}
-			const knowledge = deps.knowledge();
-			const expected = knowledge?.blockDrops(block.name)?.items ?? [];
-
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				const inventory = await readInventory(scope.world);
-				const tool = chooseTool(knowledge, inventory, block.name, raw.tool);
-				const selector: ItemSelector | null =
-					tool == null ? null : { ...(typeof raw.tool === "object" ? raw.tool : {}), name: tool, substitutions: [] };
-				if (selector != null) {
-					const heldSlot =
-						inventory.selectedSlot == null
-							? null
-							: inventory.slots.find((slot) => slot.slot === inventory.selectedSlot! + 36);
-					if (heldSlot == null || !matchesItem(selector, heldSlot)) {
-						const equipped = await scope.player.equip(selector, "hand");
-						if (equipped.completion !== "met")
-							fail("TARGET_NOT_MET", "tool equipment has no confirmed server result", {
-								dispatch: equipped.dispatch,
-								effects: [equipped.effect],
-							});
-					}
-				}
-				const receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
-				if (receipt.completion !== "met")
-					fail("TARGET_NOT_MET", "the server did not confirm the target block was broken", {
-						dispatch: receipt.dispatch,
-						effects: [receipt.effect],
-						progress: { broken: false, at: position, block: block.name },
-					});
-
-				let dropped: { name: string; count: number } | null = null;
-				if (raw.collect !== false && expected.length > 0 && knowledge != null) {
-					// 掉落可能没捡到（背包满/被抢），观察不到就省略，不猜数量。
-					const picked = await pollUntil(
-						async () => await readInventory(scope.world),
-						(inv) => dropDelta(inventory, inv, expected) != null,
-						{ timeoutMs: PICKUP_TIMEOUT_MS, intervalMs: PICKUP_INTERVAL_MS, signal: ctx.signal },
-					);
-					if (picked.ok && picked.last != null) dropped = dropDelta(inventory, picked.last, expected);
-				}
-
-				return plain({
-					broken: true,
-					...(dropped != null ? { dropped } : {}),
-					...(tool != null ? { tool: stripNamespace(tool) } : {}),
-				});
-			});
-		},
-	};
-}
-
 function placeOf(self: SelfState, position: Vec3) {
 	return {
 		world: self.place.world,
@@ -177,3 +101,88 @@ function placeOf(self: SelfState, position: Vec3) {
 		position,
 	};
 }
+
+export const miningModule: MinecraftCapabilityModule = {
+	id: "mining",
+	definitions: [
+		{
+			kind: "action",
+			descriptor,
+			bind:
+				(deps: CapabilityDeps) =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as MineInput;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const target = resolvePoint(raw.at, self);
+					if (target.dimension !== self.place.dimension) {
+						fail("WRONG_STATE", `target is in ${target.dimension}, current dimension is ${self.place.dimension}`);
+					}
+					const position = resolveGrid(raw.at, self);
+					const block = await readBlockAt(ctx.world, position);
+					if (block == null) {
+						fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is not loaded or is air`, {
+							hint: "read block@1 first; unloaded chunks are not holes",
+						});
+					}
+					if (block.name === "air") {
+						fail("NOT_FOUND", `block at ${position.x},${position.y},${position.z} is already air`);
+					}
+					const reach = blockReach(self, position);
+					if (reach > BLOCK_REACH) {
+						fail("UNREACHABLE", `${block.name} at ${position.x},${position.y},${position.z} is out of reach`, {
+							hint: `goto@1 closer first; mine does not path (need <= ${BLOCK_REACH}, was ${round2(reach)})`,
+						});
+					}
+					const knowledge = deps.knowledge();
+					const expected = knowledge?.blockDrops(block.name)?.items ?? [];
+
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						const inventory = await readInventory(scope.world);
+						const tool = chooseTool(knowledge, inventory, block.name, raw.tool);
+						const selector: ItemSelector | null =
+							tool == null
+								? null
+								: { ...(typeof raw.tool === "object" ? raw.tool : {}), name: tool, substitutions: [] };
+						if (selector != null) {
+							const heldSlot =
+								inventory.selectedSlot == null
+									? null
+									: inventory.slots.find((slot) => slot.slot === inventory.selectedSlot! + 36);
+							if (heldSlot == null || !matchesItem(selector, heldSlot)) {
+								const equipped = await scope.player.equip(selector, "hand");
+								if (equipped.completion !== "met")
+									fail("TARGET_NOT_MET", "tool equipment has no confirmed server result", {
+										dispatch: equipped.dispatch,
+										effects: [equipped.effect],
+									});
+							}
+						}
+						const receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
+						if (receipt.completion !== "met")
+							fail("TARGET_NOT_MET", "the server did not confirm the target block was broken", {
+								dispatch: receipt.dispatch,
+								effects: [receipt.effect],
+								progress: { broken: false, at: position, block: block.name },
+							});
+
+						let dropped: { name: string; count: number } | null = null;
+						if (raw.collect !== false && expected.length > 0 && knowledge != null) {
+							// 掉落可能没捡到（背包满/被抢），观察不到就省略，不猜数量。
+							const picked = await pollUntil(
+								async () => await readInventory(scope.world),
+								(inv) => dropDelta(inventory, inv, expected) != null,
+								{ timeoutMs: PICKUP_TIMEOUT_MS, intervalMs: PICKUP_INTERVAL_MS, signal: ctx.signal },
+							);
+							if (picked.ok && picked.last != null) dropped = dropDelta(inventory, picked.last, expected);
+						}
+
+						return plain({
+							broken: true,
+							...(dropped != null ? { dropped } : {}),
+							...(tool != null ? { tool: stripNamespace(tool) } : {}),
+						});
+					});
+				},
+		},
+	],
+};

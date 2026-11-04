@@ -7,7 +7,7 @@
  */
 
 import type { JsonSchema } from "../../contracts/values.js";
-import type { QuerySpec } from "../shared/query.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 
 const EVENTS_INPUT: JsonSchema = {
 	oneOf: [
@@ -34,7 +34,8 @@ const EVENTS_INPUT: JsonSchema = {
 	],
 };
 
-export const eventsQuery: QuerySpec = {
+const eventsDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "events@1",
 		summary:
@@ -64,4 +65,10 @@ export const eventsQuery: QuerySpec = {
 			},
 		],
 	},
+	bind: () => null,
+};
+
+export const eventsModule: MinecraftCapabilityModule = {
+	id: "events",
+	definitions: [eventsDefinition],
 };

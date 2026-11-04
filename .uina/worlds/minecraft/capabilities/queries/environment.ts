@@ -10,18 +10,14 @@
 
 import type { EntityRef } from "../../contracts/body.js";
 import type { ClientFactView } from "../../contracts/client-facts.js";
-import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Fact, JsonValue } from "../../contracts/values.js";
+import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import type { QuerySpec } from "../shared/query.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 import { distance } from "../shared/targets.js";
 
-export interface EnvironmentDeps {
-	knowledge: () => RegistryKnowledge | null;
-}
-
-const worldQuery: QuerySpec = {
+const worldDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "world@1",
 		// ticks/timeOfDay 随时间连续变化：world 修订在物理拍诚实推进。
@@ -41,13 +37,13 @@ const worldQuery: QuerySpec = {
 			},
 		],
 	},
-	reader: {
+	bind: () => ({
 		kind: "current",
 		read: (view: ClientFactView): Fact<unknown> => {
 			const world = view.world();
 			return world as Fact<unknown>;
 		},
-	},
+	}),
 };
 
 export type EntityKind = "hostile" | "passive" | "player" | "other";
@@ -62,7 +58,8 @@ export interface EntityEntry {
 	item: { name: string; count: number } | null;
 }
 
-const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
+const entitiesDefinition: CapabilityDefinition = {
+	kind: "query",
 	descriptor: {
 		ref: "entities@1",
 		// 名单 join 玩家名：players 修订同样影响本查询。
@@ -93,7 +90,7 @@ const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
 			},
 		],
 	},
-	reader: {
+	bind: (deps) => ({
 		kind: "current",
 		read: (view: ClientFactView, input: JsonValue): Fact<unknown> => {
 			const raw = input as { radius?: number; kind?: "hostile" | "passive" | "player" | "all"; limit?: number };
@@ -141,9 +138,10 @@ const entitiesQuery = (deps: EnvironmentDeps): QuerySpec => ({
 			const value = { entities: matched.slice(0, limit), scanned: { radius } };
 			return factOf(value, { unknown, source: "server" });
 		},
-	},
-});
+	}),
+};
 
-export function environmentQueries(deps: EnvironmentDeps): QuerySpec[] {
-	return [worldQuery, entitiesQuery(deps)];
-}
+export const environmentModule: MinecraftCapabilityModule = {
+	id: "environment",
+	definitions: [worldDefinition, entitiesDefinition],
+};

@@ -16,10 +16,10 @@
 
 import type { EntityRef, SelfState } from "../../contracts/body.js";
 import { VEHICLE_KINEMATICS } from "../../contracts/body.js";
-import type { BodyCallScope, CallableDescriptor, CallContext, NativeCallable } from "../../contracts/capabilities.js";
+import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
-import type { CapabilityDeps } from "../deps.js";
+import type { MinecraftCapabilityModule } from "../catalog.js";
 import { FENCE_NAMES, isMountName, isSteerableMount } from "../shared/activity.js";
 import { resolveEntity } from "../shared/entities.js";
 import { readValue } from "../shared/observe.js";
@@ -191,91 +191,6 @@ async function driveToward(
 	return { at: seen };
 }
 
-export function rideCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void deps;
-	return {
-		descriptor: rideDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as RideInput;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const to = raw.to == null ? null : resolvePoint(raw.to, self);
-
-			// ---- off：先（可选）驾驶，再下马 ----
-			if (raw.off === true) {
-				if (to != null) assertSameDimension(to, self, "ride destination");
-				return await ctx.withBody(async (scope: BodyCallScope) => {
-					// 证据窗口先于 sneak 派发打开：服务端的下马通知在驾驶拍进行中就会到达，
-					// 后开窗会错过（真服船步实证）。不在车上时窗口走满后如实 WRONG_STATE。
-					const pending = scope.player.awaitBodyEvent("dismount", { evidenceMs: 2500 });
-					await scope.player.drive({ keys: { sneak: true } }, 10);
-					const exit = await pending;
-					if (exit.observed === null) interrupted({ phase: "dismount" });
-					if (exit.observed !== true) {
-						fail("WRONG_STATE", "no dismount evidence — not riding anything", {
-							dispatch: "sent",
-							hint: "ride@1 without `off` first; the sneak reached the server but nothing exited",
-						});
-					}
-					const after = await readValue<SelfState>(scope.world, "self@1", {}, scope.signal, "self state");
-					return plain({ riding: false, at: { position: after.place.position, dimension: after.place.dimension } });
-				});
-			}
-
-			// ---- mount：选目标 → 距离前置 → 上车 →（可选）驾驶 ----
-			let mount: { ref: EntityRef; name: string; position: Vec3; distance: number };
-			if (raw.target != null) {
-				const found = await resolveEntity(ctx.world, raw.target, 32);
-				if (!isMountName(found.name)) {
-					fail("WRONG_STATE", `${found.name} is not a rideable mount`, {
-						hint: "rideable: boats, minecarts, horses/donkeys/mules, pig/strider/camel",
-					});
-				}
-				mount = found;
-			} else {
-				const entities = await readEntities(ctx, 16);
-				const mounts = entities.filter((entity) => isMountName(entity.name));
-				if (mounts.length === 0) {
-					fail("NOT_FOUND", "no rideable mount within 16 blocks", {
-						hint: "boats/minecarts/horses/pigs count; anything beyond loaded range is invisible",
-					});
-				}
-				mount = mounts.reduce((best, entity) => (entity.distance < best.distance ? entity : best));
-			}
-			if (mount.distance > ENTITY_REACH) {
-				fail("UNREACHABLE", `mount is ${round2(mount.distance)} blocks away (> ${ENTITY_REACH})`, {
-					hint: "goto@1 closer first; ride does not path",
-				});
-			}
-			if (to != null) assertSameDimension(to, self, "ride destination");
-
-			return await ctx.withBody(async (scope: BodyCallScope) => {
-				// 上车证据窗口先于 interact 派发打开：set_passengers 在派发后毫秒级到达，
-				// 后开窗会漏接（与 off:true 的下马竞态同构，真服实证）。
-				const pending = scope.player.awaitBodyEvent("mount", { evidenceMs: 2500 });
-				await scope.player.lookAt(mount.ref);
-				await scope.player.interact({ target: mount.ref, hand: "main" });
-				const boarded = await pending;
-				if (boarded.observed === null) interrupted({ phase: "boarding" });
-				if (boarded.observed !== true) {
-					fail("WRONG_STATE", "mount interaction produced no boarding evidence", {
-						dispatch: "sent",
-						hint: "common causes: horse untamed or unsaddled, boat already occupied, pig/strider fine to board but not to steer",
-					});
-				}
-				let at = mount.position;
-				if (to != null) {
-					at = (await driveToward(scope, mount, to.position)).at;
-				}
-				return plain({
-					riding: true,
-					mount: mount.name,
-					at: { position: at, dimension: self.place.dimension },
-				});
-			});
-		},
-	};
-}
-
 // ---- lead@1 ----
 
 const leadDescriptor: CallableDescriptor = {
@@ -376,101 +291,6 @@ async function assertStillLeashed(
 	}
 }
 
-export function leadCallable(deps: CapabilityDeps): NativeCallable<JsonValue, JsonValue> {
-	void deps;
-	return {
-		descriptor: leadDescriptor,
-		async invoke(ctx: CallContext, input: JsonValue): Promise<JsonValue> {
-			const raw = input as unknown as LeadInput;
-			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			const target = await resolveEntity(ctx.world, raw.target, LEAD_SEARCH_RADIUS);
-			if (target.distance > ENTITY_REACH) {
-				fail("UNREACHABLE", `target is ${round2(target.distance)} blocks away (> ${ENTITY_REACH})`, {
-					hint: "goto@1 closer first; lead does not path before leashing",
-				});
-			}
-			const to = raw.to == null ? null : resolvePoint(raw.to, self);
-			if (to != null) assertSameDimension(to, self, "lead destination");
-
-			// ---- release：空手对目标 use_entity（探针实证），证据 = 解除链接 ----
-			if (raw.release === true) {
-				return await ctx.withBody(async (scope: BodyCallScope) => {
-					// 已空手就不再点击（手持槽自换会产生不可确认的窗口点击，真服实证）。
-					if ((await readInventory(scope.world)).held != null) {
-						await scope.player.equip(null, "hand");
-					}
-					// 解除证据窗口先于 interact 派发打开（attach_entity 毫秒级到达，后开窗漏接）。
-					const pending = scope.player.awaitBodyEvent("link", {
-						passengerId: target.ref.networkId,
-						detached: true,
-						evidenceMs: 2500,
-					});
-					await scope.player.interact({ target: target.ref, hand: "main" });
-					const detached = await pending;
-					if (detached.observed === null) interrupted({ phase: "release" });
-					if (detached.observed !== true) {
-						fail("TARGET_NOT_MET", "no release evidence — the target was not leashed (or not to this client)", {
-							dispatch: "sent",
-							hint: "re-read the target; a leash tied to a fence is released at the knot, not the mob",
-						});
-					}
-					return plain({ leashed: false, at: { position: target.position, dimension: self.place.dimension } });
-				});
-			}
-
-			// ---- leash：拴绳前置 → 对目标 use_entity → attach_entity 证据 ----
-			const inventory = await readInventory(ctx.world);
-			if ((inventory.counts["lead"] ?? 0) <= 0) {
-				fail("MISSING_MATERIAL", "no lead in the inventory");
-			}
-			const linked = await ctx.withBody(async (scope: BodyCallScope) => {
-				// 已手持拴绳就不再点击（手持槽自换会产生不可确认的窗口点击，真服实证）。
-				if ((await readInventory(scope.world)).held?.name !== "lead") {
-					await scope.player.equip({ name: "lead" }, "hand");
-				}
-				// 已拴在本玩家就不再点击（批 18 真服实证）：对已拴目标 use_entity = 解除，
-				// "先拴后牵"两连调会让第二次调用把第一次的绳解掉；本连接事实缓存兜底。
-				if (await scope.player.leashedBySelf(target.ref)) return true;
-				// 链接证据窗口先于 interact 派发打开（attach_entity 毫秒级到达，后开窗漏接）。
-				const pending = scope.player.awaitBodyEvent("link", {
-					passengerId: target.ref.networkId,
-					evidenceMs: 2500,
-				});
-				await scope.player.lookAt(target.ref);
-				await scope.player.interact({ target: target.ref, hand: "main" });
-				const outcome = await pending;
-				if (outcome.observed === null) interrupted({ phase: "leashing" });
-				return outcome.observed;
-			});
-			if (linked !== true) {
-				fail("TARGET_NOT_MET", "leash interaction produced no link evidence", {
-					dispatch: "sent",
-					hint: "common causes: target already leashed elsewhere, or it moved out of range mid-interaction",
-				});
-			}
-			// 行程在身体作用域外走：Body 槽与 goto 槽互斥（carrying 同款纪律）；
-			// 牛跟人走，到达后独立复核链接与位置。
-			let mobEnd = target.position;
-			if (to != null) {
-				await ctx.call("goto@1", { at: to.position, tolerance: 1, maxTimeMs: 60_000 });
-				const mob = await assertStillLeashed(ctx.world, ctx.signal, target.ref.networkId, to.position);
-				mobEnd = mob.position;
-			}
-			if (raw.tie === true) {
-				const knot = await ctx.withBody(async (scope: BodyCallScope) => tieToFence(scope, ctx, mobEnd));
-				if (knot == null) {
-					fail("UNREACHABLE", "no fence within reach to tie the leash to", {
-						dispatch: "sent",
-						hint: "place a fence near the destination first; walls and fence gates do not take knots",
-					});
-				}
-				return plain({ leashed: true, at: { position: knot, dimension: self.place.dimension } });
-			}
-			return plain({ leashed: true, at: { position: mobEnd, dimension: self.place.dimension } });
-		},
-	};
-}
-
 /** 手持拴绳对栅栏 interact，证据 = leash_knot 实体出现在栅栏旁（独立事实复核）。 */
 async function tieToFence(scope: BodyCallScope, ctx: CallContext, mobAt: Vec3): Promise<Vec3 | null> {
 	const searches = await Promise.all(
@@ -517,3 +337,187 @@ async function tieToFence(scope: BodyCallScope, ctx: CallContext, mobAt: Vec3): 
 		await new Promise((resolve) => setTimeout(resolve, 250));
 	}
 }
+
+export const ridingModule: MinecraftCapabilityModule = {
+	id: "riding",
+	definitions: [
+		{
+			kind: "action",
+			descriptor: rideDescriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as RideInput;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const to = raw.to == null ? null : resolvePoint(raw.to, self);
+
+					// ---- off：先（可选）驾驶，再下马 ----
+					if (raw.off === true) {
+						if (to != null) assertSameDimension(to, self, "ride destination");
+						return await ctx.withBody(async (scope: BodyCallScope) => {
+							// 证据窗口先于 sneak 派发打开：服务端的下马通知在驾驶拍进行中就会到达，
+							// 后开窗会错过（真服船步实证）。不在车上时窗口走满后如实 WRONG_STATE。
+							const pending = scope.player.awaitBodyEvent("dismount", { evidenceMs: 2500 });
+							await scope.player.drive({ keys: { sneak: true } }, 10);
+							const exit = await pending;
+							if (exit.observed === null) interrupted({ phase: "dismount" });
+							if (exit.observed !== true) {
+								fail("WRONG_STATE", "no dismount evidence — not riding anything", {
+									dispatch: "sent",
+									hint: "ride@1 without `off` first; the sneak reached the server but nothing exited",
+								});
+							}
+							const after = await readValue<SelfState>(scope.world, "self@1", {}, scope.signal, "self state");
+							return plain({ riding: false, at: { position: after.place.position, dimension: after.place.dimension } });
+						});
+					}
+
+					// ---- mount：选目标 → 距离前置 → 上车 →（可选）驾驶 ----
+					let mount: { ref: EntityRef; name: string; position: Vec3; distance: number };
+					if (raw.target != null) {
+						const found = await resolveEntity(ctx.world, raw.target, 32);
+						if (!isMountName(found.name)) {
+							fail("WRONG_STATE", `${found.name} is not a rideable mount`, {
+								hint: "rideable: boats, minecarts, horses/donkeys/mules, pig/strider/camel",
+							});
+						}
+						mount = found;
+					} else {
+						const entities = await readEntities(ctx, 16);
+						const mounts = entities.filter((entity) => isMountName(entity.name));
+						if (mounts.length === 0) {
+							fail("NOT_FOUND", "no rideable mount within 16 blocks", {
+								hint: "boats/minecarts/horses/pigs count; anything beyond loaded range is invisible",
+							});
+						}
+						mount = mounts.reduce((best, entity) => (entity.distance < best.distance ? entity : best));
+					}
+					if (mount.distance > ENTITY_REACH) {
+						fail("UNREACHABLE", `mount is ${round2(mount.distance)} blocks away (> ${ENTITY_REACH})`, {
+							hint: "goto@1 closer first; ride does not path",
+						});
+					}
+					if (to != null) assertSameDimension(to, self, "ride destination");
+
+					return await ctx.withBody(async (scope: BodyCallScope) => {
+						// 上车证据窗口先于 interact 派发打开：set_passengers 在派发后毫秒级到达，
+						// 后开窗会漏接（与 off:true 的下马竞态同构，真服实证）。
+						const pending = scope.player.awaitBodyEvent("mount", { evidenceMs: 2500 });
+						await scope.player.lookAt(mount.ref);
+						await scope.player.interact({ target: mount.ref, hand: "main" });
+						const boarded = await pending;
+						if (boarded.observed === null) interrupted({ phase: "boarding" });
+						if (boarded.observed !== true) {
+							fail("WRONG_STATE", "mount interaction produced no boarding evidence", {
+								dispatch: "sent",
+								hint: "common causes: horse untamed or unsaddled, boat already occupied, pig/strider fine to board but not to steer",
+							});
+						}
+						let at = mount.position;
+						if (to != null) {
+							at = (await driveToward(scope, mount, to.position)).at;
+						}
+						return plain({
+							riding: true,
+							mount: mount.name,
+							at: { position: at, dimension: self.place.dimension },
+						});
+					});
+				},
+		},
+		{
+			kind: "action",
+			descriptor: leadDescriptor,
+			bind:
+				() =>
+				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
+					const raw = input as unknown as LeadInput;
+					const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+					const target = await resolveEntity(ctx.world, raw.target, LEAD_SEARCH_RADIUS);
+					if (target.distance > ENTITY_REACH) {
+						fail("UNREACHABLE", `target is ${round2(target.distance)} blocks away (> ${ENTITY_REACH})`, {
+							hint: "goto@1 closer first; lead does not path before leashing",
+						});
+					}
+					const to = raw.to == null ? null : resolvePoint(raw.to, self);
+					if (to != null) assertSameDimension(to, self, "lead destination");
+
+					// ---- release：空手对目标 use_entity（探针实证），证据 = 解除链接 ----
+					if (raw.release === true) {
+						return await ctx.withBody(async (scope: BodyCallScope) => {
+							// 已空手就不再点击（手持槽自换会产生不可确认的窗口点击，真服实证）。
+							if ((await readInventory(scope.world)).held != null) {
+								await scope.player.equip(null, "hand");
+							}
+							// 解除证据窗口先于 interact 派发打开（attach_entity 毫秒级到达，后开窗漏接）。
+							const pending = scope.player.awaitBodyEvent("link", {
+								passengerId: target.ref.networkId,
+								detached: true,
+								evidenceMs: 2500,
+							});
+							await scope.player.interact({ target: target.ref, hand: "main" });
+							const detached = await pending;
+							if (detached.observed === null) interrupted({ phase: "release" });
+							if (detached.observed !== true) {
+								fail("TARGET_NOT_MET", "no release evidence — the target was not leashed (or not to this client)", {
+									dispatch: "sent",
+									hint: "re-read the target; a leash tied to a fence is released at the knot, not the mob",
+								});
+							}
+							return plain({ leashed: false, at: { position: target.position, dimension: self.place.dimension } });
+						});
+					}
+
+					// ---- leash：拴绳前置 → 对目标 use_entity → attach_entity 证据 ----
+					const inventory = await readInventory(ctx.world);
+					if ((inventory.counts["lead"] ?? 0) <= 0) {
+						fail("MISSING_MATERIAL", "no lead in the inventory");
+					}
+					const linked = await ctx.withBody(async (scope: BodyCallScope) => {
+						// 已手持拴绳就不再点击（手持槽自换会产生不可确认的窗口点击，真服实证）。
+						if ((await readInventory(scope.world)).held?.name !== "lead") {
+							await scope.player.equip({ name: "lead" }, "hand");
+						}
+						// 已拴在本玩家就不再点击（批 18 真服实证）：对已拴目标 use_entity = 解除，
+						// "先拴后牵"两连调会让第二次调用把第一次的绳解掉；本连接事实缓存兜底。
+						if (await scope.player.leashedBySelf(target.ref)) return true;
+						// 链接证据窗口先于 interact 派发打开（attach_entity 毫秒级到达，后开窗漏接）。
+						const pending = scope.player.awaitBodyEvent("link", {
+							passengerId: target.ref.networkId,
+							evidenceMs: 2500,
+						});
+						await scope.player.lookAt(target.ref);
+						await scope.player.interact({ target: target.ref, hand: "main" });
+						const outcome = await pending;
+						if (outcome.observed === null) interrupted({ phase: "leashing" });
+						return outcome.observed;
+					});
+					if (linked !== true) {
+						fail("TARGET_NOT_MET", "leash interaction produced no link evidence", {
+							dispatch: "sent",
+							hint: "common causes: target already leashed elsewhere, or it moved out of range mid-interaction",
+						});
+					}
+					// 行程在身体作用域外走：Body 槽与 goto 槽互斥（carrying 同款纪律）；
+					// 牛跟人走，到达后独立复核链接与位置。
+					let mobEnd = target.position;
+					if (to != null) {
+						await ctx.call("goto@1", { at: to.position, tolerance: 1, maxTimeMs: 60_000 });
+						const mob = await assertStillLeashed(ctx.world, ctx.signal, target.ref.networkId, to.position);
+						mobEnd = mob.position;
+					}
+					if (raw.tie === true) {
+						const knot = await ctx.withBody(async (scope: BodyCallScope) => tieToFence(scope, ctx, mobEnd));
+						if (knot == null) {
+							fail("UNREACHABLE", "no fence within reach to tie the leash to", {
+								dispatch: "sent",
+								hint: "place a fence near the destination first; walls and fence gates do not take knots",
+							});
+						}
+						return plain({ leashed: true, at: { position: knot, dimension: self.place.dimension } });
+					}
+					return plain({ leashed: true, at: { position: mobEnd, dimension: self.place.dimension } });
+				},
+		},
+	],
+};
