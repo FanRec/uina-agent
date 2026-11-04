@@ -1,7 +1,10 @@
 /**
- * Body Session：资格门、持续控制与离散身体操作（I1 子集）。
+ * Body Session：资格门、持续控制编排与离散身体操作（I1 子集）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §4、modules/driver.md §5–§7、§10、§13。
+ * 持续控制的机械层已分离：步行键位/物理步消费在 driver/input/walking.ts，
+ * 载具运动学与中和在 driver/input/vehicle.ts；本类保留资格、撤销屏障、
+ * operation guard、use/attack 会话与效果归属。
  * 状态机 active → revoking → quiesced → closed（§5.2）；revoking 不可逆；结束须新建资格。
  * 写入核验位置（I1 覆盖 §5.3 的 1/2/3/4）：操作入口、异步恢复后产生副作用前、
  * 控制状态修改前、修改插件目标前；窗口另在同步协议写入和按代次清理时核验。
@@ -35,14 +38,15 @@ import type {
 	TossOutcome,
 	WindowSession,
 } from "../../contracts/body.js";
-import { isClientAuthVehicle, VEHICLE_KINEMATICS } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
-import type { CallFailure, EffectReceipt, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
+import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { WorldQuery } from "../../contracts/world.js";
 import type { ClientHostListener } from "../client-host.js";
 import { EffectRecorder, fail } from "../execution.js";
+import { driveVehicle, neutralizeVehicle } from "../input/vehicle.js";
+import { applyWalkingKeys, consumeWalkingTicks, DRIVE_KEYS, DRIVE_STALL_MS, revokeKeys } from "../input/walking.js";
 import { type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
 import { opensWindow } from "../window/layout.js";
@@ -84,13 +88,6 @@ export interface BodySessionDeps {
 	onClosed: (barrierProven: boolean) => void;
 }
 
-const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
-/** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
-const DRIVE_STALL_MS = 2000;
-/** 载具分支（批 18）：mineflayer mount 后 physicsTick 停发，载具拍用固定 50ms 节拍。 */
-const VEHICLE_TICK_MS = 50;
-/** 载具转向速率（弧度/拍）：开环递推的航向修正，探针实测被服务端接受。 */
-const BOAT_TURN_RATE = 0.04;
 function isIntVec(v: Vec3): boolean {
 	return Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z);
 }
@@ -205,7 +202,7 @@ export class BodySessionImpl implements BodySession {
 			} catch {
 				// 撤销不因上游异常失败；连接已亡时控制态随连接消亡
 			}
-			this.neutralizeVehicle(bot);
+			neutralizeVehicle(bot);
 			if (bot.targetDigBlock != null) {
 				const eff = this.deps.mintEff();
 				const op = this.deps.mintOp();
@@ -429,7 +426,19 @@ export class BodySessionImpl implements BodySession {
 						recoverable: true,
 					});
 				}
-				return await this.driveVehicle(bot, input, ticks, eff, op);
+				return await driveVehicle(
+					{
+						signal: this.signal,
+						recorder: this.recorder,
+						sampleSelf: this.deps.sampleSelf,
+						resolveLookTarget: (mounted, target) => this.lookPointFor(mounted, target),
+					},
+					bot,
+					input,
+					ticks,
+					eff,
+					op,
+				);
 			}
 
 			// 视角：先于键位安装；lookAt/look 各派发一次。
@@ -461,7 +470,7 @@ export class BodySessionImpl implements BodySession {
 				}),
 			);
 
-			const consumed = await this.consumeTicks(bot, ticks, eff);
+			const consumed = await consumeWalkingTicks(bot, ticks, eff, this.signal);
 
 			const sampled = this.deps.sampleSelf();
 			if (sampled == null || sampled.value == null) {
@@ -492,306 +501,13 @@ export class BodySessionImpl implements BodySession {
 			// once 留下的原生使用状态归使用会话，不在此释放。
 			// 载具输入一并中和：骑乘态键位走 player_input，与 controlState 无关（批 18）。
 			if (bot != null) {
-				this.revokeKeys(bot);
-				this.neutralizeVehicle(bot);
+				revokeKeys(bot);
+				neutralizeVehicle(bot);
 				if (input.use != null && input.use.mode === "hold") {
 					this.releaseUse(bot, input.use.hand, op, "drive exited");
 				}
 			}
 			this.exitOp();
-		}
-	}
-
-	/**
-	 * 载具驾驶（批 18）：固定 50ms 节拍逐拍派发，任何退出路径先中和输入。
-	 * 1.21.2+ 全部非矿车载具客户端权威：运动学递推位置 + 每拍 vehicle_move
-	 * （已知缺口 G23：Paper 忽略有鞍马的申报）；视角在分支内按角度直算发原始包，
-	 * 不走 bot.lookAt（骑乘态 physicsTick 停发会永久挂死）。
-	 */
-	private async driveVehicle(
-		bot: MineflayerBot,
-		input: ControlInput,
-		ticks: number,
-		eff: Ref,
-		op: Ref,
-	): Promise<{ receipt: EffectReceipt; actualTicks: number; end: Fact<SelfState>; vehicleAt: Vec3 }> {
-		const vehicle = bot.vehicle;
-		const vehicleName = vehicle?.name ?? "";
-		const clientAuth = isClientAuthVehicle(vehicleName);
-		const wantsMovement =
-			input.keys.forward === true || input.keys.back === true || input.keys.left === true || input.keys.right === true;
-		if (!clientAuth && wantsMovement) {
-			// 矿车是轨道驱动：驾驶请求如实失败（capability 层先挡，这里是协议窄口的第二道）；
-			// 但 sneak-only 放行——它是下马原语，矿车也靠它下车（批 18 真服实证）。
-			throw fail({
-				code: "WRONG_STATE",
-				source: "input",
-				message: `${vehicleName} follows rails and takes no drive input`,
-				dispatch: "not_sent",
-				recoverable: true,
-			});
-		}
-		// 运动学以载具实体位置为起点（骑乘态客户端视图冻结：self 与被骑载具都不回同步）。
-		// 速率取 contracts 唯一真源：船 0.22/拍，马/猪等 0.15/拍（探针实测被服务端接受）。
-		const isBoat = vehicleName.includes("boat") || vehicleName.includes("raft");
-		const rates = isBoat ? VEHICLE_KINEMATICS.boat : VEHICLE_KINEMATICS.default;
-		const kinematics = {
-			x: vehicle?.position.x ?? bot.entity.position.x,
-			y: vehicle?.position.y ?? bot.entity.position.y,
-			z: vehicle?.position.z ?? bot.entity.position.z,
-			yaw: bot.entity.yaw,
-			pitch: bot.entity.pitch,
-			speed: 0,
-			forwardRate: rates.forward,
-			reverseRate: rates.reverse,
-		};
-		// 视角：按角度直算进运动学（mineflayer lookAt 等物理 tick 收敛，骑乘态会永久挂死）。
-		if (input.lookAt != null) {
-			const point = this.lookPointFor(bot, input.lookAt);
-			const eye = { x: kinematics.x, y: kinematics.y + 1.2, z: kinematics.z };
-			const dx = point.x - eye.x;
-			const dy = point.y - eye.y;
-			const dz = point.z - eye.z;
-			kinematics.yaw = Math.atan2(-dx, dz);
-			kinematics.pitch = Math.atan2(-dy, Math.hypot(dx, dz));
-		} else if (input.look != null) {
-			kinematics.yaw = input.look.yaw;
-			kinematics.pitch = input.look.pitch;
-		}
-		this.recorder.record(
-			eff,
-			op,
-			"body.drive@1",
-			"dispatch",
-			"sent",
-			"unknown",
-			plain({
-				keys: { ...input.keys },
-				look: input.look ?? null,
-				lookAt: input.lookAt == null ? null : ({ ...input.lookAt } as unknown as JsonValue),
-				vehicle: { name: vehicleName, clientAuth },
-				kind: "vehicle",
-			}),
-		);
-		const consumed = await this.consumeVehicleTicks(bot, input, kinematics, ticks, eff);
-		// 骑乘态 self 视图冻结，申报终点只作审计对照；载具本体有服务端回声
-		// （rel_entity_move/sync_entity_position），到达判定由调用方读载具实体位置。
-		const vehicleAt: Vec3 = { x: kinematics.x, y: kinematics.y, z: kinematics.z };
-		const sampled = this.deps.sampleSelf();
-		if (sampled == null || sampled.value == null) {
-			throw fail({
-				code: "INTERNAL",
-				source: "capability",
-				message: "self sampling unavailable after vehicle drive; inputs were applied",
-				dispatch: "sent",
-				progress: { actualTicks: consumed, vehicle: vehicleName },
-				effects: [eff],
-				recoverable: false,
-			});
-		}
-		const end: Fact<SelfState> = { ...sampled, value: sampled.value };
-		this.recorder.record(eff, op, "body.drive@1", "receipt", "sent", "met", {
-			actualTicks: consumed,
-			vehicle: vehicleName,
-			vehicleAt: plain(vehicleAt),
-			completionContract:
-				"vehicle inputs applied for the requested 50ms ticks; the declared endpoint is the open-loop proposal, not a server-confirmed position",
-		});
-		return {
-			receipt: { effect: eff, dispatch: "sent", completion: "met", evidence: [] },
-			actualTicks: consumed,
-			end,
-			vehicleAt,
-		};
-	}
-
-	/** 载具拍消费：固定节拍；中止/断线如实 INTERRUPTED（actualTicks 保留）。 */
-	private consumeVehicleTicks(
-		bot: MineflayerBot,
-		input: ControlInput,
-		kinematics: {
-			x: number;
-			y: number;
-			z: number;
-			yaw: number;
-			pitch: number;
-			speed: number;
-			forwardRate: number;
-			reverseRate: number;
-		},
-		ticks: number,
-		eff: Ref,
-	): Promise<number> {
-		const signal = this.signal;
-		const keys = input.keys;
-		const protocol = protocolFor(bot);
-		return new Promise<number>((resolve, reject) => {
-			let consumed = 0;
-			let settled = false;
-			const cleanup = (): void => {
-				clearInterval(timer);
-				signal.removeEventListener("abort", onAbort);
-			};
-			const settle = (fn: () => void): void => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				fn();
-			};
-			const onAbort = (): void => {
-				settle(() =>
-					reject(
-						fail({
-							code: "INTERRUPTED",
-							source: "environment",
-							message: "vehicle drive interrupted; inputs neutralized",
-							dispatch: "sent",
-							progress: { actualTicks: consumed },
-							effects: [eff],
-							recoverable: true,
-						}),
-					),
-				);
-			};
-			const timer = setInterval(() => {
-				consumed++;
-				// 回调内任何异常都必须 settle：setInterval 里抛错会让本 promise 永不结束，
-				// 身体槽被占死（真服 60s 挂死 + CONTROL_ISOLATION_FAILED 连锁的教训）。
-				try {
-					// 1.21.2+ 载具移动全面客户端权威（真服探针实测）：马对 player_input 的
-					// forward 无响应；vehicle_move 生效但服务端带自己的物理拉扯，且**同一拍
-					// 里发 player_input 会以输入位压制位移**（forward:false + 位置变更 = 拒收）。
-					// 因此移动拍只发 vehicle_move（服务端回传位姿做闭环起点，沿 yaw 推进）；
-					// 非移动拍（sneak 下马 / jump）只发 player_input，不掺 vehicle_move。
-					const movement = keys.forward === true || keys.back === true || keys.left === true || keys.right === true;
-					if (movement) {
-						if (keys.left === true) kinematics.yaw += BOAT_TURN_RATE;
-						if (keys.right === true) kinematics.yaw -= BOAT_TURN_RATE;
-						kinematics.speed =
-							keys.forward === true ? kinematics.forwardRate : keys.back === true ? -kinematics.reverseRate : 0;
-						// 开环递推（探针验证）：申报点必须持续前移，马才会追踪；
-						// 不能用服务端回读位置做闭环起点——被拒后回读不动，申报点冻结在原地，死锁。
-						kinematics.x += -Math.sin(kinematics.yaw) * kinematics.speed;
-						kinematics.z += Math.cos(kinematics.yaw) * kinematics.speed;
-						protocol.vehicleMove({ x: kinematics.x, y: kinematics.y, z: kinematics.z }, kinematics.yaw);
-					} else {
-						protocol.vehicleInput({
-							forward: false,
-							backward: false,
-							left: false,
-							right: false,
-							jump: keys.jump === true,
-							shift: keys.sneak === true,
-							sprint: keys.sprint === true,
-						});
-					}
-					if (consumed >= ticks) settle(() => resolve(consumed));
-				} catch (err) {
-					settle(() =>
-						reject(
-							fail({
-								code: "INTERNAL",
-								source: "environment",
-								message: `vehicle input write failed: ${String(err)}`,
-								dispatch: "sent",
-								progress: { actualTicks: consumed, vehicle: bot.vehicle?.name ?? "" },
-								effects: [eff],
-								recoverable: true,
-							}),
-						),
-					);
-				}
-			}, VEHICLE_TICK_MS);
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
-	}
-
-	/** 载具输入中和：退出路径统一调用（防止"下车后还在按 W"与马持续前行）。 */
-	private neutralizeVehicle(bot: MineflayerBot): void {
-		// 非骑乘不发：player_input 是载具键位通道（1.21.2+），步行撤销发它纯属多余。
-		if (bot.vehicle == null) return;
-		try {
-			protocolFor(bot).vehicleInput({});
-		} catch {
-			// 客户端消亡时输入随连接消亡
-		}
-	}
-
-	/**
-	 * 物理步消费：首个 physicsTick 即第 1 个消费步（上游 simulatePlayer 先读
-	 * controlState 再 emit）；第 ticks 个消费步的监听回调内同步结算，
-	 * 保证撤销发生在下一次 simulatePlayer 之前（模拟前窄接缝）。
-	 * 失败一律抛错并携带实际步数；短执行不包装为完整成功。
-	 */
-	private consumeTicks(bot: MineflayerBot, ticks: number, eff: Ref): Promise<number> {
-		const signal = this.signal;
-		return new Promise<number>((resolve, reject) => {
-			let consumed = 0;
-			let lastTickAt = Date.now();
-			let settled = false;
-			const cleanup = () => {
-				bot.removeListener("physicsTick", onTick as never);
-				clearInterval(watchdog);
-				signal.removeEventListener("abort", onAbort);
-			};
-			const settle = (fn: () => void) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				fn();
-			};
-			const onTick = () => {
-				consumed++;
-				lastTickAt = Date.now();
-				if (consumed >= ticks) {
-					settle(() => resolve(consumed));
-				}
-			};
-			const watchdog = setInterval(() => {
-				if (Date.now() - lastTickAt > DRIVE_STALL_MS) {
-					settle(() =>
-						reject(
-							fail({
-								code: "TIMEOUT",
-								source: "environment",
-								message: "client physics loop stalled during drive",
-								hint: "chunks may be unloaded or the client is frozen; sample self/block to inspect",
-								dispatch: "sent",
-								progress: { actualTicks: consumed },
-								effects: [eff],
-								recoverable: true,
-							}),
-						),
-					);
-				}
-			}, 250);
-			const onAbort = () => {
-				settle(() =>
-					reject(
-						fail({
-							code: "INTERRUPTED",
-							source: "environment",
-							message: "drive interrupted; continuous inputs revoked",
-							dispatch: "sent",
-							progress: { actualTicks: consumed },
-							effects: [eff],
-							recoverable: true,
-						}),
-					),
-				);
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			bot.on("physicsTick", onTick as never);
-		});
-	}
-
-	private revokeKeys(bot: MineflayerBot): void {
-		for (const key of DRIVE_KEYS) {
-			try {
-				bot.setControlState(key, false);
-			} catch {
-				// 客户端消亡时键位随连接消亡
-			}
 		}
 	}
 
@@ -827,7 +543,7 @@ export class BodySessionImpl implements BodySession {
 	}
 	private installControl(bot: MineflayerBot, input: ControlInput, op: Ref): void {
 		this.validateControl(bot, input);
-		for (const key of DRIVE_KEYS) bot.setControlState(key, input.keys[key] === true);
+		applyWalkingKeys(bot, input.keys);
 		for (const [hand, use] of this.ownedUse)
 			if (use.operation === op && input.use?.hand !== hand)
 				this.releaseUse(bot, hand, op, "control input released use");
@@ -1719,7 +1435,7 @@ export class BodySessionImpl implements BodySession {
 				}),
 			clear: () =>
 				scoped(() => {
-					this.revokeKeys(bot);
+					revokeKeys(bot);
 					for (const hand of ["main", "off"] as const) this.releaseUse(bot, hand, op, "feedback released");
 				}),
 			closed: () => {
