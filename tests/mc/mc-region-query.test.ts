@@ -42,8 +42,8 @@ function viewWith(world: Map<string, ScriptedBlock | null>): ClientFactView {
 }
 
 function read(view: ClientFactView, input: JsonValue) {
-	const definition = regionModule.definitions[0];
-	if (definition.kind !== "query") throw new Error("region definition must be a query");
+	const definition = regionModule.definitions.find((entry) => entry.descriptor.ref === "region@1");
+	if (definition?.kind !== "query") throw new Error("missing region@1 query definition");
 	const reader = definition.bind({} as never) as { read: (view: ClientFactView, input: JsonValue) => unknown };
 	return reader.read(view, input) as {
 		value: {

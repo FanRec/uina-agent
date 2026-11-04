@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { ClientFactsPort } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { DomainRecord } from "../../.uina/worlds/minecraft/contracts/world.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -19,7 +19,7 @@ import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 import { PLACE_SCHEMA, placeRef, type PlaceValue } from "../../.uina/worlds/minecraft/world/places.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
-const capabilities = buildCapabilities({
+const capabilities = builtinCatalog.bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

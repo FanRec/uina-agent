@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import {
 	buildEventPage,
@@ -20,14 +20,16 @@ import {
  */
 
 const scope = eventScopeOf("bind:t", "wld:t", "wldrev:t");
-const validate = buildCapabilities({
-	surface: () => null,
-	knowledge: () => null,
-	runtime: () => {
-		throw new Error("unused");
-	},
-	gotoDirector: {} as never,
-}).validators.get("events@1")!;
+const validate = builtinCatalog
+	.bind({
+		surface: () => null,
+		knowledge: () => null,
+		runtime: () => {
+			throw new Error("unused");
+		},
+		gotoDirector: {} as never,
+	})
+	.validators.get("events@1")!;
 
 function failureOf(run: () => unknown): CallFailure {
 	try {

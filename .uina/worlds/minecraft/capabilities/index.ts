@@ -6,7 +6,7 @@
  * （id/ref 唯一、schema 可编译），bind(deps) 只在 Companion 初始化时产生读写
  * 实现：World 先校验再读查询，Runtime 用 callables 执行动作，describe 直接读
  * 目录的静态 descriptor。重复 ref 在目录创建时显式失败——两套同名实现会让
- * 目录与执行分叉。
+ * 目录与执行分叉。测试与可信本地模块经 CapabilityCatalog.create 注入，不改此清单。
  */
 
 import { activityModule } from "./actions/activity.js";
@@ -31,8 +31,7 @@ import { stationsModule } from "./actions/stations.js";
 import { surfaceModule } from "./actions/surface.js";
 import { transitModule } from "./actions/transit.js";
 import { tunnelModule } from "./actions/tunnel.js";
-import { CapabilityCatalog, type BuiltCapabilities, type MinecraftCapabilityModule } from "./catalog.js";
-import type { CapabilityDeps } from "./deps.js";
+import { CapabilityCatalog, type MinecraftCapabilityModule } from "./catalog.js";
 import { buildPlanModule } from "./queries/build-plan.js";
 import { bodyModule } from "./queries/body.js";
 import { containerLastModule } from "./queries/containers.js";
@@ -93,8 +92,3 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 ];
 
 export const builtinCatalog: CapabilityCatalog = CapabilityCatalog.create(builtinModules);
-
-/** Companion 组合入口：从内置目录绑定读写实现（BuiltCapabilities 合同不变）。 */
-export function buildCapabilities(deps: CapabilityDeps): BuiltCapabilities {
-	return builtinCatalog.bind(deps);
-}

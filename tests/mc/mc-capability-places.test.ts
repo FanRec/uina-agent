@@ -1,5 +1,5 @@
 /**
- * remember@1 / forget@1 能力语义：真临时 SQLite + 真 buildCapabilities。
+ * remember@1 / forget@1 能力语义：真临时 SQLite + 真 builtinCatalog.bind（内置目录绑定）。
  * 覆盖：创建/同名覆盖（CAS 落库）、显式维度保留、名字校验、forget 的
  * removed/NOT_FOUND、关闭重开后地点仍在。CAS 与存储的真值由
  * mc-world-records.test.ts 用同一存储路径证明；这里验证能力层的换算与校验边界。
@@ -10,14 +10,14 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { ClientFactsPort } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
-const capabilities = buildCapabilities({
+const capabilities = builtinCatalog.bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { ClientFactView } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { CallFailure, Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -46,7 +46,7 @@ const registry: RegistryLike = {
 };
 
 const knowledge = buildRegistryKnowledge(registry);
-const capabilities = buildCapabilities({
+const capabilities = builtinCatalog.bind({
 	surface: () => null,
 	runtime: () => {
 		throw new Error("runtime is not used by query readers");

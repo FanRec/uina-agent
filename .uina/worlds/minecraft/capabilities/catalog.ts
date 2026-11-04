@@ -52,6 +52,7 @@ interface AjvLike {
 const AjvCtor = createRequire(import.meta.url)("ajv") as new (options: {
 	strict: boolean;
 	allErrors: boolean;
+	addUsedSchema?: boolean;
 }) => AjvLike;
 
 function queryValidator(ref: ExactRef, ajv: AjvLike, validate: ValidateFunction): QueryValidator {
@@ -76,7 +77,7 @@ export class CapabilityCatalog {
 	private readonly queryValidators: ReadonlyMap<ExactRef, QueryValidator>;
 
 	private constructor(modules: readonly MinecraftCapabilityModule[]) {
-		const ajv = new AjvCtor({ strict: false, allErrors: true });
+		const ajv = new AjvCtor({ strict: false, allErrors: true, addUsedSchema: false });
 		const defs: CapabilityDefinition[] = [];
 		const seenIds = new Set<string>();
 		const byRef = new Map<string, CapabilityDefinition>();

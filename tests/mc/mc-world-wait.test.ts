@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { ClientFactNotice, ClientFactsPort } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { EventPage } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
-const capabilities = buildCapabilities({
+const capabilities = builtinCatalog.bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

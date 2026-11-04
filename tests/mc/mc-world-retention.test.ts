@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
-import { buildCapabilities } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type {
 	CapturedClientFact,
 	ClientWindowObservation,
@@ -16,7 +16,7 @@ import { makeBot, makeFactsHarness } from "./mc-fake.js";
 
 const partition = { binding: "bind:t:1", world: "world:t:1", worldRevision: "wrev:t:1" };
 const prune = { partition, beforeStoreSeq: Number.MAX_SAFE_INTEGER };
-const capabilities = buildCapabilities({
+const capabilities = builtinCatalog.bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,
