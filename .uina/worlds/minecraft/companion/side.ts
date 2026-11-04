@@ -324,16 +324,22 @@ export async function openExecutionSide(
 		const waitConnection = async (timeoutMs: number, signal: AbortSignal): Promise<ConnectionWaitResult> => {
 			if (signal.aborted) throw new RpcError("REQUEST_CANCELLED", "connection wait cancelled");
 			let removeAbort = () => {};
+			let cancelTimer = () => {};
 			const aborted = new Promise<never>((_, reject) => {
 				const onAbort = () => reject(new RpcError("REQUEST_CANCELLED", "connection wait cancelled"));
 				signal.addEventListener("abort", onAbort, { once: true });
 				removeAbort = () => signal.removeEventListener("abort", onAbort);
 			});
 			try {
-				const timer = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs));
+				// 定时器必须清理：悬挂的 setTimeout 会拖住伴生进程事件循环，阻塞退役。
+				const timer = new Promise<"timeout">((resolve) => {
+					const handle = setTimeout(() => resolve("timeout"), timeoutMs);
+					cancelTimer = () => clearTimeout(handle);
+				});
 				await Promise.race([connected.then(() => "terminal" as const), timer, aborted]);
 				return connectionSnapshot();
 			} finally {
+				cancelTimer();
 				removeAbort();
 			}
 		};

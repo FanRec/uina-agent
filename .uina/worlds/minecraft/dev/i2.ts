@@ -168,6 +168,8 @@ async function startWorld() {
 		notifyExposed() {},
 	});
 	await activation.start();
+	// 批25：World 不再自动入服——startWorld 先经 session 工具显式连接（settings 种子来自旧 config.json）。
+	await direct("session", { op: "connect", target: { server: "default" } });
 	await until(
 		() => direct("runs", { op: "status" }),
 		(s) => (s.side as { connection?: string })?.connection === "ready",

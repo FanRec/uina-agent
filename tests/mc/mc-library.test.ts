@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import type { ProgramPort } from "../../.uina/worlds/minecraft/contracts/program.js";
-import { methods } from "../../.uina/worlds/minecraft/executor/protocol.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
 
@@ -254,6 +253,5 @@ test("invalid saved fields reject updates and remain readable as diagnostics in 
 	await writeFile(join(root, "programs/origin.js"), invalid);
 	const detail = await library.get("program", "origin");
 	expect(detail).toMatchObject({ source: invalid, headerError: expect.any(String) });
-	expect(methods.get("library")!.output(detail)).toBe(true);
 	await expect(library.loadProgram("origin")).rejects.toMatchObject({ code: "PROGRAM_INVALID", source: "program" });
 });

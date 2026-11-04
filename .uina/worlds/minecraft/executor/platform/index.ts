@@ -113,8 +113,9 @@ export function acquireOwnership(dataDir: string, accountKey: string): WindowsOw
 	try {
 		return new WindowsOwnership(native.acquire(dataDir, createHash("sha256").update(accountKey).digest("hex")));
 	} catch (cause) {
-		if (cause instanceof Error && "code" in cause && (cause.code === "DATA_DIR_BUSY" || cause.code === "ACCOUNT_BUSY"))
-			throw cause;
+		// 不用 instanceof：vmThreads 下 native 错误来自另一个 VM realm，跨 realm 只认 code。
+		const code = (cause as { code?: unknown } | null)?.code;
+		if (code === "DATA_DIR_BUSY" || code === "ACCOUNT_BUSY") throw cause as Error;
 		throw platformError(
 			"EXECUTOR_OWNERSHIP_UNAVAILABLE",
 			`Minecraft ownership acquisition failed: ${String(cause)}`,

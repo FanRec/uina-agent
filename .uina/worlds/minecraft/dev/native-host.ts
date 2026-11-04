@@ -173,6 +173,13 @@ try {
 	});
 	await activation.start();
 	const observe = (selector: string, input: JsonValue = {}) => direct("observe", { selector, input });
+	// 批25：World 不再自动入服——经 session 工具显式连接（settings 种子来自旧 config.json）。
+	await step("session connect", async () => {
+		const reply = (await direct("session", { op: "connect", target: { server: "default" } })) as {
+			state?: string;
+		};
+		assert.ok(reply.state === "connected", `session connect failed: ${JSON.stringify(reply).slice(0, 300)}`);
+	});
 	await step("formal Host current connection", async () => {
 		await until(
 			() => direct("runs", { op: "status" }),

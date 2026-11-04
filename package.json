@@ -40,6 +40,7 @@
     "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "dev:mc:map": "tsx .uina/worlds/minecraft/dev/map.ts",
 		"dev:mc:review": "tsx .uina/worlds/minecraft/dev/review-live.ts",
+    "dev:mc:session": "tsx .uina/worlds/minecraft/dev/session-live.ts",
     "dev:mc:climb": "tsx .uina/worlds/minecraft/dev/climb.ts",
     "dev:mc:transit": "tsx .uina/worlds/minecraft/dev/transit.ts",
     "dev:mc:digest": "tsx .uina/worlds/minecraft/dev/digest.ts",
