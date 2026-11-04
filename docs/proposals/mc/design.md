@@ -108,11 +108,12 @@ Uina Core/Host 继续拥有 Subject、工具执行、会话和主体生命周期
 
 | action | 用途 |
 |---|---|
+| session | 会话生命周期：status/list/connect/disconnect；World 启用默认不入服，observe/run/chat/runs 需先 connect（批25） |
 | observe | 读取已有世界事实，不暗中移动或开箱 |
-| describe | 找能力/库条目，按需读取合同与示例 |
+| describe | 找能力/库条目，按需读取合同与示例；无连接可用（静态 Catalog + 宿主 Library） |
 | run | 执行动作、临时代码或保存程序 |
 | runs | 查进展/记录、等待、停止、继续或恢复基础设施 |
-| library | 管理普通文件库；describe 与 list 共用文件读取材料 |
+| library | 管理普通文件库；describe 与 list 共用文件读取材料；无连接可读写（宿主常驻唯一写入口） |
 | chat | 发一条消息或 /服务器指令，共用 chat@1 的受理路径 |
 
 工具参数与结果由 [Executor §2](modules/executor.md) 拥有。常驻模型指南唯一见 [Program 附录 A](modules/program.md#附录-a模型的最小指南)，其他说明按需 describe。

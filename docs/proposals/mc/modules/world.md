@@ -97,6 +97,8 @@ flowchart LR
 
 跨维度路线可以在领域 schema 中关联多个 Place；不能因通用 DomainRecord 没有顶层 dimension 就省掉实际空间约束。DomainRecord 统一绑定 worldRevision；领域 schema 决定单点、区域或多维度位置集合。
 
+**批25（2026-11-05，v3 M1/M2）数据根与世界关联来源**：`world-history.db` 与 `library/` 位于稳定 MC 共享根（`sharedDataDir`），一份历史库容纳多世界/多 Profile；分区键 `(binding, world, world_revision)` 与 `records` 的 `(world, world_revision, ref)` 不变。连接目标的 world/worldRevision 由 `SessionController` 从 connect 输入或 settings 具名服务器给出（显式）或按 endpoint 生成默认关联（`endpoint:<host>:<port>` + `default`，状态标 `endpoint_default`，不冒充已证实相同世界）；同一 Profile 重访复用其 world/revision，显式换 revision 即新 Profile、旧分区原样保留（T05 语义）。runtime.db/runs/exports 归 `sessions/<profileId>/`（`sessionDataDir`），事件 binding 仍由 executor.db 的 worldOwner 派生，不同 Profile 不无意合并。
+
 ## 5. Driver → World 证据交付
 
 ### 5.1 为什么需要捕获载荷

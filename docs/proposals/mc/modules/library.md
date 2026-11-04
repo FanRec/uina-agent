@@ -290,6 +290,8 @@ interface LibraryPort {
 
 只实现普通文件扫描、元数据和 CRUD。历史 Assets 的发布、版本链与证据副本方案见 [变更记录](../changelog.md)，不作为当前实现路径。Library 不控制身体、不运行游戏任务，也不维护另一份执行结论。
 
+**批25（2026-11-05，v3 M3.1）写入归属收敛**：`library/` 位于稳定 MC 共享根；唯一写入口是宿主常驻 FileLibrary（`worlddef` 装配，`session` 不存在时 list/get/save/update/delete 照常可用，程序校验由 `program/validator.ts` 的离线入口提供——与在线 ProgramPort 共用同一 worker compile 路径）。Companion 对 `library/` 只读（loadProgram/readDesign 与 describe 的条目元数据），其 library 写 RPC 已删除；宿主经正式 Library API 发布变更后向当前 Runtime 发 `program.changed` 窄通知撤销过期程序缓存。`save.from` 的来源核验在宿主侧路由：活动会话走 Runtime RPC（runtime.read/readRecord）+ Profile 根快照直读（`readRunSnapshot`，摘要核验同一实现）；无活动会话明确 NOT_CONNECTED，不做跨 Profile 离线保存（批26 RuntimeArchiveReader）。经由通用文件工具直接编辑工作文件仍被允许，读取时必须重新按 digest 验证，不假定缓存不过期。
+
 ## 8. 发现
 
 工具 describe 的统一搜索覆盖能力（含查询）、程序、蓝图与经验，返回 kind、callable、名字/引用、用途、必要路径与不可用原因；同名不同 kind 不遮蔽。动作能力/程序的 callable=true，使用 call；查询的 callable=false，使用 read。蓝图/经验供读取或作为领域输入，精确读取带 kind，不进入 call。

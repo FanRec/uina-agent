@@ -215,7 +215,8 @@ Executor 是 Uina 侧实例；companion 是游戏侧组合根，不把它们再�
 默认无参 World 工厂只定义 actions 和生命周期，不连接、不读宿主状态。onStart 收到 `ServiceCompanionContext` 后创建本次 activation 的 Executor。
 
 - `worldDataDir` 由框架原样注入并规范化；不自行拼另一份 profile 路径。缺少它、emitEvent、onHostEvent、expose 或持久 Host delivery 端口时，启动明确失败。无 UI Host 可使用这些接缝；不依赖终端或 isBusy。
-- 本 World 安装目录的 `config.json` 是操作者配置，启用前必须存在；其路径随 World 入口解析，不相对临时 cwd。内容含明确认证模式的 Driver 连接配置、可信 world/worldRevision 绑定（可明确 unbound）及必要执行设置。非法配置失败，不猜服务器、世界身份或认证方式。
+- **批25 双根（v3 §4.1）**：`Executor.open` 接收 `ownershipDir`（所有 Profile 共享的稳定 MC 根，Windows 目录 Job 在此目录上唯一——单活跃写源跨 Profile 成立）、`sessionDataDir`（本 Profile 的 executor.db/runtime.db/runs/exports 根）与 `sharedDataDir`（world-history.db 与 library/ 共享根）。executor.db 与 runtime.db 的身份守卫都在 sessionDataDir 内成立；World 不再启用即开执行域，执行域由 `SessionController` 按会话创建。
+- **批25 连接身份**：`worlddef/session-identity.ts` 由 connect 目标 + settings.json 解析出 `ProfileIdentity` 并计算 `profileId`（64 位 hex，进入磁盘路径前必须校验）；`identity.json` 不可变，`observed.json` 记录可验证登录观测。世界包的 `config.json` 不再是启用前置——只在旧布局一次性迁移与 settings 种子时读取；连接统一经 `session.connect`（settings.json 提供 defaultUsername 与服务器别名），初版唯一合同 offline + 1.21.11，version 不开放自由字符串。
 - `authMode` 必填，两条连接路径并列支持。offline 的 username 是实际登录名，不要求 Microsoft 登录、缓存或正版 UUID；microsoft 的 username 是上游认证缓存/账号选择标识，accountId 是操作者已确认的游戏 profile UUID。交互认证未完成时如实显示，不宣布可用；凭证/cache 复用客户端认证机制，不写入命令行、工具正文或诊断。
 - 源码运行显式用当前 Node + `--import tsx` 启动仓库内 bootstrap；构建运行使用随 World 发布的 bootstrap 与 Worker/QuickJS/native 资源。entry 使用模块相对绝对路径，不继承整份 `process.execArgv`，不拼 shell 命令。两条路径分别验收。
 - 本轮固定静态装配能力；改模块代码需关闭旧 activation、证明退役后重启。不增加热加载服务；编辑库文件仍按 Program 的段内快照规则生效。
@@ -387,7 +388,7 @@ Executor 核验消息来自当前私有 channel 且内外 launch 均匹配，立
 
 Runtime 的 read/list/wait 与控制收据使用 RunSummary/CallSummary，readDelivery 返回有界 CompletionHeader。它们从确切已提交 record 派生，不重复判断目标；header 保留真实 phase、scope、control、outcome/decision、未知效果总数和 record。waiting 保留等待种类/起点；目标列表省略时 waitingComplete=false。根进度只保留原值中能容纳的字段；省略时 progressComplete=false，不能填假零。未知效果最多列 8 个引用并注明是否完整。原因/错误文本截短须带 Complete=false。每个 header 最多 16 KiB；默认先保留标识和结论，进度预算 2 KiB、原因/错误各 1 KiB。
 
-readRecord(ref,{format}) 在一次读取边界固定 RuntimeRecord。auto 初始完整回复预算为 256 KiB，且低于 IPC 单帧可用字节；预算内直接返回 RecordReply.inline，超过才导出。inline 要求在实际完整回复预算内直接返回全文，超过报 RECORD_TOO_LARGE 并给 file 读取 nextCall；file 则明确导出。阈值是测量后可调的内部读出策略，不缩小 Program 单值或能力结果合同。导出由 Runtime 自己的 SQLite Worker/文件 I/O 路径写完整 UTF-8 JSON 至 `<worldDataDir>/exports/<sha256>.json`，返回 RecordReply.file。JSON 包含 RuntimeRecord 的 kind/record/value，不只导出一个没来源的 value。头、字节和摘要来自同一截面；大 JSON 的序列化/写入不搬回游戏主循环或 Uina 主循环同步处理。
+readRecord(ref,{format}) 在一次读取边界固定 RuntimeRecord。auto 初始完整回复预算为 256 KiB，且低于 IPC 单帧可用字节；预算内直接返回 RecordReply.inline，超过才导出。inline 要求在实际完整回复预算内直接返回全文，超过报 RECORD_TOO_LARGE 并给 file 读取 nextCall；file 则明确导出。阈值是测量后可调的内部读出策略，不缩小 Program 单值或能力结果合同。导出由 Runtime 自己的 SQLite Worker/文件 I/O 路径写完整 UTF-8 JSON 至 `<sessionDataDir>/exports/<sha256>.json`（批25 Profile 根），返回 RecordReply.file。JSON 包含 RuntimeRecord 的 kind/record/value，不只导出一个没来源的 value。头、字节和摘要来自同一截面；大 JSON 的序列化/写入不搬回游戏主循环或 Uina 主循环同步处理。
 
 导出只接受 Ref，不接受模型指定路径。临时文件完整写入、核对后原子 rename；复用已有文件前核对长度/sha256，不符则从原记录重建，失败清理自有临时件。文件是可再生读取缓存，不是新的权威记录或证据强保留；文件丢失可按同一 record 重新生成，记录已清理就 NOT_FOUND。清理 Library 不删 exports，导出不重放动作、不重新求值程序。
 
@@ -448,6 +449,8 @@ library 的写入直接在执行侧完成；取消或断线后写入程度不明
 3. 干净关闭时最后刷新必要记录，关 Driver 客户端、World/Runtime 存储和 Program/SQLite Worker，发送 shutdown reply 后退出；资源关闭依赖使用显式顺序，不靠进程自然退出猜完成。
 4. 超出关闭宽限或出现无法隔离故障，立即用 Job 终止进程树，等待 §4 的实际退役。不要等堵塞进程内的 finally。记录仅含 OS 事实，Run 在下次 Runtime 恢复时结算。
 5. 确认实际退出后清 RPC/订阅/定时器/BodyEndpoint。只有 Runtime 停用意图确认且过程确实干净才写 clean；否则保留未清理标记与原因。关闭 executor.db 后最后关闭 Job、释放独占。关闭有未知/失败必须向生命周期调用者报告，不能正常 resolve 假装已干净。
+
+**批25 退役三事实（v3 §6.2）**：`close()` 返回 `ExecutorCloseResult { process: "retired"|"unknown", ownership: "released"|"held", runtime: "clean"|"unclean"|"unknown" }`，不再以抛 `EXECUTION_DOMAIN_UNRETIRED` 表达脏关闭（该码保留给 Runtime 发起的 retire_required 请求路径）。只允许新执行域的必要条件是 `process=retired && ownership=released`；`runtime=unclean` 只影响旧 Run 的恢复结算，不阻止切服。已证实的结论幂等复用；未证实的结论允许重试——再次 close 就是人工恢复渠道，SessionController 据此把未证实执行域保留为 blocked 引用并以 `SESSION_BLOCKED` 拒绝新连接，不设时间兜底。**批25 入服回执**：`connection.wait` RPC（`Executor.waitGameConnection`）等 ClientHost 首个终态并返回 `{state, username, uuid, reason}`；`open()` 成功只代表 IPC/Runtime ready，不代表入服成功（I4）。
 
 默认：握手 10 秒、普通 RPC 回复 5 秒、短结果窗口 3 秒、关闭宽限 400ms、强杀确认另给 1 秒。显式 runs.wait 不套普通 RPC 时限；submit/continue 的受理 RPC 和结果窗口分别计时。CLI 当前可能更早硬退出，因此 Job 的父退出保证不可被优雅宽限替代。时限均为初始策略，非实时保证；超时只能说明该事实未取得。
 

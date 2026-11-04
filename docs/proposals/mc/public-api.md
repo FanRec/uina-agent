@@ -904,3 +904,40 @@ DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 saf
 ## 批 7 实现说明（2026-10-25）
 
 当前执行子集见 [Program 实施记录](archive/program-implementation.md)。Driver 的 BodySession 提供可信 Runtime 使用的 runScoped（局部取消、ControlOwner 与每次写入资格检查），不向 guest 暴露该入口。DriverExecutionFact 可携带该可信作用域捕获的 owner，晚事实保留首次效果归属。程序调用记录增加 program 来源、摘要、确切 snapshot 路径与失败诊断；Runtime schema v4，不自动迁移旧库，Host journal 仍 v4。Window 仍只支持 mode-0 左右点击；本批不开放等待/决策/反馈或 Library 管理接口。
+
+## 批 25 实现说明（2026-11-05，多世界自治 v3 第一阶段）
+
+会话生命周期唯一拥有者是 `worlddef/session-controller.ts` 的 `SessionController`；身份纯函数在 `worlddef/session-identity.ts`。工具面新增 `session` action（status/list/connect/disconnect），World 启用默认不入服，`observe/run/chat/runs` 在无活动会话或管理切换中返回 `NOT_CONNECTED`（not_started）。工具入参与结果：
+
+```typescript
+type ConnectTarget =
+  | { host: string; port?: number; username?: string; slot?: string; world?: { id: string; revision?: string } }
+  | { server: string; username?: string; slot?: string; world?: { id: string; revision?: string } };
+interface SessionStatus {
+  state: "disconnected" | "connecting" | "syncing" | "connected" | "disconnecting" | "faulted";
+  active: null | {
+    profileId: string; visitId: string; target: ProfileIdentity;
+    connection: "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
+    actualUsername: string | null; actualUuid: string | null;
+    worldAssociation: "explicit" | "endpoint_default";
+    executorPhase: "starting" | "ready" | "faulted" | "closing" | "closed";
+    actionsAllowed: boolean; ownerGates: string[];
+    history: "opening" | "ready" | "unavailable";
+  };
+  operation: null | { kind: "connect" | "disconnect" | "close"; id: string };
+  lastError: { code: string; message: string } | null;
+  settingsPath: string; libraryPath: string;
+}
+interface ProfileIdentity {
+  endpoint: { host: string; port: number };
+  principal: { kind: "offline"; username: string; slot: string };
+  world: string; worldRevision: string;
+}
+```
+
+- **身份**：`profileId = sha256(["mc-profile-v1", canonicalHost, port, "offline", username, slot, world, worldRevision])`，只允许本系统生成的 64 位 hex 进入磁盘路径。`identity.json` 不可变（schemaVersion + identity），重访内容不一致即 `PROFILE_IDENTITY_CONFLICT`；`observed.json` 保存可验证登录观测（visitId/at/username/uuid），UUID 仅在协议来源可得时记录，矛盾即拒用旧 Profile。未显式给 world 时用 `endpoint:<host>:<port>` + revision `default` 并标记 `endpoint_default`（不是已证实相同世界）。
+- **数据根**：`ownershipDir`（稳定 MC 根，Windows 目录 Job 跨 Profile 唯一）+ `sessionDataDir`（`sessions/<profileId>/`：executor.db、runtime.db、runs/、exports/）+ `sharedDataDir`（world-history.db 与 `library/`）。`settings.json` 位于稳定根，每次 connect 重读（defaultUsername、servers 别名含可选 world 关联）。
+- **退役三事实**：`Executor.close()` 返回 `{ process: "retired"|"unknown", ownership: "released"|"held", runtime: "clean"|"unclean"|"unknown" }`；只有 `process=retired && ownership=released` 才允许新执行域，未证实即 `SESSION_BLOCKED`（重试 connect/disconnect 是唯一恢复渠道，无时间兜底）。`runtime=unclean` 只影响旧 Run 的恢复结算。`EXECUTION_DOMAIN_UNRETIRED` 保留给 Runtime 发起的 retire_required 路径。
+- **连接回执**：`connection.wait` RPC 等 ClientHost 首个终态（ready/断开/故障）并返回 `{state, username, uuid, reason}`；`Executor.open()` 成功不再冒充入服成功。入服超时按当前事实判 `CONNECT_FAILED`。
+- **错误码**：`SESSION_BUSY`（管理槽占用）、`SESSION_BLOCKED`（旧执行域未证实退役）、`NOT_CONNECTED`（无活动会话）、`CONNECT_FAILED`、`IDENTITY_MISMATCH`、`PROFILE_IDENTITY_CONFLICT`、`SETTINGS_INVALID`。
+- **离线资料**：`describe` 直读静态 Catalog（无需执行域）；`library` 收敛为宿主常驻唯一写入口（`save.from` 经活动 Executor 的 Runtime RPC 与 Profile 根快照直读核验来源，无会话 NOT_CONNECTED）；Companion 对 `library/` 只读，Library 变更经 `program.changed` 窄通知撤销 Runtime 程序缓存；`program/validator.ts` 离线校验复用同一 program worker compile 路径。Body 端点 `bodyId = minecraft:<visitId>`，随 visit 注册与摘除。旧布局迁移以 executor.db 为身份锚点，一次完成（v3 M4 的最小闭环）；批26 剩 RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope 与完整 M4。
