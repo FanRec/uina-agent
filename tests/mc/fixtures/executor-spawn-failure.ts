@@ -8,7 +8,9 @@ const original = process.execPath;
 try {
 	process.execPath = join(root, "missing-node.exe");
 	await MinecraftExecutor.open({
-		worldDataDir: root,
+		ownershipDir: root,
+		sessionDataDir: root,
+		sharedDataDir: root,
 		config: {
 			connection: { host: "127.0.0.1", port: 1, username: "spawn-failure", authMode: "offline" },
 			binding: null,

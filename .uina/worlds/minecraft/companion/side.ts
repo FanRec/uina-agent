@@ -7,8 +7,12 @@ import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
 import { createConstruction } from "../construction/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
-import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
-import type { LibraryRequest } from "../contracts/library.js";
+import type {
+	CompanionInit,
+	ConnectionWaitResult,
+	ExecutionSideStatus,
+	RetirementRequest,
+} from "../contracts/executor.js";
 import type { ProgramPort } from "../contracts/program.js";
 import type {
 	ControlRetirement,
@@ -165,8 +169,9 @@ export async function openExecutionSide(
 	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
 	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
 	// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
+	// v3：伴生侧只读共享 library/（写入口收敛到宿主常驻 Library）；compile 仍给 describe 校验用。
 	const library = createLibrary({
-		dataRoot: init.worldDataDir,
+		dataRoot: init.sharedDataDir,
 		compile: (material) => program!.validate(material),
 		readSource: (origin) =>
 			readCallSource(origin, {
@@ -176,7 +181,7 @@ export async function openExecutionSide(
 			}),
 	});
 	// map@1 的 PNG 缓存目录：查询产出与 read_image 读取共用这一份派生（world.md §8.6）。
-	const imageDir = join(init.worldDataDir, "exports", "images");
+	const imageDir = join(init.sessionDataDir, "exports", "images");
 	// 启动即清上一会话的派生图片（fire-and-forget）：本会话 ref 尚未产出，磁盘占用有界。
 	void pruneExportedImages(imageDir).catch(() => {});
 	let world: MinecraftWorld;
@@ -186,7 +191,7 @@ export async function openExecutionSide(
 		readers: capabilities.readers,
 		validators: capabilities.validators,
 		queries: capabilities.queries,
-		dbPath: join(init.worldDataDir, "world-history.db"),
+		dbPath: join(init.sharedDataDir, "world-history.db"),
 		binding,
 		namespace,
 		imageDir,
@@ -197,7 +202,7 @@ export async function openExecutionSide(
 	});
 	try {
 		program = await createProgram({
-			dataRoot: init.worldDataDir,
+			dataRoot: init.sessionDataDir,
 			loadProgram: (name) => library.loadProgram(name),
 			onChanged: () => {
 				runtime?.programChanged();
@@ -223,7 +228,7 @@ export async function openExecutionSide(
 					});
 			},
 			verifiers: buildVerifiers(),
-			dbPath: join(init.worldDataDir, "runtime.db"),
+			dbPath: join(init.sessionDataDir, "runtime.db"),
 			storageId: init.storageId,
 			namespace,
 			worldOwner: init.origin.worldOwner,
@@ -308,6 +313,30 @@ export async function openExecutionSide(
 			.catch((error: unknown) => {
 				pushFault({ code: "CONNECTION_FAILED", message: error instanceof Error ? error.message : String(error) });
 			});
+		/** connection.wait 的入服事实快照；uuid 取登录会话，拿不到可靠来源就保持 null。 */
+		const connectionSnapshot = (): ConnectionWaitResult => ({
+			state: host.state,
+			username: host.bot?.username ?? null,
+			uuid: (host.bot as unknown as { uuid?: string } | null)?.uuid ?? null,
+			reason: host.disconnectFacts?.reason ?? null,
+		});
+		// connected 在首个终态（ready/断开/故障）resolve；超时返回当前快照，不冒充结果。
+		const waitConnection = async (timeoutMs: number, signal: AbortSignal): Promise<ConnectionWaitResult> => {
+			if (signal.aborted) throw new RpcError("REQUEST_CANCELLED", "connection wait cancelled");
+			let removeAbort = () => {};
+			const aborted = new Promise<never>((_, reject) => {
+				const onAbort = () => reject(new RpcError("REQUEST_CANCELLED", "connection wait cancelled"));
+				signal.addEventListener("abort", onAbort, { once: true });
+				removeAbort = () => signal.removeEventListener("abort", onAbort);
+			});
+			try {
+				const timer = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs));
+				await Promise.race([connected.then(() => "terminal" as const), timer, aborted]);
+				return connectionSnapshot();
+			} finally {
+				removeAbort();
+			}
+		};
 		const inspect = (): ExecutionSideStatus => ({
 			launch: init.launch,
 			storageId: init.storageId,
@@ -420,29 +449,14 @@ export async function openExecutionSide(
 				case "describe":
 					value = await describeDirectory(builtinCatalog, library, p as DescribeParams);
 					break;
-				case "library": {
-					const request = payload as unknown as LibraryRequest;
-					switch (request.op) {
-						case "list":
-							value = await library.list(request);
-							break;
-						case "get":
-							value = await library.get(request.kind ?? "program", request.name);
-							if (value === null) throw new RpcError("NOT_FOUND", "library entry not found");
-							break;
-						case "save":
-							value = await library.save(request);
-							break;
-						case "update":
-							value = await library.update(request);
-							break;
-						case "delete":
-							await library.delete(request.kind ?? "program", request.name);
-							value = null;
-							break;
-					}
+				case "connection.wait":
+					value = await waitConnection(typeof p.timeoutMs === "number" ? p.timeoutMs : 30_000, signal);
 					break;
-				}
+				case "program.changed":
+					runtime?.programChanged();
+					options.onChanged?.();
+					value = null;
+					break;
 				case "runtime.list":
 					value = await getRuntime().list(p as Parameters<MinecraftRuntime["list"]>[0]);
 					break;

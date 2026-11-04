@@ -105,7 +105,9 @@ async function main(): Promise<void> {
 	console.log("[mc-review] server up");
 
 	let executor: MinecraftExecutor | null = await MinecraftExecutor.open({
-		worldDataDir: root,
+		ownershipDir: root,
+		sessionDataDir: root,
+		sharedDataDir: root,
 		config,
 		policy: { autoRecover: false },
 	});

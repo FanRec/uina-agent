@@ -1,7 +1,6 @@
 /** One fixed wire method table. No reflection or caller-selected origins. */
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
-import { libraryResultSchema, librarySchema } from "../library/schema.js";
 
 const Ajv = createRequire(import.meta.url)("ajv") as new (
 	options: object,
@@ -72,7 +71,8 @@ const definitions = {
 			launch: ref,
 			origin: object({ worldOwner: ref, activation: ref }),
 			storageId: ref,
-			worldDataDir: ref,
+			sessionDataDir: ref,
+			sharedDataDir: ref,
 			config: { type: "object" },
 			unclean: { type: "boolean" },
 			oldControlRetired: { type: "boolean" },
@@ -144,7 +144,19 @@ const definitions = {
 		}),
 	},
 	describe: { input: { type: "object" }, output: { type: "object" }, cancellable: true },
-	library: { input: librarySchema, output: libraryResultSchema, cancellable: false },
+	// 入服终态等待：伴生侧等待 ClientHost 首个终态（ready/断开/故障）或超时，返回事实快照。
+	"connection.wait": {
+		input: object({ timeoutMs: { type: "number", minimum: 0 } }, []),
+		output: object({
+			state: { enum: ["connecting", "syncing", "ready", "disconnected", "faulted"] },
+			username: { type: ["string", "null"] },
+			uuid: { type: ["string", "null"] },
+			reason: { type: ["string", "null"] },
+		}),
+		cancellable: true,
+	},
+	// Library 变更的窄通知：宿主常驻 Library 发布后让当前 Runtime 撤销过期程序缓存。
+	"program.changed": { input: object({}), output: { type: "null" } },
 	"runtime.list": {
 		input: object({ activeOnly: { type: "boolean" }, cursor: ref }, []),
 		output: shaped({ items: { type: "array" } }),

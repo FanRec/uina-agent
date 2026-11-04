@@ -108,7 +108,9 @@ test("SIGKILL mid-write keeps runtime.db consistent and the executor recoverable
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			// autoRecover：伴生被杀后由父侧托管重建（本测试的恢复路径）。
 			policy: { autoRecover: true, closeGraceMs: 3000 },

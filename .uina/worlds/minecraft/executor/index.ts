@@ -5,7 +5,13 @@ import { existsSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BootstrapHello, CompanionInit, ExecutionSideStatus } from "../contracts/executor.js";
+import {
+	type BootstrapHello,
+	type CompanionInit,
+	type ConnectionWaitResult,
+	type ExecutorCloseResult,
+	type ExecutionSideStatus,
+} from "../contracts/executor.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -99,7 +105,7 @@ export class MinecraftExecutor {
 	private phase: PlatformSessionStatus["phase"] = "starting";
 	private lastFault: PlatformSessionStatus["fault"] = null;
 	private closing = false;
-	private closePromise: Promise<void> | null = null;
+	private closePromise: Promise<ExecutorCloseResult> | null = null;
 	private retiring: Promise<boolean> | null = null;
 	private launching: Promise<void> | null = null;
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -119,7 +125,8 @@ export class MinecraftExecutor {
 	private readonly activation = `activation:${randomUUID()}`;
 	private readonly abortListener: () => void;
 	private constructor(
-		private readonly root: string,
+		private readonly sessionDataDir: string,
+		private readonly sharedDataDir: string,
 		private readonly config: ReturnType<typeof parseExecutorConfig>,
 		private readonly ownership: WindowsOwnership,
 		private readonly policy: ExecutorPolicy,
@@ -133,37 +140,47 @@ export class MinecraftExecutor {
 		signal?.addEventListener("abort", this.abortListener, { once: true });
 	}
 	static async open(options: {
-		worldDataDir: string;
+		/** 所有 Profile 共享的稳定根：Native 目录 Job 唯一（v3 §4.1，I1）。 */
+		ownershipDir: string;
+		/** 本 Profile 的 executor.db/runtime.db/runs/exports 根。 */
+		sessionDataDir: string;
+		/** world-history.db 与 library/ 的共享根。 */
+		sharedDataDir: string;
 		config: unknown;
 		signal?: AbortSignal;
 		policy?: Partial<ExecutorPolicy>;
 	}): Promise<MinecraftExecutor> {
 		const config = parseExecutorConfig(options.config);
 		if (options.signal?.aborted) throw new RpcError("REQUEST_CANCELLED", "activation cancelled before start");
-		await mkdir(options.worldDataDir, { recursive: true });
-		const root = await realpath(options.worldDataDir);
-		const ownership = acquireOwnership(root, accountKey(config));
+		await mkdir(options.sessionDataDir, { recursive: true });
+		const [ownershipDir, sessionDataDir, sharedDataDir] = await Promise.all([
+			realpath(options.ownershipDir),
+			realpath(options.sessionDataDir),
+			realpath(options.sharedDataDir),
+		]);
+		const ownership = acquireOwnership(ownershipDir, accountKey(config));
 		const session = new MinecraftExecutor(
-			root,
+			sessionDataDir,
+			sharedDataDir,
 			config,
 			ownership,
 			{ ...DEFAULT_POLICY, ...options.policy },
 			options.signal,
 		);
 		try {
-			if (!existsSync(join(root, "executor.db")) && existsSync(join(root, "runtime.db")))
+			if (!existsSync(join(sessionDataDir, "executor.db")) && existsSync(join(sessionDataDir, "runtime.db")))
 				throw new RpcError(
 					"EXECUTOR_IDENTITY_MISSING",
 					"runtime exists without its executor identity; choose a new development data root",
 				);
 			const snapshot = await session.ledger.open(
-				join(root, "executor.db"),
+				join(sessionDataDir, "executor.db"),
 				`owner:${randomUUID()}`,
 				`storage:${randomUUID()}`,
 			);
 			session.identity = snapshot.identity;
 			for (const gate of snapshot.gates) session.localGates.add(gate);
-			if (session.identity.runtimeCreated && !existsSync(join(root, "runtime.db")))
+			if (session.identity.runtimeCreated && !existsSync(join(sessionDataDir, "runtime.db")))
 				throw new RpcError("STORAGE_ID_CHANGED", "previously initialized Runtime database is missing");
 			await session.startLaunch(snapshot.previous != null && !snapshot.previous.clean);
 			return session;
@@ -294,7 +311,8 @@ export class MinecraftExecutor {
 				launch,
 				origin: { worldOwner: this.identity.worldOwner, activation: this.activation },
 				storageId: this.identity.storageId,
-				worldDataDir: this.root,
+				sessionDataDir: this.sessionDataDir,
+				sharedDataDir: this.sharedDataDir,
 				config: this.config,
 				unclean,
 				oldControlRetired: true,
@@ -522,6 +540,17 @@ export class MinecraftExecutor {
 	async observe<T>(selector: string, input: JsonValue = {}): Promise<Observation<T>> {
 		return (await this.current().peer.call("observe", { selector, input })) as unknown as Observation<T>;
 	}
+	/** 入服终态回执（v3 §6.3）：等 Driver 连接真正 ready/断开/故障；open() 成功不代表入服成功。 */
+	async waitGameConnection(timeoutMs: number, signal?: AbortSignal): Promise<ConnectionWaitResult> {
+		return (await this.current().peer.call(
+			"connection.wait",
+			{ timeoutMs },
+			{
+				signal,
+				timeoutMs: null,
+			},
+		)) as unknown as ConnectionWaitResult;
+	}
 	async wait(
 		run: string,
 		options: { afterRevision?: number; timeoutMs?: number } = {},
@@ -639,42 +668,60 @@ export class MinecraftExecutor {
 			.catch(() => {});
 		return task;
 	}
-	close(): Promise<void> {
-		return (this.closePromise ??= (async () => {
+	/**
+	 * 退役三事实（v3 §6.2）：进程退役、目录 Job 释放与 Runtime 关闭是三个独立事实。
+	 * 脏关闭（runtime=unclean）只影响旧 Run 的恢复语义；进程/所有权未确认时保持
+	 * process=unknown/ownership=held，由调用方拒绝启动新执行域。绝不从异常文字猜判定。
+	 */
+	close(): Promise<ExecutorCloseResult> {
+		return (this.closePromise ??= (async (): Promise<ExecutorCloseResult> => {
 			this.closing = true;
 			this.phase = "closing";
 			this.stopHeartbeat();
-			let clean = true;
-			let error: unknown;
-			try {
-				if (this.launching) {
-					if (this.connection) await this.retireSide(false);
-					await this.launching.catch(() => {});
-				}
-				if (this.retiring) await this.retiring;
+			let process: ExecutorCloseResult["process"] = "retired";
+			let ownership: ExecutorCloseResult["ownership"] = "released";
+			let runtime: ExecutorCloseResult["runtime"] = "clean";
+			const unproven = () => {
+				process = "unknown";
+				ownership = "held";
+				runtime = "unknown";
+			};
+			if (this.launching) {
 				if (this.connection) {
-					await this.retireSide(true);
-					clean = this.lastRetirementClean;
+					const retired = await this.retireSide(false).then(
+						() => true,
+						() => {
+							unproven();
+							return false;
+						},
+					);
+					if (retired) runtime = "unclean"; // 非优雅退役：Runtime 未干净关闭。
 				}
-			} catch (cause) {
-				error = cause;
+				await this.launching.catch(() => {});
 			}
-			if (!this.connection) {
+			if (this.retiring) await this.retiring.catch(unproven);
+			if (this.connection) {
+				try {
+					runtime = (await this.retireSide(true)) && this.lastRetirementClean ? "clean" : "unclean";
+				} catch {
+					unproven();
+				}
+			}
+			if (process === "retired" && !this.connection) {
 				try {
 					await this.ledger.close();
-				} catch (cause) {
-					error ??= cause;
+				} catch {
+					runtime = "unknown";
 				}
-				this.ownership.close();
+				try {
+					this.ownership.close();
+				} catch {
+					ownership = "held";
+				}
 				this.phase = "closed";
 			} else this.phase = "faulted";
 			this.signal?.removeEventListener("abort", this.abortListener);
-			if (error) throw error;
-			if (!clean)
-				throw new RpcError(
-					"EXECUTION_DOMAIN_UNRETIRED",
-					"process tree was terminated; Runtime requires recovery on next activation",
-				);
+			return { process, ownership, runtime };
 		})());
 	}
 }

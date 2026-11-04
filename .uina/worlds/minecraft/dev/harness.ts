@@ -84,7 +84,8 @@ export async function openHarness(
 			launch: `launch:${ns}`,
 			origin: { worldOwner, activation },
 			storageId: `storage:${ns}`,
-			worldDataDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: {
 				connection: { ...DEV_SERVER, authMode: "offline" },
 				binding: options.binding ?? { world: `world:${ns}`, worldRevision: `revision:${ns}` },

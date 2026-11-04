@@ -71,8 +71,6 @@ export class MinecraftFacade {
 						await this.executor.rpc("observe", { selector: params.selector, input: params.input ?? {} }, signal),
 						signal,
 					);
-				case "library":
-					return response(await cancelled(this.executor.rpc("library", params, signal), signal));
 				case "chat":
 					return await this.run({ selector: "chat@1", input: { text: params.text } }, signal);
 				case "run":
@@ -84,34 +82,19 @@ export class MinecraftFacade {
 			}
 		} catch (error) {
 			const e = error as { code?: string; message?: string; dispatch?: string; acknowledged?: boolean };
-			const unknownFileWrite =
-				action === "library" &&
-				["save", "update", "delete"].includes(params.op as string) &&
-				e.dispatch === "unknown" &&
-				e.acknowledged !== true;
 			return response(
 				{
 					code: e.code ?? "INTERNAL",
 					message: e.message ?? String(error),
-					...(unknownFileWrite
-						? {
-								nextCall: {
-									action: "library",
-									params: { op: "get", kind: params.kind ?? "program", name: params.name },
-								},
-							}
-						: {}),
 					...(e.code === "RECORD_TOO_LARGE"
 						? { nextCall: { action: "runs", params: { op: "record", ref: params.ref, format: "file" } } }
 						: {}),
 				},
-				unknownFileWrite
-					? "unknown"
-					: e.code === "REQUEST_CANCELLED"
-						? "cancelled"
-						: action === "runs" && params.op === "stop" && e.dispatch === "unknown"
-							? "unknown"
-							: "failed",
+				e.code === "REQUEST_CANCELLED"
+					? "cancelled"
+					: action === "runs" && params.op === "stop" && e.dispatch === "unknown"
+						? "unknown"
+						: "failed",
 			);
 		}
 	}

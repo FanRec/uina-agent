@@ -8,7 +8,9 @@ const root = await mkdtemp(join(tmpdir(), "uina-executor-fault-"));
 let executor: MinecraftExecutor | null = null;
 try {
 	executor = await MinecraftExecutor.open({
-		worldDataDir: root,
+		ownershipDir: root,
+		sessionDataDir: root,
+		sharedDataDir: root,
 		config: {
 			connection: {
 				host: "127.0.0.1",

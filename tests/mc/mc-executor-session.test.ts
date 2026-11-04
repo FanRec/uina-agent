@@ -33,7 +33,9 @@ test("a remote pre-acceptance gate rejection remains not accepted while the pare
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});
@@ -64,7 +66,9 @@ test("real managed bootstrap restores Runtime before game connection, binds owne
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});
@@ -112,7 +116,9 @@ test("IPC loss retires the exact launch; recovery changes attachment and keeps o
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});
@@ -141,7 +147,9 @@ test("recover rebuilds the execution domain when the game client is gone while t
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});
@@ -171,13 +179,22 @@ test("missing initialized Runtime is refused without recreating its database", a
 	const connection = config();
 	try {
 		const executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: connection,
 			policy: { closeGraceMs: 3000 },
 		});
 		await executor.close();
 		await rename(join(dataRoot, "runtime.db"), join(dataRoot, "runtime.saved"));
-		await expect(MinecraftExecutor.open({ worldDataDir: dataRoot, config: connection })).rejects.toMatchObject({
+		await expect(
+			MinecraftExecutor.open({
+				ownershipDir: dataRoot,
+				sessionDataDir: dataRoot,
+				sharedDataDir: dataRoot,
+				config: connection,
+			}),
+		).rejects.toMatchObject({
 			code: "STORAGE_ID_CHANGED",
 		});
 	} finally {
@@ -191,7 +208,9 @@ test("concurrent recover callers share exactly one launch across the ledger awai
 	let release!: () => void;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});
@@ -234,7 +253,9 @@ test("closing emergency while side is unavailable persists local intent before r
 	let executor: MinecraftExecutor | undefined;
 	try {
 		executor = await MinecraftExecutor.open({
-			worldDataDir: dataRoot,
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
 			config: config(),
 			policy: { autoRecover: false, closeGraceMs: 3000 },
 		});

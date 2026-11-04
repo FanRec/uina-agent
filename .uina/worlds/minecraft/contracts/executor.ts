@@ -12,12 +12,34 @@ export interface CompanionInit {
 	launch: Ref;
 	origin: Origin;
 	storageId: Ref;
-	worldDataDir: string;
+	/** 本 Profile 的 runtime.db/runs/exports 根；executor.db 所在目录。 */
+	sessionDataDir: string;
+	/** world-history.db 与 library/ 的共享根（跨 Profile 只读复用）。 */
+	sharedDataDir: string;
 	config: ExecutorConfig;
 	unclean: boolean;
 	oldControlRetired: boolean;
 	ownerLifetimeMs: number;
 	localGates: ("disabled" | "emergency" | "owner_lost")[];
+}
+
+/** 退役三事实（v3 §6.2）：只允许新执行域的必要条件是 process=retired && ownership=released。 */
+export interface ExecutorCloseResult {
+	/** 所有受管进程是否确认退出。 */
+	process: "retired" | "unknown";
+	/** 目录 Native Job 是否释放。 */
+	ownership: "released" | "held";
+	/** 只决定旧记录如何恢复/审计，不阻止切服。 */
+	runtime: "clean" | "unclean" | "unknown";
+}
+
+/** connection.wait 的入服终态快照：连接状态、观测到的登录身份与断开原因。 */
+export interface ConnectionWaitResult {
+	state: ExecutionSideStatus["connection"];
+	username: string | null;
+	/** 服务器登录会话给出的玩家 UUID；拿不到可靠来源就保持 null，不冒充已核对。 */
+	uuid: string | null;
+	reason: string | null;
 }
 
 export type RetirementRequest = ControlRetirement & { launch: Ref };

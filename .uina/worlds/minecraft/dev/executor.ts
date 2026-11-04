@@ -45,7 +45,9 @@ async function main(): Promise<void> {
 		binding: { world: "dev-executor-world", worldRevision: "dev-executor-world-2026-10-25" },
 	};
 	let executor: MinecraftExecutor | null = await MinecraftExecutor.open({
-		worldDataDir: root,
+		ownershipDir: root,
+		sessionDataDir: root,
+		sharedDataDir: root,
 		config,
 		policy: { autoRecover: false },
 	});
@@ -231,7 +233,13 @@ async function main(): Promise<void> {
 			);
 			await executor!.close();
 			executor = null;
-			executor = await MinecraftExecutor.open({ worldDataDir: root, config, policy: { autoRecover: false } });
+			executor = await MinecraftExecutor.open({
+				ownershipDir: root,
+				sessionDataDir: root,
+				sharedDataDir: root,
+				config,
+				policy: { autoRecover: false },
+			});
 			await until(
 				() => executor!.inspect(),
 				(state) => state.side?.connection === "ready",
