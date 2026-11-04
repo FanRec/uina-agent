@@ -803,6 +803,8 @@ PVP 内部依赖 Pathfinder 的事实不必为了形式解耦而重写。由两�
 
 玩家库存与容器共用 driver/window/session.ts 的快照、期望、串行点击和确认；driver/mineflayer/protocol.ts 负责连接级编解码和同步协议写入。本轮适配 Java 1.21.11，后续版本以相同 DriverProtocol 窄端口接入，未支持版本的操作明确失败。Body 的 inventory、mining、sign 模块各持有自己的局部资源，BodySession 保留资格及停止屏障。
 
+实现说明（批24，2026-11-04）：持续控制的机械层从 BodySession 分离——`driver/input/vehicle.ts` 拥有载具运动学递推、50ms 节拍包序与输入中和（`driveVehicle`/`neutralizeVehicle`），`driver/input/walking.ts` 拥有步行键位安装/撤销与 physicsTick 消费（`applyWalkingKeys`/`revokeKeys`/`consumeWalkingTicks`，`DRIVE_STALL_MS` 同时是容器物理边界的停滞预算真源）。会话以窄依赖注入（signal/recorder/sampleSelf/resolveLookTarget），效果合同名（body.drive@1）与取消语义逐字保留；版本差异仍只在 DriverProtocol 内部，BodySession 无版本字符串分支。drive 的编排、use/attack 会话、窗口协调（withInventoryScope/openContainer——资格屏障作用于窗口的职责）留在 BodySession。
+
 不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、旧 revision、失效窗口在发送前拒绝。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
 
 块容器在强制看向目标后等待一个真实 physicsTick，继续时复验资格再派发。它既让视角越过实际物理/发包边界，也避免真服 Paper 已观察到的连续 block-use 静默突发丢包；不另建基于服务器配置的速率管理器。真实窗口当前值与历史同源，publishWindow 只移交服务端观察，关闭清当前值而保留旧证据。

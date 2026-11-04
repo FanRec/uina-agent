@@ -33,7 +33,7 @@ function testModule(overrides: Partial<MinecraftCapabilityModule> = {}): Minecra
 				},
 				bind: () => ({
 					kind: "static",
-					read: () => ({ observedAt: "", source: "static", coverage: "partial", unknown: [], value: {}, evidence: [] }),
+					read: () => ({ observedAt: "", source: "server", coverage: "partial", unknown: [], value: {}, evidence: [] }),
 				}),
 			},
 		],

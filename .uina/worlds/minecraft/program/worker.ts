@@ -219,7 +219,8 @@ function checkedValue(g: Guest, handle: QuickJSHandle): JsonValue {
 	}
 	const text = g.ctx.getString(r.value);
 	r.value.dispose();
-	if (Buffer.byteLength(text) > P.maxValueBytes) throw failure("PROGRAM_VALUE", "JSON exceeds 1 MiB");
+	if (Buffer.byteLength(text) > P.maxValueBytes)
+		throw failure("PROGRAM_VALUE", `JSON exceeds the ${P.maxValueBytes} byte value limit`);
 	return JSON.parse(text) as JsonValue;
 }
 function start(msg: Extract<ProgramWorkerRequest, { type: "invoke" }>): void {
@@ -247,7 +248,12 @@ function start(msg: Extract<ProgramWorkerRequest, { type: "invoke" }>): void {
 			const method = g.ctx.getString(methodHandle),
 				text = g.ctx.getString(argsHandle);
 			if (Buffer.byteLength(text) > P.maxValueBytes)
-				return { error: g.ctx.newError({ name: "PROGRAM_VALUE", message: "JSON exceeds 1 MiB" }) };
+				return {
+					error: g.ctx.newError({
+						name: "PROGRAM_VALUE",
+						message: `JSON exceeds the ${P.maxValueBytes} byte value limit`,
+					}),
+				};
 			const rpc = ++g.nextRpc,
 				d = g.ctx.newPromise();
 			g.rpcs.set(rpc, d);

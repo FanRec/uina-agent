@@ -908,6 +908,8 @@ async function main(mc, input) {
 
 模型的常驻指南唯一见 [Program 附录 A](program.md#附录-a模型的最小指南)。下表由 descriptor 生成供 describe 展开，不作为另一份常驻提示。
 
+实现说明（批24，2026-11-04）：装配合同为 `CapabilityDefinition`/`MinecraftCapabilityModule`（`capabilities/catalog.ts`）——每个能力文件自带 descriptor 与 `bind(deps)` 的配对；目录在创建时一次性校验（模块 id 唯一、ref 全局唯一跨查询/动作、输入 schema 可编译，坏模块拒绝激活而非首调才炸），`bind(deps)` 仅在 Companion 初始化时产生读写实现，`BuiltCapabilities` 合同不变。describe 直接读 `catalog.allDescriptors()`：不触发 bind、不依赖 deps，无连接、无执行域即可列出全部能力（多世界离线发现的直接前置）。测试/可信本地模块经 `createCapabilityCatalog` 注入，不需要改内置清单。
+
 | 家族 | 查询或动作 |
 |---|---|
 | 查询 | self inventory block blocks region entities players item recipe world events map places container.last route.plan build.plan |
