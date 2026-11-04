@@ -143,7 +143,6 @@ const definitions = {
 			snapshot: { anyOf: [{ type: "null" }, summary] },
 		}),
 	},
-	describe: { input: { type: "object" }, output: { type: "object" }, cancellable: true },
 	// 入服终态等待：伴生侧等待 ClientHost 首个终态（ready/断开/故障）或超时，返回事实快照。
 	"connection.wait": {
 		input: object({ timeoutMs: { type: "number", minimum: 0 } }, []),

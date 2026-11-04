@@ -40,7 +40,6 @@ import { MinecraftRuntime } from "../runtime/index.js";
 import { startDigestPush } from "../world/digest.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
-import { type DescribeParams, describeDirectory } from "./directory.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,
@@ -451,9 +450,6 @@ export async function openExecutionSide(
 					break;
 				case "runtime.stop":
 					value = await getRuntime().stop(payload as unknown as StopCommand);
-					break;
-				case "describe":
-					value = await describeDirectory(builtinCatalog, library, p as DescribeParams);
 					break;
 				case "connection.wait":
 					value = await waitConnection(typeof p.timeoutMs === "number" ? p.timeoutMs : 30_000, signal);

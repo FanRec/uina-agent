@@ -12,9 +12,6 @@ export const MC_PROTOCOL_VERSION = "1.21.11";
 export const DEFAULT_PORT = 25565;
 export const DEFAULT_SLOT = "default";
 
-/** v3 §4 稳定根布局。executor/runtime/runs/exports 属 Profile；history/library 属共享根。 */
-export const LEGACY_FILES = ["executor.db", "runtime.db"] as const;
-
 function invalid(code: string, message: string): Error {
 	return Object.assign(new Error(message), { code });
 }
@@ -109,8 +106,6 @@ export type WorldAssociation = "explicit" | "endpoint_default";
 export interface ResolvedTarget {
 	identity: ProfileIdentity;
 	worldAssociation: WorldAssociation;
-	/** 供日志/迁移显示的原始 host 输入；连接一律用 identity.endpoint.host。 */
-	source: { host: string; port: number; username: string; slot: string };
 }
 
 function worldRef(world: { id: string; revision?: string } | undefined): { world: string; worldRevision: string } {
@@ -119,6 +114,13 @@ function worldRef(world: { id: string; revision?: string } | undefined): { world
 	if (world.revision !== undefined && (typeof world.revision !== "string" || !world.revision.trim()))
 		throw invalid("INVALID_INPUT", "world revision must be non-empty");
 	return { world: world.id, worldRevision: world.revision ?? "default" };
+}
+
+function endpointPort(port: number | undefined): number {
+	// 端口在身份解析期校验：坏端口属于输入错误，不能先写 identity.json 再在 Executor 配置处失败。
+	if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535))
+		throw invalid("INVALID_INPUT", `port must be an integer in [1, 65535], got ${JSON.stringify(port)}`);
+	return port ?? DEFAULT_PORT;
 }
 
 /** 解析 connect 目标为 Profile 身份；username 缺省只从 settings.defaultUsername 取，不擅自选身份。 */
@@ -130,12 +132,12 @@ export function resolveTarget(target: ConnectTarget, settings: WorldSettings): R
 		if ("host" in target) throw invalid("INVALID_INPUT", "provide either server alias or host, not both");
 		const entry = settings.servers?.[target.server];
 		if (!entry?.host) throw invalid("INVALID_INPUT", `unknown server alias ${JSON.stringify(target.server)}`);
-		endpoint = { host: canonicalHost(entry.host), port: entry.port ?? DEFAULT_PORT };
+		endpoint = { host: canonicalHost(entry.host), port: endpointPort(entry.port) };
 		aliasWorld = entry.world;
 	} else {
 		if (typeof target.host !== "string" || !target.host.trim())
 			throw invalid("INVALID_INPUT", "connect requires host or a named server");
-		endpoint = { host: canonicalHost(target.host), port: target.port ?? DEFAULT_PORT };
+		endpoint = { host: canonicalHost(target.host), port: endpointPort(target.port) };
 	}
 	const username = target.username ?? settings.defaultUsername;
 	if (typeof username !== "string" || !username.trim() || username.trim() !== username)
@@ -163,7 +165,6 @@ export function resolveTarget(target: ConnectTarget, settings: WorldSettings): R
 			worldRevision: association.worldRevision,
 		},
 		worldAssociation: association.kind,
-		source: { host: endpoint.host, port: endpoint.port, username, slot },
 	};
 }
 

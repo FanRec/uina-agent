@@ -23,8 +23,8 @@ const port = { type: "integer", minimum: 1, maximum: 65535 };
 const worldRef = object({ id: text, revision: text }, ["id"]);
 const connectTarget = {
 	oneOf: [
-		object({ host: text, port, username: text, slot: text, world: worldRef }, []),
-		object({ server: text, username: text, slot: text, world: worldRef }, []),
+		object({ host: text, port, username: text, slot: text, world: worldRef }, ["host"]),
+		object({ server: text, username: text, slot: text, world: worldRef }, ["server"]),
 	],
 };
 const entry = (extra: object = {}) => ({

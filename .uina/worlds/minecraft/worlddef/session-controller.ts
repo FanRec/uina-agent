@@ -274,6 +274,7 @@ export class SessionController {
 	}
 
 	private beginTransition(kind: "connect" | "disconnect" | "close"): { kind: string; id: string } {
+		if (this.closing) throw new RpcError("WORLD_DISABLED", "Minecraft session controller is closing");
 		if (this.transition)
 			throw new RpcError("SESSION_BUSY", `a ${this.transition.kind} operation is already in progress`);
 		this.transitionSettled = new Promise<void>((resolve) => {
@@ -368,6 +369,8 @@ export class SessionController {
 				schemaVersion: 1,
 				lastVisit: { visitId, at: new Date().toISOString(), username: waited.username, uuid: waited.uuid },
 			});
+			// 心跳可能尚未刷新 side 缓存：发布前拉一次实时状态，避免把 ready 报成 connecting。
+			await candidate.inspect();
 			const facade = new MinecraftFacade(candidate, this.options.ctx, this.options.deliveryPolicy);
 			const body = createBodyEndpoint(candidate, `minecraft:${visitId}`);
 			const detachBody = this.options.expose(`${BODY_ENDPOINT_EXPOSED_PREFIX}${body.bodyId}`, body);
@@ -402,4 +405,4 @@ export class SessionController {
 	}
 }
 
-export { response as sessionResponse, notConnected as sessionNotConnected };
+export { response as sessionResponse };

@@ -79,7 +79,7 @@ export class MinecraftFacade {
 					throw new RpcError("INVALID_INPUT", `unknown Minecraft action ${action}`);
 			}
 		} catch (error) {
-			const e = error as { code?: string; message?: string; dispatch?: string; acknowledged?: boolean };
+			const e = error as { code?: string; message?: string; dispatch?: string };
 			return response(
 				{
 					code: e.code ?? "INTERNAL",

@@ -13,7 +13,7 @@ import { readRunSnapshot } from "../program/index.js";
 import { createProgramValidator, type ProgramValidator } from "../program/validator.js";
 import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
-import { SessionController, sessionNotConnected, sessionResponse } from "./session-controller.js";
+import { SessionController, sessionResponse } from "./session-controller.js";
 import { actionSchemas, nativeGuide } from "./schema.js";
 import { MC_PROTOCOL_VERSION } from "./session-identity.js";
 
@@ -50,6 +50,9 @@ export function createMinecraftWorld(
 
 	const invalidInput = (message: string): RpcError => new RpcError("INVALID_INPUT", message);
 	const ok = (value: unknown): ToolExecutionResult => sessionResponse(value);
+	/** activation 关闭后（onStop 与下一次 onStart 之间）任何动作都只是世界未启用，不冒充会话语义。 */
+	const disabled = (): ToolExecutionResult =>
+		sessionResponse({ code: "WORLD_DISABLED", message: "Minecraft activation is not running" }, "not_started");
 
 	/** save.from 的来源核验：活动会话走 Runtime RPC + Profile 根的固定快照；离线明确失败。 */
 	const readSource = async (origin: ProgramOrigin) => {
@@ -64,7 +67,7 @@ export function createMinecraftWorld(
 
 	const libraryAction = async (params: Record<string, unknown>): Promise<ToolExecutionResult> => {
 		const lib = library;
-		if (!lib) return sessionNotConnected("library");
+		if (!lib) return disabled();
 		const kind = (params.kind as LibraryKind | undefined) ?? "program";
 		switch (params.op) {
 			case "list":
@@ -91,6 +94,7 @@ export function createMinecraftWorld(
 		params: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<ToolExecutionResult> => {
+		if (!controller && name !== "session") return disabled();
 		switch (name) {
 			case "session": {
 				switch (params.op) {
@@ -99,14 +103,14 @@ export function createMinecraftWorld(
 					case "list":
 						return ok(controller ? await controller.list() : []);
 					case "connect": {
-						if (!controller) return sessionNotConnected("session");
+						if (!controller) return disabled();
 						const target = params.target;
 						if (target == null || typeof target !== "object" || Array.isArray(target))
 							throw invalidInput("session connect requires a target object");
 						return ok(await controller.connect(target as never, signal));
 					}
 					case "disconnect": {
-						if (!controller) return sessionNotConnected("session");
+						if (!controller) return disabled();
 						return ok(await controller.disconnect(signal));
 					}
 					default:
@@ -119,7 +123,7 @@ export function createMinecraftWorld(
 				return await libraryAction(params);
 			default:
 				// observe/run/chat/runs 只作用于当前会话；无连接或切换中 NOT_CONNECTED。
-				return controller ? await controller.execute(name, params, signal) : sessionNotConnected(name);
+				return await controller!.execute(name, params, signal);
 		}
 	};
 
