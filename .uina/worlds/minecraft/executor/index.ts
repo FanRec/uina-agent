@@ -106,6 +106,7 @@ export class MinecraftExecutor {
 	private lastFault: PlatformSessionStatus["fault"] = null;
 	private closing = false;
 	private closePromise: Promise<ExecutorCloseResult> | null = null;
+	private closeResult: ExecutorCloseResult | null = null;
 	private retiring: Promise<boolean> | null = null;
 	private launching: Promise<void> | null = null;
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -672,56 +673,68 @@ export class MinecraftExecutor {
 	 * 退役三事实（v3 §6.2）：进程退役、目录 Job 释放与 Runtime 关闭是三个独立事实。
 	 * 脏关闭（runtime=unclean）只影响旧 Run 的恢复语义；进程/所有权未确认时保持
 	 * process=unknown/ownership=held，由调用方拒绝启动新执行域。绝不从异常文字猜判定。
+	 * 已证实的结论幂等复用；未证实的结论允许重试——再次 close 就是人工恢复渠道。
 	 */
 	close(): Promise<ExecutorCloseResult> {
-		return (this.closePromise ??= (async (): Promise<ExecutorCloseResult> => {
-			this.closing = true;
-			this.phase = "closing";
-			this.stopHeartbeat();
-			let process: ExecutorCloseResult["process"] = "retired";
-			let ownership: ExecutorCloseResult["ownership"] = "released";
-			let runtime: ExecutorCloseResult["runtime"] = "clean";
-			const unproven = () => {
-				process = "unknown";
-				ownership = "held";
-				runtime = "unknown";
-			};
-			if (this.launching) {
-				if (this.connection) {
-					const retired = await this.retireSide(false).then(
-						() => true,
-						() => {
-							unproven();
-							return false;
-						},
-					);
-					if (retired) runtime = "unclean"; // 非优雅退役：Runtime 未干净关闭。
-				}
-				await this.launching.catch(() => {});
-			}
-			if (this.retiring) await this.retiring.catch(unproven);
+		if (this.closeResult && this.closeResult.process === "retired" && this.closeResult.ownership === "released")
+			return Promise.resolve(this.closeResult);
+		if (this.closePromise) return this.closePromise;
+		const promise = this.runClose().then((result) => {
+			this.closeResult = result;
+			this.closePromise = null;
+			return result;
+		});
+		this.closePromise = promise;
+		return promise;
+	}
+
+	private async runClose(): Promise<ExecutorCloseResult> {
+		this.closing = true;
+		this.phase = "closing";
+		this.stopHeartbeat();
+		let process: ExecutorCloseResult["process"] = "retired";
+		let ownership: ExecutorCloseResult["ownership"] = "released";
+		let runtime: ExecutorCloseResult["runtime"] = "clean";
+		const unproven = () => {
+			process = "unknown";
+			ownership = "held";
+			runtime = "unknown";
+		};
+		if (this.launching) {
 			if (this.connection) {
-				try {
-					runtime = (await this.retireSide(true)) && this.lastRetirementClean ? "clean" : "unclean";
-				} catch {
-					unproven();
-				}
+				const retired = await this.retireSide(false).then(
+					() => true,
+					() => {
+						unproven();
+						return false;
+					},
+				);
+				if (retired) runtime = "unclean"; // 非优雅退役：Runtime 未干净关闭。
 			}
-			if (process === "retired" && !this.connection) {
-				try {
-					await this.ledger.close();
-				} catch {
-					runtime = "unknown";
-				}
-				try {
-					this.ownership.close();
-				} catch {
-					ownership = "held";
-				}
-				this.phase = "closed";
-			} else this.phase = "faulted";
-			this.signal?.removeEventListener("abort", this.abortListener);
-			return { process, ownership, runtime };
-		})());
+			await this.launching.catch(() => {});
+		}
+		if (this.retiring) await this.retiring.catch(unproven);
+		if (this.connection) {
+			try {
+				runtime = (await this.retireSide(true)) && this.lastRetirementClean ? "clean" : "unclean";
+			} catch {
+				unproven();
+			}
+		}
+		if (process === "retired" && !this.connection) {
+			try {
+				await this.ledger.close();
+			} catch {
+				runtime = "unknown";
+			}
+			try {
+				this.ownership.close();
+			} catch {
+				ownership = "held";
+			}
+			this.phase = "closed";
+		} else this.phase = "faulted";
+		this.signal?.removeEventListener("abort", this.abortListener);
+		return { process, ownership, runtime };
 	}
 }

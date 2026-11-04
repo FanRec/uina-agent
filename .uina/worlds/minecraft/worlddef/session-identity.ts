@@ -51,6 +51,26 @@ export function isProfileId(value: string): boolean {
 	return /^[a-f0-9]{64}$/.test(value);
 }
 
+/** Profile 身份 → 单次 Executor 不可变配置（I2）；unbound 字面量仅限 legacy 迁移档。 */
+export function executorConfigFromIdentity(identity: ProfileIdentity): {
+	connection: { host: string; port: number; username: string; authMode: "offline"; version: string };
+	binding: { world: string; worldRevision: string } | null;
+} {
+	return {
+		connection: {
+			host: identity.endpoint.host,
+			port: identity.endpoint.port,
+			username: identity.principal.username,
+			authMode: "offline",
+			version: MC_PROTOCOL_VERSION,
+		},
+		binding:
+			identity.world === "unbound" && identity.worldRevision === "unbound"
+				? null
+				: { world: identity.world, worldRevision: identity.worldRevision },
+	};
+}
+
 export function profileDir(minecraftRoot: string, id: string): string {
 	if (!isProfileId(id)) throw invalid("INVALID_INPUT", `profile id must be a 64-hex digest, got ${JSON.stringify(id)}`);
 	return join(minecraftRoot, "sessions", id);
@@ -317,4 +337,26 @@ export async function migrateLegacyRoot(minecraftRoot: string, legacyConfig: unk
 	);
 	await writeObservedFile(target, (await readObservedFile(target)) ?? { schemaVersion: 1 });
 	return { migrated: true, profileId: id };
+}
+
+/** settings.json 缺席且旧 config.json 有身份时写入种子；用户手编的 settings 永不覆盖。 */
+export async function seedSettingsFromLegacy(minecraftRoot: string, legacyConfig: unknown): Promise<void> {
+	const path = join(minecraftRoot, "settings.json");
+	if (existsSync(path)) return;
+	const connection = (legacyConfig as { connection?: { host?: string; port?: number; username?: string } } | null)
+		?.connection;
+	if (typeof connection?.host !== "string" || typeof connection?.username !== "string") return;
+	const binding = (legacyConfig as { binding?: { world: string; worldRevision: string } | null } | null)?.binding;
+	const settings: WorldSettings = {
+		defaultUsername: connection.username,
+		servers: {
+			default: {
+				host: connection.host,
+				...(connection.port === undefined ? {} : { port: connection.port }),
+				...(binding ? { world: { id: binding.world, revision: binding.worldRevision } } : {}),
+			},
+		},
+	};
+	await mkdir(minecraftRoot, { recursive: true });
+	await writeFile(path, `${JSON.stringify(settings, null, "\t")}\n`, "utf8");
 }

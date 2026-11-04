@@ -2,51 +2,127 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { BODY_ENDPOINT_EXPOSED_PREFIX } from "../../../../src/extensions/world-framework/seams.js";
-import type { ServiceCompanionContext, WorldDef } from "../../../../src/extensions/world-framework/types.js";
-import { MinecraftFacade } from "../executor/facade.js";
-import { type ExecutorPolicy, MinecraftExecutor } from "../executor/index.js";
-import { createBodyEndpoint } from "./body-endpoint.js";
+import { builtinCatalog } from "../capabilities/index.js";
+import { describeDirectory } from "../companion/directory.js";
+import type { LibraryKind, ProgramOrigin } from "../contracts/library.js";
+import type { ExecutorPolicy } from "../executor/index.js";
+import { RpcError } from "../executor/ipc.js";
+import { createLibrary, type FileLibrary } from "../library/index.js";
+import { readCallSource } from "../library/origin.js";
+import { readRunSnapshot } from "../program/index.js";
+import { createProgramValidator, type ProgramValidator } from "../program/validator.js";
+import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
+import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
+import { SessionController, sessionNotConnected, sessionResponse } from "./session-controller.js";
 import { actionSchemas, nativeGuide } from "./schema.js";
-import {
-	ensureIdentityFile,
-	identityFromLegacyConfig,
-	migrateLegacyRoot,
-	MC_PROTOCOL_VERSION,
-	profileDir,
-	profileId,
-} from "./session-identity.js";
+import { MC_PROTOCOL_VERSION } from "./session-identity.js";
 
 export function createMinecraftWorld(
 	options: {
-		configPath?: string;
 		executorPolicy?: Partial<ExecutorPolicy>;
 		deliveryPolicy?: { shortWindowMs?: number; pollMs?: number };
+		/** 旧 config.json 路径（迁移与 settings 种子输入）；默认世界包内 config.json。 */
+		legacyConfigPath?: string;
 	} = {},
 ): WorldDef {
-	let executor: MinecraftExecutor | null = null,
-		facade: MinecraftFacade | null = null;
+	let controller: SessionController | null = null;
+	let library: FileLibrary | null = null;
+	let validator: ProgramValidator | null = null;
 	let closing: Promise<void> | null = null;
-	let starting: Promise<MinecraftExecutor> | null = null;
-	let detachBody: (() => void) | null = null,
-		detachAbort: (() => void) | null = null;
+	let detachAbort: (() => void) | null = null;
+
 	const close = (): Promise<void> =>
 		(closing ??= (async () => {
 			const errors: unknown[] = [];
-			const results = await Promise.allSettled([
-				facade?.close(),
-				(async () => {
-					const active = executor ?? (await starting?.catch(() => null));
-					await active?.close();
-				})(),
-			]);
-			for (const result of results) if (result.status === "rejected") errors.push(result.reason);
-			detachBody?.();
+			try {
+				await controller?.close();
+			} catch (error) {
+				errors.push(error);
+			}
+			controller = null;
+			await validator?.close().catch(() => {});
+			validator = null;
+			library = null;
 			detachAbort?.();
-			facade = null;
-			executor = null;
+			detachAbort = null;
 			if (errors.length) throw new AggregateError(errors, "Minecraft activation close failed");
 		})());
+
+	const invalidInput = (message: string): RpcError => new RpcError("INVALID_INPUT", message);
+	const ok = (value: unknown): ToolExecutionResult => sessionResponse(value);
+
+	/** save.from 的来源核验：活动会话走 Runtime RPC + Profile 根的固定快照；离线明确失败。 */
+	const readSource = async (origin: ProgramOrigin) => {
+		const session = controller?.session;
+		if (!session) throw new RpcError("NOT_CONNECTED", "saving from a run requires the active session");
+		return await readCallSource(origin, {
+			readRun: (run) => session.executor.read(run),
+			readRecord: (ref) => session.executor.readRecord(ref),
+			readSnapshot: ({ run, digest }) => readRunSnapshot(session.sessionDataDir, run, digest),
+		});
+	};
+
+	const libraryAction = async (params: Record<string, unknown>): Promise<ToolExecutionResult> => {
+		const lib = library;
+		if (!lib) return sessionNotConnected("library");
+		const kind = (params.kind as LibraryKind | undefined) ?? "program";
+		switch (params.op) {
+			case "list":
+				return ok(await lib.list(params as never));
+			case "get": {
+				const detail = await lib.get(kind, params.name as string);
+				if (!detail) throw new RpcError("NOT_FOUND", "library entry not found");
+				return ok(detail);
+			}
+			case "save":
+				return ok(await lib.save(params as never));
+			case "update":
+				return ok(await lib.update(params as never));
+			case "delete":
+				await lib.delete(kind, params.name as string);
+				return ok(null);
+			default:
+				throw invalidInput(`unknown library op ${String(params.op)}`);
+		}
+	};
+
+	const route = async (
+		name: string,
+		params: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<ToolExecutionResult> => {
+		switch (name) {
+			case "session": {
+				switch (params.op) {
+					case "status":
+						return ok(controller?.status() ?? { state: "disconnected", active: null });
+					case "list":
+						return ok(controller ? await controller.list() : []);
+					case "connect": {
+						if (!controller) return sessionNotConnected("session");
+						const target = params.target;
+						if (target == null || typeof target !== "object" || Array.isArray(target))
+							throw invalidInput("session connect requires a target object");
+						return ok(await controller.connect(target as never, signal));
+					}
+					case "disconnect": {
+						if (!controller) return sessionNotConnected("session");
+						return ok(await controller.disconnect(signal));
+					}
+					default:
+						throw invalidInput(`unknown session op ${String(params.op)}`);
+				}
+			}
+			case "describe":
+				return ok(await describeDirectory(builtinCatalog, library!, params as never));
+			case "library":
+				return await libraryAction(params);
+			default:
+				// observe/run/chat/runs 只作用于当前会话；无连接或切换中 NOT_CONNECTED。
+				return controller ? await controller.execute(name, params, signal) : sessionNotConnected(name);
+		}
+	};
+
 	return {
 		name: "minecraft",
 		description: nativeGuide,
@@ -61,15 +137,22 @@ export function createMinecraftWorld(
 							? "Run an exact capability, named program or JavaScript code; accepted may continue in background"
 							: name,
 					parameters,
-					run: async (params, ctx) =>
-						facade
-							? await facade.execute(name, params, ctx.signal)
-							: { status: "not_started" as const, result: "Minecraft is not enabled" },
+					run: async (params: Record<string, unknown>, ctx: { signal: AbortSignal }) => {
+						try {
+							return await route(name, params, ctx.signal);
+						} catch (error) {
+							const e = error as { code?: string; message?: string };
+							return sessionResponse(
+								{ code: e.code ?? "INTERNAL", message: e.message ?? String(error) },
+								e.code === "REQUEST_CANCELLED" ? "cancelled" : "failed",
+							);
+						}
+					},
 				},
 			]),
 		),
-		async onStart(ctx: ServiceCompanionContext) {
-			if (executor) throw new Error("Minecraft activation already running");
+		async onStart(ctx) {
+			if (controller) throw new Error("Minecraft activation already running");
 			if (
 				!ctx.worldDataDir ||
 				!ctx.emitEvent ||
@@ -80,54 +163,40 @@ export function createMinecraftWorld(
 				throw new Error("Minecraft requires worldDataDir, emitEvent, onHostEvent, expose and durable Host delivery");
 			closing = null;
 			if (ctx.signal.aborted) throw new Error("Minecraft activation already cancelled");
-			const configPath = options.configPath ?? fileURLToPath(new URL("../config.json", import.meta.url));
-			const legacyConfig = existsSync(configPath) ? (JSON.parse(await readFile(configPath, "utf8")) as unknown) : null;
-			if (
-				legacyConfig != null &&
-				(legacyConfig as { connection?: { version?: string } }).connection?.version !== MC_PROTOCOL_VERSION
-			)
-				throw new Error(`native Minecraft stage supports explicit version ${MC_PROTOCOL_VERSION} only`);
-			// M1 数据根：稳定根共享（history/library），executor/runtime/runs/exports 归 Profile。
-			// 旧布局一次性迁入 legacy Profile；身份不可确认则保持不动。
-			const migration = await migrateLegacyRoot(ctx.worldDataDir, legacyConfig);
-			if (migration.reason) console.warn(`[mc-world] legacy migration skipped: ${migration.reason}`);
-			const identity = identityFromLegacyConfig(legacyConfig);
-			if (!identity) throw new Error("Minecraft requires config.json connection identity or a session connect");
-			const sessionDataDir = profileDir(ctx.worldDataDir, profileId(identity));
-			await ensureIdentityFile(sessionDataDir, identity);
+			// 常驻层：静态 Catalog describe、共享 Library 与 SessionController；不读取固定连接、不打开 Bot。
+			validator = createProgramValidator();
+			library = createLibrary({
+				dataRoot: ctx.worldDataDir,
+				compile: (material) => {
+					if (!validator) throw new Error("program validator is closed");
+					return validator.validate(material);
+				},
+				readSource,
+			});
+			const legacyConfigPath = options.legacyConfigPath ?? fileURLToPath(new URL("../config.json", import.meta.url));
+			const rawLegacy = existsSync(legacyConfigPath)
+				? (JSON.parse(await readFile(legacyConfigPath, "utf8")) as unknown)
+				: null;
+			// 仅 1.21.11 合同产生的旧数据才参与迁移/种子；其余视同无 legacy 输入。
+			const legacyConfig =
+				rawLegacy != null &&
+				(rawLegacy as { connection?: { version?: string } }).connection?.version === MC_PROTOCOL_VERSION
+					? rawLegacy
+					: null;
 			const abort = () => {
 				void close().catch(() => {});
 			};
 			ctx.signal.addEventListener("abort", abort, { once: true });
 			detachAbort = () => ctx.signal.removeEventListener("abort", abort);
 			try {
-				starting = MinecraftExecutor.open({
-					ownershipDir: ctx.worldDataDir,
-					sessionDataDir,
-					sharedDataDir: ctx.worldDataDir,
-					config: {
-						connection: {
-							host: identity.endpoint.host,
-							port: identity.endpoint.port,
-							username: identity.principal.username,
-							authMode: "offline" as const,
-							version: MC_PROTOCOL_VERSION,
-						},
-						binding:
-							identity.world === "unbound" ? null : { world: identity.world, worldRevision: identity.worldRevision },
-					},
-					signal: ctx.signal,
-					policy: options.executorPolicy,
+				controller = await SessionController.create({
+					minecraftRoot: ctx.worldDataDir,
+					ctx,
+					expose: ctx.expose,
+					executorPolicy: options.executorPolicy,
+					deliveryPolicy: options.deliveryPolicy,
+					legacyConfig,
 				});
-				executor = await starting;
-				if (ctx.signal.aborted) {
-					await close();
-					throw new Error("Minecraft activation cancelled during start");
-				}
-				facade = new MinecraftFacade(executor, ctx, options.deliveryPolicy);
-				const body = createBodyEndpoint(executor);
-				detachBody = ctx.expose(BODY_ENDPOINT_EXPOSED_PREFIX + body.bodyId, body);
-				facade.start();
 			} catch (error) {
 				await close();
 				throw error;

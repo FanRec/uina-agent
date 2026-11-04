@@ -155,7 +155,7 @@ const step = async (name: string, work: () => Promise<void>) => {
 	console.log(`[mc-i2] PASS ${name}`);
 };
 async function startWorld() {
-	const world = createMinecraftWorld({ configPath });
+	const world = createMinecraftWorld({ legacyConfigPath: configPath });
 	const start = world.onStart!;
 	world.onStart = async (ctx) => {
 		context = ctx;

@@ -57,7 +57,6 @@ let facade=new MinecraftFacade(executor,ctx,{shortWindowMs:2000,pollMs:20});faca
 const signal=new AbortController().signal;
 let key,request;
 try {
- const found=await facade.execute('describe',{selector:'chat@1'},signal);assert.equal(found.status,'succeeded');assert.match(found.result,/chat@1/);
  const unknownQuery=await facade.execute('observe',{selector:'position@1'},signal);assert.equal(unknownQuery.status,'failed');
  const result=await facade.execute('chat',{text:'no connection'},signal);assert.equal(result.status,'failed');assert.ok(result.receipt);key=result.receipt.key;request=result.details.requestId;
  assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'pending');

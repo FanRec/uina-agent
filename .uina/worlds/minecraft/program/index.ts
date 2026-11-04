@@ -252,6 +252,8 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 		if (!/^[a-f0-9]{64}$/.test(digest)) programError("PROGRAM_INVALID", "invalid snapshot digest");
 		return join(options.dataRoot, "runs", encodeURIComponent(run), "sources", `${digest}.js`);
 	}
+	const readSnapshot: ProgramPort["readSnapshot"] = async ({ run, digest }) =>
+		readRunSnapshot(options.dataRoot, run, digest);
 	const port: ProgramPort = {
 		resolve: async (source) =>
 			"code" in source ? parseProgramSource(source.code, null) : options.loadProgram(source.name),
@@ -282,18 +284,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 			}
 			return { digest: program.digest, path };
 		},
-		readSnapshot: async ({ run, digest }) => {
-			const path = snapshotPath(run, digest);
-			try {
-				const source = await readFile(path, "utf8");
-				if (createHash("sha256").update(source).digest("hex") !== digest)
-					programError("PROGRAM_CONFLICT", "snapshot bytes changed");
-				return { source, path };
-			} catch (e) {
-				if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
-				throw e;
-			}
-		},
+		readSnapshot,
 		openSegment: (request) => {
 			const cache = new Map<string, Promise<ResolvedProgram>>();
 			if (request.entry?.name) cache.set(request.entry.name, Promise.resolve(request.entry));
@@ -422,4 +413,23 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 		},
 	};
 	return port;
+}
+
+/** 固定源码快照的唯一定位与摘要核验；在线 ProgramPort 与宿主 Library 复用同一实现。 */
+export async function readRunSnapshot(
+	dataRoot: string,
+	run: string,
+	digest: string,
+): Promise<{ source: string; path: string } | null> {
+	if (!/^[a-f0-9]{64}$/.test(digest)) programError("PROGRAM_INVALID", "invalid snapshot digest");
+	const path = join(dataRoot, "runs", encodeURIComponent(run), "sources", `${digest}.js`);
+	try {
+		const source = await readFile(path, "utf8");
+		if (createHash("sha256").update(source).digest("hex") !== digest)
+			programError("PROGRAM_CONFLICT", "snapshot bytes changed");
+		return { source, path };
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
 }

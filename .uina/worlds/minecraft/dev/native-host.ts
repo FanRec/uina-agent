@@ -110,7 +110,7 @@ host.subscribe((event) => {
 	if (event.type === "usage_update" || event.type === "error" || event.type === "output_end") transcript.push(event);
 });
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
-const world = createMinecraftWorld({ configPath });
+const world = createMinecraftWorld({ legacyConfigPath: configPath });
 const start = world.onStart!;
 world.onStart = async (ctx) => {
 	context = ctx;

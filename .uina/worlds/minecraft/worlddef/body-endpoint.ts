@@ -1,8 +1,11 @@
 import type { BodyEndpoint } from "../../../../src/extensions/world-framework/seams.js";
 import { MinecraftExecutor } from "../executor/index.js";
 
-export function createBodyEndpoint(executor: MinecraftExecutor): BodyEndpoint {
-	const bodyId = `minecraft:${executor.status().accountKey.slice(0, 16)}`;
+/**
+ * Body 端点绑定当次 visit（v3 §6.4）：bodyId = minecraft:<visitId>，不再是长期身份。
+ * 切换时先摘除旧端点注册再暴露新端点；safeStop 仍使用旧 Executor 的真实 Owner Gate 语义。
+ */
+export function createBodyEndpoint(executor: MinecraftExecutor, bodyId: string): BodyEndpoint {
 	return {
 		bodyId,
 		bodyType: "humanoid",

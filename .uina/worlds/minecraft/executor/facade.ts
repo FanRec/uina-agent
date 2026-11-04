@@ -64,8 +64,6 @@ export class MinecraftFacade {
 			return response({ code: "REQUEST_CANCELLED", message: "query cancelled before dispatch" }, "not_started");
 		try {
 			switch (action) {
-				case "describe":
-					return response(await this.executor.rpc("describe", params, signal));
 				case "observe":
 					return await this.observeResult(
 						await this.executor.rpc("observe", { selector: params.selector, input: params.input ?? {} }, signal),
