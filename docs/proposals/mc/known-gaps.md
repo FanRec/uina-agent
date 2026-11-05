@@ -1,8 +1,8 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-11-03（批20 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-11-06（批25 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
-本文由审查轮产初版、施工批次持续更新：关闭条目在关闭时写入"关闭事实"（含证据口径），开放条目保留现象/证据/修法要点三段；取舍（§8）登记后不修。历史措辞（如早期"未施工、未复跑"）只描述登记当轮，不代表当前状态。
+本文由审查轮产初版、施工批次持续更新：关闭条目在关闭时写入"关闭事实"（含证据口径），开放条目保留现象/证据/修法要点三段；取舍（§8）登记后不修。历史措辞（如早期"未施工、未复跑"）只描述登记当轮，不代表当前状态。批26 的施工范围（RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4）属设计合同剩余项，见 [multi-world-v3.md](multi-world-v3.md) §7/§10 与 development-plan §10.3 批25 条，不在本清单重复登记。
 
 ## 1. 优先级与依赖
 
@@ -110,7 +110,7 @@
 | G14 | 30 分钟真实模型自主游玩 | 9B 暴露**重复死亡 + OwnerLost 门关闭后不恢复**；批10 补了自保与恢复但**未重跑同一窗口**，"自主生存"仍为空。批22 已把窗口就绪：`dev/i2.ts` 增请求预算（`--max-requests` 默认 500，达限即 interrupt）、观察扩展（self 健康与氧气、death 事件游标计数、runs 门状态与 safety 介入）、扰动演练（`--chaos`：窗口 60% 处 SIGKILL 伴生 → owner_lost → 模型须 `runs recover` 自开门，批9B 断链的直接复验开关）；真模型窗口待执行 |
 | ~~G15~~ | **复杂避障**（✅ 已于 2026-11-04 批22 关闭，残余见 G25） | 关闭方式：批9B 的静默挂死根治——`driver/goto.ts` 看门狗三形态收束（上膛后 3s 位移停滞 / 上膛后 goal 被上游清空 2.5s 宽限仍不结算 / 非挖掘 10s 零位移总兜底，均 Stalled → UNREACHABLE，墙钟不再烧尽）；新增自然地形验收场景 `dev:mc:terrain-nav`（自寻真树、水候选拒绝、批9B 复刻 lane 柱、树绕行/digThrough、24 格穿越、explore） | 真服源码/产物各 6/6：树绕行 4.5–7s 到达、digThrough 对照到达、穿越 19.7s 到达或 9.9s 诚实失败、explore 25–40 格、批9B 复刻到达（平原 7.1s）或 12s 诚实失败（山地）；climb 回归 6/6（密封竖井 100ms 快速失败不受影响）；执行器残余登记 G25 |
 | G16 | 断电、长期负载、历史库增长成本 | **断电子项批22 已闭**：`tests/mc/mc-executor-kill-write.test.ts`——伴生在 runtime.db 写活动窗口被 SIGKILL → autoRecover 托管重建回 ready → 取证（独立进程）证 meta 身份不变、恢复只增不删、无半行损坏、owner_lost 如实关闭、探针 DISCONNECTED 诚实结算（3 次稳定）；`dev:mc:history --stats` 体量观测手段就绪。长期负载与历史库增长两项随 G14 窗口（i2.ts 预算/观察/扰动已就绪，真模型窗口待执行） |
-| G17 | 51 项终态报告 | 不存在；需按 `buildCapabilities()` 实际目录与 `capabilities.md` 的 16+35 逐项对照出状态表 |
+| G17 | 51 项终态报告 | 不存在；需按 `capabilities/index.ts` 的 `builtinCatalog`（批24 审查轮起唯一目录入口，`buildCapabilities` 别名已删）实际模块与 `capabilities.md` 的 16+35 逐项对照出状态表 |
 
 ## 7. P2 文档漂移（✅ 已于 2026-11-03 批21 全部修复）
 

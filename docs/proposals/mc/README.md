@@ -2,36 +2,27 @@
 
 Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游玩完整 Java 原版 Minecraft。
 
-更新时间：2026-10-25（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
+更新时间：2026-11-05（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
 
 ## 当前状态
 
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
-| Driver（受控玩家）、World（观察与记录） | K1 + 批 2 + 批 3 + 修复：连接级 1.21.11 协议适配、玩家/容器/工作站共享确认、独立库存/采矿/牌面操作、统一查询校验；窗口含普通容器、工作台与熔炉（高炉/烟熏炉仍拒），`revision` 只随槽位与光标推进；批10已接feedback/默认自保；通用领域记录仍缺 | 2026-10-25 |
-| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁、效果与恢复；批 4 补齐 Owner/心跳/三门、受理及开始提交屏障、关闭与退役，批 6 固定记录与交付处置已接通，库 schema v6（批10），批 9B 已接程序决策、显式续段、替换/抢占与决策报告有效性 | 2026-10-25 |
-| 能力面（16 查询 + 35 动作） | K1、批 1 采集、批 2 窗口容器、批 3 生产链、批11 领域记录与地点/路径探索、批12 移动鲁棒性与完整战斗、批13 地形切片与空间作业（region/tunnel/excavate，G4 关闭）、批14 蓝图与施工（build.plan/build，K5 关闭）、批15 专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）、批16 玩家名单（players，entities 玩家名覆写）、批17 地图与 G11 图片出口（map，K6 收口）、批18 K8 活动、批19 transit（**51/51 全部落地**） | 2026-11-02 |
-| 会话与多世界（session / Profile） | **批25 已实现**：`session` 动作（status/list/connect/disconnect）、World 启用默认不入服、Profile 身份文件与 `sessions/<profileId>/` 数据根、Executor 双根 + 目录 Job 跨 Profile 唯一、close 三事实、connection.wait 入服回执、离线 describe/library；同服多 Profile 真服验收 `dev:mc:session` 6/6 | 2026-11-05 |
-| Library（程序、蓝图与经验） | 批 8 已实现三类文件 CRUD、来源保存与统一发现；批25 收敛宿主常驻唯一写入口（Companion 只读、离线 validator、无会话可读写）；蓝图解释/施工留 Construction，见 [实施记录](archive/library-implementation.md) | 2026-11-05 |
-| Executor（Uina 接入、IPC、进程与通知） | 批 4 平台已实现：Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本、停止/退役/显式恢复；批 6 正式 WorldDef、原生工具、请求凭证、可靠通知与 BodyEndpoint 已接线；批25 双根 + close 三事实 + connection.wait + blocked 重试语义。见 [原生接入实施](archive/native-host-implementation.md) | 2026-11-05 |
-| Host 持久交付接缝 | **批 5 已实现**：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定；见 [实施记录](archive/host-delivery-implementation.md) | 2026-10-25 |
-| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行子集、正式入口、快照与取消已实现，见 [实施记录](archive/program-implementation.md)；9A 已接可等待查询与 waitUntil；9B 已接决策/checkpoint；批10已接feedback/loop | 2026-10-25 |
-| 真实 Minecraft 游玩验收 | 批 4 受管源码/产物各 **8/8**（含导航中关闭/过期/故障恢复）；MC **33 文件/270 项**。生产链 K3 各 **14/14**、production-repair 各 **7/7** 及 Driver repair/I1/K1/批 2 保留对应历史证据。批 6 已有真实 deepseek-flash 的采集/生产、缺料纠错和显式停止校准，见 [实施记录](archive/native-host-implementation.md) | 2026-10-25 |
+| Driver（受控玩家）、World（观察与记录） | 连接级 1.21.11 协议窄口、玩家/容器/工作站共享确认、独立库存/采矿/牌面、统一查询校验、窗口会话（批2/3/修复轮）、feedback 与默认自保（批10）、领域记录与 places/route（批11）、Watch 类别化失效与断线证据链（批23）；地图/图片出口（批17） | 2026-11-04 |
+| Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁（含 priority 档，批21）、效果与恢复；Owner/心跳/三门（批4）、固定记录与交付处置（批6）、决策/续段/替换/抢占（批9B）、feedback（批10）；schema v6 | 2026-11-03 |
+| 能力面（16 查询 + 35 动作） | **51/51 全部落地**（批19 transit 收口）；批20 G6 节流 digest / G7 inventory@1 {since} / G8 run {wait}；批21 G9 priority / G10 FRAME_EXPIRED hint / G24 tunnel 上行加高；批22 G15 关闭（残余 G25）；批24 静态 Catalog（`builtinCatalog.bind`，describe 离线可发现） | 2026-11-04 |
+| 会话与多世界（session / Profile） | **批25**：`session` 动作（status/list/connect/disconnect）、World 启用默认不入服、Profile 身份文件与 `sessions/<profileId>/` 数据根、Executor 双根 + 目录 Job 跨 Profile 唯一、close 三事实、connection.wait 入服回执、离线 describe/library；设计合同见 [multi-world-v3.md](multi-world-v3.md)；批26 剩 RuntimeArchiveReader/profile 查询/离线 saveFromRun/交付 envelope/M4 | 2026-11-05 |
+| Library（程序、蓝图与经验） | 批 8 三类文件 CRUD、来源保存与统一发现；批25 收敛宿主常驻唯一写入口（Companion 只读、离线 validator、无会话可读写）；蓝图解释/施工留 Construction | 2026-11-05 |
+| Executor（Uina 接入、IPC、进程与通知） | 批 4 Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本；批 6 正式 WorldDef、请求凭证、可靠通知与 BodyEndpoint；批25 双根 + close 三事实 + connection.wait + blocked 重试语义 | 2026-11-05 |
+| Host 持久交付接缝 | 批 5：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定 | 2026-10-25 |
+| Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行、正式入口、快照与取消；9A 可等待查询与 waitUntil；9B 决策/checkpoint；批10 feedback/loop；批21 priority 透传 | 2026-11-03 |
+| 真实 Minecraft 游玩验收 | 真服场景 25 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查各有独立验收）；确定性回归 tests/mc 85 文件 **716/716**（vmThreads，重负载限 4 worker）；真模型 30 分钟窗口 G14 待跑 | 2026-11-05 |
 
-批 7 审查收口：MC **38 文件/293 项**、Host 相关 **5 文件/27 项**、typecheck/build 通过；正式源码/产物程序真服场景各 **8/8**，真实 deepseek-flash 程序校准通过。证据与未验证范围见 [实施记录](archive/program-implementation.md)。
+职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件，SessionController 拥有会话生命周期。
 
-批 8 验收：MC **40 文件/305 项**、Host **5 文件/27 项**、typecheck/build 通过；正式源码/产物 Library 场景各 **7/7**，真实 deepseek-flash 文件复用校准 **4/4**。范围和保留证据见 [实施记录](archive/library-implementation.md)。
+**下一步与当前状态分开**：按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 0–19 依次接通原生入口、Program/Library、等待/决策 I2、反馈与默认自保、领域记录、移动鲁棒性、地形切片、蓝图施工、专用工作站、地图图片出口、K8 活动与 transit（**能力面 51/51**）；批 20–22 关闭 G6/G7/G8、G9/G10/G24、G15（残余 G25）与 G16 断电子项；批 23 审查修复轮（断线证据链/聊天 channel/事件补发/生存重试/recover 重建/Watch 类别化 + 简化批）；批 24 方案 01 收尾（F4 静态 Catalog + F5 Driver 分离）；批 25 多世界自治 v3 第一阶段（M1+M2+M3.1，设计合同 [multi-world-v3.md](multi-world-v3.md)）。剩余横向缺口见 [known-gaps.md](known-gaps.md)：G12/G13（需授权账号/目标硬件）、G14（真模型 30 分钟窗口，待跑）、G25（lane 侧隙绕柱执行器残余）、G16 子项、G17；v3 剩余（批26）：RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4 迁移仪式。
 
-职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
-
-**下一步与当前状态分开**：批 6 正式原生工具、首次校准及独立审查已完成，最终验收见 [实施记录](archive/native-host-implementation.md)。按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 7 执行已接通，批 8 文件与发现复用已接通，9A 等待已接通；9B 决策/调度/现有历史清理已接通；批10已接反馈与默认自保；批11已接领域记录（G1 关闭）、地点与路径探索；批12已接移动鲁棒性与完整战斗（follow/flee/surface/fight，G3 关闭）；批13已接地形切片与空间作业（region/tunnel/excavate，G4 关闭）；批14已接蓝图与施工（build.plan/build，K5 关闭）；批15已接专用工作站（brew/enchant/anvil/grindstone/trade，G2 关闭）；批16已接玩家名单（players，entities 玩家名覆写）；批17已接地图与 G11 图片出口（map，K6 收口）；批18已接 K8 活动（sleep/fish/ride/lead，G23 登记）；批19 关闭 G21 并接上 K8 最后一项跨维度旅行（transit），**能力面 51/51 全部落地**（16 查询 + 35 动作）；批20 关闭 G6/G7/G8；批21 关闭 G9/G10/G24；批22 关闭 G15（残余 G25 登记）+ G16 断电子项；批23 审查修复轮；批24 方案 01 收尾（F4 静态 Catalog + F5 Driver 分离）；**批25（2026-11-05）多世界自治 v3 第一阶段（M1+M2+M3.1）**——World 启用默认不入服，`session` 动作管理会话生命周期，Profile 数据根与单活跃锁跨 Profile 成立，describe/library 离线可用，真服 `dev:mc:session` 6/6。剩余横向缺口：G12/G13（需授权账号/目标硬件）、G14（真模型 30 分钟窗口，待跑）、G25（lane 侧隙绕柱执行器残余）、G16 子项、G17；v3 剩余（批26）：RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4 迁移仪式。
-
-批 2 设计、取舍与任务记录见 [窗口与容器实施](archive/window-container-implementation.md)。运行 `pnpm dev:mc:containers` 做独立真服场景；普通容器开放 mode-0 左/右键，工作站专用操作留给生产/工作站批次。祖先身体只操作已触及容器，先导航再持身体；开窗未确认而取消/超时后须重连客户端。
-
-本轮修复与重构见 [Driver 修复实施](archive/driver-repair-implementation.md)。`pnpm dev:mc:repair` 默认使用独立临时数据目录，串行验证协议确认、工具/实例选择、取消、导航和容器历史；当前受控写入实现仅支持 Java 1.21.11，后续版本通过同一 DriverProtocol 接缝实现，未支持版本明确失败。
-
-
-生产链八项审查修复见 [生产链修复实施](archive/production-repair-implementation.md)：合成/熔炼独立实现，共用组件感知与多槽搬运；熔炼等待释放自有身体，进度保留累计确认量。入口 `pnpm dev:mc:production-repair` 默认独立临时数据根。
+各历史轮次的设计取舍与验收证据统一见 [changelog.md](changelog.md) 与 [archive/](archive/README.md)；真服场景入口见 `package.json` 的 `dev:mc:*`（25 个）与 `dev/MC-WORLD.md`。
 
 ## 文档地图
 
@@ -39,10 +30,11 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|---|
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
 | [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、51 项能力覆盖；**§10 当前施工总纲（批次、就绪队列与分责任验收）** | 实施负责人，按依赖推进 |
+| [multi-world-v3.md](multi-world-v3.md) | 多世界自治设计合同（M1/M2/M3.1 已落地，M3.2/M3.3/M4 为批26 施工范围） | 批26 实施者 |
 | [development-guide.md](development-guide.md) | 统一接缝、复用/重构、真实环境优先及适量验证 | 所有开发者，开工前阅读 |
 | [contracts.md](contracts.md) | 所有权、依赖与跨模块协作导航；算法链接所属模块 | 实现者（跨模块时） |
 | [public-api.md](public-api.md) | 公开类型与方法；§6 导航到 Program/Library 的权威定义 | 实现者（查类型） |
-| [modules/executor.md](modules/executor.md) | 六入口、启动/关闭、Windows 独占与退役、IPC、受理查证和交付 | Executor/接入实现者 |
+| [modules/executor.md](modules/executor.md) | 入口/启动/关闭、Windows 独占与退役、IPC、受理查证和交付、会话双根 | Executor/接入实现者 |
 | [Host 持久交付回执](../runtime/delivery-receipts.md) | 工具/输入标记、持久接收查询、尝试退役；不含游戏逻辑 | Host/Core/World 接入实现者 |
 | [modules/runtime.md](modules/runtime.md) | Run / Segment / Call / Effect、身体排队与委托、记录屏障 | Runtime 实现者 |
 | [modules/program.md](modules/program.md) | 程序模型、编程面、执行材料、guest 与关闭 | Program 实现者 |
@@ -52,7 +44,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | [modules/library.md](modules/library.md) | 三类文件、程序头、CRUD、save from 与统一发现 | Library 实现者 |
 | [changelog.md](changelog.md) | 每轮改了什么、为什么 | 评审者 |
 | [known-gaps.md](known-gaps.md) | 当前缺陷与欠缺清单（含优先级、修法与验收） | 施工负责人 |
-| [archive/](archive/README.md) | 批 2–10 实施记录与早期研究；只用于追溯当时的做法与证据 | 需要查证据的人 |
+| [archive/](archive/README.md) | 历史实施记录与早期研究；只用于追溯当时的做法与证据 | 需要查证据的人 |
 
 ## 怎么读
 
@@ -119,10 +111,5 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 - 每个行为由所属 modules 文档唯一维护；public-api 保存跨模块类型，contracts 只给所有权/协作导航。本页和 design 只给概要。
 - 改动先改权威正文，再改本页索引；一轮改动追加到 changelog.md。
 - 已作废的机制不保留第二份完整描述：正文里留一句指针，细节去 git 历史。
-- 实施记录与早期研究只进 [archive/](archive/README.md)；根目录只放当前有效的规范、索引与状态。批次完成后不再往根目录新增文件。
+- 实施记录与早期研究只进 [archive/](archive/README.md)；根目录只放当前有效的规范、索引与状态。批次完成后不再往根目录新增文件；未完结的设计合同（当前即 multi-world-v3.md）随其施工范围留在根目录。
 - 实现状态与验收要求分开；Program 验收见 program.md §8，Runtime 验收见 runtime.md §8。
-
-批 9A：确切查询版本、事件提交 Watch、Program waitUntil 与停止/身体生命周期已接通；能力仍为 25/51，历史库 v2，Runtime/Host 格式不变。完整证据见 [实施记录](archive/wait-implementation.md)。
-
-
-批9B：decide/checkpoint、显式continue、替换/抢占、历史保留与显式清理已接通，Runtime v5/history v3/ledger v3，仍为25/51能力。MC46文件357项、Host5文件27项、类型/边界/构建通过；正式源码/产物I2各7/7，真实deepseek-flash分阶段校准3/3。30分钟开放观察暴露重复死亡与OwnerLost恢复限制，批10已接反馈与默认自保，下一工作包为地点与路径探索。详见[批9B实施记录](archive/decision-implementation.md)。

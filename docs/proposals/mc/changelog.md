@@ -1,5 +1,48 @@
 # 设计变更记录
 
+## 2026-11-05 · 批25 多世界自治 v3 第一阶段（M1 数据根 + M2 长驻 World 连接控制 + M3.1 离线资料）
+
+《多世界自治设计 v3》全文入库为 [multi-world-v3.md](multi-world-v3.md)（即批24 点名的方案 02 施工合同；本文记录落地事实与偏差，现行合同以 public-api 批25 实现说明与 modules/executor.md §3/§7 为准）。
+
+- **M1 双根**：`Executor.open` 改收 `ownershipDir`（稳定 MC 根，Windows 目录 Job 跨 Profile 唯一，I1 单活跃写源）/`sessionDataDir`（`sessions/<profileId>/` 的 executor.db/runtime.db/runs/exports）/`sharedDataDir`（world-history.db 与 library/ 共享根）；CompanionInit 双根化，伴生按根派生。**取代 2026-10-18"数据布局固定"条的单根并列布局**——world-history.db/library 留共享根，其余归 Profile 根。
+- **close 三事实**：`close()` 返回 `{process, ownership, runtime}`，脏关闭不再抛 `EXECUTION_DOMAIN_UNRETIRED`（该码保留给 Runtime 发起的 retire_required 路径）；只允许新执行域的必要条件是 process=retired && ownership=released；未证实的结论可重试（人工恢复渠道，无时间兜底）。
+- **M2 会话层**：`worlddef/session-identity.ts`（canonicalHost / profileId=sha256 定长数组 / settings.json 每次 connect 重读 / identity.json 不可变 + observed.json 可更新 / listProfiles 扫描 / 旧布局一次性迁移——executor.db 为身份锚点、带标记可续、binding null 保留 unbound 字面量）+ `worlddef/session-controller.ts`（唯一会话生命周期拥有者：串行管理槽、并发 SESSION_BUSY、同 Profile ready 幂等、blocked 引用保留、bodyId=`minecraft:<visitId>`、onStop 最终收口）。工具面新增 `session` 动作（status/list/connect/disconnect）；World 启用默认不入服；observe/run/chat/runs 无会话 NOT_CONNECTED；`connection.wait` RPC 提供入服终态回执（open 成功不再冒充入服成功，I4）。
+- **M3.1 离线资料**：describe 上移宿主（直读静态 Catalog）；Library 收敛宿主常驻唯一写入口（Companion 只读、`program.changed` 窄通知、save.from 经活动 Executor RPC + Profile 根快照直读 `readRunSnapshot`）；`program/validator.ts` 离线校验复用同一 worker compile 路径。
+- **两处真实缺陷**（探针定位）：connection.wait 悬挂 setTimeout 拖住伴生事件循环——优雅关闭后伴生不自退、waitRetired 超时被迫 terminate → unclean → 同 Profile 重开转 owner_lost，清理定时器后 close 55ms 且 clean；acquireOwnership 跨 VM realm 的 `instanceof` 判定失败使 vmThreads 下 DATA_DIR_BUSY 被吞——改为按 code 鸭子判定。经验：**新增常驻 RPC 的悬挂定时器会改变进程退役事实；错误码合同跨 realm 只认属性不认原型**。
+- 验收：新增 mc-session-identity 10 / mc-executor-roots 3 / mc-session-controller 6 项；mc-native-host 重写为 T01/T02 语义；tests/mc vmThreads 85 文件 **716/716** 全绿，`pnpm build` 通过；真服 `dev:mc:session` **6/6**（T01 启用未连接 / connect→ready / disconnect 同 Profile 重访 / 同服换离线用户名新 Profile / 连失败端口回滚 / 会话内 /stop）。审查轮（a0c9a596）收紧 connectTarget 判别、身份期端口校验、统一关闭态 WORLD_DISABLED、清理死代码（伴生 describe RPC、LEGACY_FILES、ResolvedTarget.source）。
+- 批26 剩余：RuntimeArchiveReader、profile 查询参数、跨 Profile 离线 saveFromRun、DeliveryPump profile/visit envelope、完整 M4 迁移仪式（多 launch unbound 分区归档）。
+
+## 2026-11-04 · 批24 基础重构收尾（方案 01 剩余 R3/R4：F4 静态 Catalog + F5 Driver 分离）
+
+- **F4 能力目录**：`capabilities/catalog.ts` 定义 `CapabilityDefinition`（query：descriptor + bind(deps)→reader|null；action：descriptor + bind(deps)→invoke）/`MinecraftCapabilityModule` 合同；目录创建时一次性校验（模块 id 唯一、ref 全局唯一、AJV 编译输入 schema，坏模块拒绝激活而非首调才炸）；12 查询 + 23 动作文件改为模块自带 descriptor+bind 配对，删除 QuerySpec 注册方式与 `shared/query.ts`，不留兼容层。`describeDirectory` 改收 catalog：`allDescriptors()` 无 deps、无执行域即可列出全部能力（多世界离线 describe 的直接前置）。worlddef 的 `chat` 工具 schema 与 chat@1 descriptor 同源。
+- **F5 Driver 分离**：`driver/input/{vehicle,walking}.ts` 从 `body/session.ts` 整体搬出（载具运动学/50ms 节拍/输入中和；步行键位安装撤销/physicsTick 消费/停滞看门狗），效果合同与取消语义逐字保留，session.ts 1737→1453 行；RuntimeEngine 不拆（"文件长度不是重构理由"裁决维持）；worker 超限错误文案改引真实配额。
+- 审查轮（d4800486）：catalog 激活门 AJV 选项补 `addUsedSchema:false` 与运行时门对齐；删 `buildCapabilities` 别名（13 个测试文件迁到 `builtinCatalog.bind`）；mc-region-query 改按 ref 查找定义；文档漂移修复（46/51 计数沿革、session.ts 行数）。
+- 验收：mc-capability-catalog 6 项；tests/mc 82 文件 699 项全绿；真服 `dev:mc:review` 6/6、`dev:mc:k8` 16/16、`dev:mc:mobility` 5/7（两个失败步骤经 fa174a05 基线对拍同样失败，环境/场景固有，如实登记）；`pnpm build` 通过。
+
+## 2026-11-04 · 批23 审查修复轮（11+5 项，五个 PR）
+
+- **断线证据链**：FactsSource 在 host disconnected/faulted 时先 capture 断线证据再封源（旧实现 end 监听因 attachedBot 已清空而空转——断线从不入库、importantEvents 推送死路）；主动关闭记 reason=closed。
+- **聊天 channel 对齐合同**：whisper/chat 按内建模式分流 private/public，messagestr 按原始消息对象身份去重，未匹配格式如实 unknown（playerChat sender 记 uuid 不冒充 name）——public-api §events 的 channel 枚举自始如此，实现此前一直违反。
+- **事件投递**：minecraft_event/digest 投递失败 1s 补发一次（幂等 id）。
+- **生存介入重试**：锁存改 {key, retryAt}——确认安全锁存到危险事实消失，失败冷却 1s 可重试；新伤害换 key 立即重试；faults 诊断 32 条上限。
+- **游戏断线恢复**：recover() 在执行侧进程健康但 side.connection disconnected/faulted 时退役重建执行域；旧 Run 不重放，connecting/syncing 不重复连接。
+- **扫描预算**：findSkyAccess 4ms 时间预算让出 + AbortSignal 停止屏障；下界跳过无意义大扫描。**地图导出**：唯一 tmp + link 容忍 EEXIST；启动清理上一会话派生图片。**Watch 类别化失效**：游标=依赖类别修订和值（inventory@1 等待不再被物理拍 20Hz 唤醒），公开合同不变。
+- **简化批**：nativeGuide 4.3KB→1.75KB；删 `scaffoldsUsed` 占位字段；删 `PROGRAM_POLICY.workerCount` 零消费字段；未绑定世界启动警告；慢读诊断（>100ms 警告、10s 抑制）。
+- **不做**：P1-9 大查询异步快照（先测量再定）；engine.ts/body-session.ts 拆分；Library 缓存；MapCache 内存上限；reconnect 热替换 Bot。
+- 验收：tests/mc 89 文件 806 项全绿 + typecheck，五个 PR 独立提交；断线入库/私聊推送/recover 重连/慢读测量的真服回归随后由 `dev:mc:review` 承担（6/6）。
+
+## 2026-11-03 · 批22 导航挂死根治 + 断电边界（G15 关闭、G25 登记、G16 断电子项）
+
+- **G15**：批9B 的导航静默挂死根治——`driver/goto.ts` 看门狗三形态收束（上膛后 3s 位移停滞 / goal 被上游清空 2.5s 宽限仍不结算 / 非挖掘 10s 零位移总兜底，均 Stalled→UNREACHABLE，墙钟不再烧尽）；新增自然地形验收 `dev:mc:terrain-nav`（自寻真树、水候选拒绝、批9B 复刻 lane 柱、树绕行/digThrough、24 格穿越、explore），真服源码/产物各 6/6；执行器残余登记 **G25**（lane 侧隙绕柱零推进，planPath 试算与实时 A* 配置不一致，属上游 mineflayer-pathfinder，看门狗已保证快速诚实失败）。
+- **G16 断电子项**：`mc-executor-kill-write`——伴生在 runtime.db 写活动窗口被 SIGKILL → 托管重建回 ready → 独立进程取证：meta 身份不变、恢复只增不删、无半行损坏、owner_lost 如实关闭、探针诚实结算（3 次稳定）；`dev:mc:history --stats` 体量观测就绪。
+- **G14 窗口就绪**：`dev/i2.ts` 增请求预算（`--max-requests` 默认 500）、观察扩展（self/death 游标/门状态/safety）、扰动演练（`--chaos` 杀伴生 → 模型须 runs recover 自开门）；真模型窗口待执行。
+
+## 2026-11-03 · 批21 运行时调度统一 + 上行走廊加高（G9/G10/G24 关闭）
+
+- **G9**：`Schedule` enqueue 增 `priority?: boolean`——engine 在身体申请与导航申请入队前按本次受理的 schedule 重设队列一次性 prioritize 旗标（无常驻优先级栈，safety 仍最前，continue 新段不带）；engine 接线由 `mc-decision-runtime` 真 SQLite 覆盖。
+- **G10**：两处 `FRAME_EXPIRED` 统一携带 hint（250ms 帧窗 vs 20ms burst 数字语义不同，不并常量）；baseGuide 把"过期帧拒绝"与"mc.sleep(0) 分片"接成因果句。
+- **G24**：`planCorridor` 上坡过渡在 height<3 时把升坡列自身 ceiling 一并挖除（踏步上方成 3 高净空）；真服 `dev:mc:climb` 源码/产物各 6/6——1x2 上行 1:1 走廊 10 格全挖并走到终点。另注：goto 的 placeToReach（垫柱合法）会在前置走廊收走掉落物时用圆石垫柱翻出石壁且 `placed` 恒 null 无法归属——场景步骤以 `/clear` 固定前提。
+
 ## 2026-11-03 · 批20 感知效率包：G6 节流推送 + G7 增量游标 + G8 按调用短窗
 
 - **G6 节流 digest 推送**（`world/digest.ts` 新模块）：模型不主动 read 就不知道世界在变。digest 按查询依赖生成——三段（self/inventory/world）直接复用 `capabilities.readers` 的现有读取器，同一 `facts.sample` 提交边界采样，与 observe 口径一致，不建第二套事实提取。前缘节流 10s（`DIGEST_INTERVAL_MS`，集中策略值不新增配置面）、规范化 JSON 哈希去重（"同一份不重复"；`world/watch.ts` 的 `canonical` 导出复用）、facts reset 后清哈希（重连即使内容相同也补发一份）。上行走既有事件管道（`onGameEvent` → executor 事件 → `DeliveryPump`），以独立事件类型 **minecraft_digest** 交付：不指向 events@1（不污染历史）、无 nextCall；**主脑忙碌（`isBusy`）时只保留最新一份待发、空闲即补发**——长任务期间 digest 不刷屏。时间只取粗粒度相位与天数（ticks 连续变化会让去重永远失效）、位置取整数格。
@@ -380,7 +423,7 @@
 
 ## 2026-10-18 · 数据布局固定
 
-所有 Minecraft 数据在同一 `worldDataDir`（`.uina/world-data/minecraft/`）下并列：`programs/`、`blueprints/`、`experiences/`、`runs/<run>/sources/<sha256>.js`、`world-history.db`、`runtime.db`。程序按约定路径读写，不散落。
+所有 Minecraft 数据在同一 `worldDataDir`（`.uina/world-data/minecraft/`）下并列：`programs/`、`blueprints/`、`experiences/`、`runs/<run>/sources/<sha256>.js`、`world-history.db`、`runtime.db`。程序按约定路径读写，不散落。**（批25 起被双根布局取代：world-history.db 与 library/ 留稳定根，executor.db/runtime.db/runs/exports 归 `sessions/<profileId>/`，见 2026-11-05 条与 multi-world-v3.md §4。）**
 
 ## 2026-10-17 · 架构重构
 

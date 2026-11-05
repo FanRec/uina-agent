@@ -900,10 +900,7 @@ DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 saf
 
 这些是接口实现的验收要求，尚未执行的项目不能写成通过。解析/存储类、SQL 表、插件内部算法、完整原版函数目录及延迟常数由模块设计和实验决定；它们不应阻挡另一模块基于以上公开合同开发。
 
-
-## 批 7 实现说明（2026-10-25）
-
-当前执行子集见 [Program 实施记录](archive/program-implementation.md)。Driver 的 BodySession 提供可信 Runtime 使用的 runScoped（局部取消、ControlOwner 与每次写入资格检查），不向 guest 暴露该入口。DriverExecutionFact 可携带该可信作用域捕获的 owner，晚事实保留首次效果归属。程序调用记录增加 program 来源、摘要、确切 snapshot 路径与失败诊断；Runtime schema v4，不自动迁移旧库，Host journal 仍 v4。Window 仍只支持 mode-0 左右点击；本批不开放等待/决策/反馈或 Library 管理接口。
+（历史批次的状态性附注——如批7 时期的执行子集说明——已随批次收口移出本文：现行合同以正文与所属 modules 文档为准，当时的边界与证据见 [archive/](archive/README.md) 各实施记录与 changelog。）
 
 ## 批 25 实现说明（2026-11-05，多世界自治 v3 第一阶段）
 
