@@ -31,6 +31,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
 | [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、51 项能力覆盖；**§10 当前施工总纲（批次、就绪队列与分责任验收）** | 实施负责人，按依赖推进 |
 | [multi-world-v3.md](multi-world-v3.md) | 多世界自治设计合同（M1/M2/M3.1 已落地，M3.2/M3.3/M4 为批26 施工范围） | 批26 实施者 |
+| [refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md) | 下一轮重构/打磨执行包（2026-11-06，基线 a0c9a596）：M0–M10 工作包、三条接缝、验收场景与 Agent 指令；**待核实的设计候选与执行指令，不是现行合同**——已确认的决策与进度回填 development-plan/known-gaps/modules 后，整包转 archive | 下一轮实施负责人 |
 | [development-guide.md](development-guide.md) | 统一接缝、复用/重构、真实环境优先及适量验证 | 所有开发者，开工前阅读 |
 | [contracts.md](contracts.md) | 所有权、依赖与跨模块协作导航；算法链接所属模块 | 实现者（跨模块时） |
 | [public-api.md](public-api.md) | 公开类型与方法；§6 导航到 Program/Library 的权威定义 | 实现者（查类型） |
@@ -111,5 +112,5 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 - 每个行为由所属 modules 文档唯一维护；public-api 保存跨模块类型，contracts 只给所有权/协作导航。本页和 design 只给概要。
 - 改动先改权威正文，再改本页索引；一轮改动追加到 changelog.md。
 - 已作废的机制不保留第二份完整描述：正文里留一句指针，细节去 git 历史。
-- 实施记录与早期研究只进 [archive/](archive/README.md)；根目录只放当前有效的规范、索引与状态。批次完成后不再往根目录新增文件；未完结的设计合同（当前即 multi-world-v3.md）随其施工范围留在根目录。
+- 实施记录与早期研究只进 [archive/](archive/README.md)；根目录只放当前有效的规范、索引与状态。批次完成后不再往根目录新增文件；未完结的设计合同随其施工范围留在规范树（当前即 [multi-world-v3.md](multi-world-v3.md) 与 [refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md)），完结后整包转 archive。
 - 实现状态与验收要求分开；Program 验收见 program.md §8，Runtime 验收见 runtime.md §8。

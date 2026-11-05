@@ -85,7 +85,7 @@
 - **现象**：受控车道（3 宽石面、上方 4 格净空、中置 3 高柱、两侧各 1 格净宽）上，目标在柱后时 goto 零位移：goal 已设、`route.plan` 只读试算 **5 步可达**，`gotoNear` 实时 A* 却静默空转——isMoving 永假、无 NoPath、promise 不结算（批22 看门狗修复前烧满墙钟，修复后 10–12s 诚实 UNREACHABLE）。平原/水边地形同几何 **7.1s 绕行到达**，山腰地形稳定失败——地形依赖。
 - **证据**：`dev:mc:terrain-nav` 批22 多轮（trace 采样 spread=0.0、对照实验隔离：A placeToReach true/false 双失败、B lane 内无柱点 2s 到达、C 抬目标失败——卡点精确在"绕入 1 宽侧隙"）。
 - **影响**：山地等复杂地形上，需要从 1 宽缝隙绕过直立障碍的导航不可用（诚实快速失败，不挂死）；树绕行/开放地形穿越/explore 不受影响（均实测通过）。
-- **修法方向**：上游 `mineflayer-pathfinder` 的 Movements 差异（planPath 只读试算与 gotoNear 实时 A* 的配置/代价不一致）或 1 宽通道代价判定；属依赖执行器层，不改导航合同。看门狗已保证此类失败快速诚实。
+- **修法方向**：上游 `mineflayer-pathfinder` 的 Movements 差异（planPath 只读试算与 gotoNear 实时 A* 的配置/代价不一致）或 1 宽通道代价判定；属依赖执行器层，不改导航合同。看门狗已保证此类失败快速诚实。**批26 执行包（[refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md)，2026-11-06）以本项为默认首切片**——先复现根因，再定搜索候选/物理可行/跟随层的最小修复。
 
 | ID | 缺口 | 证据 | 修法要点 |
 |---|---|---|---|
