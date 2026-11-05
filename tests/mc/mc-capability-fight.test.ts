@@ -100,6 +100,39 @@ describe("fight@1 会话", () => {
 		expect(h.calls.some((call) => call.startsWith("attack"))).toBe(false);
 	}, 15000);
 
+	test("逃跑腿全部被拒 → retreat_failed，不再虚报 retreated", async () => {
+		const zombie = entity("zombie", "hostile", 12.5, 10);
+		const state = baseState([zombie], {});
+		const h = makeHarness(state, {
+			self: { health: 5 },
+			gotoFailure: () => Object.assign(new Error("every bearing blocked"), { code: "UNREACHABLE" }),
+		});
+		const result = (await h.callable("fight@1").invoke(h.ctx, FIGHT)) as {
+			ended: string;
+			retreated: string;
+			at: { position: { x: number; y: number; z: number } };
+		};
+		expect(result.ended).toBe("retreat_failed");
+		// retreated 字段是撤退原因，与成败正交：低血量触发了这次未遂撤退。
+		expect(result.retreated).toBe("low_health");
+		// 没有任何一条腿走出去：结算位置就是起点。
+		expect(result.at.position).toEqual({ x: 10, y: 64, z: 10 });
+	}, 15000);
+
+	test("拉开距离但威胁跟到贴身 → retreat_failed", async () => {
+		const zombie = entity("zombie", "hostile", 12.5, 10);
+		const state = baseState([zombie], {});
+		const h = makeHarness(state, {
+			self: { health: 5 },
+			onGoto: (request) => {
+				// 僵尸每条腿都追到新位置 3 格内：距离核验过了，威胁仍贴身。
+				state.entities![0]!.position = { x: request.at.x + 3, y: 64, z: request.at.z };
+			},
+		});
+		const result = (await h.callable("fight@1").invoke(h.ctx, FIGHT)) as { ended: string };
+		expect(result.ended).toBe("retreat_failed");
+	}, 15000);
+
 	test("retreatHealth 显式覆盖 stance 比例；血量跌破即撤", async () => {
 		const zombie = entity("zombie", "hostile", 40, 10); // 远目标：先追击
 		const state = baseState([zombie], { iron_sword: 1 });

@@ -1,8 +1,16 @@
 diff --git a/index.js b/index.js
-index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..29c84b8d6e39cb2ea47e3fa7ba859dfa9210a35f 100644
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6a045f3c2 100644
 --- a/index.js
 +++ b/index.js
-@@ -27,6 +27,10 @@ function inject (bot) {
+@@ -9,7 +9,6 @@ const Lock = require('./lib/lock')
+ const Vec3 = require('vec3').Vec3
+ 
+ const Physics = require('./lib/physics')
+-const nbt = require('prismarine-nbt')
+ const interactableBlocks = require('./lib/interactable.json')
+ 
+ function inject (bot) {
+@@ -27,6 +26,10 @@ function inject (bot) {
    let placing = false
    let placingBlock = null
    let lastNodeTime = performance.now()
@@ -13,7 +21,98 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..29c84b8d6e39cb2ea47e3fa7ba859dfa
    let returningPos = null
    let stopPathing = false
    const physics = new Physics(bot)
-@@ -608,26 +612,55 @@ function inject (bot) {
+@@ -49,7 +52,10 @@ function inject (bot) {
+     let fastest = Number.MAX_VALUE
+     let bestTool = null
+     for (const tool of availableTools) {
+-      const enchants = (tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : []
++      // 1.20.5+ items carry enchantments as components, not nbt: the old
++      // nbt.simplify read silently lost every enchant there, making the tool
++      // selection ignore Efficiency and friends. `enchants` serves both eras.
++      const enchants = tool?.enchants ?? []
+       const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
+       if (digTime < fastest) {
+         fastest = digTime
+@@ -518,12 +524,34 @@ function inject (bot) {
+         fullStop()
+       }
+ 
++      // The gate branch below reassigns placingBlock from toPlace.shift(),
++      // which is undefined when the gate was the last entry. Without this
++      // guard the node falls through to the scaffolding placement with a
++      // null placingBlock (path drop or TypeError).
++      if (!placingBlock) {
++        placing = false
++        return
++      }
++
+       // Open gates or doors
+       if (placingBlock?.useOne) {
+         if (!lockUseBlock.tryAcquire()) return
+-        bot.activateBlock(bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z))).then(() => {
+-          lockUseBlock.release()
+-          placingBlock = nextPoint.toPlace.shift()
++        const doorPos = new Vec3(placingBlock.x, placingBlock.y, placingBlock.z)
++        bot.activateBlock(bot.blockAt(doorPos)).then(() => {
++          // Activation is open-loop (the packet is sent, nothing verified):
++          // give the server a moment, then confirm the door actually opened.
++          // Holding the lock across the window also keeps this branch from
++          // re-activating every tick (which would close it again). Not open
++          // after the wait is a failed step, not progress — re-plan.
++          setTimeout(() => {
++            const door = bot.blockAt(doorPos, false)
++            lockUseBlock.release()
++            if (door?.getProperties?.().open !== true) {
++              resetPath('door_error')
++              return
++            }
++            placingBlock = nextPoint.toPlace.shift()
++          }, 400)
+         }, err => {
+           console.error(err)
+           lockUseBlock.release()
+@@ -559,7 +587,26 @@ function inject (bot) {
+                 bot.setControlState('sneak', false)
+                 if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
+               })
+-              .catch(_ignoreError => {
++              .catch(err => {
++                // Record only explicit server refusals, keyed by the real
++                // target cell: those predict the next refusal on the same
++                // cell+block. Timeouts prove nothing about the cell and are
++                // not recorded. The planner consults this blacklist
++                // (Movements.filterRefusedPlacements) to steer A* elsewhere.
++                if (err?.refused === true) {
++                  const tx = placingBlock.x + placingBlock.dx
++                  const ty = placingBlock.y + placingBlock.dy
++                  const tz = placingBlock.z + placingBlock.dz
++                  bot.placeMisses = bot.placeMisses ?? []
++                  bot.placeMisses.push({
++                    x: tx,
++                    y: ty,
++                    z: tz,
++                    was: bot.blockAt(new Vec3(tx, ty, tz), false)?.name,
++                    at: Date.now()
++                  })
++                  if (bot.placeMisses.length > 64) bot.placeMisses.shift()
++                }
+                 resetPath('place_error')
+               })
+               .then(() => {
+@@ -567,6 +614,12 @@ function inject (bot) {
+                 placing = false
+                 lastNodeTime = performance.now()
+               })
++          }, function (_ignoreError) {
++            // Release the equip lock on rejection, retaining placement state
++            // so the next tick can retry. Handled in then's second argument:
++            // the trailing catch also receives fulfilled-handler errors, which
++            // must not release the lock twice.
++            lockEquipItem.release()
+           })
+           .catch(_ignoreError => {})
+       }
+@@ -608,26 +661,55 @@ function inject (bot) {
      bot.setControlState('forward', true)
      bot.setControlState('jump', false)
  
@@ -28,12 +127,12 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..29c84b8d6e39cb2ea47e3fa7ba859dfa
        bot.setControlState('sprint', false)
 -    } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
 -      bot.setControlState('jump', false)
--      bot.setControlState('sprint', true)
--    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
--      bot.setControlState('jump', true)
 +    } else if (stateMovements.allowSprinting && (physics.canStraightLine(path, true) || physics.canSprintJump(path))) {
 +      bot.setControlState('jump', jumpNow)
        bot.setControlState('sprint', true)
+-    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
+-      bot.setControlState('jump', true)
+-      bot.setControlState('sprint', true)
 -    } else if (physics.canStraightLine(path)) {
 -      bot.setControlState('jump', false)
 -      bot.setControlState('sprint', false)
@@ -79,6 +178,354 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..29c84b8d6e39cb2ea47e3fa7ba859dfa
      // check for futility
      if (performance.now() - lastNodeTime > 3500) {
        // should never take this long to go to the next node
+diff --git a/lib/astar.js b/lib/astar.js
+index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..6d3a6c81d642c2dca712c551aaa84eb77ce91204 100644
+--- a/lib/astar.js
++++ b/lib/astar.js
+@@ -65,6 +65,19 @@ class AStar {
+   }
+ 
+   compute () {
++    // Fresh cache per compute chunk: reads are deduplicated inside the chunk
++    // and the whole object is dropped afterwards, so no stale block can ever
++    // leak between chunks or into path following. The chunk boundary is the
++    // only invalidation needed — the world re-plans from scratch on changes.
++    this.movements.__sliceCache = { blocks: new Map(), breakable: new Map(), labor: new Map() }
++    try {
++      return this.computeUncached()
++    } finally {
++      this.movements.__sliceCache = undefined
++    }
++  }
++
++  computeUncached () {
+     const computeStartTime = performance.now()
+     while (!this.openHeap.isEmpty()) {
+       if (performance.now() - computeStartTime > this.tickTimeout) { // compute time per tick
+diff --git a/lib/goto.js b/lib/goto.js
+index 0b8b9de4e3459c896fda1485d4c71fb98704e720..e5c6bc34da6108477ed681c44915e304bb3cae98 100644
+--- a/lib/goto.js
++++ b/lib/goto.js
+@@ -20,9 +20,12 @@ function goto (bot, goal) {
+     }
+ 
+     function noPathListener (results) {
+-      if (results.path.length === 0) {
+-        cleanup()
+-      } else if (results.status === 'noPath') {
++      // A finished search that found nothing must reject: the old code checked
++      // path.length first and resolved ANY empty-path update — including a
++      // genuine noPath/timeout whose best node was still the start — as if the
++      // goal had been reached. An empty best path on a partial is just "not
++      // found yet": keep waiting for the next chunk.
++      if (results.status === 'noPath') {
+         cleanup(error('NoPath', 'No path to the goal!'))
+       } else if (results.status === 'timeout') {
+         cleanup(error('Timeout', 'Took to long to decide path to goal!'))
+diff --git a/lib/movements.js b/lib/movements.js
+index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e06162d75 100644
+--- a/lib/movements.js
++++ b/lib/movements.js
+@@ -1,5 +1,4 @@
+ const { Vec3 } = require('vec3')
+-const nbt = require('prismarine-nbt')
+ const Move = require('./move')
+ 
+ const cardinalDirections = [
+@@ -92,7 +91,8 @@ class Movements {
+       }
+     })
+     registry.blocksArray.forEach(block => {
+-      if (this.interactableBlocks.has(block.name) && block.name.toLowerCase().includes('gate') && !block.name.toLowerCase().includes('iron')) {
++      const name = block.name.toLowerCase()
++      if (this.interactableBlocks.has(block.name) && !name.includes('iron') && (name.includes('gate') || name.endsWith('_door'))) {
+         // console.info(block)
+         this.openable.add(block.id)
+       }
+@@ -215,7 +215,33 @@ class Movements {
+     return this.entityIntersections[`${x},${y},${z}`] ?? 0
+   }
+ 
++  /**
++   * Search-scoped block cache: one decorated Block per unique position per
++   * A* compute() call, instead of a fresh Vec3 + Block allocation per lookup.
++   * The AStar.compute() wrapper attaches __sliceCache before and detaches it
++   * after, so cache lifetime is a single compute chunk and the world is read
++   * fresh everywhere else. Callers must not mutate the decorated fields of a
++   * returned block — the object is shared across the whole chunk.
++   */
+   getBlock (pos, dx, dy, dz) {
++    if (pos) {
++      const cache = this.__sliceCache
++      if (cache) {
++        const key = (pos.x + dx) + ',' + (pos.y + dy) + ',' + (pos.z + dz)
++        let b = cache.blocks.get(key)
++        if (b === undefined) {
++          b = this.getBlockUncached(pos, dx, dy, dz)
++          // Unloaded columns yield a bare stub (no type): never cache those,
++          // the chunk may load mid-search and callers must see the real block.
++          if (b.type !== undefined) cache.blocks.set(key, b)
++        }
++        return b
++      }
++    }
++    return this.getBlockUncached(pos, dx, dy, dz)
++  }
++
++  getBlockUncached (pos, dx, dy, dz) {
+     const b = pos ? this.bot.blockAt(new Vec3(pos.x + dx, pos.y + dy, pos.z + dz), false) : null
+     if (!b) {
+       return {
+@@ -241,6 +267,13 @@ class Movements {
+     for (const shape of b.shapes) {
+       b.height = Math.max(b.height, pos.y + dy + shape[4])
+     }
++    // An open door (or gate) keeps a thin collision shape, so the generic
++    // decoration above calls it a wall the planner must dig or "use" again
++    // (which would close it). It is actually passable.
++    if (b.openable && b.getProperties().open === true) {
++      b.safe = true
++      b.physical = false
++    }
+     return b
+   }
+ 
+@@ -249,7 +282,27 @@ class Movements {
+    * @param {import('prismarine-block').Block} block
+    * @returns
+    */
++  /**
++   * Pure world-state judgement (5 liquid neighbour reads + falling-block and
++   * entity lookups): memoized per position within the search cache. Config
++   * inputs (canDig, blocksCantBreak, exclusion areas) are stable during one
++   * compute() call, so the memo cannot go stale inside it.
++   */
+   safeToBreak (block) {
++    const cache = this.__sliceCache
++    if (cache && block.position) {
++      const key = block.position.x + ',' + block.position.y + ',' + block.position.z
++      let ok = cache.breakable.get(key)
++      if (ok === undefined) {
++        ok = this.safeToBreakUncached(block)
++        cache.breakable.set(key, ok)
++      }
++      return ok
++    }
++    return this.safeToBreakUncached(block)
++  }
++
++  safeToBreakUncached (block) {
+     if (!this.canDig) {
+       return false
+     }
+@@ -289,11 +342,23 @@ class Movements {
+ 
+     if (block.physical) cost += this.getNumEntitiesAt(block.position, 0, 1, 0) * this.entityCost // Add entity cost if there is an entity above (a breakable block) that will fall
+ 
+-    const tool = this.bot.pathfinder.bestHarvestTool(block)
+-    const enchants = (tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : []
+-    const effects = this.bot.entity.effects
+-    const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
+-    const laborCost = (1 + 3 * digTime / 1000) * this.digCost
++    // Only the (tool selection + digTime → labor) computation is memoized,
++    // keyed by block type: it is pure for the duration of one compute() call
++    // (inventory and effects do not change mid-search). Position-dependent and
++    // entity-dependent parts above stay live.
++    const cache = this.__sliceCache
++    let laborCost = cache?.labor.get(block.type)
++    if (laborCost === undefined) {
++      const tool = this.bot.pathfinder.bestHarvestTool(block)
++      // 1.20.5+ items carry enchantments as components, not nbt: tool.nbt is
++      // empty there and the old nbt.simplify read silently lost every enchant.
++      // prismarine-item's normalized `enchants` getter serves both eras.
++      const enchants = tool?.enchants ?? []
++      const effects = this.bot.entity.effects
++      const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
++      laborCost = (1 + 3 * digTime / 1000) * this.digCost
++      cache?.labor.set(block.type, laborCost)
++    }
+     cost += laborCost
+     return cost
+   }
+@@ -307,6 +372,7 @@ class Movements {
+     let cost = 2 // move cost (move+jump)
+     const toBreak = []
+     const toPlace = []
++    let landHeight = blockC.height
+ 
+     if (blockA.physical && (this.getNumEntitiesAt(blockA.position, 0, 1, 0) > 0)) return // Blocks A, B and H are above C, D and the player's space, we need to make sure there are no entities that will fall down onto our building space if we break them
+     if (blockH.physical && (this.getNumEntitiesAt(blockH.position, 0, 1, 0) > 0)) return
+@@ -315,6 +381,10 @@ class Movements {
+     if (!blockC.physical) {
+       if (node.remainingBlocks === 0) return // not enough blocks to place
+ 
++      // Placing while swimming needs a floor to jump from: in deep water there
++      // is nothing to press the block against, so the placement would fail.
++      if (this.getBlock(node, 0, 0, 0).liquid && !this.getBlock(node, 0, -1, 0).physical) return
++
+       if (this.getNumEntitiesAt(blockC.position, 0, 0, 0) > 0) return // Check for any entities in the way of a block placement
+ 
+       const blockD = this.getBlock(node, dir.x, -1, dir.z)
+@@ -342,11 +412,17 @@ class Movements {
+       toPlace.push({ x: node.x + dir.x, y: node.y - 1, z: node.z + dir.z, dx: 0, dy: 1, dz: 0 })
+       cost += this.placeCost // additional cost for placing a block
+ 
+-      blockC.height += 1
++      // Blocks are shared through the search cache now: keep the simulated +1
++      // landing height local instead of mutating blockC.height.
++      landHeight += 1
+     }
+ 
+     const block0 = this.getBlock(node, 0, -1, 0)
+-    if (blockC.height - block0.height > 1.2) return // Too high to jump
++    // In deep water the block below is still liquid, one under the surface
++    // node: measuring the bank from it would turn a 1-block bank into a fake
++    // 2-block jump. The take-off surface for swimming is the node itself.
++    const takeoffHeight = block0.liquid ? node.y : block0.height
++    if (landHeight - takeoffHeight > 1.2) return // Too high to jump
+ 
+     cost += this.safeOrBreak(blockA, toBreak)
+     if (cost > 100) return
+@@ -372,6 +448,10 @@ class Movements {
+     if (!blockD.physical && !blockC.liquid) {
+       if (node.remainingBlocks === 0) return // not enough blocks to place
+ 
++      // Placing while swimming needs a floor to press against; in deep water
++      // the bridge would be unplaceable.
++      if (this.getBlock(node, 0, 0, 0).liquid && !this.getBlock(node, 0, -1, 0).physical) return
++
+       if (this.getNumEntitiesAt(blockD.position, 0, 0, 0) > 0) return // D intersects an entity hitbox
+ 
+       if (!blockD.replaceable) {
+@@ -387,8 +467,9 @@ class Movements {
+     cost += this.safeOrBreak(blockB, toBreak)
+     if (cost > 100) return
+ 
+-    // Open fence gates
+-    if (this.canOpenDoors && blockC.openable && blockC.shapes && blockC.shapes.length !== 0) {
++    // Open doors and fence gates (closed ones only: using an open one closes
++    // it again, which is why upstream ships canOpenDoors disabled).
++    if (this.canOpenDoors && blockC.openable && blockC.getProperties().open === false && blockC.shapes && blockC.shapes.length !== 0) {
+       toPlace.push({ x: node.x + dir.x, y: node.y, z: node.z + dir.z, dx: 0, dy: 0, dz: 0, useOne: true }) // Indicate that a block should be used on this block not placed
+     } else {
+       cost += this.safeOrBreak(blockC, toBreak)
+@@ -397,10 +478,28 @@ class Movements {
+ 
+     if (this.getBlock(node, 0, 0, 0).liquid) cost += this.liquidCost
+ 
++    // The upper half of a door is head clearance, never a landing spot: its
++    // floor is the lower door panel, so standing in it means standing in the
++    // doorway of a door the planner treats as passable-but-not-standable.
++    if (blockC.openable && blockC.getProperties().half === 'upper') return
++
+     neighbors.push(new Move(blockC.position.x, blockC.position.y, blockC.position.z, node.remainingBlocks - toPlace.length, cost, toBreak, toPlace))
+   }
+ 
+   getMoveDiagonal (node, dir, neighbors) {
++    const before = neighbors.length
++    this.getMoveDiagonalMoves(node, dir, neighbors)
++    // A door occupies the frame even while open (its panel hugs the block
++    // edge), and only the upstream forward generator knows how to open doors —
++    // a diagonal candidate into a door cell would scrape the panel or clip
++    // through a closed one. Enter doors head-on; walking around costs 1.
++    for (let i = neighbors.length - 1; i >= before; i--) {
++      const mv = neighbors[i]
++      if (this.getBlock(mv, 0, 0, 0).openable) neighbors.splice(i, 1)
++    }
++  }
++
++  getMoveDiagonalMoves (node, dir, neighbors) {
+     let cost = Math.SQRT2 // move cost
+     const toBreak = []
+ 
+@@ -427,6 +526,16 @@ class Movements {
+     cost2 += this.safeOrBreak(blockC2, toBreak2)
+     if (blockD2.height - block0.height > 1.2) cost2 += this.safeOrBreak(blockD2, toBreak2)
+ 
++    // Both orthogonal corner lines must be walkable. The diagonal passes through the
++    // corner vertex shared with both neighbour cells, so a solid cell on either line
++    // wedges a 0.6-wide hitbox against the corner: per-axis collision resolves the
++    // squeeze into ~zero net motion (no slide), and the executor pins there while
++    // every 3.5s re-plan reproduces the same impossible move. Only validating the
++    // cheaper line (min(cost1, cost2) below) silently ignored the other side and
++    // emitted physically impossible corner-cutting diagonals whenever an obstacle
++    // sat next to the diagonal, e.g. bypassing a pillar through a one-wide gap.
++    if (!blockB1.safe || !blockC1.safe || !blockB2.safe || !blockC2.safe) return
++
+     if (cost1 < cost2) {
+       cost += cost1
+       toBreak.push(...toBreak1)
+@@ -522,7 +631,6 @@ class Movements {
+ 
+   getMoveUp (node, neighbors) {
+     const block1 = this.getBlock(node, 0, 0, 0)
+-    if (block1.liquid) return
+     if (this.getNumEntitiesAt(node, 0, 0, 0) > 0) return // an entity (besides the player) is blocking the building area
+ 
+     const block2 = this.getBlock(node, 0, 2, 0)
+@@ -544,9 +652,15 @@ class Movements {
+       const block0 = this.getBlock(node, 0, -1, 0)
+       if (block0.physical && block0.height - node.y < -0.2) return // cannot jump-place from a half block
+ 
++      // Towering up from inside water works only with a real floor to jump
++      // from (shallow water); swimming in deep water has nothing to press the
++      // support block against.
++      if (block1.liquid && !block0.physical) return
++
+       cost += this.exclusionPlace(block1)
+       toPlace.push({ x: node.x, y: node.y - 1, z: node.z, dx: 0, dy: 1, dz: 0, jump: true })
+       cost += this.placeCost // additional cost for placing a block
++      if (block1.liquid) cost += this.liquidCost
+     }
+ 
+     if (cost > 100) return
+@@ -656,6 +770,46 @@ class Movements {
+     this.getMoveDown(node, neighbors)
+     this.getMoveUp(node, neighbors)
+ 
++    return this.filterRefusedPlacements(neighbors)
++  }
++
++  /**
++   * Cells the server explicitly refused recently would repeat the refusal: the
++   * executor re-plans, A* picks the same cheapest placement, fails again — a
++   * loop that only ends at the caller's wall clock. Drop candidate moves whose
++   * placement target is still the exact block the server refused there
++   * (keyed by the real target cell = reference + face vector, not the
++   * reference). The record is written by the executor only on explicit
++   * refusals, never on timeouts or cancellations; a world change (different
++   * block in the cell now) or TTL expiry releases it.
++   */
++  filterRefusedPlacements (neighbors) {
++    const misses = this.bot.placeMisses
++    if (!Array.isArray(misses) || misses.length === 0) return neighbors
++    const now = Date.now()
++    const refused = new Map()
++    for (const miss of misses) {
++      if (now - miss.at > 180000) continue
++      refused.set(`${miss.x},${miss.y},${miss.z}`, miss.was)
++    }
++    if (refused.size === 0) return neighbors
++    for (let i = neighbors.length - 1; i >= 0; i--) {
++      const mv = neighbors[i]
++      const placements = mv.toPlace
++      if (!placements || placements.length === 0) continue
++      for (const p of placements) {
++        if (p.useOne) continue
++        const tx = p.x + p.dx
++        const ty = p.y + p.dy
++        const tz = p.z + p.dz
++        const was = refused.get(`${tx},${ty},${tz}`)
++        if (was === undefined) continue
++        if (this.getBlock({ x: tx, y: ty, z: tz }, 0, 0, 0).name === was) {
++          neighbors.splice(i, 1)
++          break
++        }
++      }
++    }
+     return neighbors
+   }
+ }
 diff --git a/lib/physics.js b/lib/physics.js
 index ef9e3897b44fd023455f1f0b8adc315d628fa85f..e2590106e94f47cd41127b8472198c79ef4aa984 100644
 --- a/lib/physics.js

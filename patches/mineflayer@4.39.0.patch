@@ -1,0 +1,123 @@
+diff --git a/lib/plugins/digging.js b/lib/plugins/digging.js
+index 5ae55521d713f14c4d2311133531a14ebc99b77d..5ec57d098e210991e80f02cc42c4d8b5a2300cb0 100644
+--- a/lib/plugins/digging.js
++++ b/lib/plugins/digging.js
+@@ -8,6 +8,7 @@ module.exports = inject
+ function inject (bot) {
+   let swingInterval = null
+   let waitTimeout = null
++  let confirmTimeout = null
+ 
+   let diggingTask = createDoneTask()
+ 
+@@ -140,6 +141,30 @@ function inject (bot) {
+       bot.swingArm()
+     }, 350)
+ 
++    // The dig is over only when the server changes that cell. The budget covers
++    // the whole lifecycle: the swing phase (client-side estimate) plus the
++    // server's confirmation of the finish packet. Exactly one terminal state
++    // happens: confirmed (diggingCompleted), cancelled (stopDigging) or
++    // unconfirmed (budget); all three run the same cleanup first, and late
++    // events after a terminal state are ignored (terminated guard).
++    // bot.targetDigBlock stays set until the terminal state, so stopDigging()
++    // can still cancel during the confirmation window and callers watching
++    // targetDigBlock (stall watchdogs) are not fooled into thinking the dig is
++    // over while the server has not spoken yet.
++    const confirmBudgetMs = Math.max(8000, waitTime * 3)
++    let terminated = false
++    confirmTimeout = setTimeout(digUnconfirmed, confirmBudgetMs)
++
++    function cleanupDigResources () {
++      clearInterval(swingInterval)
++      clearTimeout(waitTimeout)
++      clearTimeout(confirmTimeout)
++      swingInterval = null
++      waitTimeout = null
++      confirmTimeout = null
++      bot.removeListener(eventName, onBlockUpdate)
++    }
++
+     function finishDigging () {
+       clearInterval(swingInterval)
+       clearTimeout(waitTimeout)
+@@ -152,10 +177,20 @@ function inject (bot) {
+           face: bot.targetDigFace // always the same as the start face
+         })
+       }
++      bot.lastDigTime = performance.now()
++      // The block is NOT written as air locally any more: pretending the dig
++      // succeeded made bot.dig resolve regardless of the server's decision,
++      // and the executor would walk into the solid block it "dug".
++    }
++
++    function digUnconfirmed () {
++      if (terminated) return
++      terminated = true
++      cleanupDigResources()
+       bot.targetDigBlock = null
+       bot.targetDigFace = null
+       bot.lastDigTime = performance.now()
+-      bot._updateBlockState(block.position, 0)
++      diggingTask.cancel(new Error(`Server did not confirm digging ${block.position} within ${confirmBudgetMs}ms`))
+     }
+ 
+     const eventName = `blockUpdate:${block.position}`
+@@ -170,11 +205,9 @@ function inject (bot) {
+       const stoppedBecauseOfNewDigRequest = !currentBlock.position.equals(bot.targetDigBlock.position)
+       const cancellationDiggingFace = !stoppedBecauseOfNewDigRequest ? bot.targetDigFace : 0
+ 
+-      bot.removeListener(eventName, onBlockUpdate)
+-      clearInterval(swingInterval)
+-      clearTimeout(waitTimeout)
+-      swingInterval = null
+-      waitTimeout = null
++      if (terminated) return
++      terminated = true
++      cleanupDigResources()
+       bot._client.write('block_dig', {
+         status: 1, // cancel digging
+         location: bot.targetDigBlock.position,
+@@ -190,15 +223,15 @@ function inject (bot) {
+     }
+ 
+     function onBlockUpdate (oldBlock, newBlock) {
+-      // vanilla server never actually interrupt digging, but some server send block update when you start digging
+-      // so ignore block update if not air
+-      // All block update listeners receive (null, null) when the world is unloaded. So newBlock can be null.
+-      if (newBlock?.type !== 0) return
+-      bot.removeListener(eventName, onBlockUpdate)
+-      clearInterval(swingInterval)
+-      clearTimeout(waitTimeout)
+-      swingInterval = null
+-      waitTimeout = null
++      // Completion requires the block to be actually removed or replaced:
++      // a state-only update (door toggling, facing) says nothing about the dig,
++      // and (null, null) on world unload is not a success either.
++      // vanilla servers never interrupt digging, but some send an early
++      // same-type update when digging starts; those are ignored by the
++      // type-change check.
++      if (terminated || !newBlock || !oldBlock || newBlock.type === oldBlock.type) return
++      terminated = true
++      cleanupDigResources()
+       bot.targetDigBlock = null
+       bot.targetDigFace = null
+       bot.lastDigTime = performance.now()
+diff --git a/lib/plugins/place_block.js b/lib/plugins/place_block.js
+index dc86e1e84fcfa0d48d3c1147e184737f9de723da..8fcbe49ce13f1ae65b9034457dade70f7e532673 100644
+--- a/lib/plugins/place_block.js
++++ b/lib/plugins/place_block.js
+@@ -39,7 +39,12 @@ function inject (bot) {
+ 
+     if (!newBlock) return
+     if (newBlock.type === oldBlock.type) {
+-      throw new Error(`Server refused to place ${bot.heldItem?.name ?? 'block'} at ${dest}: the block is still ${newBlock.name}`)
++      // Marked so callers can tell an explicit server refusal (worth
++      // remembering, e.g. for placement blacklists) from a timeout (which
++      // proves nothing about the cell).
++      const err = new Error(`Server refused to place ${bot.heldItem?.name ?? 'block'} at ${dest}: the block is still ${newBlock.name}`)
++      err.refused = true
++      throw err
+     }
+     bot.emit('blockPlaced', oldBlock, newBlock)
+   }

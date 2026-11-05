@@ -2,4 +2,7 @@ allowBuilds:
   esbuild: true
 patchedDependencies:
   mineflayer-pathfinder@2.4.5: patches/mineflayer-pathfinder@2.4.5.patch
+  mineflayer@4.39.0: patches/mineflayer@4.39.0.patch
+  prismarine-item@1.18.0: patches/prismarine-item@1.18.0.patch
+  prismarine-physics@1.11.1: patches/prismarine-physics@1.11.1.patch
   quickjs-emscripten-core@0.32.0: patches/quickjs-emscripten-core@0.32.0.patch

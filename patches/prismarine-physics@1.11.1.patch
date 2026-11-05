@@ -1,0 +1,54 @@
+diff --git a/lib/aabb.js b/lib/aabb.js
+index 6b78f46bea6ff10de81749809d1b58a0ab8f2868..e48054d7047ac5272aad67faf05602dd976e42b7 100644
+--- a/lib/aabb.js
++++ b/lib/aabb.js
+@@ -1,3 +1,8 @@
++// Horizontal clearance kept between the entity box and a block side face. 1e-5 is
++// far below any gameplay-relevant distance, yet above the server's exact-touch
++// criterion (gap > 0 counts as clear, measured on Paper 1.21.11 down to 1e-7).
++const WALL_GAP = 1e-5
++
+ class AABB {
+   constructor (x0, y0, z0, x1, y1, z1) {
+     this.minX = x0
+@@ -64,12 +69,21 @@ class AABB {
+     return this
+   }
+ 
++  // Paper 1.21.11 rejects positions whose bounding box touches a block's side face
++  // exactly (gap 0 or negative): it teleports the player back silently, without
++  // "moved wrongly" (1.21.10 and earlier accept them). The collision solver below
++  // clamps movement to exactly touching, so wall sliding, step faces and 1-wide
++  // squeezes got pinned every tick. Stop WALL_GAP short of the face instead, and
++  // back off the same amount when already touching and still pressing inward.
++  // Vertical faces are the only criterion that changed: resting on top faces or
++  // under ceilings is still accepted, so computeOffsetY stays untouched.
++  // this is the block's box, other is the moving entity's box.
+   computeOffsetX (other, offsetX) {
+     if (other.maxY > this.minY && other.minY < this.maxY && other.maxZ > this.minZ && other.minZ < this.maxZ) {
+-      if (offsetX > 0.0 && other.maxX <= this.minX) {
+-        offsetX = Math.min(this.minX - other.maxX, offsetX)
+-      } else if (offsetX < 0.0 && other.minX >= this.maxX) {
+-        offsetX = Math.max(this.maxX - other.minX, offsetX)
++      if (offsetX > 0.0 && other.maxX <= this.minX + WALL_GAP) {
++        offsetX = Math.min(this.minX - other.maxX - WALL_GAP, offsetX)
++      } else if (offsetX < 0.0 && other.minX >= this.maxX - WALL_GAP) {
++        offsetX = Math.max(this.maxX - other.minX + WALL_GAP, offsetX)
+       }
+     }
+     return offsetX
+@@ -88,10 +102,10 @@ class AABB {
+ 
+   computeOffsetZ (other, offsetZ) {
+     if (other.maxX > this.minX && other.minX < this.maxX && other.maxY > this.minY && other.minY < this.maxY) {
+-      if (offsetZ > 0.0 && other.maxZ <= this.minZ) {
+-        offsetZ = Math.min(this.minZ - other.maxZ, offsetZ)
+-      } else if (offsetZ < 0.0 && other.minZ >= this.maxZ) {
+-        offsetZ = Math.max(this.maxZ - other.minZ, offsetZ)
++      if (offsetZ > 0.0 && other.maxZ <= this.minZ + WALL_GAP) {
++        offsetZ = Math.min(this.minZ - other.maxZ - WALL_GAP, offsetZ)
++      } else if (offsetZ < 0.0 && other.minZ >= this.maxZ - WALL_GAP) {
++        offsetZ = Math.max(this.maxZ - other.minZ + WALL_GAP, offsetZ)
+       }
+     }
+     return offsetZ

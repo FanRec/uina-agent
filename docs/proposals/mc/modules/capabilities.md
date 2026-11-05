@@ -787,10 +787,12 @@ await mc.call("chat@1", {text:"/list"});
   | `aggressive` | ≥ 35% | < 20% | 4 | 1 格 | 只对远程怪 | 不主动撤 |
 
   stance 提供默认值；retreatHealth 是可选绝对生命值阈值（0..当前 maxHealth，0 表示不因血量主动撤退），显式给出覆盖 stance 的撤退血量规则。其他委托与急停约束仍生效；有效阈值随 CallRecord 记录。其余内部权重不逐项开放，精细控制仍可用 body.loop。
-- 会话结束：目标清除、撤退、目标失去跟踪或期限到；对应 ended=targets_cleared/retreated/target_lost/timeout。期限到是本次会话结束，stop/掉线等中断仍抛错，不能把目标失踪当击杀。
+- 会话结束：目标清除、撤退、撤离未脱险、目标失去跟踪或期限到；对应 ended=targets_cleared/retreated/retreat_failed/target_lost/timeout。期限到是本次会话结束，stop/掉线等中断仍抛错，不能把目标失踪当击杀。
 - 返回 `{ended, kills:[{name,drops:{[item]:number}}], hp:{before,after}, retreated?:"low_health"|"no_progress", stance, retreatHealth, at}`；击杀/掉落仅记录可确认部分。
 - 失败 `NOT_FOUND`（启动时没有目标）、`INTERRUPTED`、`DISCONNECTED`
-- 注意：`retreated` 是**成功返回**的一种，不是失败——模型问的是"打完了吗"，答案可以是"我撤了"。
+- 注意：`retreated` 是**成功返回**的一种，不是失败——模型问的是"打完了吗"，答案可以是"我撤了"。批26 起 `retreated` 只在**核验过的脱险**（背向威胁拉开 ≥16 格且结算扫描无 ≤8 格贴身敌对实体）时返回；撤离未脱险如实返回 `retreat_failed`（仍带 kills/hp/at），不再把"尝试过撤退"当"已脱险"。`retreated` 字段（low_health/no_progress）是撤退原因，与成败正交。
+
+实现说明（2026-11-06 批26）：`withdraw` 拍的结算从"返回终点"改为核验性 `{cleared, at}`——anchor 距离 + 活跃敌对实体近身复查；四个调用点按 cleared 结算 retreated/retreat_failed。开场低于接战线的撤退路径同口径，且其 `at` 与会话结束路径统一为 `{position, dimension}`。
 
 ### 记录
 

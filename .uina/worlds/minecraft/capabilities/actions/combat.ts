@@ -11,7 +11,8 @@
  * 不嵌套租赁；safety 介入经同一队列优先，会话抛 INTERRUPTED 并保留 kills/hp。
  * 击杀只认 Driver 的 entityDead 观察（dead），目标失踪不算击杀；掉落只记死亡位置
  * 附近新出现的可确认掉落物。会话结束用明确 ended（targets_cleared/retreated/
- * target_lost/timeout），retreated 是成功返回值。
+ * retreat_failed/target_lost/timeout）：retreated 是经核验的成功撤退（拉开到清除
+ * 距离且威胁没有跟到贴身）；retreat_failed 如实报告撤离未脱险，不冒充成功。
  */
 
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
@@ -55,6 +56,8 @@ const RANGED_STANDOFF_MAX = 14;
 const RANGED_EVIDENCE_MS = 1500;
 /** 击杀掉落归属半径。 */
 const KILL_DROP_RADIUS = 4;
+/** 撤退结算的"贴近威胁"判据：结算扫描里活跃敌对实体在这个半径内就不算脱险。 */
+const RETREAT_NEAR_RADIUS = 8;
 
 // ---- attack@1 ----
 
@@ -127,7 +130,10 @@ const fightDescriptor: CallableDescriptor = {
 	output: {
 		type: "object",
 		properties: {
-			ended: { type: "string", enum: ["targets_cleared", "retreated", "target_lost", "timeout"] },
+			ended: {
+				type: "string",
+				enum: ["targets_cleared", "retreated", "retreat_failed", "target_lost", "timeout"],
+			},
 			kills: {
 				type: "array",
 				items: {
@@ -158,7 +164,7 @@ const fightDescriptor: CallableDescriptor = {
 	completion: {
 		scope: "capability",
 		description:
-			"Session end is explicit: targets_cleared counts only observed deaths; a vanished target ends target_lost, not a kill; retreated (low_health/no_progress) is a successful withdrawal; stop/safety raises INTERRUPTED keeping kills/hp",
+			"Session end is explicit: targets_cleared counts only observed deaths; a vanished target ends target_lost, not a kill; retreated (low_health/no_progress) is a verified withdrawal (clear of the threat anchor and no hostile within 8 blocks); retreat_failed means the withdrawal could not get clear — the bot is still in danger; stop/safety raises INTERRUPTED keeping kills/hp",
 	},
 	errors: [
 		{ code: "NOT_FOUND", meaning: "no target to fight: the name/ref is untracked, or no hostile within the radius" },
@@ -351,7 +357,18 @@ async function shootBeat(
 	});
 }
 
-/** 撤退拍：cautious 先回露天可站（surface 失败不阻断撤退），再背向 anchor 拉开到清除距离。 */
+/**
+ * 撤退拍：cautious 先回露天可站（surface 失败不阻断撤退），再背向 anchor 拉开到清除距离。
+ * 结算是核验性的：真的拉开了（anchor ≥ RETREAT_CLEARANCE）且结算扫描里没有贴身（≤8 格）的
+ * 活跃敌对实体才算 cleared——只返回终点会让调用方把"尝试过撤退"当成"已脱险"（批26 修正）。
+ */
+interface WithdrawOutcome {
+	/** 确实脱险：拉开到清除距离且威胁没有跟到贴身。 */
+	cleared: boolean;
+	/** 结算时位置。 */
+	at: Vec3;
+}
+
 async function withdraw(
 	deps: CapabilityDeps,
 	ctx: CallContext,
@@ -361,7 +378,7 @@ async function withdraw(
 	deadline: number,
 	anchor: Vec3,
 	onInterrupted: () => never,
-): Promise<Vec3> {
+): Promise<WithdrawOutcome> {
 	if (surfaceFirst && probe != null) {
 		try {
 			const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
@@ -377,7 +394,7 @@ async function withdraw(
 		if (ctx.signal.aborted) onInterrupted();
 		if (Date.now() >= deadline) break;
 		const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-		if (distance(self.place.position, anchor) >= RETREAT_CLEARANCE) return self.place.position;
+		if (distance(self.place.position, anchor) >= RETREAT_CLEARANCE) break;
 		const target = fleeLegTarget(
 			self.place.position,
 			anchor,
@@ -404,7 +421,13 @@ async function withdraw(
 		}
 	}
 	const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-	return final.place.position;
+	const at = final.place.position;
+	const hostiles = await scanEntities(ctx, RETREAT_NEAR_RADIUS, "hostile");
+	const threatNearby = hostiles.some((entry) => distance(entry.position, at) <= RETREAT_NEAR_RADIUS);
+	return {
+		cleared: distance(at, anchor) >= RETREAT_CLEARANCE && !threatNearby,
+		at,
+	};
 }
 
 export const combatModule: MinecraftCapabilityModule = {
@@ -510,7 +533,7 @@ export const combatModule: MinecraftCapabilityModule = {
 					const onInterrupted = (): never => interrupted(kills, hpBefore, hpAfter);
 					// 开场血量低于接战线：不接战，按血量撤退结算（有 anchor 就背向它拉开）。
 					if (targets.length === 0) {
-						const at = await withdraw(
+						const retreat = await withdraw(
 							deps,
 							ctx,
 							owner,
@@ -522,13 +545,14 @@ export const combatModule: MinecraftCapabilityModule = {
 						);
 						const finalSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 						return plain({
-							ended: "retreated",
+							ended: retreat.cleared ? "retreated" : "retreat_failed",
 							kills,
 							hp: { before: hpBefore, after: finalSelf.health },
 							retreated: "low_health",
 							stance,
 							retreatHealth,
-							at,
+							// 与会话结束路径同形：{position, dimension}（descriptor 示例口径）。
+							at: { position: retreat.at, dimension: finalSelf.place.dimension },
 						});
 					}
 
@@ -560,7 +584,7 @@ export const combatModule: MinecraftCapabilityModule = {
 						}
 					});
 
-					let ended: "targets_cleared" | "retreated" | "target_lost" | "timeout" = "timeout";
+					let ended: "targets_cleared" | "retreated" | "retreat_failed" | "target_lost" | "timeout" = "timeout";
 					let retreatedReason: "low_health" | "no_progress" | null = null;
 					let lastProgressAt = Date.now();
 					let bestGap = Number.POSITIVE_INFINITY;
@@ -574,7 +598,7 @@ export const combatModule: MinecraftCapabilityModule = {
 						const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 						hpAfter = self.health;
 						if (retreatHealth != null && self.health != null && self.health < retreatHealth) {
-							await withdraw(
+							const retreat = await withdraw(
 								deps,
 								ctx,
 								owner,
@@ -584,7 +608,7 @@ export const combatModule: MinecraftCapabilityModule = {
 								nearestAnchor(targets, self.place.position),
 								onInterrupted,
 							);
-							ended = "retreated";
+							ended = retreat.cleared ? "retreated" : "retreat_failed";
 							retreatedReason = "low_health";
 							break;
 						}
@@ -617,7 +641,7 @@ export const combatModule: MinecraftCapabilityModule = {
 							ended = "target_lost";
 							break;
 						}
-						// no_progress：迟迟无法接近也无法命中，主动脱离（retreated 是成功返回值）。
+						// no_progress：迟迟无法接近也无法命中，主动脱离（cleared 才结算 retreated）。
 						// bestGap 按目标身份跟踪：击杀后 nearest 换人，距离正常变大不是停滞。
 						if (nearest!.ref.networkId !== nearestId) {
 							nearestId = nearest!.ref.networkId;
@@ -627,7 +651,7 @@ export const combatModule: MinecraftCapabilityModule = {
 							bestGap = nearestGap;
 							lastProgressAt = Date.now();
 						} else if (Date.now() - lastProgressAt > NO_PROGRESS_MS_VALUE) {
-							await withdraw(
+							const retreat = await withdraw(
 								deps,
 								ctx,
 								owner,
@@ -637,7 +661,7 @@ export const combatModule: MinecraftCapabilityModule = {
 								nearest!.lastPosition,
 								onInterrupted,
 							);
-							ended = "retreated";
+							ended = retreat.cleared ? "retreated" : "retreat_failed";
 							retreatedReason = "no_progress";
 							break;
 						}
@@ -698,7 +722,7 @@ export const combatModule: MinecraftCapabilityModule = {
 								const fresh = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 								hpAfter = fresh.health;
 								if (retreatHealth != null && fresh.health != null && fresh.health < retreatHealth) {
-									await withdraw(
+									const retreat = await withdraw(
 										deps,
 										ctx,
 										owner,
@@ -708,7 +732,7 @@ export const combatModule: MinecraftCapabilityModule = {
 										nearestAnchor(targets, fresh.place.position),
 										onInterrupted,
 									);
-									ended = "retreated";
+									ended = retreat.cleared ? "retreated" : "retreat_failed";
 									retreatedReason = "low_health";
 									break;
 								}
@@ -719,7 +743,10 @@ export const combatModule: MinecraftCapabilityModule = {
 					return plain({
 						ended,
 						kills,
-						hp: { before: hpBefore, after: ended === "retreated" ? final.health : hpAfter },
+						hp: {
+							before: hpBefore,
+							after: ended === "retreated" || ended === "retreat_failed" ? final.health : hpAfter,
+						},
 						...(retreatedReason != null ? { retreated: retreatedReason } : {}),
 						stance,
 						retreatHealth,

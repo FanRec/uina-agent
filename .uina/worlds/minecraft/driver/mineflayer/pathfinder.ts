@@ -81,23 +81,33 @@ export function loadPathfinderPlugin(bot: MineflayerBot): void {
 }
 
 /**
- * 以原语配置 Movements；实例不外泄（§9.1）。复用已装载实例，避免重置寻路共享状态。
+ * 导航选项 → Movements 字段的唯一赋值口径：活动导航（configureMovements）与只读
+ * 试算（planPath/planEscape）共用，防止第三份配置漂移（driver.md §9.1、§2.11）。
  * Disabling placements removes usable scaffolding as well as towers: bridging and jump supports
  * consult remainingBlocks, not allow1by1towers. Re-enabling restores this adapter's default materials.
+ * 上游执行器做不稳跑酷节点（要精确的起跳时机）；默认 true 会让 A* 规划出
+ * 走不出来的路线，因此规划与执行一致地关闭。
  */
-export function configureMovements(bot: MineflayerBot, config: PathfinderMovementsConfig): void {
-	const assembly = (bot as BotWithAssembly).pathfinder;
-	const existing = assembly?.movements;
-	const movements = existing instanceof Movements ? existing : new Movements(bot);
+function applyMovementsConfig(
+	movements: PathfinderMovements,
+	bot: MineflayerBot,
+	config: PathfinderMovementsConfig,
+): void {
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
-	// 上游执行器做不稳跑酷节点（要精确的起跳时机）；默认 true 会让 A* 规划出
-	// 走不出来的路线。与 planEscape/planPath 保持同一口径。
 	movements.allowParkour = false;
 	movements.scafoldingBlocks = config.placeToReach
 		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
 		: [];
+}
+
+/** 以原语配置 Movements；实例不外泄（§9.1）。复用已装载实例，避免重置寻路共享状态。 */
+export function configureMovements(bot: MineflayerBot, config: PathfinderMovementsConfig): void {
+	const assembly = (bot as BotWithAssembly).pathfinder;
+	const existing = assembly?.movements;
+	const movements = existing instanceof Movements ? existing : new Movements(bot);
+	applyMovementsConfig(movements, bot, config);
 	assembly?.setMovements(movements);
 }
 
@@ -147,10 +157,8 @@ export async function planEscape(
 ): Promise<Vec3[] | null> {
 	loadPathfinderPlugin(bot);
 	const movements = new Movements(bot);
-	movements.canDig = false;
-	movements.allow1by1towers = false;
-	movements.scafoldingBlocks = [];
-	movements.allowParkour = false;
+	// 逃生口径：不挖不垫、允许冲刺（构造器默认）、下落上限 1 格。
+	applyMovementsConfig(movements, bot, { sprint: true, digThrough: false, placeToReach: false });
 	movements.maxDropDown = 1;
 	const block = (p: Vec3) => bot.blockAt(toMineflayerVec3(p), false);
 	const origin = { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z };
@@ -260,13 +268,7 @@ export async function planPath(
 	const assembly = (bot as BotWithAssembly).pathfinder;
 	if (assembly == null) throw new Error("pathfinder plugin is not loaded");
 	const movements = new Movements(bot);
-	movements.allowSprinting = config.sprint;
-	movements.canDig = config.digThrough;
-	movements.allow1by1towers = config.placeToReach;
-	movements.allowParkour = false;
-	movements.scafoldingBlocks = config.placeToReach
-		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
-		: [];
+	applyMovementsConfig(movements, bot, config);
 	const goal = new GoalNear(at.x, at.y, at.z, tolerance);
 	const iterator = assembly.getPathFromTo(movements, bot.entity.position, goal, { optimizePath: false });
 	for (;;) {

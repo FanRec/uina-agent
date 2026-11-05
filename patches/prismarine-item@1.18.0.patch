@@ -1,0 +1,25 @@
+diff --git a/index.js b/index.js
+index 47a27b092b1358ebfdc0198f89bb0d392d8cdf1e..09850be3e9631655268a1e5021bfef061e7d0376 100644
+--- a/index.js
++++ b/index.js
+@@ -259,7 +259,19 @@ function loader (registryOrVersion) {
+       const useStoredEnchantments = registry.supportFeature('booksUseStoredEnchantments') && this.name === 'enchanted_book'
+ 
+       if (this.componentMap?.has('enchantments')) {
+-        return this.componentMap.get('enchantments').data
++        // 1.20.5+ components carry the raw wire shape: a container with an
++        // array of numeric {id, level}. Consumers (mineflayer digTime,
++        // prismarine-block getEnchantmentLevel) expect the same normalized
++        // [{name, lvl}] entries the nbt branches below produce, so map it
++        // here instead of leaking the raw object (a non-array breaks every
++        // caller that iterates or concats the result).
++        const data = this.componentMap.get('enchantments').data
++        const list = Array.isArray(data) ? data : data?.enchantments
++        if (!Array.isArray(list)) return []
++        return list.map((ench) => ({
++          lvl: ench.level,
++          name: typeof ench.id === 'string' ? ench.id.replace('minecraft:', '') : registry.enchantments[ench.id]?.name || null
++        }))
+       }
+ 
+       if (typeOfEnchantLevelValue === 'short' && enchantNbtKey === 'ench') {

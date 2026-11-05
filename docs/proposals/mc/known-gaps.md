@@ -12,7 +12,7 @@
 | 2 | ~~G6 节流推送~~ | **批20 已关闭**——同时修掉"模型不 read 就瞎"和"轮询成本"，面向观众线的前置已就位 |
 | 3 | ~~G8 按调用的短窗~~ | **批20 已关闭**（同批含 G7 增量游标） |
 | 4 | ~~G5 剩余能力~~ | 批19 收口 51/51 |
-| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G14（30 分钟真模型窗口——i2.ts 预算/观察/扰动已就绪待跑）、G16 的负载/增长子项（随 G14 窗口）、G25（lane 侧隙绕柱残余）、G17（终态报告，待 G14）。G15/G16 断电子项已于批22 关闭 |
+| 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G14（30 分钟真模型窗口——i2.ts 预算/观察/扰动已就绪待跑）、G16 的负载/增长子项（随 G14 窗口）、G17（终态报告，待 G14）；G25 已于批26 关闭，其 24 格穿越残余（A* think budget 搜索加速）并入 M2 性能工作项 | |
 
 ## 2. P0 阻断项
 
@@ -80,12 +80,12 @@
 - **验收**：`1x2` 上行 1:1 走廊在自动加高后能走到终点，或 `tunnel@1` 对上行请求明确要求 3 高净空。
 - **关闭事实**：`planCorridor` 上坡过渡在 height<3 的 profile 下把升坡列自身 ceiling 一并挖除（踏步上方成 3 高净空；height≥3 物理已够不多挖），`digCeiling` 使支撑探测自动上移一格；合同句落 capabilities.md §4 tunnel。真服 `dev:mc:climb` 源码与产物各 6/6：1x2 上行 1:1 走廊 10 格全挖（与规划器逐格一致）并走到终点（服务端 Pos y=202.0），升坡列顶 (9821,203)/(9822,204) 世界复读为 air、平地段顶 (9824,204) 保持 stone；既有 1 格台阶/三级阶梯/密封竖井 100ms 快速失败/平地 30 格全部保持通过。另注：本批首轮竖井步骤曾从 UNREACHABLE 变成 75 ticks 到达——成因是前置隧道步骤挖通的走廊把掉落物全部收进背包，goto 的 placeToReach（默认 true，垫柱合法）用圆石垫柱翻出 2 高石壁（`placed` 恒 null 无法归属）；场景步骤现以 `/clear` 固定其"无材料"前提。批19 的 1x3 dug=10 楔死记录不在本批重审范围（该轮步骤已移除） |
 
-### G25 · lane 侧隙绕柱执行器零推进（批22 登记）
+### G25 · lane 侧隙绕柱执行器零推进（批22 登记，✅ 已于 2026-11-06 批26 关闭）
 
 - **现象**：受控车道（3 宽石面、上方 4 格净空、中置 3 高柱、两侧各 1 格净宽）上，目标在柱后时 goto 零位移：goal 已设、`route.plan` 只读试算 **5 步可达**，`gotoNear` 实时 A* 却静默空转——isMoving 永假、无 NoPath、promise 不结算（批22 看门狗修复前烧满墙钟，修复后 10–12s 诚实 UNREACHABLE）。平原/水边地形同几何 **7.1s 绕行到达**，山腰地形稳定失败——地形依赖。
 - **证据**：`dev:mc:terrain-nav` 批22 多轮（trace 采样 spread=0.0、对照实验隔离：A placeToReach true/false 双失败、B lane 内无柱点 2s 到达、C 抬目标失败——卡点精确在"绕入 1 宽侧隙"）。
 - **影响**：山地等复杂地形上，需要从 1 宽缝隙绕过直立障碍的导航不可用（诚实快速失败，不挂死）；树绕行/开放地形穿越/explore 不受影响（均实测通过）。
-- **修法方向**：上游 `mineflayer-pathfinder` 的 Movements 差异（planPath 只读试算与 gotoNear 实时 A* 的配置/代价不一致）或 1 宽通道代价判定；属依赖执行器层，不改导航合同。看门狗已保证此类失败快速诚实。**批26 执行包（[refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md)，2026-11-06）以本项为默认首切片**——先复现根因，再定搜索候选/物理可行/跟随层的最小修复。
+- **关闭事实**：批22 的"planPath 与实时 A* 配置不一致"假设**不成立**——两处 Movements 字段值逐项相同（事件级 trace：实时 A* 同样给出完整 7 节点 success 路径，前 1s 正常走出 3 节点）。真根因是两层叠加：**搜索层**上游 `getMoveDiagonal` 只校验两条正交角线中便宜的一条，柱角实体格在未校验侧被放过 → A* 产出贴角对角线；**物理层**prismarine-physics 把移动钳到与实体面"恰好贴上"（gap=0），而 Paper 1.21.11 静默拒绝恰好贴面的位置（无 moved wrongly 日志，1.21.10 及更早版本接受）→ 服务端回弹，挤压净位移≈0（无 pathfinder 自由探针实证 ±0.02 振荡），每 3.5s `resetPath('stuck')` 重搜同一路径无限循环。修复 = 最终补丁集（`patches/mineflayer-pathfinder@2.4.5.patch` 589 行 + `prismarine-physics@1.11.1.patch` + `prismarine-item@1.18.0.patch`，审查轮已逐文件验证 pristine+patch 与安装包零分歧）：pathfinder 补丁含 G21 执行器层（stepAt/shouldJump/后退助跑）、G25 搜索合法性 hunk（对角线两侧角线脚/头格必须 safe，计划/执行合法性不再依赖贴边滑移）、以及此前散落 node_modules 未入库的规划器强化包（astar/movements 搜索分块缓存且未加载列不入缓存、门/水语义——开门验证+上半门不可站+斜切不进门+深水放置/起跳守卫、显式拒绝放置黑名单根治 refuse→re-plan→refuse 循环、goto noPath 诚实拒绝、附魔组件经 `tool?.enchants` 兼容），全部描述见 patches/README.md；physics 补丁 `WALL_GAP=1e-5` 消除恰好贴面回弹；item 补丁归一化 1.20.5+ 附魔组件（digTime/getEnchantmentLevel 消费者）。`driver/mineflayer/pathfinder.ts` 的三处 Movements 赋值收敛为 `applyMovementsConfig` 单一口径（S2 接缝卫生）。验收（全部在完整补丁集上）：真服 `dev:mc:terrain-nav` 源码 **6/6**，lane 绕柱三次独立 **2015/2100/2010ms 实际到达**（原 12.1s 零位移失败），树绕行 7.1→4.5s、digThrough 9.6→5.1s；`dev:mc:climb` **6/6**（1 格台阶 1078ms、三级阶梯 4606ms 较基线 7318ms 提升、G24 走廊与竖井快败不变）；全仓 vitest **3231 项通过**（其中 tests/mc 94 文件 832 项；2 项失败为 tts httpx 环境缺失与 map EPERM 竞争抖动，隔离跑均绿，与本改动无关）；`pnpm typecheck` 通过。**残余（登记为 M2 搜索预算项，非正确性缺陷）**：24 格自然穿越在目标位于山头时，A* 5s think budget 内搜不完（5.8 万节点），5–10s 后 Timeout 诚实拒绝——此前 bot 已实际走完 ~26 格山地地形；属 Cortico pathfinder-perf 的搜索加速领域，另开工作项。**遗留草稿**：`patches/mineflayer@4.39.0.patch`（挖方服务端确认 + 放置拒绝标记，未接线未应用）留待 M1 工作包决策。
 
 | ID | 缺口 | 证据 | 修法要点 |
 |---|---|---|---|

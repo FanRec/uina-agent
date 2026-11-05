@@ -1,5 +1,27 @@
 # 设计变更记录
 
+## 2026-11-06 · 批26 战斗撤退诚实结算（fight@1 增 retreat_failed，B05 关闭）
+
+`fight@1` 的撤退拍此前把"尝试过撤退"当"已脱险"：`withdraw` 只返回终点，四个调用点不核验即结算 `retreated` 成功（01-DESIGN §4.2 点名的假成功）。
+
+- **withdraw 核验化**：返回 `{cleared, at}`——脱险判据 = 背向 anchor 拉开 ≥16 格 **且** 结算扫描无 ≤8 格贴身活跃敌对实体（`RETREAT_NEAR_RADIUS=8`）；原 early-return 并入单一结算路径。
+- **ended 枚举 +1**：撤离未脱险如实返回 `retreat_failed`（仍带 kills/hp/at，`retreated` 字段保留为撤退原因，与成败正交）。输出 schema 纯增量，既有消费者（比较 ended 字符串的 Program/测试）不受影响；modules/capabilities.md §4 fight 同步。
+- **顺带修复**：开场低于接战线撤退路径的 `at` 从裸 Vec3 统一为 `{position, dimension}`（与会话结束路径、descriptor 示例同形）。
+- **T0**：`mc-capability-fight` +2（逃跑腿全被拒 → retreat_failed；拉开距离但威胁追到贴身 → retreat_failed），harness 增 `gotoFailure` 钩子；tests/mc **94 文件 / 832 项全绿**，`pnpm typecheck` 通过。
+- **T2**：`pnpm dev:mc:combat` **6/6**——新增围死步（7×7 两高石墙 + NoAI 僵尸 + 低血量接战门）真服实证 `retreat_failed(low_health)` 且位置仍在围栏内；三僵尸/aggressive 步按诚实结局空间更新断言（balanced maxTargets=2 的清场、第 4 杀证据窗口竞态如实 target_lost 不虚报）。场景两处环境缺陷一并修复：自保"低血+2s 新伤"窗口内开打会被 safety 抢占（伤害后等 2.6s 再测）；围死步清理缺失会跨步骤/跨轮毒化开阔地步骤（restore 增围墙体积清除 + finally 保证清理）。
+- 关联缺口：B05（逃跑失败/敌人短暂失踪不许假 retreated）的场景验收落地。
+
+## 2026-11-06 · 批26 G25 关闭（refactor-v2 首切片：搜索层切角对角线根治 + Movements 口径收敛）
+
+执行包 `refactor-v2/`（2026-11-06）默认首切片。**根因推翻批22 假设**：事件级 trace 证明实时 A* 与 planPath 的 Movements 配置逐项相同、路径一致（7 节点 success，前 1s 正常走出）——问题不在配置漂移。真根因两层叠加：**搜索层**上游 `getMoveDiagonal` 只校验两条正交角线中便宜的一条（`min(cost1,cost2)`），实体角格在未校验侧被放过 → A* 产出贴角对角线；**物理层**prismarine-physics 把移动钳到与实体面恰好贴上（gap=0），而 Paper 1.21.11 静默拒绝恰好贴面的位置（无 moved wrongly 日志）→ 服务端回弹，挤压净位移≈0（无 pathfinder 自由探针实证 ±0.02 振荡）→ 每 3.5s `resetPath('stuck')` 重搜同一路径无限循环 → 看门狗 10–12s UNREACHABLE。
+
+- **补丁**（`patches/mineflayer-pathfinder@2.4.5.patch` 新增 `lib/movements.js` hunk）：对角线两侧角线的脚/头格必须 safe，否则拒绝该对角线——计划/执行的合法性不再依赖贴边滑移的脆弱机制（S2 诚实性）。平原地形角格全空不受影响；山地地形柱旁实体角格是此前触发条件。
+- **上一会话遗留补丁入库（批26 审查轮定稿）**：`patches/prismarine-physics@1.11.1.patch`（`WALL_GAP=1e-5`——Paper 1.21.11 静默拒绝恰好贴面位置，未打补丁时墙面滑动/台阶面/1 宽挤压全部被服务端回弹钉死，即探针观察到的楔死机制）与 `patches/prismarine-item@1.18.0.patch`（1.20.5+ 附魔组件形状归一化，digTime/getEnchantmentLevel 消费者）随 patch-commit 正式进入 workspace/lockfile。pathfinder 补丁文件在编辑目录重建时被 pnpm 重新生成为 **589 行完整描述**——除 G21/G25 hunk 外完整收录了此前只存在于安装包中的规划器强化包（搜索分块缓存、门/水语义、显式拒绝放置黑名单、goto noPath 诚实拒绝、附魔组件兼容、栅栏门 toPlace 穷尽守卫、equip 拒绝释放锁）；审查轮以 pristine+patch 重建并逐文件 diff 验证与安装包**零分歧**（此前 193 行旧版与安装状态不一致，干净重装会丢失约 150 行未入库改动）。全部 T2 验收在最终补丁集上执行。
+- **遗留草稿登记**：`patches/mineflayer@4.39.0.patch`（挖方服务端确认 + 放置拒绝标记）未接线未应用，留待 M1 工作包决策；见 patches/README.md。
+- **适配层收敛**：`driver/mineflayer/pathfinder.ts` 三处 Movements 字段赋值（configureMovements/planPath/planEscape）收敛为 `applyMovementsConfig` 唯一口径；planEscape 保持原语义（不挖不垫、sprint 构造器默认、maxDropDown=1）。
+- 验收：真服 `dev:mc:terrain-nav` **6/6**——山地 lane 绕柱三次独立 **2015/2100/2010ms 实际到达**（基线 12.1s 零位移 UNREACHABLE），树绕行 7.1→4.5s、digThrough 9.6→5.1s、explore 25→32 格；`dev:mc:climb` **6/6**（三级阶梯 7318→4606ms，G21/G24 场景不变）；全仓 vitest **3231 项通过**（其中 tests/mc 94 文件 832 项；2 失败为 tts httpx 环境缺失 + map EPERM 竞争抖动，隔离均绿，与本改动无关）；`pnpm typecheck` 通过。诊断方法：临时 trace 场景挂上游 path_update/path_reset 原始事件 + 200ms 控制采样（用后已删）。
+- **残余登记**：24 格自然穿越在目标位于山头时 A* 5s think budget 搜不完（5.8 万节点后 Timeout 诚实拒绝；此前已实际走完 ~26 格山地）——**搜索加速属 M2 性能工作项**（Cortico pathfinder-perf 对照领域），非正确性缺陷；known-gaps G25 关闭条目中保留证据。
+
 ## 2026-11-05 · 批25 多世界自治 v3 第一阶段（M1 数据根 + M2 长驻 World 连接控制 + M3.1 离线资料）
 
 《多世界自治设计 v3》全文入库为 [multi-world-v3.md](multi-world-v3.md)（即批24 点名的方案 02 施工合同；本文记录落地事实与偏差，现行合同以 public-api 批25 实现说明与 modules/executor.md §3/§7 为准）。

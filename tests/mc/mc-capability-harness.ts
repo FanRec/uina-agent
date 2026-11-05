@@ -166,6 +166,8 @@ export interface HarnessHooks {
 	onDrive?: (ticks: number, selfState: SelfState) => void;
 	/** 导航替身：测试可在里面模拟"走到之后世界发生了什么"（例如顺手捡起）。 */
 	onGoto?: (request: { at: { x: number; y: number; z: number }; tolerance: number }) => void;
+	/** goto 替身抛出的失败（如逃跑腿被围死）；设置后 goto 不再位移，直接抛出。 */
+	gotoFailure?: () => unknown;
 	/**
 	 * self 读回前的一次回调：服务端在"条件满足的当下"改变身体状态时用（例如站在点亮的
 	 * 门里被传送——这不是任何动作的后果，所以不该挂在 drive/interact 上）。
@@ -487,6 +489,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		gotoDirector: {
 			async goto(request: { at: { x: number; y: number; z: number }; tolerance: number }) {
 				calls.push(`goto:${key(request.at)}`);
+				if (hooks.gotoFailure != null) throw hooks.gotoFailure();
 				hooks.onGoto?.(request);
 				// 到位：后续动作读到的 self 必须反映"走过去了"，否则射程判定会假失败。
 				selfState.place = { ...selfState.place, position: { x: request.at.x, y: request.at.y, z: request.at.z } };
