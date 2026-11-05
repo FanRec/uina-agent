@@ -45,7 +45,8 @@
 
 ```mermaid
 flowchart LR
-  A[Uina 主脑] --> E[Executor]
+  A[Uina 主脑] --> SS[SessionController 会话层]
+  SS --> E[Executor]
   E --> R[Runtime]
   R --> C[原生动作与 Program]
   C --> D[Driver]
@@ -59,17 +60,18 @@ flowchart LR
 
 | 所有者 | 职责 |
 |---|---|
+| 会话层（SessionController） | 连接/断开/切换、Profile 身份与数据根、串行管理操作（批25） |
 | Executor | Uina 接入、伴生进程、IPC、请求凭证与结果交付 |
 | Runtime | 受理、调用、唯一身体队列、停止、决策续段和执行记录 |
 | Driver | 唯一客户端当前状态、实际输入、操作资源与控制隔离 |
 | World | 观察查询、历史、Watch、证据与领域记录 |
 | Program | 普通 JS、宿主桥、源码固定、guest/worker 及退役 |
-| Library | 程序/蓝图/经验的工作文件、元数据、CRUD 与发现 |
+| Library | 程序/蓝图/经验的工作文件、元数据、CRUD 与发现（批25 起宿主常驻唯一写入口） |
 | 领域模块 | 导航、物品、制作、战斗、施工等算法与目标核验 |
 
 ### 2.3 进程与 Uina 边界
 
-Executor 在 Uina 侧管理一个 Node 伴生进程。Driver、Runtime、World、Library 与原生能力在执行侧装配，Program 使用共享 worker/独立 QuickJS guest；各持久存储有自己的 I/O 路径。模型往返不参与物理闭环。
+World activation 常驻但不打开 Bot；SessionController 经 `session` 工具动作按会话创建/退役 Executor。Executor 在 Uina 侧同一时刻至多管理一个 Node 伴生进程。Driver、Runtime、World、Library 与原生能力在执行侧装配，Program 使用共享 worker/独立 QuickJS guest；各持久存储有自己的 I/O 路径。模型往返不参与物理闭环。
 
 Uina Core/Host 继续拥有 Subject、工具执行、会话和主体生命周期。Minecraft 不向 Core 引入游戏任务/地图概念。进程监管只由 Executor 负责，见 [Executor](modules/executor.md)。
 
@@ -204,20 +206,21 @@ Driver 提供实际派发及协议/预测依据，能力核验声明目标，Run
 
 ### 8.1 所有权
 
-当前客户端事实归 Driver；空间/容器历史、地点、事故和工程记录归 World；调用和效果归 Runtime；工作文件归 Library。实体/窗口活引用不跨连接复活，历史地点保留 world/worldRevision/dimension。地址与离线名字不自动证明持久世界身份。
+当前客户端事实归 Driver；空间/容器历史、地点、事故和工程记录归 World；调用和效果归 Runtime；工作文件归 Library；会话状态与 Profile 身份归 SessionController（identity.json 不可变、observed.json 可更新、settings.json 可手编，都是普通文件）。实体/窗口活引用不跨连接复活，历史地点保留 world/worldRevision/dimension。地址与离线名字不自动证明持久世界身份。
 
 ### 8.2 存储位置
 
-数据根沿用 Host 提供的 worldDataDir，不另配路径。
+数据根沿用 Host 提供的 worldDataDir（稳定 MC 根），不另配路径。批25 起分双根：Profile 专属数据在 `sessions/<profileId>/`，跨 Profile 共享件留在根上。
 
 | 路径 | 所有者 |
 |---|---|
-| programs/、blueprints/、experiences/ | Library 工作文件 |
-| runs/<run>/sources/<sha256>.js | Runtime 记录所用执行快照，由 Program 写入 |
-| runtime.db | Runtime 受理、执行与结算 |
-| world-history.db | World 历史、领域记录与证据 |
-| exports/<sha256>.json | Runtime 按需导出的可再生读取缓存 |
-| executor.db | Uina 侧接入身份、请求凭证和交付尝试 |
+| settings.json、sessions/*/identity.json、sessions/*/observed.json | 会话层普通文件 |
+| library/ 下的 programs/、blueprints/、experiences/ | Library 工作文件（宿主常驻唯一写入口） |
+| sessions/<profileId>/runs/<run>/sources/<sha256>.js | Runtime 记录所用执行快照，由 Program 写入 |
+| sessions/<profileId>/runtime.db | Runtime 受理、执行与结算 |
+| world-history.db | World 历史、领域记录与证据（跨 Profile 共享，分区含 binding/world/worldRevision） |
+| sessions/<profileId>/exports/<sha256>.json | Runtime 按需导出的可再生读取缓存 |
+| sessions/<profileId>/executor.db | Uina 侧接入身份、请求凭证和交付尝试 |
 
 各存储互不代写，不合成跨库事务。恢复与故障边界分别见所属模块。
 
@@ -239,6 +242,7 @@ Library 是普通文件库，没有发布、包管理或依赖锁。程序头的
 
 | 场景 | 应有体验 |
 |---|---|
+| 进入与切换（批25） | `session.connect` 给 host/离线名或别名 → ready 才报 connected（登录身份可核实）→ disconnect/换目标安全退役旧执行域；同 Profile 重访复用，Profile 身份与 Run 历史可离线查询；不自动入服、不自动切回 |
 | 基础生存 | 查材料/配方 → 采集/制作 → 不足看具体差额和错误，不从零重做 |
 | 熔炼并行 | 投料核验后释放自有身体 → 其他任务使用身体 → 重新申请并开炉验产物；祖先委托则保留身体 |
 | 建造与修复 | 同一目标先计划、再按现场差异执行；缺料保留部分量，改设计重算，不沿用旧完成量跳格 |

@@ -1,6 +1,6 @@
 # Minecraft World：所有权与协作
 
-日期：2026-10-18。状态：设计导航；原生能力与批 4–6 已接通；Program 执行、批 8 Library、等待/决策与完整 I2 已实现（批 9A/9B），能力面 51/51（批19）。
+日期：2026-10-18（2026-11-06 批25 同步）。状态：设计导航；原生能力与批 4–6 已接通；Program 执行、批 8 Library、等待/决策与完整 I2 已实现（批 9A/9B），能力面 51/51（批19），会话层/双根数据目录/宿主 Library（批25，设计合同 [multi-world-v3](multi-world-v3.md)）。
 
 本文只列模块边界和跨模块流程。行为合同由所属模块唯一维护，跨模块类型见 [public-api](public-api.md)；本文件不另定义受理、停止、等待或结算算法。
 
@@ -10,6 +10,7 @@
 
 | 问题 | 唯一正文 |
 |---|---|
+| 会话生命周期（session 动作、连接/切换、Profile 身份、双根数据目录、settings/identity/observed 文件） | [multi-world-v3](multi-world-v3.md) §3–§8；落地合同见 [Executor](modules/executor.md) §3/§7 与 [public-api](public-api.md) 批25 说明 |
 | façade、接入凭证、IPC、进程监管、Host 投递 | [Executor](modules/executor.md) |
 | Run/Segment/Call/Effect、受理、身体调度、停止与结算 | [Runtime](modules/runtime.md) |
 | JS、guest API、源码固定、共享 worker 与退役 | [Program](modules/program.md) |
@@ -27,13 +28,14 @@
 
 | 模块 | 可使用 | 唯一拥有 | 不穿透 |
 |---|---|---|---|
-| Executor | Runtime 客户端、World/目录/Library、Host 回执、OS 进程句柄 | executor.db、传输与通知尝试 | Runtime 表、游戏算法、Bot |
-| Runtime | 动作描述/实现、Program、Driver、World、只读库材料 | runtime.db、身体队列与调用身份 | Host/UI、具体玩法内部 |
-| Program | 注入的宿主桥、只读库加载、快照文件 | guest/worker、段内名字固定与执行源码 | Bot、Runtime 表、库 CRUD |
+| 会话层（SessionController/宿主常驻） | Executor/Facade 公开端口、静态 Catalog、共享 Library | 会话状态、settings.json、identity.json/observed.json；library/ 的唯一写入口（伴生只读） | Executor/伴生内部、Runtime 表、游戏算法 |
+| Executor | Runtime 客户端、World/目录/Library、Host 回执、OS 进程句柄 | `sessions/<profileId>/executor.db`、传输与通知尝试 | Runtime 表、游戏算法、Bot |
+| Runtime | 动作描述/实现、Program、Driver、World、只读库材料 | `sessions/<profileId>/runtime.db`、身体队列与调用身份 | Host/UI、具体玩法内部 |
+| Program | 注入的宿主桥、只读库加载、快照文件 | guest/worker、段内名字固定与执行源码（快照在 `sessions/<profileId>/runs/`） | Bot、Runtime 表、库 CRUD |
 | 能力 | 当前调用上下文、World、Driver、明确使用的其他能力 | 领域算法、目标核验与进度含义 | 原始 Bot、顶层受理队列、其他模块表 |
 | Driver | 客户端依赖、调用核验与效果 sink、纯采样函数 | 客户端当前状态、有效资格与操作资源 | 业务队列、历史与工程算法 |
-| World | Driver 事实、查询/领域定义、自己的存储 | world-history.db、Watch 与证据保留 | 主动开箱/移动、Runtime 表 |
-| Library | 文件、compile-only、确切调用快照读取 | programs/blueprints/experiences | 运行结论、身体控制、数据库表 |
+| World | Driver 事实、查询/领域定义、自己的存储 | world-history.db（共享根）、Watch 与证据保留 | 主动开箱/移动、Runtime 表 |
+| Library | 文件、compile-only、确切调用快照读取 | programs/blueprints/experiences（共享根 `library/`；写入口在宿主常驻层） | 运行结论、身体控制、数据库表 |
 | 组合根 | 各公开端口及实现 | 静态装配与可信注入 | 不向模块泄漏全局容器 |
 
 Runtime 的事务不覆盖 Library 文件或 World 存储。工作文件、执行快照和服务端事实各按其所有者的边界固定，不声称跨库/跨服务器原子。
