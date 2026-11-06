@@ -2,9 +2,7 @@
 import type { CapabilityCatalog } from "../capabilities/catalog.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
-import { plain } from "../contracts/values.js";
 import { RpcError } from "../executor/ipc.js";
-import { canonicalJson, sha256Hex } from "../runtime/rows.js";
 
 export interface DescribeParams {
 	query?: string;
@@ -20,14 +18,6 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 		callable: d.access === "act",
 		descriptor: d,
 		availability: { state: "unknown", reasons: ["availability depends on current connection and input"] },
-		...(d.access === "act" ? { digest: sha256Hex(canonicalJson(plain(d))) } : {}),
-		toolExamples: d.examples.map((e) => ({
-			action: d.access === "act" ? "run" : "observe",
-			params: { selector: d.ref, input: e.input },
-		})),
-		programExamples: d.examples.map(
-			(e) => `await mc.${d.access === "act" ? "call" : "read"}(${JSON.stringify(d.ref)}, ${JSON.stringify(e.input)});`,
-		),
 	});
 	const exact = params.selector ?? params.name;
 	if (exact !== undefined) {
@@ -91,7 +81,9 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 					count: entries.filter((e) => e.kind === kind).length,
 				})),
 			],
-			nextCall: { action: "describe", params: { query: "" } },
+			// 一次给全名：模型的 selector 是确切 ref，没有名字就只能盲搜。
+			reads: descriptors.filter((d) => d.access === "read").map((d) => d.ref),
+			acts: descriptors.filter((d) => d.access === "act").map((d) => d.ref),
 		};
 	const candidates: SearchSummary[] = [
 		...descriptors.map((d) => ({
@@ -129,8 +121,11 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 		.sort((a, b) => score(a) - score(b) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
 	const offset = Number(params.cursor ?? 0);
 	if (!Number.isSafeInteger(offset)) throw new RpcError("CURSOR_INVALID", "invalid catalogue cursor");
+	const page = found.slice(offset, offset + 10);
 	return {
-		items: found.slice(offset, offset + 10),
+		items: page,
 		...(found.length > offset + 10 ? { next: String(offset + 10) } : {}),
+		// 空结果不说"没找到"，直接给下一步：模型不会反复换关键词试探。
+		...(page.length === 0 ? { hint: "no match; describe {} lists all capability refs" } : {}),
 	};
 }

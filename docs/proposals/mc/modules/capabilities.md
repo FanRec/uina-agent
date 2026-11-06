@@ -281,7 +281,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### inventory · `inventory@1`
 - 输入 `{}`（全量）或 `{ since: revision }`（**批20 起增量**，G7）
-- 全量返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`
+- 全量返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`；物品项值为 null 的字段省略（不写占位）
 - 增量（`since` = 上次读到的 `revision`）：revision 更新时返回 `{ revision, changes:[{ slot, item|null }], counts, usedSlots, freeSlots, selectedSlot }`——`changes` 是"自 since 起被写过"的槽位及其**当前内容**（item null = 已空），合并中间态不重放；`counts/usedSlots/freeSlots` 恒为变化后总数。同游标回 `changes:[]`。不含 slots/layout/gear。
 - 失败面：`since` 超前当前 revision（含跨进程重启后 revision 归零）→ `INVALID_INPUT`（hint：重读全量）；槽位标记不可用 → 退回全量并在 unknown 如实标注，不冒充差量。
 - slots 使用当前库存窗口实际编号，另给 layout.regions；常见 Java 库存窗口为合成 0..4、护甲 5..8、背包 9..35、快捷栏 36..44、副手 45。quickBarSlot 的 0..8 只是快捷栏选择索引，不能拿来 click。版本实际布局以返回 regions 为准，物品项保留 components/durability。
@@ -927,7 +927,7 @@ async function main(mc, input) {
 
 ## 8. `describe` 的输出
 
-`mc describe` 无参数返回家族概览；query 搜索覆盖能力、程序、蓝图与经验，候选标 kind/callable，具体排序与数量上限由 Library §8 定义。查询能力用 read，动作/程序用 call，蓝图/经验供读取。
+`mc describe` 无参数返回家族概览与 `reads`/`acts` 两组能力 ref（确切名字清单，一次拿全）；query 搜索覆盖能力、程序、蓝图与经验，候选标 kind/callable，具体排序与数量上限由 Library §8 定义。查询能力用 read，动作/程序用 call，蓝图/经验供读取。
 
 `mc describe collect` 返回单条契约，下列六项齐全，另包含 kind/callable/availability；候选和详情都取同一 descriptor：
 

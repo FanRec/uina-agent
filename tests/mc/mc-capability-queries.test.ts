@@ -162,19 +162,12 @@ describe("self@1", () => {
 			armor: Record<string, { name: string }>;
 			health: number | null;
 		}>;
-		expect(result.value.held).toMatchObject({
-			name: "oak_log",
-			count: 8,
-			stackSize: 64,
-			durability: null,
-			components: null,
-		});
-		expect(result.value.armor.head).toMatchObject({
-			name: "diamond_helmet",
-			count: 1,
-			components: null,
-			durability: 20,
-		});
+		expect(result.value.held).toMatchObject({ name: "oak_log", count: 8, stackSize: 64 });
+		// 值为 null 的字段省略；非 null 的耐久仍是可核实事实。
+		expect(result.value.held).not.toHaveProperty("durability");
+		expect(result.value.held).not.toHaveProperty("components");
+		expect(result.value.armor.head).toMatchObject({ name: "diamond_helmet", count: 1, durability: 20 });
+		expect(result.value.armor.head).not.toHaveProperty("components");
 		expect(result.value.armor.chest).toBeUndefined();
 		expect(result.unknown.some((entry) => entry.includes("not captured"))).toBe(false);
 		expect(result.value.health).toBe(18);
@@ -189,12 +182,17 @@ describe("inventory@1", () => {
 			counts: Record<string, number>;
 			usedSlots: number;
 			freeSlots: number;
-			slots: { slot: number }[];
+			slots: ({ slot: number } & Record<string, unknown>)[];
 		}>;
 		expect(result.value.counts).toEqual({ diamond_helmet: 1, oak_log: 12, apple: 2 });
 		expect(result.value.usedSlots).toBe(3);
 		expect(result.value.freeSlots).toBe(33);
 		expect(result.value.slots.map((slot) => slot.slot)).toEqual([5, 36, 37, 38]);
+		// 每槽固定占位的 null 字段省略；耐久有值就保留。
+		expect(result.value.slots[0]).toMatchObject({ slot: 5, name: "diamond_helmet", durability: 20 });
+		expect(result.value.slots[0]).not.toHaveProperty("components");
+		expect(result.value.slots[1]).not.toHaveProperty("durability");
+		expect(result.value.slots[1]).not.toHaveProperty("components");
 	});
 
 	test("{since} 相同游标回 changes:[] 与变化后总数，不回全量 slots", () => {

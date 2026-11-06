@@ -14,7 +14,19 @@ import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog
 import { factOf } from "../shared/facts.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 
-type SlotItem = ItemValue;
+type SlotItem = Record<string, JsonValue>;
+
+/**
+ * 省略值为 null 的字段：stackSize/components/durability 在大多数槽位上都是 null，
+ * 每个槽固定占位是纯噪音。非 null 原样保留（耐久、组件仍是可核实事实）。
+ */
+function compactItem(item: ItemValue): SlotItem {
+	const out: SlotItem = { name: item.name, count: item.count };
+	if (item.stackSize != null) out.stackSize = item.stackSize;
+	if (item.components != null) out.components = item.components;
+	if (item.durability != null) out.durability = item.durability;
+	return out;
+}
 
 export interface GearView {
 	held?: SlotItem;
@@ -26,7 +38,7 @@ function gearOf(inventory: ClientInventoryValue): GearView {
 	const slotItem = (index: number): SlotItem | undefined => {
 		const slot = inventory.slots.find((entry) => entry.slot === index);
 		const item = slot?.item;
-		return item == null ? undefined : { ...item };
+		return item == null ? undefined : compactItem(item);
 	};
 	const selected = inventory.selectedSlot;
 	const held = selected == null ? undefined : slotItem(36 + selected);
@@ -124,8 +136,8 @@ function fullInventoryFact(
 	summary: { counts: Record<string, number>; usedSlots: number; freeSlots: number },
 	extraUnknown: string[],
 ): Fact<unknown> {
-	const slots: (ItemValue & { slot: number })[] = [];
-	for (const slot of value.slots) if (slot.item != null) slots.push({ slot: slot.slot, ...slot.item });
+	const slots: (SlotItem & { slot: number })[] = [];
+	for (const slot of value.slots) if (slot.item != null) slots.push({ slot: slot.slot, ...compactItem(slot.item) });
 	return factOf(
 		{
 			revision: value.revision,

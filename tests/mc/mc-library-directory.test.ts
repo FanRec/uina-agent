@@ -42,5 +42,19 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 		availability: { state: "unavailable" },
 		program: { headerError: expect.any(String) },
 	});
-	expect(await describeDirectory(catalog, library, {})).toMatchObject({ families: expect.any(Array) });
+	// 无参概览：家族计数保留，另给确切 ref 清单（模型的 selector 只能靠名字），不再中转一次 nextCall。
+	const overview = (await describeDirectory(catalog, library, {})) as {
+		families: { kind: string; count: number }[];
+		reads: string[];
+		acts: string[];
+	};
+	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 0 }]));
+	expect(overview.reads).toEqual([]);
+	expect(overview.acts).toEqual([]);
+	expect(overview).not.toHaveProperty("next");
+	// 空结果给下一步，而不是让模型换关键词反复试探。
+	expect(await describeDirectory(catalog, library, { query: "no-such-capability" })).toMatchObject({
+		items: [],
+		hint: expect.any(String),
+	});
 });

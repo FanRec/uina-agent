@@ -276,17 +276,26 @@ export class MinecraftFacade {
 			this.delivery.heldRequests.delete(requestId);
 		}
 	}
+	/**
+	 * `runs.status`（无 run）的模型出口：内部 status 带最多 64KB 执行侧日志尾，
+	 * 只有排障时才需要。ready 且无 fault 时省略 tail；否则只给末 2000 字符。
+	 */
+	private async platformStatus(): Promise<Record<string, unknown>> {
+		const status = this.executor.status();
+		const full = status.phase === "ready" ? await this.executor.inspect() : status;
+		const { tail, ...diagnostics } = full.diagnostics;
+		const delivery = this.delivery.diagnostics();
+		return {
+			...full,
+			diagnostics:
+				full.phase === "ready" && full.fault == null ? diagnostics : { ...diagnostics, tail: tail.slice(-2000) },
+			delivery: { pendingCount: delivery.pendingCount, error: delivery.error },
+		};
+	}
 	private async runs(p: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
 		switch (p.op) {
 			case "status":
-				return response(
-					p.run
-						? await this.executor.read(p.run as string)
-						: {
-								...(this.executor.status().phase === "ready" ? await this.executor.inspect() : this.executor.status()),
-								delivery: this.delivery.diagnostics(),
-							},
-				);
+				return response(p.run ? await this.executor.read(p.run as string) : await this.platformStatus());
 			case "list":
 				return response(
 					await this.executor.rpc(
