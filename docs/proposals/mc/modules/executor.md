@@ -73,10 +73,10 @@
 |---|---|---|
 | observe | `{selector,input?}`；缺省 input=`{}`，只允许查询目录中的 read 入口 | 原样保留 Observation 的 value、version、范围、来源、时间和 unknown |
 | describe | `{query,cursor?}` 检索（空参数或仅 cursor 读取家族目录）；或 `{selector}` 精确能力/程序；或 `{kind,name}` 精确条目，三者互斥 | 同一目录的候选或完整说明，附工具/程序调用形状和声明的示例 |
-| run | 下列 Run 参数 → Runtime.submit | RunReply 的受理、固定结果或受理未知 |
+| run | 下列 Run 参数 → Runtime.submit | 受理、固定结果的展示投影或受理未知 |
 | runs | 下列 Runs 参数 → 运行读取、控制或接入恢复 | 对应事实及必要 nextCall；普通查询不消费通知 |
 | library | [Library §5](library.md) 的统一请求 | 文件事实、摘要、路径或明确错误；不创建 Run、不自动重试写入；写入派发后回执未知时保留 unknown，给 get 读回而非重试写入 |
-| chat | `{text}` → 与 `run({selector:"chat@1",input:{text}})` 相同的受理路径；首字符 `/` 是服务器指令 | 相同 RunReply；不申请身体；发送完成不认证指令生效，领域合同见 [chat@1](capabilities.md#chat) |
+| chat | `{text}` → 与 `run({selector:"chat@1",input:{text}})` 相同的受理路径；首字符 `/` 是服务器指令 | 相同受理与展示投影；不申请身体；发送完成不认证指令生效，领域合同见 [chat@1](capabilities.md#chat) |
 
 observe 使用与 `mc.read` 相同的查询分派、参数校验和只读限制，生命周期属于本次查询，不创建持久 Run。不能借 observe 调用 `access=read` 但不属于查询目录的普通程序，也不能暗中移动、开箱。保存程序仍通过 run 调用。
 

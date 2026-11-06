@@ -180,7 +180,7 @@ interface BodyCallScope extends CallContext { readonly player: BodyOps }
 
 动作使用 NativeCallable；查询只使用 QueryDescriptor 与 World 查询定义，静态知识/计划是 watchable=false 的查询。组合根校验所有确切 ref 唯一、schema、支持条件和示例，目录由同一声明生成。Program 使用 Library 的可选契约，不伪造完整原生 descriptor。
 
-目录统一发现能力、程序、蓝图与经验。search 只给候选摘要；describe 给合同、路径与完整调用示例，不默认搬运源码。匹配和排序见 [Library §8](modules/library.md#8-发现)。查询 callable=false 使用 read；动作/程序 callable=true 使用 call。
+目录统一发现能力、程序、蓝图与经验。search 只给候选摘要；describe 给合同与路径，示例只有 descriptor 里的输入/输出对（不另生成调用串，也不默认搬运源码）；无参数调用一次给出 `reads`/`acts` 两组能力 ref。匹配和排序见 [Library §8](modules/library.md#8-发现)。查询 callable=false 使用 read；动作/程序 callable=true 使用 call。
 
 Runtime 的 [调用与身体合同](modules/runtime.md#body) 唯一规定子 Call、权限交集、可信来源、身体委托和退出清理。参数由调用者显式传递，内部 call 不 submit 子 Run；read 上下文不装配写代理，捕获旧 act 代理也不能升级权限。受信任原生实现绕过公开端口的 OS 行为不在隔离承诺内。
 
@@ -740,6 +740,10 @@ type CompletionView =
   | (Extract<CompletionHeader, {reportKind: "decision"}> & {
       content: CompletionContent<Extract<CompletionReport, {reportKind: "decision"}>>});
 type RunReply = Acceptance | ({kind: "result"} & CompletionView);
+// RunReply 是 Runtime 侧的语义形状。模型实际收到的是按 phase 收窄的展示投影：
+// finished 给 outcome/progress/value/error/unknownEffects，awaiting_decision 给
+// decision/reason/progress；正文读不到时给 detail=record|unavailable 与截断标志；
+// 结构化原件仍在工具 details 与事件 data，两者不互相推导。
 type DeliveryDisposition = "pending" | "committed";
 interface DeliveryState {
   delivery: CompletionHeader; disposition: DeliveryDisposition; // 有界投影；完整正文按 completionRef 读

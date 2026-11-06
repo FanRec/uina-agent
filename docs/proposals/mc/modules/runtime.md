@@ -262,7 +262,7 @@ pendingDeliveries 只按 [public-api §7](../public-api.md) 分页返回 pending
 
 settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。两种交付渠道复用同一回执类型；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
 
-submit/continue 的受理在执行侧完成，ExecutorClient 的 Uina 侧适配再组织短窗口，返回带 CompletionView 的 RunReply；等待取消不取消已受理 Run。窗口选择、Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
+submit/continue 的受理在执行侧完成，ExecutorClient 的 Uina 侧适配再组织短窗口：工具 result 给按 phase 收窄的展示投影（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），details 给完整 CompletionView；两者不互相推导。等待取消不取消已受理 Run。窗口选择、Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
 
 Run 等待与请求重试不共享一个取消域。wait 默认忽略普通进度，等 finished/awaiting_decision；已有报告立即返回。显式 afterRevision 等一次变化，未来修订拒绝，finished 始终立即返回；超时返回 timeout，不制造 revision，也不取消 Run。小型 CompletionHeader 与正文可用性分开：content=unavailable 不改原 outcome；通知允许交付真实 header 后按 HostCommitReceipt ACK，完整材料故障不能阻塞其他报告。
 

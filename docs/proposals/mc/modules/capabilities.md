@@ -281,7 +281,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### inventory · `inventory@1`
 - 输入 `{}`（全量）或 `{ since: revision }`（**批20 起增量**，G7）
-- 全量返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`；物品项值为 null 的字段省略（不写占位）
+- 全量返回 `{ slots:[{ slot, name, count, stackSize?, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`；物品项值为 null 的字段省略（不写占位）
 - 增量（`since` = 上次读到的 `revision`）：revision 更新时返回 `{ revision, changes:[{ slot, item|null }], counts, usedSlots, freeSlots, selectedSlot }`——`changes` 是"自 since 起被写过"的槽位及其**当前内容**（item null = 已空），合并中间态不重放；`counts/usedSlots/freeSlots` 恒为变化后总数。同游标回 `changes:[]`。不含 slots/layout/gear。
 - 失败面：`since` 超前当前 revision（含跨进程重启后 revision 归零）→ `INVALID_INPUT`（hint：重读全量）；槽位标记不可用 → 退回全量并在 unknown 如实标注，不冒充差量。
 - slots 使用当前库存窗口实际编号，另给 layout.regions；常见 Java 库存窗口为合成 0..4、护甲 5..8、背包 9..35、快捷栏 36..44、副手 45。quickBarSlot 的 0..8 只是快捷栏选择索引，不能拿来 click。版本实际布局以返回 regions 为准，物品项保留 components/durability。
@@ -937,7 +937,7 @@ collect@1  kind:capability · callable:true · act · P0
 输入 { item: Name, count?: 1..1024 = 1, radius?: 4..64 = 32, digThrough?: false, tool?: Name|ItemSelector }
 返回 {mined, acquired, collected:{item:n}, remaining:0, toolsUsed}；不足抛错并携带同名 progress
 失败 NOT_FOUND | MISSING_TOOL | INVENTORY_FULL | UNREACHABLE | TIMEOUT | INTERRUPTED
-例 await mc.call("collect@1", {item:"oak_log",count:8}); → {mined:8,acquired:8,collected:{oak_log:8},remaining:0,toolsUsed:[]}
+例（descriptor.examples 的 input/output 对）{input: {item:"oak_log",count:8}} → {mined:8,acquired:8,collected:{oak_log:8},remaining:0,toolsUsed:[]}
 ```
 
 ## 9. 与三份参考实现的取舍
