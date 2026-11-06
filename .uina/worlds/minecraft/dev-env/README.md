@@ -32,6 +32,9 @@ pwsh -File dev-env/start-server.ps1
 pwsh -File dev-env/reset-server.ps1
 ```
 
+start-server.ps1 为 UTF-8 带 BOM：Windows PowerShell 5.1 按无 BOM 的 ANSI 解析中文注释会报
+语法错误（批20 实测），编辑此文件后必须保留 BOM。
+
 首次启动流程：`start-server.ps1` 首跑生成 `eula.txt` 与 `server.properties` →
 自动写入 `eula=true`、`online-mode=false` → 需要重启一次服务端生效。
 场景准备与结果断言属于验证代码，放在 `tests/` 或验证脚本，不进入本目录。

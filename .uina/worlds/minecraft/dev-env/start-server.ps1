@@ -1,4 +1,4 @@
-# 启动本地 Paper 1.21.11 offline 服务端（dev-env/server/）。
+﻿# 启动本地 Paper 1.21.11 offline 服务端（dev-env/server/）。
 # 首次运行生成 eula.txt / server.properties 后自动改写，再提示需要重启。
 param(
 	[int]$Port = 25565
