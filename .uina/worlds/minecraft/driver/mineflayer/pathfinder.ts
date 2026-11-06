@@ -41,6 +41,7 @@ interface PathfinderMovements {
 	allowSprinting: boolean;
 	canDig: boolean;
 	allow1by1towers: boolean;
+	canOpenDoors: boolean;
 	scafoldingBlocks: number[];
 }
 
@@ -97,6 +98,9 @@ function applyMovementsConfig(
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
 	movements.allowParkour = false;
+	// 上游默认关（闭门 useOne 会再"用一下"把开着的门关上）；补丁已修为仅闭门
+	// 生成 useOne 且执行器核验开门事实，开启门穿越能力（N04）。
+	movements.canOpenDoors = true;
 	movements.scafoldingBlocks = config.placeToReach
 		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
 		: [];

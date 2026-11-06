@@ -256,16 +256,19 @@ export class GotoDirector {
 					});
 				}
 				const at = fromMineflayerVec3(bot.entity.position) ?? request.at;
-				// 上游 goto 在"空路径"时也会 resolve（lib/goto.js 的 noPathListener 先判
-				// path.length===0 再判 status，noPath 的空路径被当成正常结束）。
-				// 完成必须是 GoalNear 真实成立：这里按实际站位复核，不把 resolve 当到达。
+				// 到达精度权威归 Uina，不删此复核。上游 lib/goto.js 的空路径假成功已
+				// 补丁修复（noPath/timeout 空路径现按错误名拒绝），但 goal_reached 还有
+				// isEnd(p.floored().offset(0,1,0)) 分支：站在半砖/楼梯上时 floored 比目标
+				// 低 2 格也会被判到达——GoalNear 的 +1 容忍与 nodeGap 口径不等价（已知
+				// 语义差）。nodeGap 更严，符合 goto@1 的站位合同；若真服出现误拒再裁决放宽。
+				// 同时保留对上游回归的防线。
 				const gap = Math.hypot(at.x - request.at.x, at.y - request.at.y, at.z - request.at.z);
 				if (nodeGap(at, request.at) > request.tolerance) {
 					throw fail({
 						code: "UNREACHABLE",
 						source: "world",
 						message: `pathfinder stopped ${gap.toFixed(2)} blocks from the goal without a route`,
-						hint: "the upstream goto resolves on an empty path; retry with a nearer target or digThrough",
+						hint: "retry with a nearer target or digThrough",
 						dispatch: "sent",
 						progress: plain({ ticks, at, target: request.at, gap }) as never,
 						effects: [eff],

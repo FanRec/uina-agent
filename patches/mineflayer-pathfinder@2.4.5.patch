@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6a045f3c2 100644
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569fb2e0815c 100644
 --- a/index.js
 +++ b/index.js
 @@ -9,7 +9,6 @@ const Lock = require('./lib/lock')
@@ -33,7 +33,25 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
        const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
        if (digTime < fastest) {
          fastest = digTime
-@@ -518,12 +524,34 @@ function inject (bot) {
+@@ -168,9 +174,15 @@ function inject (bot) {
+   function postProcessPath (path) {
+     for (let i = 0; i < path.length; i++) {
+       const curPoint = path[i]
+-      if (curPoint.toBreak.length > 0 || curPoint.toPlace.length > 0) break
++      // A door/gate "use" node is not a world-modifying placement: snapping it
++      // (and the nodes after it) to cell centers keeps the executor on the
++      // passable line. Breaking here left the whole tail at raw integer block
++      // coordinates, so the bot walked into block corners — through an open
++      // door it grazed the swung-out panel and pinned against the wall.
++      const useOneOnly = curPoint.toBreak.length === 0 && curPoint.toPlace.length > 0 && curPoint.toPlace.every(p => p.useOne)
++      if (!useOneOnly && (curPoint.toBreak.length > 0 || curPoint.toPlace.length > 0)) break
+       const b = bot.blockAt(new Vec3(curPoint.x, curPoint.y, curPoint.z))
+-      if (b && (b.type === waterType || ((b.type === ladderId || b.type === vineId) && i + 1 < path.length && path[i + 1].y < curPoint.y))) {
++      if (b && (b.type === waterType || useOneOnly || ((b.type === ladderId || b.type === vineId) && i + 1 < path.length && path[i + 1].y < curPoint.y))) {
+         curPoint.x = Math.floor(curPoint.x) + 0.5
+         curPoint.y = Math.floor(curPoint.y)
+         curPoint.z = Math.floor(curPoint.z) + 0.5
+@@ -518,12 +530,57 @@ function inject (bot) {
          fullStop()
        }
  
@@ -53,25 +71,48 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
 -          lockUseBlock.release()
 -          placingBlock = nextPoint.toPlace.shift()
 +        const doorPos = new Vec3(placingBlock.x, placingBlock.y, placingBlock.z)
-+        bot.activateBlock(bot.blockAt(doorPos)).then(() => {
-+          // Activation is open-loop (the packet is sent, nothing verified):
-+          // give the server a moment, then confirm the door actually opened.
-+          // Holding the lock across the window also keeps this branch from
-+          // re-activating every tick (which would close it again). Not open
-+          // after the wait is a failed step, not progress — re-plan.
-+          setTimeout(() => {
-+            const door = bot.blockAt(doorPos, false)
-+            lockUseBlock.release()
-+            if (door?.getProperties?.().open !== true) {
-+              resetPath('door_error')
++        // The interaction face must match the side the bot is on: modern
++        // servers validate the packet face against the player's line of sight,
++        // and activateBlock's default (up) gets silently rejected for a wall
++        // door the bot faces head-on. Send the face pointing back at the bot.
++        const toBot = new Vec3(
++          bot.entity.position.x - (doorPos.x + 0.5),
++          bot.entity.position.y + bot.entity.height - (doorPos.y + 0.5),
++          bot.entity.position.z - (doorPos.z + 0.5),
++        )
++        const face =
++          Math.abs(toBot.x) >= Math.abs(toBot.y) && Math.abs(toBot.x) >= Math.abs(toBot.z)
++            ? new Vec3(Math.sign(toBot.x) || 1, 0, 0)
++            : Math.abs(toBot.y) >= Math.abs(toBot.z)
++              ? new Vec3(0, Math.sign(toBot.y) || 1, 0)
++              : new Vec3(0, 0, Math.sign(toBot.z) || 1)
++        bot.activateBlock(bot.blockAt(doorPos), face).then(() => {
++          // Activation is open-loop: the interaction packet is sent, nothing
++          // verified. Poll the client's block state — the server pushes the
++          // opened block within a tick or two, so accept as soon as it reads
++          // open and never re-activate in between (a second use would close
++          // the door again and oscillate). Never open after the window is a
++          // failed step, not progress — re-plan.
++          let tries = 0
++          const poll = setInterval(() => {
++            tries++
++            const open = bot.blockAt(doorPos, false)?.getProperties?.().open === true
++            if (open) {
++              clearInterval(poll)
++              lockUseBlock.release()
++              placingBlock = nextPoint.toPlace.shift()
 +              return
 +            }
-+            placingBlock = nextPoint.toPlace.shift()
-+          }, 400)
++            if (tries >= 6) {
++              clearInterval(poll)
++              lockUseBlock.release()
++              resetPath('door_error')
++            }
++          }, 200)
          }, err => {
            console.error(err)
            lockUseBlock.release()
-@@ -559,7 +587,26 @@ function inject (bot) {
+@@ -559,7 +616,26 @@ function inject (bot) {
                  bot.setControlState('sneak', false)
                  if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
                })
@@ -99,7 +140,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
                  resetPath('place_error')
                })
                .then(() => {
-@@ -567,6 +614,12 @@ function inject (bot) {
+@@ -567,6 +643,12 @@ function inject (bot) {
                  placing = false
                  lastNodeTime = performance.now()
                })
@@ -112,7 +153,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
            })
            .catch(_ignoreError => {})
        }
-@@ -608,26 +661,55 @@ function inject (bot) {
+@@ -608,24 +690,57 @@ function inject (bot) {
      bot.setControlState('forward', true)
      bot.setControlState('jump', false)
  
@@ -127,25 +168,28 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
        bot.setControlState('sprint', false)
 -    } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
 -      bot.setControlState('jump', false)
+-      bot.setControlState('sprint', true)
+-    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
+-      bot.setControlState('jump', true)
 +    } else if (stateMovements.allowSprinting && (physics.canStraightLine(path, true) || physics.canSprintJump(path))) {
 +      bot.setControlState('jump', jumpNow)
        bot.setControlState('sprint', true)
--    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
--      bot.setControlState('jump', true)
--      bot.setControlState('sprint', true)
 -    } else if (physics.canStraightLine(path)) {
 -      bot.setControlState('jump', false)
--      bot.setControlState('sprint', false)
--    } else if (physics.canWalkJump(path)) {
--      bot.setControlState('jump', true)
 +    } else if (physics.canStraightLine(path) || physics.canWalkJump(path)) {
 +      bot.setControlState('jump', jumpNow)
        bot.setControlState('sprint', false)
-     } else {
-       bot.setControlState('forward', false)
+-    } else if (physics.canWalkJump(path)) {
+-      bot.setControlState('jump', true)
++    } else {
++      // The straight-line simulations failed — usually grazing a wall corner
++      // or the panel of an open door with a slightly drifted box. Freezing
++      // here deadlocks: the bot can stand inside the opened panel's collision
++      // band, and pressing forward is the only way to slide out (collision
++      // resolves the graze). The futility watchdog below bounds dead ends.
        bot.setControlState('sprint', false)
-     }
- 
++    }
++
 +    // Step assist: a jump started while already touching a step face cannot clear
 +    // it — the collision has eaten the horizontal speed and air control (0.02/tick)
 +    // is far too weak to win it back before landing, so the bot just bounces. Back
@@ -155,7 +199,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
 +    const speed = Math.hypot(bot.entity.velocity.x, bot.entity.velocity.z)
 +    if (physics.stepAt(bot, nextPoint, 0.6) && speed < 0.12) {
 +      if (stuckSince === 0) stuckSince = nowMs
-+    } else {
+     } else {
 +      stuckSince = 0
 +    }
 +    if (stuckSince !== 0 && nowMs - stuckSince > 150) {
@@ -166,18 +210,17 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..1d2ad1dae9cffe87f60318b00b3e91a6
 +      backOff = 0
 +    }
 +    if (nowMs < backUntil) {
-+      bot.setControlState('forward', false)
+       bot.setControlState('forward', false)
+-      bot.setControlState('sprint', false)
 +      bot.setControlState('back', true)
 +      bot.setControlState('jump', false)
 +      backing = true
 +    } else if (backing) {
 +      bot.setControlState('back', false)
 +      backing = false
-+    }
-+
+     }
+ 
      // check for futility
-     if (performance.now() - lastNodeTime > 3500) {
-       // should never take this long to go to the next node
 diff --git a/lib/astar.js b/lib/astar.js
 index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..6d3a6c81d642c2dca712c551aaa84eb77ce91204 100644
 --- a/lib/astar.js
@@ -223,7 +266,7 @@ index 0b8b9de4e3459c896fda1485d4c71fb98704e720..e5c6bc34da6108477ed681c44915e304
        } else if (results.status === 'timeout') {
          cleanup(error('Timeout', 'Took to long to decide path to goal!'))
 diff --git a/lib/movements.js b/lib/movements.js
-index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e06162d75 100644
+index a7e35053cde64e3cd32880af2aafa5f03e919ff8..52f835ca6d7f59419eff12d1b30d2148f66c0fcc 100644
 --- a/lib/movements.js
 +++ b/lib/movements.js
 @@ -1,5 +1,4 @@
@@ -276,21 +319,30 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      const b = pos ? this.bot.blockAt(new Vec3(pos.x + dx, pos.y + dy, pos.z + dz), false) : null
      if (!b) {
        return {
-@@ -241,6 +267,13 @@ class Movements {
+@@ -241,6 +267,22 @@ class Movements {
      for (const shape of b.shapes) {
        b.height = Math.max(b.height, pos.y + dy + shape[4])
      }
-+    // An open door (or gate) keeps a thin collision shape, so the generic
-+    // decoration above calls it a wall the planner must dig or "use" again
-+    // (which would close it). It is actually passable.
-+    if (b.openable && b.getProperties().open === true) {
-+      b.safe = true
-+      b.physical = false
++    // Doors and fence gates: with canOpenDoors the planner never breaks them.
++    // An open one still carries a thin collision shape, so the generic
++    // decoration calls it a wall — it is actually passable. A closed one is
++    // passable via the useOne move the forward generator emits; marking it
++    // safe also keeps the upper half from being priced as head-height digging
++    // (a bare-hand door break costs ~22s of labor and routes the search
++    // around the door instead of through it). With canOpenDoors off the
++    // upstream wall semantics stay untouched.
++    if (b.openable && this.canOpenDoors) {
++      if (b.getProperties().open === true) {
++        b.safe = true
++        b.physical = false
++      } else {
++        b.safe = true
++      }
 +    }
      return b
    }
  
-@@ -249,7 +282,27 @@ class Movements {
+@@ -249,7 +291,27 @@ class Movements {
     * @param {import('prismarine-block').Block} block
     * @returns
     */
@@ -318,7 +370,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      if (!this.canDig) {
        return false
      }
-@@ -289,11 +342,23 @@ class Movements {
+@@ -289,11 +351,23 @@ class Movements {
  
      if (block.physical) cost += this.getNumEntitiesAt(block.position, 0, 1, 0) * this.entityCost // Add entity cost if there is an entity above (a breakable block) that will fall
  
@@ -347,7 +399,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      cost += laborCost
      return cost
    }
-@@ -307,6 +372,7 @@ class Movements {
+@@ -307,6 +381,7 @@ class Movements {
      let cost = 2 // move cost (move+jump)
      const toBreak = []
      const toPlace = []
@@ -355,7 +407,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
  
      if (blockA.physical && (this.getNumEntitiesAt(blockA.position, 0, 1, 0) > 0)) return // Blocks A, B and H are above C, D and the player's space, we need to make sure there are no entities that will fall down onto our building space if we break them
      if (blockH.physical && (this.getNumEntitiesAt(blockH.position, 0, 1, 0) > 0)) return
-@@ -315,6 +381,10 @@ class Movements {
+@@ -315,6 +390,10 @@ class Movements {
      if (!blockC.physical) {
        if (node.remainingBlocks === 0) return // not enough blocks to place
  
@@ -366,7 +418,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
        if (this.getNumEntitiesAt(blockC.position, 0, 0, 0) > 0) return // Check for any entities in the way of a block placement
  
        const blockD = this.getBlock(node, dir.x, -1, dir.z)
-@@ -342,11 +412,17 @@ class Movements {
+@@ -342,11 +421,22 @@ class Movements {
        toPlace.push({ x: node.x + dir.x, y: node.y - 1, z: node.z + dir.z, dx: 0, dy: 1, dz: 0 })
        cost += this.placeCost // additional cost for placing a block
  
@@ -381,12 +433,17 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
 +    // In deep water the block below is still liquid, one under the surface
 +    // node: measuring the bank from it would turn a 1-block bank into a fake
 +    // 2-block jump. The take-off surface for swimming is the node itself.
-+    const takeoffHeight = block0.liquid ? node.y : block0.height
++    // Swimming take-off: in water the relevant surface is the node itself (the
++    // bot floats at the surface), not the block below — deep water has liquid
++    // there, and a surface pool over a drop has air (the platform pool case:
++    // block0 would measure the void and reject a trivial 1-block bank hop).
++    const nodeCell = this.getBlock(node, 0, 0, 0)
++    const takeoffHeight = nodeCell.liquid || block0.liquid ? node.y : block0.height
 +    if (landHeight - takeoffHeight > 1.2) return // Too high to jump
  
      cost += this.safeOrBreak(blockA, toBreak)
      if (cost > 100) return
-@@ -372,6 +448,10 @@ class Movements {
+@@ -372,6 +462,10 @@ class Movements {
      if (!blockD.physical && !blockC.liquid) {
        if (node.remainingBlocks === 0) return // not enough blocks to place
  
@@ -397,7 +454,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
        if (this.getNumEntitiesAt(blockD.position, 0, 0, 0) > 0) return // D intersects an entity hitbox
  
        if (!blockD.replaceable) {
-@@ -387,8 +467,9 @@ class Movements {
+@@ -387,8 +481,9 @@ class Movements {
      cost += this.safeOrBreak(blockB, toBreak)
      if (cost > 100) return
  
@@ -409,7 +466,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
        toPlace.push({ x: node.x + dir.x, y: node.y, z: node.z + dir.z, dx: 0, dy: 0, dz: 0, useOne: true }) // Indicate that a block should be used on this block not placed
      } else {
        cost += this.safeOrBreak(blockC, toBreak)
-@@ -397,10 +478,28 @@ class Movements {
+@@ -397,10 +492,28 @@ class Movements {
  
      if (this.getBlock(node, 0, 0, 0).liquid) cost += this.liquidCost
  
@@ -438,7 +495,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      let cost = Math.SQRT2 // move cost
      const toBreak = []
  
-@@ -427,6 +526,16 @@ class Movements {
+@@ -427,6 +540,16 @@ class Movements {
      cost2 += this.safeOrBreak(blockC2, toBreak2)
      if (blockD2.height - block0.height > 1.2) cost2 += this.safeOrBreak(blockD2, toBreak2)
  
@@ -455,7 +512,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      if (cost1 < cost2) {
        cost += cost1
        toBreak.push(...toBreak1)
-@@ -522,7 +631,6 @@ class Movements {
+@@ -522,7 +645,6 @@ class Movements {
  
    getMoveUp (node, neighbors) {
      const block1 = this.getBlock(node, 0, 0, 0)
@@ -463,7 +520,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      if (this.getNumEntitiesAt(node, 0, 0, 0) > 0) return // an entity (besides the player) is blocking the building area
  
      const block2 = this.getBlock(node, 0, 2, 0)
-@@ -544,9 +652,15 @@ class Movements {
+@@ -544,9 +666,15 @@ class Movements {
        const block0 = this.getBlock(node, 0, -1, 0)
        if (block0.physical && block0.height - node.y < -0.2) return // cannot jump-place from a half block
  
@@ -479,7 +536,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..05e664c003243153a0440414ba82387e
      }
  
      if (cost > 100) return
-@@ -656,6 +770,46 @@ class Movements {
+@@ -656,6 +784,46 @@ class Movements {
      this.getMoveDown(node, neighbors)
      this.getMoveUp(node, neighbors)
  

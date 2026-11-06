@@ -134,10 +134,17 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 			} catch {
 				// 记录读不出：保持 outcome 侧信息
 			}
+			let recordDetail = "";
+			try {
+				const failed = await rt.readRecord(reply.snapshot.record);
+				if (failed.kind === "inline") recordDetail = JSON.stringify(failed.record.value).slice(0, 3000);
+			} catch {
+				/* 记录读不出：保持快照摘录 */
+			}
 			return {
 				ok: false,
 				code: reply.snapshot.error?.code ?? reply.snapshot.outcome,
-				message: reply.snapshot.error?.message ?? `snapshot=${JSON.stringify(reply.snapshot).slice(0, 220)}`,
+				message: `${reply.snapshot.error?.message ?? ""} | record=${recordDetail || `snapshot=${JSON.stringify(reply.snapshot).slice(0, 220)}`}`,
 			};
 		}
 		const full = await rt.readRecord(reply.snapshot.record);

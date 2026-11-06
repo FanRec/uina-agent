@@ -17,6 +17,7 @@ import {
 	type MineflayerBot,
 } from "./mineflayer/adapter.js";
 import { protocolFor } from "./mineflayer/protocol.js";
+import { fixToolTierMaterials } from "./mineflayer/upstream-fixes.js";
 
 export type ConnectionState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 
@@ -130,6 +131,10 @@ export class ClientHost {
 			const onLogin = () => {
 				if (generation !== this._attachGeneration) return;
 				if (this._state === "connecting") this.setState("syncing");
+				// registry 在 loader 的 connect_allowed 之后才就绪（mineflayer loader.js:119），
+				// login 时必然可用；挖速表数据修正每个 bot 一次（1.21.11 incorrect_for_* 缺陷，
+				// 见 upstream-fixes.ts）。
+				fixToolTierMaterials(bot.registry);
 			};
 			const onEnd = () => {
 				if (generation !== this._attachGeneration) return;

@@ -6,7 +6,8 @@
  * pathfinder 插件适配在同目录 pathfinder.ts（driver/mineflayer/ 内可 import 插件）。
  * 不在适配层写玩法算法；资格、完成合同等业务语义属于 driver 其余模块。
  * 依赖组合固定：mineflayer 4.39.0 / minecraft-protocol 1.68.0（协议上限 1.21.11）、
- * mineflayer-pathfinder 2.4.5、vec3 0.1.7。
+ * mineflayer-pathfinder 2.4.5。vec3 经 mineflayer 解析链取得（单一实例，不另设
+ * 顶层依赖——生态统一 0.2.0，双版本并存会造成 Vec3 类不兼容）。
  */
 
 import { createRequire } from "node:module";
@@ -14,11 +15,14 @@ import { type Bot, createBot } from "mineflayer";
 import type { Vec3 } from "../../contracts/values.js";
 
 /**
- * vec3 是 CJS 裸 module.exports 赋值，ESM 具名导入不可静态识别；
- * 经 createRequire 构造（与 engine.ts 的 Ajv 同一仓库惯例）。
+ * vec3 是 CJS 裸 module.exports 赋值，ESM 具名导入不可静态识别；经 mineflayer
+ * 的解析链构造（与 protocol.ts 的 prismarine-* 同一惯例，保证与生态同一实例）。
  */
-type MineflayerVec3 = import("vec3").Vec3;
-const vec3Ctor = createRequire(import.meta.url)("vec3") as unknown as new (
+/** 与 mineflayer d.ts 的 Vec3（blockAt 首参）同源，避免再从顶层 import 'vec3' 类型。 */
+type MineflayerVec3 = Parameters<import("mineflayer").Bot["blockAt"]>[0];
+const vec3Ctor = createRequire(createRequire(import.meta.url).resolve("mineflayer/package.json"))(
+	"vec3",
+) as unknown as new (
 	x: number,
 	y: number,
 	z: number,

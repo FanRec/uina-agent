@@ -39,7 +39,7 @@
     "dev:mc:k8": "tsx .uina/worlds/minecraft/dev/k8.ts",
     "dev:mc:players": "tsx .uina/worlds/minecraft/dev/players.ts",
     "dev:mc:map": "tsx .uina/worlds/minecraft/dev/map.ts",
-		"dev:mc:review": "tsx .uina/worlds/minecraft/dev/review-live.ts",
+    "dev:mc:review": "tsx .uina/worlds/minecraft/dev/review-live.ts",
     "dev:mc:session": "tsx .uina/worlds/minecraft/dev/session-live.ts",
     "dev:mc:climb": "tsx .uina/worlds/minecraft/dev/climb.ts",
     "dev:mc:transit": "tsx .uina/worlds/minecraft/dev/transit.ts",
@@ -77,7 +77,6 @@
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
     "quickjs-emscripten": "0.32.0",
-    "vec3": "0.1.7",
     "ws": "^8.21.3"
   }
 }

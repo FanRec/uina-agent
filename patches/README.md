@@ -108,10 +108,22 @@ the shape is neither array nor container.
 Regression: tool-dependent dig time (`tests/mc` pathfinder/goto suites) and real-server mining
 (`dev:mc:repair`). Reevaluate when upgrading the pinned dependency.
 
-# mineflayer 4.39.0 patch（未接线草稿）
+# mineflayer 4.39.0 patch
 
-`patches/mineflayer@4.39.0.patch` exists but is **not wired** into `pnpm-workspace.yaml` — the
-installed mineflayer is unpatched. It drafts the M1 protocol-confirmation work (server-confirmed dig
-completion with an unconfirmed-cancelled budget instead of local air-faking; `err.refused` marking on
-server place refusals for placement blacklists). Activating it is an M1 work-package decision
-(complete caller/receipt/cleanup changes plus full revalidation), not a drop-in.
+`mineflayer@4.39.0.patch` (wired in `pnpm-workspace.yaml`, batch 26) repairs the two protocol truths
+the executor's dig/place paths still consume through `bot.dig`/`bot.placeBlock` (Uina's own capability
+layer bypasses these; only the pathfinder executor routes through them):
+
+- `lib/plugins/digging.js`: completion is the server changing that cell to a **different type** —
+  the old `finishDigging` wrote the block as air locally and resolved on the client-estimated
+  timer, so a refused/slow dig "succeeded" and the executor walked into the solid block. Terminal
+  states are now exclusive (confirmed / cancelled / budget `max(8s, digTime×3)`) with one cleanup;
+  `bot.targetDigBlock` stays set until a terminal state so `stopDigging` still cancels during the
+  confirmation window and stall watchdogs are not fooled. Late updates after a terminal state are
+  ignored (terminated guard).
+- `lib/plugins/place_block.js`: explicit server refusals throw with `err.refused = true` — the
+  executor records those into `bot.placeMisses` (the planner blacklist); timeouts prove nothing and
+  are not recorded.
+
+Regressions: `tests/mc/mc-upstream-dig.test.ts` (lifecycle), `dev:mc:upstream-nav` step 4 (real-server
+digThrough with water behind). Reevaluate when upgrading the pinned dependency.
