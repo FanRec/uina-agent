@@ -392,7 +392,7 @@ readRecord(ref,{format}) 在一次读取边界固定 RuntimeRecord。auto 初始
 
 导出只接受 Ref，不接受模型指定路径。临时文件完整写入、核对后原子 rename；复用已有文件前核对长度/sha256，不符则从原记录重建，失败清理自有临时件。文件是可再生读取缓存，不是新的权威记录或证据强保留；文件丢失可按同一 record 重新生成，记录已清理就 NOT_FOUND。清理 Library 不删 exports，导出不重放动作、不重新求值程序。
 
-短窗口与通知共用 CompletionView，先读小型 header。recordBytes 由 Runtime 存储路径随固定记录计算，不在 Uina/游戏主循环重新序列化大正文。格式器为信封预留空间；header、完整正文和信封合计能放进默认 16 KiB 展示预算时才读正文并给 content=inline；其余给 content=record 和原引用，不先读全文或导出文件。显式 record 则按上面的独立预算读全文，RecordReply 才可返回文件。
+短窗口与通知共用 CompletionView，先读小型 header。recordBytes 由 Runtime 存储路径随固定记录计算，不在 Uina/游戏主循环重新序列化大正文。格式器为信封预留空间；header、完整正文和信封合计能放进默认 16 KiB 展示预算时才读正文并给 content=inline；其余给 content=record 和原引用，不先读全文或导出文件。显式 record 则按上面的独立预算读全文，RecordReply 才可返回文件。格式器输出的是模型展示投影：只保留该 phase 决策所需的必需字段（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），同一事实只写一次；结构化原件仍是 details 里的 CompletionView，两者不互相推导。
 
 实际读取失败时 content=unavailable，仍显示已有真实结论、未知量和记录读取 nextCall。不能因某份载荷故障退役整个通知队列；header/record 引用可正常进入 canonical 并 ACK，完整材料随后由显式查询重读。只有 eligibility 不可核实时暂缓投递，并继续扫描其他项。普通 queries 的导出失败直接失败，不冒充返回完整值。
 

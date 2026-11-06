@@ -234,9 +234,14 @@ test("one unavailable report does not block other headers; unavailable content r
 		await pump.reconcile();
 		expect(events).toHaveLength(1);
 		expect(JSON.parse((await events[0]!.render!())!)).toMatchObject({
-			snapshot: { outcome: "failed", unknownEffectCount: 1 },
-			content: { kind: "unavailable" },
+			phase: "finished",
+			outcome: "failed",
+			detail: "unavailable",
+			unknownEffectCount: 1,
+			error: { code: "RECORD_UNAVAILABLE" },
 		});
+		// 展示投影不变改细节通道：事件 data 仍是完整 CompletionView。
+		expect((events[0]!.data as { content: { kind: string } }).content.kind).toBe("unavailable");
 		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
 		await pump.reconcile();
 		expect(acked).toEqual(["good"]);

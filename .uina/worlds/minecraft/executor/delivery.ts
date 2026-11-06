@@ -331,10 +331,59 @@ export class DeliveryPump {
 	}
 }
 
+/**
+ * 模型展示投影：只保留该 phase 决策所需字段，每个事实只出现一次。
+ *
+ * 这不是 CompletionView 的序列化——结构化原件仍在工具 details
+ * （`facade.execute` 的 `{kind:"result", ...view}`），供前端与 effect 读取。
+ * `awaiting_decision` 必须带 decision：runs.continue 只能用它续段。
+ */
 export function formatCompletion(view: CompletionView): string {
+	const base = { kind: "result" as const, run: view.run };
+	const nextCall = { action: "runs", params: { op: "record", ref: view.completionRef } };
+	if (view.content.kind !== "inline") {
+		// 正文读不到或太大：只能用有界 summary，如实标注 detail 与完整性标志。
+		const snapshot = view.snapshot;
+		return JSON.stringify({
+			...base,
+			phase: snapshot.phase,
+			progress: snapshot.progress,
+			...(snapshot.phase === "awaiting_decision"
+				? { decision: snapshot.decision, reason: snapshot.reason }
+				: { outcome: snapshot.outcome }),
+			detail: view.content.kind,
+			unknownEffectCount: snapshot.unknownEffectCount,
+			unknownEffectsComplete: snapshot.unknownEffectsComplete,
+			...(view.content.kind === "unavailable"
+				? { error: { code: "RECORD_UNAVAILABLE", message: view.content.error.message } }
+				: {}),
+			completionRef: view.completionRef,
+			nextCall,
+		});
+	}
+	const snapshot = view.content.report.snapshot;
+	if (snapshot.phase === "awaiting_decision")
+		return JSON.stringify({
+			...base,
+			phase: snapshot.phase,
+			progress: snapshot.progress,
+			decision: snapshot.decision,
+			reason: snapshot.reason,
+			completionRef: view.completionRef,
+			nextCall,
+		});
 	return JSON.stringify({
-		kind: "result",
-		...view,
-		nextCall: { action: "runs", params: { op: "record", ref: view.completionRef } },
+		...base,
+		phase: snapshot.phase,
+		outcome: snapshot.outcome,
+		progress: snapshot.progress,
+		...(snapshot.value !== undefined ? { value: snapshot.value } : {}),
+		...(snapshot.error != null ? { error: { code: snapshot.error.code, message: snapshot.error.message } } : {}),
+		...(snapshot.unknownEffects.length > 0 ? { unknownEffects: snapshot.unknownEffects } : {}),
+		...(snapshot.interruptedChildren != null && snapshot.interruptedChildren.length > 0
+			? { interruptedChildren: snapshot.interruptedChildren }
+			: {}),
+		completionRef: view.completionRef,
+		nextCall,
 	});
 }

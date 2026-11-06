@@ -199,6 +199,14 @@ test("a decision in the short result window uses the same fixed report and Host 
 			},
 		});
 		expect(f.attempts).toMatchObject([{ key: "completion:decision", channel: "tool" }]);
+		// 展示投影必须把 decision 带给模型：runs.continue 只能用它续段；
+		// 细节仍在 details（CompletionView），两种通道各自稳定。
+		expect(JSON.parse(result.result)).toMatchObject({
+			phase: "awaiting_decision",
+			decision: "decision:two",
+			completionRef: "completion:decision",
+		});
+		expect(JSON.parse(result.result)).not.toHaveProperty("content");
 	} finally {
 		await f.facade.close();
 	}
