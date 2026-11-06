@@ -193,6 +193,8 @@ describe("inventory@1", () => {
 		expect(result.value.slots[0]).not.toHaveProperty("components");
 		expect(result.value.slots[1]).not.toHaveProperty("durability");
 		expect(result.value.slots[1]).not.toHaveProperty("components");
+		// 省略的语义是"null 不出现"：任何槽位字段都不该以 null 占位。
+		for (const slot of result.value.slots) expect(Object.values(slot).every((value) => value !== null)).toBe(true);
 	});
 
 	test("{since} 相同游标回 changes:[] 与变化后总数，不回全量 slots", () => {

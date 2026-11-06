@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { DeliveryState } from "../../.uina/worlds/minecraft/contracts/runtime.js";
-import { DeliveryPump } from "../../.uina/worlds/minecraft/executor/delivery.js";
+import type { CompletionView, DeliveryState } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import { DeliveryPump, formatCompletion } from "../../.uina/worlds/minecraft/executor/delivery.js";
 import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import type { HostDeliveryState } from "../../src/core/types.js";
 import type { ServiceCompanionContext, WorldEvent } from "../../src/extensions/world-framework/types.js";
@@ -238,8 +238,9 @@ test("one unavailable report does not block other headers; unavailable content r
 			outcome: "failed",
 			detail: "unavailable",
 			unknownEffectCount: 1,
-			error: { code: "RECORD_UNAVAILABLE" },
 		});
+		// 正文读不到时不再指一条注定失败的 record 读取。
+		expect(JSON.parse((await events[0]!.render!())!)).not.toHaveProperty("nextCall");
 		// 展示投影不变改细节通道：事件 data 仍是完整 CompletionView。
 		expect((events[0]!.data as { content: { kind: string } }).content.kind).toBe("unavailable");
 		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
@@ -450,4 +451,133 @@ test("补发仍失败只存诊断，不无限重试", async () => {
 	} finally {
 		await pump.close();
 	}
+});
+
+function completionView(overrides: Record<string, unknown> = {}): CompletionView {
+	const snapshot = {
+		run: "run:proj:1",
+		rootRequestId: "req-proj",
+		revision: 7,
+		segment: "seg:proj:1",
+		record: "rec:proj:1",
+		completion: { scope: "capability", description: "the server confirmed the target became air" },
+		progress: { mined: 4, acquired: 3, collected: { oak_log: 3 }, remaining: 1, toolsUsed: [] },
+		control: "none",
+		unknownEffects: [],
+		phase: "finished",
+		outcome: "succeeded",
+		completionRef: "comp:proj:1",
+		interruptedChildren: [],
+	};
+	return {
+		completionRef: "comp:proj:1",
+		requestId: "req-proj",
+		run: "run:proj:1",
+		segment: "seg:proj:1",
+		revision: 7,
+		recordBytes: 512,
+		reportKind: "terminal",
+		snapshot: { ...snapshot, progressComplete: true, unknownEffectCount: 0, unknownEffectsComplete: true },
+		content: { kind: "inline", report: { reportKind: "terminal", snapshot } },
+		...overrides,
+	} as unknown as CompletionView;
+}
+
+test("inline completion projects one layer and stays within the model budget", () => {
+	const text = formatCompletion(completionView());
+	expect(text.length).toBeLessThanOrEqual(800);
+	const parsed = JSON.parse(text) as Record<string, unknown>;
+	expect(parsed).toMatchObject({
+		kind: "result",
+		phase: "finished",
+		outcome: "succeeded",
+		completionRef: "comp:proj:1",
+	});
+	// 同一事实只写一次：三层包装与内部簿记都不出现在模型文本里。
+	for (const key of ["content", "snapshot", "requestId", "segment", "revision", "recordBytes", "reportKind"])
+		expect(parsed).not.toHaveProperty(key);
+});
+
+test("degraded completion keeps truncation marks and the run's own error", () => {
+	const base = completionView();
+	const summary = {
+		run: "run:proj:1",
+		rootRequestId: "req-proj",
+		revision: 7,
+		segment: "seg:proj:1",
+		record: "rec:proj:1",
+		completion: { scope: "capability", description: "x" },
+		progress: {},
+		progressComplete: false,
+		control: "none",
+		unknownEffectCount: 9,
+		unknownEffects: ["eff:1"],
+		unknownEffectsComplete: false,
+		phase: "finished",
+		outcome: "failed",
+		error: { code: "TIMEOUT", message: "budget ran out", messageComplete: false },
+		completionRef: "comp:proj:1",
+	};
+	const record = {
+		...base,
+		snapshot: summary,
+		content: { kind: "record", record: "comp:proj:1" },
+	} as unknown as CompletionView;
+	const projected = JSON.parse(formatCompletion(record)) as Record<string, unknown>;
+	expect(projected).toMatchObject({
+		detail: "record",
+		outcome: "failed",
+		progressComplete: false,
+		unknownEffectsComplete: false,
+		error: { code: "TIMEOUT", message: "budget ran out", messageComplete: false },
+	});
+	expect(projected.nextCall).toBeDefined();
+
+	const unavailable = {
+		...base,
+		snapshot: summary,
+		content: { kind: "unavailable", record: "comp:proj:1", error: { code: "RECORD_UNAVAILABLE", message: "x" } },
+	} as unknown as CompletionView;
+	const lost = JSON.parse(formatCompletion(unavailable)) as Record<string, unknown>;
+	// 正文读不到由 detail 表达，不覆盖 run 自己的错误，也不再指 record。
+	expect(lost).toMatchObject({ detail: "unavailable", error: { code: "TIMEOUT" } });
+	expect(lost).not.toHaveProperty("nextCall");
+});
+
+test("awaiting_decision hands out the decision, never a record pointer", () => {
+	const base = completionView();
+	const summary = {
+		run: "run:proj:1",
+		rootRequestId: "req-proj",
+		revision: 7,
+		segment: "seg:proj:1",
+		record: "rec:proj:1",
+		completion: { scope: "execution", description: "x" },
+		progress: { phase: 2 },
+		progressComplete: true,
+		control: "none",
+		unknownEffectCount: 0,
+		unknownEffects: [],
+		unknownEffectsComplete: true,
+		phase: "awaiting_decision",
+		decision: "rec:decision:1",
+		reason: "need a plan",
+		reasonComplete: true,
+		completionRef: "comp:proj:2",
+	};
+	const inline = {
+		...base,
+		completionRef: "comp:proj:2",
+		snapshot: summary,
+		content: { kind: "inline", report: { reportKind: "decision", snapshot: summary } },
+	} as unknown as CompletionView;
+	const projected = JSON.parse(formatCompletion(inline)) as Record<string, unknown>;
+	expect(projected).toMatchObject({
+		phase: "awaiting_decision",
+		decision: "rec:decision:1",
+		reason: "need a plan",
+	});
+	// 唯一能推进的是 runs.continue，而 entry 不能预填，因此不给 nextCall。
+	expect(projected).not.toHaveProperty("nextCall");
+	expect(projected).not.toHaveProperty("outcome");
 });

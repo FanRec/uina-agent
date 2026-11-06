@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
+import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 
@@ -57,4 +58,17 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 		items: [],
 		hint: expect.any(String),
 	});
+});
+
+test("describe without arguments lists every capability ref in one response", async () => {
+	const emptyLibrary = { list: async () => [], get: async () => null } as never;
+	const overview = (await describeDirectory(builtinCatalog, emptyLibrary, {})) as {
+		reads: string[];
+		acts: string[];
+		families: { kind: string; count: number }[];
+	};
+	// 51 个 ref 一次给全：模型的 selector 只能靠确切名字，分页会让它盲搜。
+	expect(overview.reads.length + overview.acts.length).toBe(51);
+	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 51 }]));
+	expect(JSON.stringify(overview).length).toBeLessThanOrEqual(1600);
 });

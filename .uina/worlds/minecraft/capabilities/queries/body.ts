@@ -14,7 +14,8 @@ import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog
 import { factOf } from "../shared/facts.js";
 import { EMPTY_INPUT } from "../shared/schema.js";
 
-type SlotItem = Record<string, JsonValue>;
+/** 槽位物品：只保留非 null 的字段；字段名仍受 ItemValue 约束。 */
+type SlotItem = Pick<ItemValue, "name" | "count"> & Partial<Pick<ItemValue, "stackSize" | "components" | "durability">>;
 
 /**
  * 省略值为 null 的字段：stackSize/components/durability 在大多数槽位上都是 null，
