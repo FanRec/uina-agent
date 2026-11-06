@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-07 · 批27 关闭 G26/G27（upstream-nav 真服门 7/7：场景几何改判 + 挖确认不撕路径）
+
+批26 登记 S3/S4 两开放项经事件级实证**双双改判**并修复，`dev:mc:upstream-nav` 7/7 全绿，climb/terrain-nav 回归保持。
+
+- **G26（S3 游上岸被中止）**：登记的"运行时无因中止"不成立。signal abort 堆栈（stackTraceLimit 还原后抓取）+ survival 触发事实 dump 实证：中止者是生存系统对**真实溺水**的正当介入（`survival.ts` → `runtime.intervene` → safety 主动打断）。探针对拍：S3 的"1 深水洞"水洞正下方 198 层是虚空（平台只铺 GY 一层），bot 掉穿平台从 y=199 一路落到 y=99 的真实自然水域；服务端 Air 与客户端 `oxygenLevel` 读数一致递减（112→81→…ticks ↔ oxygen 7→5→…），头部浸水 ~16s 后氧到 4 → 溺水触发完全正当；运行记录 `control:"none"`、无 stop_intent 是 safety 介入后 run 的正常结算路径，运行时（engine/body-queue）零改动。修复 = 场景几何：S3/S4 水洞下方铺底（GY-1 层 stone）+ setup 校验 server Pos 稳定在洞位（掉穿即 setup 失败，不再把落水误当"站在水洞"）。批26 记录"独立诊断 REACHED、前置门/栅栏门是唯一差异"的归因有误。
+- **G27（S4 挖穿 dug=0）**：登记的"计划/执行代价分歧"不成立——事件级对拍（path_update 采样）证明 route.plan 与实机 A* 同 Movements 口径、同一条解（2 高墙下"挖头层 1 格+跳半墙+跳水洞"合法且比挖 2 格平穿便宜，needs.dig=1 两侧一致；"挖是唯一近路"的场景几何前提错误）。真缺陷是**挖掘完成计数丢失**：pathfinder 全局 `blockUpdate` 监听（先于 digging.js 的 per-dig 监听注册）把自己挖掘的确认更新当世界变化触发 `resetPath('block_updated')` → `stopDigging`，`diggingAborted` 与服务端确认同毫秒到达、抢在确认回调之前，terminated 守卫吞掉 `diggingCompleted`（dug=0），resetPath 清掉含 toBreak 的路径后 A* 看到"头层已开"重规划，脚层永不挖。修复 = `patches/mineflayer-pathfinder@2.4.5.patch` 新 hunk：`digging` 期间跳过 `block_updated`（自己挖掘的确认是计划内进展；挖掘窗口内的世界变化由下次重规划吸收，patch-commit 重新生成完整补丁）；S4 场景几何改为 17 宽墙身 + GY+3/GY+4 封顶两层（"挖上两层爬墙"需 3 格挖掘且无净空，挖 2 格平穿明确最廉）；断言按目标行附近 3 列核对（A* 按对角启发式在等价列中选列，单列断言会误报）。
+- **同期收尾**：`dev:mc:upstream-nav` 补进 package.json（批26 记录声称新增、实际缺条目）。
+
+**测试**：真服 upstream-nav 7/7（S4 route.plan 与实机同解 needs.dig=2、dug=2、脚层通、7.1s 到达）；climb 6/6、terrain-nav 6/6 回归保持；tests/mc 103 文件 853 项全绿；全仓 3256 项通过（唯一 FAIL 为 tts-bridge-protocol 的 TTS 伴生环境缺失，隔离跑 skip，与批26 记录同类）；`pnpm typecheck` 过。
+
 ## 2026-11-06 · 模型出口瘦身（完成投影 / 读取 / 诊断 / 发现）
 
 模型可见的四处出口此前按"内部完整形状"直接序列化：同一个事实写三遍、诊断日志整段进上下文、能力只能靠盲搜。本条目只改投影层，不动 Runtime/Driver 语义，不加参数、不加机制。

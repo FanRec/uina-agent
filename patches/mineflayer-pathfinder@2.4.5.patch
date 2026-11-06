@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569fb2e0815c 100644
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..aa19354b0bfb2822958e17d424463fff6436bf7b 100644
 --- a/index.js
 +++ b/index.js
 @@ -9,7 +9,6 @@ const Lock = require('./lib/lock')
@@ -51,7 +51,20 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569f
          curPoint.x = Math.floor(curPoint.x) + 0.5
          curPoint.y = Math.floor(curPoint.y)
          curPoint.z = Math.floor(curPoint.z) + 0.5
-@@ -518,12 +530,57 @@ function inject (bot) {
+@@ -397,6 +409,12 @@ function inject (bot) {
+ 
+   bot.on('blockUpdate', (oldBlock, newBlock) => {
+     if (!oldBlock || !newBlock) return
++    // While the executor itself is digging, the confirmation update of its own
++    // dig is part of the planned path, not a world change. Resetting here
++    // aborts the in-flight dig (diggingAborted wins the race against the
++    // digging.js confirmation callback, so the dig completes but is never
++    // counted) and re-plans from a half-dug state.
++    if (digging) return
+     if (isPositionNearPath(oldBlock.position, path) && oldBlock.type !== newBlock.type) {
+       resetPath('block_updated', false)
+     }
+@@ -518,12 +536,57 @@ function inject (bot) {
          fullStop()
        }
  
@@ -112,7 +125,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569f
          }, err => {
            console.error(err)
            lockUseBlock.release()
-@@ -559,7 +616,26 @@ function inject (bot) {
+@@ -559,7 +622,26 @@ function inject (bot) {
                  bot.setControlState('sneak', false)
                  if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
                })
@@ -140,7 +153,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569f
                  resetPath('place_error')
                })
                .then(() => {
-@@ -567,6 +643,12 @@ function inject (bot) {
+@@ -567,6 +649,12 @@ function inject (bot) {
                  placing = false
                  lastNodeTime = performance.now()
                })
@@ -153,7 +166,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..25fb9defe85a00baa18645976a94569f
            })
            .catch(_ignoreError => {})
        }
-@@ -608,24 +690,57 @@ function inject (bot) {
+@@ -608,24 +696,57 @@ function inject (bot) {
      bot.setControlState('forward', true)
      bot.setControlState('jump', false)
  

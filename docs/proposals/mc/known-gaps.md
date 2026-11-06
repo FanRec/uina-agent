@@ -1,6 +1,6 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-11-06（批25 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-11-07（批27 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
 本文由审查轮产初版、施工批次持续更新：关闭条目在关闭时写入"关闭事实"（含证据口径），开放条目保留现象/证据/修法要点三段；取舍（§8）登记后不修。历史措辞（如早期"未施工、未复跑"）只描述登记当轮，不代表当前状态。批26 的施工范围（RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4）属设计合同剩余项，见 [multi-world-v3.md](multi-world-v3.md) §7/§10 与 development-plan §10.3 批25 条，不在本清单重复登记。
 
@@ -89,13 +89,13 @@
 
 | ID | 缺口 | 证据 | 修法要点 |
 |---|---|---|---|
-| G26 | **多步 dev 场景中 goto 运行 ~3.3s 被运行时中止（control=none）**（批26 依赖审查轮登记） | `dev:mc:upstream-nav` S3（1 深水洞游上岸）三轮稳定复现：goto 派发后 ~3.3s 运行以 INTERRUPTED 结束，运行记录 `control:"none"`（从未进入执行轨）、`interruptedChildren:[]`、无 stop_intent；同一水洞几何在独立诊断脚本中 **REACHED**（起跳面规则生效，游出+爬岸 ~3.6s），前置门/栅栏门导航步是唯一差异 | 运行生命周期层（executor/runtime），非 mineflayer 生态；先在 engine 层给 INTERRUPTED 记录补中断原因字段（谁 abort 的 run signal），再定位多 Run 序列下的排队/回收路径。修复后 upstream-nav S3 直接转绿 |
-| G27 | **实机 goto 的 A* 绕开挖路（route.plan 给挖、实机绕行）**（批26 依赖审查轮登记） | `dev:mc:upstream-nav` S4：11 宽 2 高石墙 + 铁镐，`route.plan` 给挖路（needs.dig≥1，诊断探针核实），实机 goto 到达但 dug=0——实机 A* 选了绕行（对角线使绕行 ~21 代价 vs 挖穿 ~16.6 的估计在实机不成立或挖路代价被高估） | 归 M2 计划/执行一致性工作项：实机 A* 与 route.plan 在同一 Movements 口径下对拍挖路代价（labor 记忆/附魔链已统一），定位绕行判定的代价差；S4 场景保留为回归门 |
+| ~~G26~~ | **goto 运行 ~3.3s 被无因中止（✅ 已于 2026-11-07 批27 关闭——登记的"运行时无因中止"不成立）** | 中止者实证（signal abort 堆栈 + survival 触发事实 dump）：`survival.ts` → `runtime.intervene` → `safety` 主动打断——**真实溺水**。探针对拍（g26-probe）：S3 的"1 深水洞"水洞正下方 198 层是虚空（平台只铺 GY 一层），bot 掉穿平台从 y=199 落到 y=99 的真实自然水域；服务端 Air 与客户端 oxygenLevel 读数一致递减（112→81→…ticks ↔ 7→5→…），头部浸水 ~16s 后氧到 4 → 溺水触发完全正当；`control:"none"`、无 stop_intent 是 safety 介入后 run 的正常结算路径，非运行时缺陷 | 场景几何修复：S3/S4 水洞下方铺底（`GY-1` 层 stone）+ setup 校验 server Pos 稳定在洞位（掉穿即失败，不再把落水当"站在水洞"）。真服 `dev:mc:upstream-nav` S3 转绿（3472ms 游出到达）。批26 记录的"独立诊断 REACHED、前置门/栅栏门是唯一差异"归因有误：差异不在前置步骤，而在该诊断几何是否有底 |
+| ~~G27~~ | **实机 goto 挖穿 dug=0（✅ 已于 2026-11-07 批27 关闭——登记的"计划/执行代价分歧"不成立）** | 事件级对拍（g27-probe）：route.plan 与实机 A* 在同一 Movements 口径下给出**同一条解**（2 高墙下"挖头层 1 格+跳半墙+跳水洞"，needs.dig=1，合法且比挖 2 格平穿便宜——"挖是唯一近路"的场景几何前提错误）。真缺陷是**挖掘完成计数丢失**：`dig() @(-732,201)` 后 413ms，服务端确认 blockUpdate(stone→air) 与 `diggingAborted` 同毫秒——pathfinder 全局 `blockUpdate` 监听（先注册）触发 `resetPath('block_updated')` → `stopDigging`，abort 抢在 digging.js 确认回调前，terminated 守卫吞掉 `diggingCompleted` → dug=0；resetPath 清掉含 toBreak 的路径后 A* 看到"头层已开"重规划，脚层永不挖 | 两处修复：(1) pathfinder 补丁新 hunk——`digging` 期间跳过 `block_updated`（自己挖掘的确认是计划内进展，不是世界变化；dig 完成照常结算，挖掘窗口内的世界变化由下次重规划吸收）；(2) S4 场景几何改为 17 宽墙身+GY+3/GY+4 封顶两层（"挖上两层爬墙"需 3 格挖掘且无净空，挖穿 2 格平穿明确最廉）+ 断言按目标行附近 3 列核对（A* 按对角启发式在等价列中选列，单列断言会误报）。真服 S4：route.plan 与实机同解 needs.dig=2、dug=2、脚层通、7.1s 到达 |
 
-### G26/G27 · 批26 依赖审查轮新登记（mineflayer 生态收尾 + upstream-nav 真服门）
+### G26/G27 · 批26 依赖审查轮新登记（✅ 批27 全部关闭）
 
-- **mineflayer@4.39.0 补丁接线**：挖生命周期单终态化（见 G25 关闭事实的遗留草稿段）——T0 `mc-upstream-dig` 5 项（成功=类型变化含留水/纯状态变化与 null 不完成/预算拒绝/确认窗内可取消/迟到事件不双结算），真服门 `dev:mc:upstream-nav` S4 挖穿（其 dug=0 残余归 G27）。
-- **`dev:mc:upstream-nav` 真服门（7 步）**：闭木门穿越（2379ms，open=true）、闭栅栏门穿越（3309ms，open=true）、1 深水游上岸（G26）、邻水墙挖穿（G27）、拒放避让（2515ms 邻位到达）、全宽沟槽无料诚实失败（UNREACHABLE 5064ms 不进坑）、性能采样（门场景搜索 t=15ms v=11 g=51）。本批 5/7，开放项见上表 G26/G27。
+- **mineflayer@4.39.0 补丁接线**：挖生命周期单终态化（见 G25 关闭事实的遗留草稿段）——T0 `mc-upstream-dig` 5 项（成功=类型变化含留水/纯状态变化与 null 不完成/预算拒绝/确认窗内可取消/迟到事件不双结算），真服门 `dev:mc:upstream-nav` S4 挖穿（其 dug=0 残余归 G27，✅ 批27 关闭）。
+- **`dev:mc:upstream-nav` 真服门（7 步）**：闭木门穿越、闭栅栏门穿越、1 深水游上岸（G26）、邻水墙挖穿（G27）、拒放避让、全宽沟槽无料诚实失败、性能采样。**批27 修复后 7/7 全绿**（门穿越 2449/3336ms 且 open=true、S3 游出到达、S4 挖穿 dug=2 脚层通 7.1s、拒放邻位 2442ms、无料 UNREACHABLE 5104ms 不进坑）；climb 6/6、terrain-nav 6/6 回归保持。
 - **vec3 单一化**：顶层 `vec3@0.1.7` 依赖删除，adapter 经 mineflayer 解析链取生态 0.2.0（双 Vec3 类并存的隐患消除）。
 - **工具等级材料修正**：`driver/mineflayer/upstream-fixes.ts` `fixToolTierMaterials(registry)`——minecraft-data 3.117.0 的 1.21.11 数据 108 种方块 material 错标 `incorrect_for_*`（铁镐挖铁矿 4.55s，实际 0.75s），按 harvestTools 推回 `mineable/<kind>`，等级约束保留；client-host login 时装配。T0 `mc-upstream-materials`。
 

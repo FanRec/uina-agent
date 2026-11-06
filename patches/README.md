@@ -73,6 +73,17 @@ silently dropped everything below.
   after activation (`door_error` re-plan instead of looping re-activation), and releases
   `lockEquipItem` when the pre-placement equip rejects.
 
+**Dig confirmation is not a world change (G27, batch 27).** `lib/index.js`'s global `blockUpdate`
+listener resets the path on any type change near the path (`block_updated`). While the executor's
+own dig is in flight (`digging === true`), the confirmation update of that very dig arrives through
+the same listener first (plugin listeners register before digging.js's per-dig one), so the reset
+aborted the in-flight dig: `diggingAborted` won the race against digging.js's confirmation callback,
+the terminated guard swallowed `diggingCompleted` (dug stayed 0), and the reset re-planned from a
+half-dug state — the capped-wall digThrough arrived without ever opening the foot layer. The hunk
+skips `block_updated` while `digging`; the dig's own completion keeps its normal settlement, and
+world changes during the (short) dig are picked up by the next re-plan. Regression:
+`pnpm dev:mc:upstream-nav` step 4 (`dug=2` on the capped wall, foot cell verified open).
+
 `allowParkour` is disabled in our adapter (`driver/mineflayer/pathfinder.ts`) — the executor cannot
 hold parkour nodes reliably.
 

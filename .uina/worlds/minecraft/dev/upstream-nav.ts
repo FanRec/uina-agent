@@ -181,9 +181,16 @@ async function main(): Promise<void> {
 		await s.step("1-deep water hole: swim out onto the bank (water takeoff rule)", async () => {
 			const hx = BASE.x + 48;
 			const z = STAND.z;
-			// 1 深水洞（替换 199 层地板，四周地板围住不外流）
+			// 1 深水洞（替换 199 层地板，四周地板围住不外流）；下方 198 层必须铺底，
+			// 否则 bot 会掉穿平台落进真实水域——那不是被测场景，而是真实溺水（G26 根因）。
 			await s.command(`/fill ${hx} ${GY} ${z} ${hx + 1} ${GY} ${z} minecraft:water`);
+			await s.command(`/fill ${hx} ${GY - 1} ${z} ${hx + 1} ${GY - 1} ${z} minecraft:stone`);
 			await reset({ x: hx + 0.5, y: GY + 0.9, z: z + 0.5 });
+			const at = await serverPos();
+			if (Math.abs(at.y - (GY + 0.9)) > 1.2 || at.x < hx - 0.5 || at.x > hx + 2.5)
+				throw new Error(
+					`bot left the water hole during setup: (${at.x.toFixed(1)}, ${at.y.toFixed(1)}, ${at.z.toFixed(1)})`,
+				);
 			const inWater = await s.readSelf();
 			if ((inWater as { inWater?: boolean }).inWater !== true) throw new Error(`bot not in water at setup`);
 			const target = { x: hx + 5, y: GY + 1, z };
@@ -197,23 +204,36 @@ async function main(): Promise<void> {
 		await s.step("digThrough a wall with a water hole behind (server-confirmed dig)", async () => {
 			const wx = BASE.x + 26;
 			const z = STAND.z;
-			// 11 宽 2 高石墙：挖穿（~16 代价）比绕行（~21）便宜，挖是唯一近路
-			for (const dz of [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]) {
+			// 17 宽石墙（GY+1/GY+2 墙身 + GY+3/GY+4 封顶）：封顶两层后"挖上两层爬墙"
+			// 需要 3 格挖掘且站上墙顶仍无净空，挖穿 2 格平穿（~21）明确便宜于
+			// 爬墙（~30+）与绕行（17 宽 ~29）。
+			for (const dz of [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8]) {
 				await s.command(`/setblock ${wx} ${GY + 1} ${z + dz} minecraft:stone`);
 				await s.command(`/setblock ${wx} ${GY + 2} ${z + dz} minecraft:stone`);
+				await s.command(`/setblock ${wx} ${GY + 3} ${z + dz} minecraft:stone`);
+				await s.command(`/setblock ${wx} ${GY + 4} ${z + dz} minecraft:stone`);
 			}
-			// 墙后地板挖水洞（四周地板围住），穿过墙后要游出去
+			// 墙后地板挖水洞（四周地板围住），穿过墙后要游出去；同样必须铺底（G26 同款缺陷）
 			await s.command(`/setblock ${wx + 1} ${GY} ${z} minecraft:water`);
+			await s.command(`/setblock ${wx + 1} ${GY - 1} ${z} minecraft:stone`);
 			await s.command(`/give ${USER} minecraft:iron_pickaxe 1`);
 			await reset({ x: wx - 5.5, y: GY + 1, z: z + 0.5 });
 			const target = { x: wx + 7, y: GY + 1, z };
 			const outcome = await nav(target, { digThrough: true, placeToReach: false });
 			if (!outcome.ok) throw new Error(`digThrough failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms`);
-			if (outcome.dug <= 0) throw new Error(`digThrough arrived without digging (dug=${outcome.dug})`);
-			const wall = await s.readBlock({ x: wx, y: GY + 1, z });
-			const passable = wall == null || wall.name === "air" || wall.name === "water";
-			if (!passable) throw new Error(`dug wall cell is still ${wall?.name ?? "unknown"}`);
-			return `dug=${outcome.dug}, wall cell now ${wall?.name ?? "air"}, arrived in ${outcome.elapsed}ms`;
+			if (outcome.dug < 2) throw new Error(`digThrough arrived without digging through (dug=${outcome.dug})`);
+			// A* 可在 17 宽墙的任一列挖穿（等价代价，对角启发式选列），断言按目标行
+			// 附近 3 列核对：至少一列的脚层已通。
+			const columns: string[] = [];
+			let passable = false;
+			for (const dz of [-1, 0, 1]) {
+				const wall = await s.readBlock({ x: wx, y: GY + 1, z: z + dz });
+				const name = wall?.name ?? "air";
+				columns.push(`${dz}:${name}`);
+				if (name === "air" || name === "water") passable = true;
+			}
+			if (!passable) throw new Error(`dug wall cells are still stone (${columns.join(", ")})`);
+			return `dug=${outcome.dug}, wall foot cells [${columns.join(", ")}], arrived in ${outcome.elapsed}ms`;
 		});
 
 		// ---- S5a 拒放避让：中间桥位被占 → 记录拒绝 → 重规划走邻位 ----
