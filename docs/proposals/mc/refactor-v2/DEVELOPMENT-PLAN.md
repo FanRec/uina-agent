@@ -2,7 +2,7 @@
 
 > **用途**：直接交给具备仓库、终端和测试服务器访问能力的编码 Agent 执行。本文是实施指令，不是新一轮研究任务，也不是要求照单实现每项技术。  
 > **仓库**：`E:\Uina\Uina`；MC 源码：`.uina/worlds/minecraft/`；现有权威设计：`docs/proposals/mc/`。  
-> **方案输入**：配套 `01-DESIGN.md`、`02-IMPLEMENTATION.md`、`03-VALIDATION.md`、`04-AGENT-BRIEF.md`。它们是**待核实的设计候选**，不是已经验证的结论。  
+> **方案输入**：配套 `01-DESIGN.md`、`02-IMPLEMENTATION.md`、`03-VALIDATION.md`。它们是**待核实的设计候选**，不是已经验证的结论。  
 > **参考基线**：Uina `a0c9a5963cb8`，Cortico `c376b91c1ebb`（2026-11-06 核对）。开发前必须以实际工作区 HEAD、依赖及服务器环境为准。  
 > **适用范围**：仅 Minecraft World 及为其修复所必需的接缝；不借机重建 Uina 通用 Agent 架构。
 
