@@ -129,10 +129,9 @@ async function main(): Promise<void> {
 		await s.step("closed oak door traversal: goto opens it and arrives (door open=true)", async () => {
 			const wx = BASE.x + 18;
 			const z = STAND.z;
-			for (const dz of [-3, -2, -1, 1, 2, 3]) {
-				await s.command(`/setblock ${wx} ${GY + 1} ${z + dz} minecraft:stone`);
-				await s.command(`/setblock ${wx} ${GY + 2} ${z + dz} minecraft:stone`);
-			}
+			// 门两侧墙段（dz=0 留门位）
+			await s.command(`/fill ${wx} ${GY + 1} ${z - 3} ${wx} ${GY + 2} ${z - 1} minecraft:stone`);
+			await s.command(`/fill ${wx} ${GY + 1} ${z + 1} ${wx} ${GY + 2} ${z + 3} minecraft:stone`);
 			await s.command(
 				`/setblock ${wx} ${GY + 1} ${z} minecraft:oak_door[facing=east,half=lower,open=false,hinge=left]`,
 			);
@@ -161,10 +160,9 @@ async function main(): Promise<void> {
 		await s.step("closed fence gate traversal: goto opens it and arrives (gate open=true)", async () => {
 			const wx = BASE.x + 34;
 			const z = STAND.z;
-			for (const dz of [-3, -2, -1, 1, 2, 3]) {
-				await s.command(`/setblock ${wx} ${GY + 1} ${z + dz} minecraft:stone`);
-				await s.command(`/setblock ${wx} ${GY + 2} ${z + dz} minecraft:stone`);
-			}
+			// 栅栏门两侧墙段（dz=0 留门位）
+			await s.command(`/fill ${wx} ${GY + 1} ${z - 3} ${wx} ${GY + 2} ${z - 1} minecraft:stone`);
+			await s.command(`/fill ${wx} ${GY + 1} ${z + 1} ${wx} ${GY + 2} ${z + 3} minecraft:stone`);
 			await s.command(`/setblock ${wx} ${GY + 1} ${z} minecraft:spruce_fence_gate[facing=east,open=false]`);
 			await reset({ x: wx - 6.5, y: GY + 1, z: z + 0.5 });
 			const target = { x: wx + 6, y: GY + 1, z };
@@ -207,12 +205,7 @@ async function main(): Promise<void> {
 			// 17 宽石墙（GY+1/GY+2 墙身 + GY+3/GY+4 封顶）：封顶两层后"挖上两层爬墙"
 			// 需要 3 格挖掘且站上墙顶仍无净空，挖穿 2 格平穿（~21）明确便宜于
 			// 爬墙（~30+）与绕行（17 宽 ~29）。
-			for (const dz of [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8]) {
-				await s.command(`/setblock ${wx} ${GY + 1} ${z + dz} minecraft:stone`);
-				await s.command(`/setblock ${wx} ${GY + 2} ${z + dz} minecraft:stone`);
-				await s.command(`/setblock ${wx} ${GY + 3} ${z + dz} minecraft:stone`);
-				await s.command(`/setblock ${wx} ${GY + 4} ${z + dz} minecraft:stone`);
-			}
+			await s.command(`/fill ${wx} ${GY + 1} ${z - 8} ${wx} ${GY + 4} ${z + 8} minecraft:stone`);
 			// 墙后地板挖水洞（四周地板围住），穿过墙后要游出去；同样必须铺底（G26 同款缺陷）
 			await s.command(`/setblock ${wx + 1} ${GY} ${z} minecraft:water`);
 			await s.command(`/setblock ${wx + 1} ${GY - 1} ${z} minecraft:stone`);
