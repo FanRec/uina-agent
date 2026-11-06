@@ -1,5 +1,9 @@
 # 设计变更记录
 
+## 2026-11-07 · 批28 关闭 A* think budget 残余（启发式加权：山头穿越从 5s Timeout 到实机到达）
+
+G25 关闭时登记的 M2 搜索预算项**搜索半部关闭**：24 格山头穿越 A* 5s think budget 搜不完（5.8 万节点诚实 Timeout）的根因定性为**启发式引导缺失**——欧氏启发式在爬升地形严重低估真实代价，无偏置 A* 沿山体等值线泛洪。真服画像（新增 `dev:mc:nav-perf`：gain-16 山头目标直接驱动 getPathFromTo）实测定案：w=1 → 10,974 节点/428ms；w=3 → 556 节点/11ms（÷20），路径代价 +6.7%、步数更少（46→43），跨次完全确定；平地/水域对照无害（w≥2 节点均 ÷10 量级）。**修复 = `patches/mineflayer-pathfinder@2.4.5.patch` 新 hunk `heuristicWeight`**：加权 A* 只改扩展顺序——g 代价、移动合法性、isEnd、bestNode 选择（h 单调）全部不动；`searchRadius` 的 maxCost 剪枝保持 raw 启发式尺度（初版误用加权 h 对 raw maxCost 剪枝，start 处即全剪枝，T0 当场抓出后修正）；默认 1 = 上游原序，`driver/mineflayer/pathfinder.ts` `applyMovementsConfig` 单一口径设 3（规划与执行共用，S2 接缝不漂移）。**端到端**：真 goto 山头目标 28.5s 实际到达（gap 1.70）——原失败形态 5–10s Timeout 零到达。**验收**：T0 新增 `mc-pathfinder-heuristic-weight`（曼哈顿锥形山、山后目标：默认=上游原序逐节点一致、w=3 节点 ÷8、真实 g 代价有界、maxCost raw 口径可达峰顶）；真服 `dev:mc:upstream-nav` 连续三轮 7/7（gate 4520–4536ms、S3 4536–5041ms、S4 9596–10119ms——加权路径略长使执行慢 1–3s，属"代价换搜索"的正常反映）、climb 6/6（三级阶梯 4442ms）、terrain-nav 6/6；tests/mc 104 文件 854 项、全仓 3257 项通过（唯一 FAIL 为 tts-bridge-protocol 的 httpx 环境缺失，与批26/27 同类）；`pnpm typecheck` 过。**S3 水中爬岸方差不随本修复关闭**并拆出登记 **G28**：该几何 A* 搜索本身毫秒级，批28 当日 w=1（与本补丁严格等价）亦两轮 TIMEOUT，加权后 4536–5041ms 到达——方差主体在水节点出发的移动控制与规划交互（归 M3/水域控制工作项），不在搜索规模；S3 断言保持 20s 不放宽。诊断基建：upstream-nav 的 nav() 增 2s 位置轨迹采样与搜索指标失败输出（区分"原地打转"与"绕行不达"，terrain-nav 同款）；冷启动首轮 S2/S3 双失败未在后续 6 轮复现，如实记录不解释。
+
 ## 2026-11-07 · 批27 关闭 G26/G27（upstream-nav 真服门 7/7：场景几何改判 + 挖确认不撕路径）
 
 批26 登记 S3/S4 两开放项经事件级实证**双双改判**并修复，`dev:mc:upstream-nav` 7/7 全绿，climb/terrain-nav 回归保持。

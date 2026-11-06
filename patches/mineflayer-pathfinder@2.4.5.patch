@@ -235,10 +235,37 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..aa19354b0bfb2822958e17d424463fff
  
      // check for futility
 diff --git a/lib/astar.js b/lib/astar.js
-index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..6d3a6c81d642c2dca712c551aaa84eb77ce91204 100644
+index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..ea2f183acaff4cee5714056f5866d77e7521e1b7 100644
 --- a/lib/astar.js
 +++ b/lib/astar.js
-@@ -65,6 +65,19 @@ class AStar {
+@@ -43,12 +43,24 @@ class AStar {
+     this.openHeap = new Heap()
+     this.openDataMap = new Map()
+ 
+-    const startNode = new PathNode().set(start, 0, goal.heuristic(start))
++    // Weighted A* expansion bias (movements.heuristicWeight, default 1 keeps
++    // upstream ordering). The euclidean heuristic grossly underestimates cost
++    // on climbing terrain, so the unweighted search floods the hill contour
++    // (measured: a 24-block natural hilltop crossing explored 58k nodes and
++    // timed out). A weight of 3 cuts expansions ~20x for a few percent of
++    // extra path cost (bounded suboptimality) — legality, g costs and isEnd
++    // are untouched: only the expansion order changes.
++    this.heuristicWeight = movements.heuristicWeight ?? 1
++
++    const startH = goal.heuristic(start)
++    const startNode = new PathNode().set(start, 0, startH * this.heuristicWeight)
+     this.openHeap.push(startNode)
+     this.openDataMap.set(startNode.data.hash, startNode)
+     this.bestNode = startNode
+ 
+-    this.maxCost = searchRadius < 0 ? -1 : startNode.h + searchRadius
++    // maxCost keeps the raw (unweighted) heuristic scale so searchRadius
++    // semantics stay upstream-compatible.
++    this.maxCost = searchRadius < 0 ? -1 : startH + searchRadius
+     this.visitedChunks = new Set()
+   }
+ 
+@@ -65,6 +77,19 @@ class AStar {
    }
  
    compute () {
@@ -258,6 +285,21 @@ index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..6d3a6c81d642c2dca712c551aaa84eb7
      const computeStartTime = performance.now()
      while (!this.openHeap.isEmpty()) {
        if (performance.now() - computeStartTime > this.tickTimeout) { // compute time per tick
+@@ -91,8 +116,12 @@ class AStar {
+         let neighborNode = this.openDataMap.get(neighborData.hash)
+         let update = false
+ 
+-        const heuristic = this.goal.heuristic(neighborData)
+-        if (this.maxCost > 0 && gFromThisNode + heuristic > this.maxCost) continue
++        // The weight scales the heuristic for ordering only; the maxCost
++        // futility bound keeps the raw scale so searchRadius semantics stay
++        // upstream-compatible regardless of the weight.
++        const rawHeuristic = this.goal.heuristic(neighborData)
++        const heuristic = rawHeuristic * this.heuristicWeight
++        if (this.maxCost > 0 && gFromThisNode + rawHeuristic > this.maxCost) continue
+ 
+         if (neighborNode === undefined) {
+           // add neighbor to the open set
 diff --git a/lib/goto.js b/lib/goto.js
 index 0b8b9de4e3459c896fda1485d4c71fb98704e720..e5c6bc34da6108477ed681c44915e304bb3cae98 100644
 --- a/lib/goto.js

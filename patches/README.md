@@ -84,6 +84,21 @@ skips `block_updated` while `digging`; the dig's own completion keeps its normal
 world changes during the (short) dig are picked up by the next re-plan. Regression:
 `pnpm dev:mc:upstream-nav` step 4 (`dug=2` on the capped wall, foot cell verified open).
 
+**Weighted A* expansion bias (M2 search budget, batch 28).** `lib/astar.js` reads
+`movements.heuristicWeight` (default 1 = upstream ordering) and scales the heuristic for expansion
+ordering only: g costs, move legality, `isEnd` and `bestNode` selection (monotonic in h) are
+untouched, and the `searchRadius`/`maxCost` futility bound keeps the **raw** heuristic scale so
+radius semantics stay upstream-compatible regardless of the weight. Rationale: the euclidean
+heuristic grossly underestimates climbing cost, so the unweighted search floods the terrain contour
+around hills — measured on the real server, a 24-block natural hilltop crossing explored 58k nodes
+and died at the 5s think budget (registered residual of the G25 closure), and a gain-16 hill probe
+explored 10,974 nodes in 428ms. Weight 3 (set by `applyMovementsConfig`, the single Movements
+config source) probes at 556 nodes / 11ms (÷20) for +6.7% path cost, deterministically across
+repeats; a T0 fixture (Manhattan cone hill, goal beyond it) pins default-parity, the ÷3 node
+reduction and bounded cost. Regressions watched on the real gates: `dev:mc:upstream-nav` three
+consecutive 7/7 runs at weight 3 (gate/dig steps run slightly longer — the costlier-but-faster-found
+paths are a few percent longer), `dev:mc:climb` 6/6, `dev:mc:terrain-nav` 6/6.
+
 `allowParkour` is disabled in our adapter (`driver/mineflayer/pathfinder.ts`) — the executor cannot
 hold parkour nodes reliably.
 

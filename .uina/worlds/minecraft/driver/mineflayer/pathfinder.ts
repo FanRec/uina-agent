@@ -43,6 +43,8 @@ interface PathfinderMovements {
 	allow1by1towers: boolean;
 	canOpenDoors: boolean;
 	scafoldingBlocks: number[];
+	/** 补丁扩展字段：A* 扩展偏置（1 = 上游原序）。 */
+	heuristicWeight: number;
 }
 
 const { pathfinder, Movements } = pathfinderModule;
@@ -82,6 +84,15 @@ export function loadPathfinderPlugin(bot: MineflayerBot): void {
 }
 
 /**
+ * A* 启发式扩展偏置（补丁消费 movements.heuristicWeight）。欧氏启发式在爬升地形
+ * 严重低估真实代价，无偏置的搜索会沿山体等高线泛洪——实测 24 格山头穿越 5s think
+ * budget 搜不出（5.8 万节点 Timeout，known-gaps G25 残余）。真服画像（dev/nav-perf-probe）：
+ * 同一自然山头 w=1 → 10,974 节点/428ms，w=3 → 556 节点/12ms（÷20），路径代价 +6.7%、
+ * 步数更少，且跨次完全确定；平地/水域对照无害。合法性与 g 代价不动，只改扩展顺序。
+ */
+const SEARCH_HEURISTIC_WEIGHT = 3;
+
+/**
  * 导航选项 → Movements 字段的唯一赋值口径：活动导航（configureMovements）与只读
  * 试算（planPath/planEscape）共用，防止第三份配置漂移（driver.md §9.1、§2.11）。
  * Disabling placements removes usable scaffolding as well as towers: bridging and jump supports
@@ -98,6 +109,7 @@ function applyMovementsConfig(
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
 	movements.allowParkour = false;
+	movements.heuristicWeight = SEARCH_HEURISTIC_WEIGHT;
 	// 上游默认关（闭门 useOne 会再"用一下"把开着的门关上）；补丁已修为仅闭门
 	// 生成 useOne 且执行器核验开门事实，开启门穿越能力（N04）。
 	movements.canOpenDoors = true;

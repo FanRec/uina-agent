@@ -14,7 +14,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeHarness, openHarness, waitForStill } from "./harness.js";
+import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
 import { type CallResult, makeScenario } from "./scenario.js";
 
 const USER = "UinaDev";
@@ -80,11 +80,28 @@ async function main(): Promise<void> {
 			metrics.push({ status, cost, visited: visitedNodes, generated: generatedNodes, time });
 		};
 		bot.on("path_update", onPathUpdate);
+		// 位置轨迹（2s 一拍）：失败时区分"原地打转"与"绕行不达"（terrain-nav 同款）。
+		const trace: Vec[] = [];
+		let tracing = true;
+		const sampler = (async () => {
+			while (tracing) {
+				await sleep(2000);
+				if (!tracing) break;
+				try {
+					const pos = await serverPos();
+					if (pos != null) trace.push(pos);
+				} catch {
+					/* 采样失败不影响导航本体 */
+				}
+			}
+		})();
 		let result: CallResult;
 		try {
 			result = await s.waitCall(spawned, budget + 15000);
 		} finally {
+			tracing = false;
 			sampling = false;
+			await sampler;
 			bot.removeListener("path_update", onPathUpdate);
 		}
 		const elapsed = Date.now() - started;
@@ -105,6 +122,10 @@ async function main(): Promise<void> {
 			dug: 0,
 			at,
 			search,
+			traceNote:
+				trace.length === 0
+					? "no samples"
+					: `trace=${trace.map((p) => `${p.x.toFixed(0)}/${p.y.toFixed(0)}/${p.z.toFixed(0)}`).join("→")}`,
 		};
 	};
 
@@ -166,9 +187,11 @@ async function main(): Promise<void> {
 			await s.command(`/setblock ${wx} ${GY + 1} ${z} minecraft:spruce_fence_gate[facing=east,open=false]`);
 			await reset({ x: wx - 6.5, y: GY + 1, z: z + 0.5 });
 			const target = { x: wx + 6, y: GY + 1, z };
-			const outcome = await nav(target, { placeToReach: false });
+			const outcome = await nav(target, { placeToReach: false, sample: true });
 			if (!outcome.ok)
-				throw new Error(`gate traversal failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms`);
+				throw new Error(
+					`gate traversal failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms at (${outcome.at.x.toFixed(1)},${outcome.at.y.toFixed(1)},${outcome.at.z.toFixed(1)}); searches ${outcome.search}; ${"traceNote" in outcome ? outcome.traceNote : ""}`,
+				);
 			const gate = await s.readBlock({ x: wx, y: GY + 1, z });
 			if (gate?.properties?.open !== "true")
 				throw new Error(`gate should be open: ${JSON.stringify(gate?.properties)}`);
@@ -193,7 +216,10 @@ async function main(): Promise<void> {
 			if ((inWater as { inWater?: boolean }).inWater !== true) throw new Error(`bot not in water at setup`);
 			const target = { x: hx + 5, y: GY + 1, z };
 			const outcome = await nav(target, { placeToReach: false });
-			if (!outcome.ok) throw new Error(`swim-out failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms`);
+			if (!outcome.ok)
+				throw new Error(
+					`swim-out failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms; searches ${outcome.search}; ${"traceNote" in outcome ? outcome.traceNote : ""}`,
+				);
 			if (outcome.elapsed > 20000) throw new Error(`swim-out too slow: ${outcome.elapsed}ms`);
 			return `swam out and arrived in ${outcome.elapsed}ms (server y=${outcome.at.y.toFixed(1)})`;
 		});
@@ -213,7 +239,10 @@ async function main(): Promise<void> {
 			await reset({ x: wx - 5.5, y: GY + 1, z: z + 0.5 });
 			const target = { x: wx + 7, y: GY + 1, z };
 			const outcome = await nav(target, { digThrough: true, placeToReach: false });
-			if (!outcome.ok) throw new Error(`digThrough failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms`);
+			if (!outcome.ok)
+				throw new Error(
+					`digThrough failed: ${outcome.code} ${outcome.message} in ${outcome.elapsed}ms; searches ${outcome.search}; ${"traceNote" in outcome ? outcome.traceNote : ""}`,
+				);
 			if (outcome.dug < 2) throw new Error(`digThrough arrived without digging through (dug=${outcome.dug})`);
 			// A* 可在 17 宽墙的任一列挖穿（等价代价，对角启发式选列），断言按目标行
 			// 附近 3 列核对：至少一列的脚层已通。
