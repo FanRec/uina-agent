@@ -93,6 +93,19 @@ const GOAL_DROP_GRACE_MS = 2500;
  * Stalled 收束。它不依赖任何上游状态，是看门狗的最终防线。
  */
 const ZERO_MOVE_STALL_MS = 10000;
+/**
+ * 圈禁判定：12s 内净位移仍很小、且一次也没有比历史最近距离更近（差 0.5 格以上），
+ * 就不再算"在路上"。
+ *
+ * 为什么单靠上面两条挡不住：批34 基线里 bot 在 3x3x3 的井底洞里对着 10 格高的目标
+ * 来回走，每 3s 位移都有 2~3 格（台阶来回）、也从不静止，两条看门狗都判它有进展，
+ * 于是烧满 90s 墙钟。真正缺的是"有没有更靠近"。
+ * 为什么不能只看"没更靠近"：绕行会合法地长时间不缩短直线距离（见上面 STALL_WINDOW_MS
+ * 的注释），所以再加一条净位移上限——绕行会走出 6 格以外，原地打转不会。
+ */
+const LOITER_WINDOW_MS = 12000;
+const LOITER_NET_DISPLACEMENT = 6;
+const LOITER_MIN_GAIN = 0.5;
 
 /** GoalNear 的判定口径：节点（整数格）之间的 3D 距离。 */
 function nodeGap(a: Vec3, b: Vec3): number {
@@ -374,6 +387,10 @@ export class GotoDirector {
 			let digSince = 0;
 			let lastMoveAt = Date.now();
 			let lastTickPos: Vec3 | null = null;
+			// 圈禁判定状态：12s 位置环 + 历史最近距离。
+			const loiter: { at: number; pos: Vec3 }[] = [];
+			let bestGap = Number.POSITIVE_INFINITY;
+			let bestGapAt = 0;
 			const watchdog = setInterval(() => {
 				const now = Date.now();
 				const pos = fromMineflayerVec3(bot.entity.position);
@@ -411,6 +428,39 @@ export class GotoDirector {
 						}),
 					);
 					return;
+				}
+				// 圈禁：一直在动、却既没走远也没更靠近，等于在做做不到的动作。
+				if (pos != null) {
+					loiter.push({ at: now, pos });
+					// 多留一个窗口的余量，才取得到"正好跨满 12s"的参照帧（剪到 12s 就永远取不到）。
+					while (loiter.length > 0 && now - loiter[0]!.at > LOITER_WINDOW_MS * 2) loiter.shift();
+					let ref: { at: number; pos: Vec3 } | null = null;
+					for (const entry of loiter) {
+						if (now - entry.at >= LOITER_WINDOW_MS) ref = entry;
+						else break;
+					}
+					const gap = Math.hypot(pos.x - request.at.x, pos.y - request.at.y, pos.z - request.at.z);
+					if (bestGapAt === 0) {
+						bestGap = gap;
+						bestGapAt = now;
+					} else if (gap <= bestGap - LOITER_MIN_GAIN) {
+						bestGap = gap;
+						bestGapAt = now;
+					}
+					if (ref != null) {
+						const net = Math.hypot(pos.x - ref.pos.x, pos.y - ref.pos.y, pos.z - ref.pos.z);
+						if (net <= LOITER_NET_DISPLACEMENT && now - bestGapAt >= LOITER_WINDOW_MS) {
+							finish(
+								Object.assign(
+									new Error(
+										`moved ${net.toFixed(1)} blocks net in ${LOITER_WINDOW_MS / 1000}s without closing the ${bestGap.toFixed(1)}-block gap`,
+									),
+									{ name: "NoCloser", gap, bestGap },
+								),
+							);
+							return;
+						}
+					}
 				}
 				if (!pathfinderGoalActive(bot)) {
 					// 上膛后 goal 消失 = 上游清了路径与 goal 却未结算 promise（resetPath 形态）。
@@ -490,6 +540,19 @@ export class GotoDirector {
 				hint: "inspect the obstacle at the reported position, or allow digThrough / pick a nearer target",
 				dispatch: "sent",
 				progress,
+				effects: [eff],
+				recoverable: true,
+			});
+		}
+		if (name === "NoCloser") {
+			const detail = outcome as Error & { gap?: number; bestGap?: number };
+			return fail({
+				code: "UNREACHABLE",
+				source: "world",
+				message: `navigation moved for ${LOITER_WINDOW_MS / 1000}s without getting closer than ${(detail.bestGap ?? 0).toFixed(1)} blocks; the last stretch needs a climb or a jump this space does not allow`,
+				hint: "dig a stair tunnel toward the target (tunnel@1), or aim at a target on the same level",
+				dispatch: "sent",
+				progress: { ...progress, gap: detail.gap ?? null, bestGap: detail.bestGap ?? null },
 				effects: [eff],
 				recoverable: true,
 			});

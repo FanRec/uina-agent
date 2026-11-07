@@ -2,7 +2,7 @@
 
 Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游玩完整 Java 原版 Minecraft。
 
-更新时间：2026-11-05（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
+更新时间：2026-11-07（Asia/Shanghai，批34）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
 
 ## 当前状态
 
@@ -16,13 +16,15 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | Executor（Uina 接入、IPC、进程与通知） | 批 4 Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本；批 6 正式 WorldDef、请求凭证、可靠通知与 BodyEndpoint；批25 双根 + close 三事实 + connection.wait + blocked 重试语义 | 2026-11-05 |
 | Host 持久交付接缝 | 批 5：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定 | 2026-10-25 |
 | Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行、正式入口、快照与取消；9A 可等待查询与 waitUntil；9B 决策/checkpoint；批10 feedback/loop；批21 priority 透传 | 2026-11-03 |
-| 真实 Minecraft 游玩验收 | 真服场景 25 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查各有独立验收）；确定性回归 tests/mc 85 文件 **716/716**（vmThreads，重负载限 4 worker）；真模型 30 分钟窗口 G14 待跑 | 2026-11-05 |
+| refactor-v2（批次 A 导航 / 批次 B 战斗+施工+探索） | **批26–33 已实施并真服验证**（01-DESIGN 的"待实施"口径已过时）：G25 贴角对角线+Paper 贴面回弹双根因修复（三补丁入库）、G26/G27 关闭（upstream-nav 7/7）、A* 启发式加权 w=3（批28）、fight@1 近身拍 context steering + feedback 流 + fuse 感知（批29/33）、build@1 站位分区批量（批30）、explore@1 前沿覆盖重写（批32）；剩余 = 批次 C（M7 生存/M8 生产/M9 体验/M10 收敛）未开工 | 2026-11-07 |
+| 任务级基线（批34） | `dev:mc:task` 三任务竞技场（SHELTER/MINE/NIGHT，完整 Program，终态服务端判决，失败强制归因，记录落 task-runs/）；暴露 mine 回程六轮全挂 → 探针钉死执行器缺陷集群登记 **G30**；goto 圈禁看门狗 NoCloser；场地自毁修复（矿石格=阶梯末级踏步块） | 2026-11-07 |
+| 真实 Minecraft 游玩验收 | 真服场景 35 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查各有独立验收）+ 任务级基线 `dev:mc:task`；确定性回归 tests/mc 100 文件 **782/782**（vmThreads，重负载限 4 worker）；真模型 30 分钟窗口 G14 待跑 | 2026-11-07 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件，SessionController 拥有会话生命周期。
 
-**下一步与当前状态分开**：按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 0–19 依次接通原生入口、Program/Library、等待/决策 I2、反馈与默认自保、领域记录、移动鲁棒性、地形切片、蓝图施工、专用工作站、地图图片出口、K8 活动与 transit（**能力面 51/51**）；批 20–22 关闭 G6/G7/G8、G9/G10/G24、G15（残余 G25）与 G16 断电子项；批 23 审查修复轮（断线证据链/聊天 channel/事件补发/生存重试/recover 重建/Watch 类别化 + 简化批）；批 24 方案 01 收尾（F4 静态 Catalog + F5 Driver 分离）；批 25 多世界自治 v3 第一阶段（M1+M2+M3.1，设计合同 [multi-world-v3.md](multi-world-v3.md)）。剩余横向缺口见 [known-gaps.md](known-gaps.md)：G12/G13（需授权账号/目标硬件）、G14（真模型 30 分钟窗口，待跑）、G25（lane 侧隙绕柱执行器残余）、G16 子项、G17；v3 剩余（批26）：RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4 迁移仪式。
+**下一步与当前状态分开**：按 [总规划 §10](development-plan.md#10-剩余施工总纲2026-10-25-重排)，批 0–19 依次接通原生入口、Program/Library、等待/决策 I2、反馈与默认自保、领域记录、移动鲁棒性、地形切片、蓝图施工、专用工作站、地图图片出口、K8 活动与 transit（**能力面 51/51**）；批 20–22 关闭 G6/G7/G8、G9/G10/G24、G15（残余 G25）与 G16 断电子项；批 23 审查修复轮；批 24 方案 01 收尾；批 25 多世界自治 v3 第一阶段（M1+M2+M3.1）；批 26–33 refactor-v2 批次 A/B（导航端到端 + 战斗/施工/探索，进度唯一真源见 [总规划 §10.3](development-plan.md)）；批 34 任务级基线（G30 登记，mine 回程待执行器专项）。**批35 方向**：G30 执行器专项（跳跃决策按批19 实测方法重做 + 塔升接续 + 精确重入）与 collect 东壁漏采，随后 G14 真模型 30 分钟窗口（`dev/i2.ts` 就绪待跑）与批次 C（M7/M8）。剩余横向缺口见 [known-gaps.md](known-gaps.md)：G12/G13（需授权账号/目标硬件）、G14（待跑）、G28（水中爬岸）、G29 残余（苦力怕击杀路径）、G30（自挖走廊逆行/自由导航爬阶）、G16 子项、G17；v3 剩余：RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4 迁移仪式。
 
-各历史轮次的设计取舍与验收证据统一见 [changelog.md](changelog.md) 与 [archive/](archive/README.md)；真服场景入口见 `package.json` 的 `dev:mc:*`（25 个）与 `dev/MC-WORLD.md`。
+各历史轮次的设计取舍与验收证据统一见 [changelog.md](changelog.md) 与 [archive/](archive/README.md)；真服场景入口见 `package.json` 的 `dev:mc:*`（35 个）与 `dev/MC-WORLD.md`。
 
 ## 文档地图
 

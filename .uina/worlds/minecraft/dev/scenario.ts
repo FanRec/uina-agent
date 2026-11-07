@@ -66,6 +66,16 @@ export interface SpawnedCall {
 	requestId: string;
 }
 
+/** 服务端对"世界里有没有这个东西"的判决，取自 `/execute if` 的回执文本。 */
+export interface ServerInventory {
+	counts: Record<string, number>;
+	/** server = `/data get` 解析成功；client = 回执被截断，退回 inventory@1 并如实标注。 */
+	source: "server" | "client";
+	truncated: boolean;
+	/** 解析为空时的回执原文摘录：区分"真的空背包"与"回执形状没认出"。 */
+	raw?: string;
+}
+
 export interface Scenario {
 	call: (ref: string, input: JsonValue, timeoutMs?: number) => Promise<CallResult>;
 	/** 后台派发：submit 后立即返回 run 引用（follow/fight 的"会话期间操作世界"用）。 */
@@ -85,6 +95,23 @@ export interface Scenario {
 	serverData: (selector: string, path: string) => Promise<string>;
 	/** 服务端真值坐标：/data get Pos 的解析结果（解析失败返回 null）。 */
 	serverPos: (selector: string) => Promise<Vec3 | null>;
+	/** 发任意指令并返回它之后到达的第一条服务端回执文本（按事件游标切窗，不吃旧消息）。 */
+	serverReply: (command: string) => Promise<string>;
+	/** `/execute if ...` 的布尔判决；回执既非 passed 也非 failed 时抛错，不猜。 */
+	serverProbe: (command: string) => Promise<boolean>;
+	/** 逐格方块断言（结构核验用）。 */
+	serverBlock: (at: Vec3, name: string) => Promise<boolean>;
+	/** 服务端库存：/data get Inventory 解析；截断时退回 inventory@1 并标 source=client。 */
+	serverInventory: (selector?: string) => Promise<ServerInventory>;
+	/** 服务端血量与饥饿值（/data get Health 与 food）。 */
+	serverHealth: (selector?: string) => Promise<{ health: number | null; food: number | null }>;
+	/** 从游标起算某类事件；死亡计数必须这样取，否则历史事件会污染本次判定。 */
+	eventsSince: (
+		after: string | null,
+		kinds?: ("chat" | "damage" | "death" | "connection")[],
+	) => Promise<{ events: { payload?: unknown }[]; after: string | null }>;
+	/** 当前事件游标（用于开窗前记录基线）。 */
+	eventCursor: (kinds?: ("chat" | "damage" | "death" | "connection")[]) => Promise<string | null>;
 	step: (name: string, run: () => Promise<string>) => Promise<void>;
 	/** 打印汇总并设置退出码；返回失败条数。 */
 	finish: () => number;
@@ -204,26 +231,109 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		await sleep(350);
 	};
 
-	const serverData = async (selector: string, path: string): Promise<string> => {
-		await call("chat@1", { text: `/data get entity ${selector} ${path}` });
-		await sleep(500);
-		// /data get 回执是 system 消息（sender=null，不会被 facts 层的自身回声过滤丢弃）；
-		// events@1 升序返回，场景无并发聊天，最新匹配即本次回执。
-		const observation = await world.read<{ events?: { payload?: unknown }[] }>({
+	const eventText = (payload: unknown): string => {
+		// chat 事件的正文就在 payload.text；直接取可以避开 JSON 转义（`id: \"x\"` 会让字段正则失配）。
+		if (payload != null && typeof payload === "object" && typeof (payload as { text?: unknown }).text === "string") {
+			return (payload as { text: string }).text;
+		}
+		const raw = JSON.stringify(payload ?? "");
+		const match = /"text":"((?:[^"\\]|\\.)*)"/.exec(raw);
+		return match != null ? match[1] : raw;
+	};
+
+	const eventCursor = async (kinds: ("chat" | "damage" | "death" | "connection")[] = ["chat"]) => {
+		const observation = await world.read<{ after?: string | null }>({
 			ref: "events@1",
-			input: { limit: 40, kinds: ["chat"] },
+			input: { limit: 1, kinds },
 		});
-		const texts = (observation.value?.events ?? []).map((event) => {
-			const raw = JSON.stringify(event.payload ?? "");
-			const match = /"text":"((?:[^"\\]|\\.)*)"/.exec(raw);
-			return match != null ? match[1] : raw;
+		return observation.value?.after ?? null;
+	};
+
+	const eventsSince = async (
+		after: string | null,
+		kinds: ("chat" | "damage" | "death" | "connection")[] = ["death"],
+	) => {
+		const observation = await world.read<{ events?: { payload?: unknown }[]; after?: string | null }>({
+			ref: "events@1",
+			input: { limit: 200, kinds, ...(after != null ? { after } : {}) },
 		});
-		for (let i = texts.length - 1; i >= 0; i--) {
-			if (texts[i].includes("has the following entity data") || texts[i].includes("Found no elements matching")) {
-				return texts[i];
-			}
+		return { events: observation.value?.events ?? [], after: observation.value?.after ?? null };
+	};
+
+	/**
+	 * 按事件游标切窗发指令：先记游标、再发、只读窗内新事件。
+	 * 旧实现扫最近 40 条并靠关键字匹配，历史回执与本轮回复无法区分（并发聊天即误判）。
+	 */
+	const serverReply = async (command: string): Promise<string> => {
+		const cursor = await eventCursor();
+		const result = await call("chat@1", { text: command });
+		if (!result.ok) throw new Error(`command failed: ${command} -> ${result.code} ${result.message ?? ""}`);
+		// 回执可能晚于固定等待到达：轮询到窗内出现消息为止（上限 2s），而不是猜一个 sleep。
+		const deadline = Date.now() + 2000;
+		let texts: string[] = [];
+		while (texts.length === 0 && Date.now() < deadline) {
+			await sleep(150);
+			const observation = await world.read<{ events?: { payload?: unknown }[] }>({
+				ref: "events@1",
+				input: { limit: 20, kinds: ["chat"], ...(cursor != null ? { after: cursor } : {}) },
+			});
+			texts = (observation.value?.events ?? []).map((event) => eventText(event.payload));
 		}
 		return texts.at(-1) ?? "NO_OUTPUT";
+	};
+
+	const serverProbe = async (command: string): Promise<boolean> => {
+		const text = await serverReply(command);
+		if (text.includes("Test passed")) return true;
+		if (text.includes("Test failed")) return false;
+		throw new Error(`unrecognized /execute reply: ${text}`);
+	};
+
+	const serverBlock = async (at: Vec3, name: string): Promise<boolean> => {
+		const block = name.startsWith("minecraft:") ? name : `minecraft:${name}`;
+		return await serverProbe(`/execute if block ${Math.floor(at.x)} ${Math.floor(at.y)} ${Math.floor(at.z)} ${block}`);
+	};
+
+	const serverInventory = async (selector = process.env.MC_DEV_USER ?? "UinaDev"): Promise<ServerInventory> => {
+		const text = await serverData(selector, "Inventory");
+		if (text.includes("Found no elements matching") || text.includes("does not have the following entity data")) {
+			return { counts: {}, source: "server", truncated: false };
+		}
+		const truncated = text.includes("...");
+		const counts: Record<string, number> = {};
+		if (!truncated) {
+			for (const chunk of text.split(/\},\s*\{/)) {
+				const id = /id:\s*"(?:minecraft:)?([a-z0-9_]+)"/.exec(chunk)?.[1];
+				const count = /count:\s*(\d+)/.exec(chunk)?.[1];
+				if (id != null && count != null) counts[id] = (counts[id] ?? 0) + Number(count);
+			}
+		}
+		// 回执被截断时不猜：退回客户端视图（它同样由服务端包推进）并如实标注来源。
+		if (truncated) return { counts: (await readInventory()).counts, source: "client", truncated };
+		return {
+			counts,
+			source: "server",
+			truncated,
+			...(Object.keys(counts).length === 0 ? { raw: text.slice(0, 300) } : {}),
+		};
+	};
+
+	const serverHealth = async (
+		selector = process.env.MC_DEV_USER ?? "UinaDev",
+	): Promise<{ health: number | null; food: number | null }> => {
+		const parse = (text: string): number | null => {
+			const match = /entity data:\s*(-?[\d.]+)/.exec(text);
+			return match == null ? null : Number(match[1]);
+		};
+		const health = parse(await serverData(selector, "Health"));
+		const food = parse(await serverData(selector, "foodLevel"));
+		return { health, food };
+	};
+
+	const serverData = async (selector: string, path: string): Promise<string> => {
+		const text = await serverReply(`/data get entity ${selector} ${path}`);
+		// 命令回执有两种形状：拿到数据与"没有这个标签"。都不匹配时把原文交回调用方判断。
+		return text;
 	};
 
 	const serverPos = async (selector: string): Promise<Vec3 | null> => {
@@ -266,6 +376,13 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		command,
 		serverData,
 		serverPos,
+		serverReply,
+		serverProbe,
+		serverBlock,
+		serverInventory,
+		serverHealth,
+		eventsSince,
+		eventCursor,
 		step,
 		finish,
 		log,

@@ -91,6 +91,39 @@ describe("tunnel corridor planning", () => {
 		for (const column of flat) expect(column.digCeiling).toBe(false);
 	});
 
+	// 批34：挖下去的走廊必须能自己走回来。下行 1:1 阶梯逆行时，每一级踏步的
+	// 起跳列（低位列）需要 floor..floor+2 三格净空——2 格净空里起跳被天花板削顶
+	// （脚只能抬 ~0.2），bot 永远跳不上自己挖的台阶（批34 mine 基线 6 轮 returned
+	// 全挂、探针 v2-v5 实证）。净空由下坡檐块规则提供，这里锁死为回归不变量。
+	test("descending ramp leaves 3-block jump clearance at every riser for the return climb", () => {
+		const columns = planCorridor(at(0, 64, 0), at(10, 54, 0), "1x2", "auto");
+		expect(columns).toHaveLength(11);
+		for (let i = 1; i < columns.length; i++) {
+			const lowerIdx = columns[i]!.floor.y < columns[i - 1]!.floor.y ? i : i - 1;
+			const lower = columns[lowerIdx]!;
+			const ys = new Set(lower.cells.map((cell) => cell.y));
+			for (let y = lower.floor.y; y <= lower.floor.y + 2; y++) {
+				expect(ys.has(y), `riser ${i}: lower column ${lower.floor.x},${lower.floor.y} missing clearance y=${y}`).toBe(
+					true,
+				);
+			}
+		}
+	});
+
+	test("flat-then-descend L keeps the descent risers climbable in reverse", () => {
+		const columns = planCorridor(at(0, 64, 0), at(4, 61, 0), "1x2", "auto");
+		// 平地段 0..2 恒高， descend 段 3..4。
+		for (let i = 1; i < columns.length; i++) {
+			const lowerIdx = columns[i]!.floor.y < columns[i - 1]!.floor.y ? i : i - 1;
+			const lower = columns[lowerIdx]!;
+			const upperY = Math.max(columns[i]!.floor.y, columns[i - 1]!.floor.y);
+			const ys = new Set(lower.cells.map((cell) => cell.y));
+			for (let y = lower.floor.y; y <= upperY + 1; y++) {
+				expect(ys.has(y), `riser ${i}: lower column missing y=${y}`).toBe(true);
+			}
+		}
+	});
+
 	test("stairs auto falls back to a shaft when horizontal steps run out", () => {
 		const columns = planCorridor(at(0, 64, 0), at(1, 68, 0), "1x2", "auto");
 		const ys = columns.map((column) => column.floor.y);
