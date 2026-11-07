@@ -243,6 +243,130 @@ describe("Subject", () => {
 		).toEqual(["external-1", "internal-1"]);
 	});
 
+	// 同一世界事件（external）与执行完成（internal）属于同一段经历：按到达顺序一次读完，
+	// 不能因为 origin 不同就拆成两个回合——那会让模型先按半个因果决定、下一条再推翻。
+	test("同一世界的事件与完成跨 origin 合批为一次请求", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{
+				id: "mc-event",
+				order: 1,
+				mode: "followUp",
+				text: "玩家私聊：先采木头",
+				source: { kind: "runtime", type: "minecraft_event", ref: "minecraft", origin: "external", channel: "world" },
+			},
+			{
+				id: "mc-completion",
+				order: 2,
+				mode: "followUp",
+				text: "采集完成：16/16",
+				source: {
+					kind: "runtime",
+					type: "minecraft_completion",
+					ref: "minecraft",
+					origin: "internal",
+					channel: "world",
+				},
+			},
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		expect(scenario.calls).toHaveLength(1);
+		// 合批只改变消费回合：两条仍是各自独立的持久记录。
+		expect(
+			harness.subject
+				.historySnapshot()
+				.filter((message) => message.id === "mc-event" || message.id === "mc-completion")
+				.map((message) => message.id),
+		).toEqual(["mc-event", "mc-completion"]);
+	});
+
+	test("用户发言切断同一世界的合批", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{
+				id: "mc-before",
+				order: 1,
+				mode: "followUp",
+				text: "木头采集完成",
+				source: {
+					kind: "runtime",
+					type: "minecraft_completion",
+					ref: "minecraft",
+					origin: "internal",
+					channel: "world",
+				},
+			},
+			{
+				id: "user-stop",
+				order: 2,
+				mode: "followUp",
+				text: "先别建了，回来",
+				source: { kind: "user", type: "user-input" },
+			},
+			{
+				id: "mc-after",
+				order: 3,
+				mode: "followUp",
+				text: "建筑失败：缺材料",
+				source: {
+					kind: "runtime",
+					type: "minecraft_completion",
+					ref: "minecraft",
+					origin: "internal",
+					channel: "world",
+				},
+			},
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		// 真实先后顺序不能为合并让步：MC → 用户 → MC 必须是三个回合。
+		expect(scenario.calls).toHaveLength(3);
+	});
+
+	test("同一世界的 steer 插队先处理，但不吞掉排队中的 follow-up", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{
+				id: "mc-slow",
+				order: 1,
+				mode: "followUp",
+				text: "走很远才到达",
+				source: { kind: "runtime", type: "minecraft_event", ref: "minecraft", origin: "external", channel: "world" },
+			},
+			{
+				id: "mc-urgent",
+				order: 2,
+				mode: "steer",
+				text: "紧急断电：服务器关了",
+				source: { kind: "runtime", type: "minecraft_event", ref: "minecraft", origin: "external", channel: "world" },
+			},
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		expect(scenario.calls).toHaveLength(2);
+		const contains = (index: number, needle: string): boolean =>
+			JSON.stringify(scenario.calls[index]!.messages).includes(needle);
+		expect(contains(0, "紧急断电")).toBe(true);
+		expect(contains(0, "走很远才到达")).toBe(false);
+		expect(contains(1, "走很远才到达")).toBe(true);
+	});
+
 	// 合批判据是 kind === "runtime"（来源种类），不是某个频道的名字。
 	// 无 channel 的 runtime followUp 同样合批为单次请求，防止内核重新认识扩展词汇。
 	test("无 channel 的 runtime follow-up 同样合批消费", async () => {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { ChatMsg, RequestProjection } from "../src/core/types.js";
+import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
 import { WORLD_HOST_EVENT_TYPES, type WorldDef } from "../src/extensions/world-framework/types.js";
 import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
@@ -80,6 +82,132 @@ describe("world framework host event 透传", () => {
 		expect(pi.listenerCount("agent_settled")).toBe(1);
 		await activation.stop();
 		expect(pi.listenerCount("agent_settled")).toBe(0);
+	});
+});
+
+/** 只记 hook 注册的 pi：requestContext 接缝只依赖 onHook（tail 相位）。 */
+function makeHookPi() {
+	const hooks: { hook: string; handler: (input: RequestProjection) => unknown; tail?: boolean }[] = [];
+	const pi = {
+		subject: undefined,
+		cwd: process.cwd(),
+		submitInput: async () => {},
+		registerTool: () => () => {},
+		on: () => () => {},
+		onHook: (hook: string, handler: (input: RequestProjection) => unknown, options?: { tail?: boolean }) => {
+			const entry = { hook, handler, ...(options?.tail ? { tail: true } : {}) };
+			hooks.push(entry);
+			return () => {
+				const index = hooks.indexOf(entry);
+				if (index >= 0) hooks.splice(index, 1);
+			};
+		},
+	};
+	return { pi, hooks };
+}
+
+const projectionOf = (messages: ChatMsg[]): RequestProjection => ({
+	projectionId: "p",
+	modelKey: "m",
+	messages,
+	tools: [],
+});
+
+const { projection: framePolicy } = createEventFrameProfile();
+
+async function activateWith(
+	requestContext: WorldDef["requestContext"],
+): Promise<{ activation: WorldActivation; hooks: ReturnType<typeof makeHookPi>["hooks"] }> {
+	const { pi, hooks } = makeHookPi();
+	const definition = makeDef({ requestContext });
+	const activation = new WorldActivation(definition, {
+		pi: pi as never,
+		runtime: { definition, enabled: true },
+		worldName: "test-world",
+		notifyExposed: () => {},
+	});
+	await activation.start();
+	return { activation, hooks };
+}
+
+describe("world requestContext 接缝", () => {
+	it("以 tail 相位注册，投影尾部追加一条协议完整的观察帧", async () => {
+		const { activation, hooks } = await activateWith(async () => "overworld (1,64,2) 生命20/20");
+		try {
+			expect(hooks).toHaveLength(1);
+			expect(hooks[0]!.hook).toBe("turn.transformContext");
+			expect(hooks[0]!.tail).toBe(true);
+			const base = projectionOf([{ role: "user", content: "玩家：挖木头" }]);
+			const result = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
+			const messages = result.projection.messages;
+			expect(messages).toHaveLength(4);
+			expect(messages[0]).toEqual({ role: "user", content: "玩家：挖木头" });
+			expect(messages[1]!.role).toBe("user");
+			expect(messages[1]!.content).toContain("test-world 观察");
+			expect(messages[1]!.content).toContain("非用户输入");
+			const receipt = JSON.parse(messages[3]!.content) as { text: string };
+			expect(receipt.text).toBe("overworld (1,64,2) 生命20/20");
+			// 帧组必须自洽：分组/调用配对/回执来源都可校验。
+			expect(() => framePolicy.validateContext(messages)).not.toThrow();
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("内容相同的两次请求产生同一 eventId（帧逐字节稳定）", async () => {
+		const { activation, hooks } = await activateWith(async () => "静止状态");
+		try {
+			const base = projectionOf([{ role: "user", content: "hi" }]);
+			const first = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
+			const second = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
+			expect(second.projection.messages).toEqual(first.projection.messages);
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("返回 null 或空白时不注入，投影保持原样", async () => {
+		const { activation, hooks } = await activateWith(async () => "  ");
+		try {
+			const base = projectionOf([{ role: "user", content: "hi" }]);
+			expect(await hooks[0]!.handler(base)).toBeUndefined();
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("世界侧取不到正文（抛错）就不注入，不把模型请求挂住", async () => {
+		const { activation, hooks } = await activateWith(async () => {
+			throw new Error("executor unavailable");
+		});
+		try {
+			expect(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))).toBeUndefined();
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("取正文超时不注入：宁缺一份快照，不挂住请求", async () => {
+		const { activation, hooks } = await activateWith(() => new Promise<string>(() => {}));
+		try {
+			const started = Date.now();
+			expect(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))).toBeUndefined();
+			expect(Date.now() - started).toBeLessThan(2000);
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("停用后摘除 handler；未声明 requestContext 的世界不注册", async () => {
+		const { activation, hooks } = await activateWith(async () => "x");
+		expect(hooks).toHaveLength(1);
+		await activation.stop();
+		expect(hooks).toHaveLength(0);
+
+		const { activation: bare } = await activateWith(undefined);
+		const bareHooks = makeHookPi();
+		expect(bareHooks.hooks).toHaveLength(0);
+		await bare.stop();
 	});
 });
 
