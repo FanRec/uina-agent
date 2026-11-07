@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import type { ChatMsg } from "../../core/types.js";
+import { appendTailFrame, buildEventFrameGroup, contentAddressedEventId } from "../event-frames/index.js";
 import { ResourceScope } from "../lifecycle-scope.js";
 import type { ExtensionAPI } from "../runner.js";
 import {
@@ -9,6 +11,30 @@ import {
 	type WorldRuntime,
 } from "./types.js";
 import { createWorldTool } from "./world-tool.js";
+
+/**
+ * 请求前观察正文的取用上限。采样是本地内存读，正常在毫秒级；超过这个量级说明世界侧
+ * 已经卡住，此时宁可不注入快照，也不能把模型请求一起挂住。
+ */
+const REQUEST_CONTEXT_TIMEOUT_MS = 250;
+
+/** 请求前观察帧的通知文案：说清"是什么"（快照）、"不是什么"（输入/委托）。 */
+function observationNotice(worldName: string): string {
+	return `[${worldName} 观察] 你此刻所在世界的最新可用快照（环境感知信息，非用户输入，不是新的委托，无需专门回应）；正文在随后的 external_event_frame 回执中。`;
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error("world deactivated"));
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`request context exceeded ${ms}ms`)), ms);
+		const abort = () => reject(new Error("world deactivated"));
+		signal.addEventListener("abort", abort, { once: true });
+		void work.then(resolve, reject).finally(() => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", abort);
+		});
+	});
+}
 
 export interface WorldActivationHost {
 	readonly pi: ExtensionAPI;
@@ -39,6 +65,7 @@ export class WorldActivation {
 	async start(): Promise<void> {
 		try {
 			await this.definition.onStart?.(this.context);
+			this.registerRequestContext();
 			const rawTool = createWorldTool(this.definition, {
 				getRuntime: () => this.host.runtime,
 			});
@@ -58,6 +85,47 @@ export class WorldActivation {
 			await this.rollback(cause);
 			throw cause;
 		}
+	}
+
+	/**
+	 * 请求前观察帧：世界提供正文，框架负责包成瞬态帧接进模型投影。
+	 *
+	 * 用 tail 相位：无论其他扩展先后注册，观察帧恒排在一切历史注入之后，作为"此刻"的
+	 * 最后一段。帧的生命周期跟随 world activation（`track`），世界停用即摘除 handler。
+	 */
+	private registerRequestContext(): void {
+		const provide = this.definition.requestContext;
+		if (!provide) return;
+		const { pi } = this.host;
+		const name = this.definition.name;
+		this.track(
+			pi.onHook(
+				"turn.transformContext",
+				async (projection) => {
+					if (!this.scope.active) return;
+					let text: string | null;
+					try {
+						text = await withTimeout(provide(), REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
+					} catch {
+						// 取不到就不注入：缺一份快照是小事，挂住模型请求不是。
+						return;
+					}
+					if (text == null || text.trim() === "") return;
+					const appended = appendTailFrame(
+						projection.messages,
+						buildEventFrameGroup({
+							eventId: contentAddressedEventId(`world:${name}:state`, text),
+							text,
+							notice: observationNotice(name),
+							source: { kind: "runtime", type: "runtime.observation", origin: "internal" },
+						}),
+					);
+					if (!appended) return;
+					return { projection: { ...projection, messages: appended.messages as ChatMsg[] } };
+				},
+				{ tail: true },
+			),
+		);
 	}
 
 	async stop(): Promise<void> {

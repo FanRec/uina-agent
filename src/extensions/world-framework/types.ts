@@ -155,6 +155,19 @@ export interface WorldDef {
 	actions: Record<string, ActionDef>;
 
 	/**
+	 * 每次模型请求前的瞬态观察正文（可选）。
+	 *
+	 * 与 onStart/onStop 的分工：那是生命周期，这是请求投影。返回值是给模型看的
+	 * 有界正文（此刻世界的可读快照），框架把它包成瞬态观察帧追加在请求尾部：
+	 * 不落 Session 历史、不产生 Subject 输入、不唤醒模型。返回 null 表示此刻无需注入。
+	 *
+	 * 实现必须**只读**：本方法在每次模型请求前运行（上下文检视也会触发），
+	 * 不得消费事件、推进投递水位、启动 Run 或产生任何外部副作用。
+	 * 状态快照失败时应返回"不可用"的明确正文，不得沿用上一次读到的值。
+	 */
+	requestContext?: () => Promise<string | null>;
+
+	/**
 	 * 工具执行模式声明（可选，默认 parallel）。
 	 * 有内部串行状态的世界（如 QQ 的单写方操作日志）声明 sequential，
 	 * 由 Broker 保证同一工具的调用不并发执行。
