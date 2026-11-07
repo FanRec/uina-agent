@@ -487,12 +487,12 @@ type ExploreTarget =
 ```
 
 - until 恰选一种目标；`{entity:"cow"}` 找指定生物，`{entity:{kind:"passive"}}` 找一类，player 仍按玩家名字匹配。不接受跨 guest 回调或任意条件 DSL。
-- 做：朝未访问过的方向走一段、扫一眼、再走；命中 `until` 即停。
-- 返回 `{found:{kind:"block"|"biome"|"player"|"entity",at,name,ref?:EntityRef},traveled,scanned}`；实体 ref 只在当前仍可核验跟踪代次时给出。先检查当前覆盖，再逐段移动、扫描，命中便停止本次探索控制；只读 players 中出现名字不算已找到位置。
+- 做：每站用 region 观察盒（水平 ±16、竖直 ±3）更新稀疏覆盖图，取"可站立且邻接未知格"的前沿，走向信息增益最大且 `route.plan` 可达的前沿、每站扫描；命中 `until` 即停。`direction` 只作评分偏置，不再是刚性轮转方向。
+- 返回 `{found:{kind:"block"|"biome"|"player"|"entity",at,name,ref?:EntityRef},traveled,scanned}`；实体 ref 只在当前仍可核验跟踪代次时给出。先检查当前覆盖，再进入探索控制循环；命中便停止本次探索控制；只读 players 中出现名字不算已找到位置。
 - 未满足 until 抛 NOT_FOUND/TIMEOUT，progress 保留 traveled/scanned，不把目标未找到报告成已完成。复杂组合条件由程序组织多次短探索与查询，不在原生目标中增加逻辑表达式。
 - 失败 `TIMEOUT`、`UNREACHABLE`、`INTERRUPTED`
 
-实现说明（2026-10-30 批11，冻结）：整个多段循环持有一次 `navigate` 控制作用域；每段按未访问方向 `goto`（段距 24、段容差 4、不挖不垫、段超时 min(45s, 余量)），每站扫描（blocks/entities 半径 32、biome 读 world@1）并推进 `progress{traveled,scanned}`。失败映射：预算耗尽仍有未走方向 → `TIMEOUT`；空间穷尽且一步未成（四方向从起点即不可达）→ `UNREACHABLE`；真实移动过后穷尽 → `NOT_FOUND`；控制被夺/断线如实上抛；全局取消 → `INTERRUPTED`。方向死 = 该方向上一段 `UNREACHABLE`；"未访问"按扫描点整数格计。玩家目标只认 tracked 实体（players 名单属 K6，名单出现名字不算位置）。
+实现说明（2026-11-07 批32，refactor-v2 M6 重写）：替换批11 的四向 24 格腿游标（一次 UNREACHABLE 整向判死、四腿走完即称穷尽，01-DESIGN §6 判不可信）。纯逻辑在 `shared/explore.ts`（ObservationMap：格状态 air/water/lava/solid、判死/到访记账、前沿提取；rankFrontiers/pickFrontier 确定性评分）。覆盖记忆限单次探索活动，只存 region 实际观测格（-1 未加载不入图，未知不是空气），不建第二世界数据库。选站 = 前沿按（未知邻增益 − 直线距离 − 岩浆危险 − 失败记账 + direction 偏置）启发式取 top5，`route.plan`（tolerance 2、不挖不垫）只读估价重排；全部候选被判不可达时不派发导航、软记账换批。单格失败只判死该格（goto `UNREACHABLE` 立即；goto `TIMEOUT` 与 plan 判不可达两次判死），不封方向。整个循环持有一次 `navigate` 控制作用域，段超时 min(45s, 余量)，每站推进 `progress{traveled,scanned}`。失败映射：预算耗尽仍有前沿 → `TIMEOUT`；起步即无前沿（如密封空间）→ `UNREACHABLE`；真实移动过后当前已知覆盖内无可达前沿 → `NOT_FOUND`（不声称未加载区域"探索完毕"）；控制被夺/断线如实上抛；全局取消 → `INTERRUPTED`；中途跨维度 → `WRONG_STATE`（覆盖图按维度分区，不跨维度混写）。可站立列 = 本格与头顶可通行（air/water）、脚下一格 solid；纯水下列不算（游泳不是探索步）。玩家目标只认 tracked 实体（players 名单属 K6，名单出现名字不算位置）。已知取舍：region 观察沿客户端已加载区块读取（透视墙体，与 blocks@1 同口径）；区块未加载边界处的前沿可能反复软判死——真实世界区块随移动加载，风险局限于围合死端。
 
 #### transit · `transit@1` · act · P2
 - 输入 `{ destination: { dimension: string, at?: Pos }, allow?: ["portal"|"minecart"|"boat"|"horse"], maxTimeMs?: 600000 }`

@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-11-07 · 批32 explore@1 前沿覆盖重写（四向游标退场，M6/批次 B 收口）
+
+explore@1 从四向 24 格腿游标替换为前沿覆盖探索（refactor-v2 M6，01-DESIGN §6"不建第二世界数据库"落地）：
+
+- **`shared/explore.ts` 重写**：`ObservationMap`（region 观察盒水平 ±16/竖直 ±3 入图，格状态 air/water/lava/solid，-1 未加载不入图即未知；visited/dead/attempts 三账本）+ `rankFrontiers`/`pickFrontier` 确定性评分（未知邻增益 − 距离 − 岩浆危险 − 失败记账 + direction 偏置；top5 走 route.plan 只读估价重排，全部候选被判不可达时零派发软记账换批）。旧 `ExploreCursor`/`LEG_DISTANCE` 整体删除。
+- **`actions/explore.ts` 主循环** = 观察→until 扫描→选前沿→goto（容差 2、不挖不垫）；单格失败只判死该格（UNREACHABLE 立即，TIMEOUT/plan 两次），不封方向；跨维度 `WRONG_STATE` 守卫。公开合同 explore@1 schema 与失败码不变，三个失败码语义改按覆盖事实表述（capabilities.md 同步）。
+- 验收：T0 重写 mc-explore 26 项；真服新增 `dev:mc:explore-frontier` 4 步全绿两轮一致（之字迷宫跨 90° 弯寻获首扫不可见的 diamond_ore，traveled 24.22、服务端 gap 24.2；地下实心岩层密封室 180ms 诚实 UNREACHABLE、服务端位置未动——旧游标该迷宫首轮全向判死、密封场景语义上"四方向用尽即穷尽"）；terrain-nav 6/6 回归保持。tests/mc 过滤器口径 107 文件 890 项（唯一 FAIL 为 mcp-extension-loading 环境预存，stash 对照与本批无关）；`pnpm typecheck` 过。
+
 ## 2026-11-07 · 批28–30 审查轮（死字段清理 + 记录口径修正）
 
 对批28–30 自查一轮，修四类问题：
