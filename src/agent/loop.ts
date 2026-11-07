@@ -1221,11 +1221,15 @@ export class Subject {
 		this.resumingQueue = false;
 		let queuedInputs = [item];
 		if (isRuntimeFollowUp(item)) {
+			// 同一世界连续产生的事实集中成一个决策回合：事件（external）与执行完成（internal）
+			// 属于同一段经历，分开读会让模型先按半个因果做决定、下一条又推翻。跨世界、
+			// 用户发言与 steer 都是硬边界——真实先后顺序不能为合并让步。
+			// 没有 ref 的运行时来源没有世界身份，退回"同种类即可合批"的旧语义。
+			const world = item.source?.ref;
 			queuedInputs = [];
-			const origin = item.source?.origin;
 			for (const candidate of this.queues.all().filter((candidate) => candidate.order >= item.order)) {
 				if (!isRuntimeFollowUp(candidate)) break;
-				if (candidate.source?.origin !== origin) break;
+				if (world !== undefined && candidate.source?.ref !== world) break;
 				queuedInputs.push(candidate);
 			}
 		}
