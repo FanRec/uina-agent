@@ -1,5 +1,19 @@
 # 设计变更记录
 
+## 2026-11-07 · 批35 审查轮（(b) 残余逐帧精化 + 文档漂移修复 + MC-WORLD.md 刷新）
+
+- **debugState 节点携带 toPlace/toBreak 长度**：`Vec3.clone()` 会丢掉放置信息，塔升编排诊断需要知道放置节点是否在路径里、执行器是否消费到它。逐帧实拍推翻第一轮登记：塔升放置链路完整工作（A* 规划塔升节点、执行器坑沿放置 <200ms、跨缺口续爬）——批34 原形态"放置成功后不接续"已随纯节点规则消失；残余改判为**缺口跨越后连续台阶的弹跳彩票**（探针 4 轮 3 绿 1 红），四处文档（known-gaps/development-plan/README/patches README/探针头注）同步。
+- **MC-WORLD.md 刷新到批35 口径**：摘要停在批27 事实（tests 740/25 脚本/当前批=批27）——摘要重写、批25/批27 记录移入 `dev/archive/MC-WORLD-批次记录-2026-10~11.md`、当前批位换批35、`start-server.ps1` 的"PowerShell 5.1 解析失败"说法更正（本批 `powershell -ExecutionPolicy Bypass -File` 实测可用）；新增经验 61（决策规则的中间态拒绝必须验证隐含前提在每个出现场景成立）。
+- 验收：`pnpm typecheck` 过；tests/mc 定点 mc-pathfinder-jump-decision + mc-spatial-actions 11 项绿。
+
+## 2026-11-07 · 批35 G30 执行器专项（跳跃决策纯节点规则 + 精确重入分离；(a)(c) 关闭）
+
+- **(a) 跳跃决策 = 纯节点规则（补丁新 `stepBlockOf`）**：批19 方向探测有亚格漂移盲区（±0.5 格漂移使探针落进邻格，跳跃键不按）。两轮中间方案被 200ms 真服探针逐轮否决：面距离+落地模拟+<0.6 死区（mine 1 绿 2 红——1:1 阶梯落点贴下一踏面，死区拒绝链式跳，退避把 bot 退下 1 格深台阶沿）；死区改动量门控 speed<0.12（仍 1 绿 2 红——着陆动量 1–2 拍内被摩擦吃掉，且落地模拟对贴面态结构性乐观而 Paper 静默回弹精确贴面，模拟不可信）。最终：下一节点为 1 格上步且有支撑即按跳，无距离带无模拟；撞面弹回交给既有退避，阶梯靠落地即再跳链式通过。真服：无坑 1:1 走廊爬升从永不完成变 13.7s 端到端。
+- **(c) 精确重入分离**：tunnel 走拍前核验目标脚位支撑（block@1，规划地板落既有挖空 → UNREACHABLE 带归因快速失败，T0 mc-spatial-actions +1）；被测程序回程 goto tolerance 2→1（GoalNear 半径 2 把"井口内一格低一格"判到达）。
+- **采集专项收敛**：批34 "东壁漏采与计数矛盾"判定为旧场地伪影（mine-b34-final 跑在场地修复提交之前的 e65086aa，探针客户端/服务端对拍当前场地仅 4 格种植矿）；collect NOT_FOUND 失败消息补带最后跳过原因（兑现其注释承诺）。
+- **G30 残余 (b) 重登记** + 对拍探针 `dev:mc:tower-probe` 入库（creeper-probe 同例，`dev:mc:tower-probe`）。
+- 验收：**mine 4/4 连续全绿**（returned/haul/ore_gone 全部服务端判决，returned 精确回起点）、climb 6/6、terrain-nav 6/6、upstream-nav 7/7（S3 首轮失败为 G28 已登记抖动，复跑即过）、shelter/night 抽查全绿；T0 新增 mc-pathfinder-jump-decision；tests/mc 109 文件 897 项全绿；`pnpm typecheck` 过。提交 9f1dc286。
+
 ## 2026-11-07 · 批34 审查轮（记录口径修正 + serverData 收敛）
 
 - **轮次口径修正**（development-plan §10.3 与 known-gaps G30 同步）：mine 修复前为 11 轮回程全挂（returned ×10、shaft ×1，含 06-07/06-10/06-14 三轮调试），原记"六轮"；场地修复后为 3 轮 2 绿 1 红，原记"4 轮 2 绿 2 红"；探针为 v1–v10 十轮，原记"v2–v10"九个编号；shelter 实为 9/12（3 红集中在竞技场/断言打磨期，随后 9 连绿），原记"5/5"；night 5 绿 1 红。轮次经 task-runs 各批 summary.jsonl 逐条重读核对。

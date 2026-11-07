@@ -2,13 +2,13 @@ import { execFileSync } from "node:child_process";
 import { describe, test } from "vitest";
 
 // G30 缺陷 (a)+(a′)：shouldJump 从"沿 bot→节点方向探测 0.6/1.2/1.8"重写为
-// 纯落地模拟（canWalkJump 从真实位置/速度出发）。
-// 第一轮重写的 <0.6 死区在 1 格深台阶上扼杀"着陆动量链式跳"（mine 回程钉死
-// 在 y195 的实证）——第二轮删除死区，模拟自身仲裁：
-//   零速贴面跳 → 模拟判 false（批19 实测永远过不去）→ 退避接管；
-//   着陆动量贴面跳 → 模拟判 true → 1:1 阶梯链式攀爬。
-// fixture = 真 prismarine-physics + 假方块网格：平地、窗口内、贴面零速、
-// 贴面带着陆动量（G30 a′ 形态）、漂移进场、悬浮节点、双高墙。
+// 纯节点规则（stepBlockOf：下一节点为 1 格上步且有支撑即按跳）。
+// 批35 两轮中间方案（面距离+落地模拟+<0.6 死区、死区改动量门控）均被 200ms
+// 真服探针否决：1:1 阶梯落点贴下一踏面、摩擦 1-2 拍吃掉着陆动量，任何贴面态
+// 拒绝都会让退避把 bot 退下 1 格深台阶沿；落地模拟对贴面态结构性乐观
+// （reached 被起跳瞬间自满足）而 Paper 静默回弹精确贴面——距离带与模拟都不进决策。
+// fixture = 真 prismarine-physics + 假方块网格：平地、台阶、贴面零速、
+// 漂移进场（含旧探测对照）、悬浮节点、双高墙。
 const program = `
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -98,7 +98,7 @@ function legacyShouldJump(physics, bot, nextPoint) {
   assert.equal(physics.shouldJump(bot, new Vec3(5, 65, 0)), false, "flat node must not jump");
 }
 
-// 2) 1 级台阶、起跳窗口内（面距 1.2）：模拟判可到 → true（真物理跑满 20 tick）
+// 2) 1 级台阶（有支撑）：纯节点规则按跳
 {
   const bot = makeBot({ pos: [3.8, 65, 0.3], vel: [0.216, 0, 0], pillars: stepPillars });
   const physics = new Physics(bot);
@@ -115,36 +115,35 @@ function legacyShouldJump(physics, bot, nextPoint) {
   assert.equal(physics.shouldJump(bot, STEP_NODE), true, "step-ahead node always asks for the jump; recovery belongs to the step assist");
 }
 
-
-
-// 5) G30 形态：起跳窗口内但 ±0.5 格漂移。旧方向探测沿 bot→节点方向打探针，
+// 4) G30 形态：起跳窗口内但 ±0.5 格漂移。旧方向探测沿 bot→节点方向打探针，
 //    漂移让 1.2/1.8 探针落进邻格（空气）判 false——跳跃键永不按下；
-//    新决策按从真实位置/速度出发的落地模拟必须判 true。
+//    纯节点规则不看方向，漂移进场照常按跳。
 {
   // bot 在 (3.8, 65, 0.9)（横向漂 0.9）：旧探测方向 (1.2, -0.9)→1.2 处落在 (4,65)（空气），
   // 1.8 处落在 (5,65,-1)（邻列空气）→ 两探针都 miss。
   const bot = makeBot({ pos: [3.8, 65, 0.9], vel: [0.216, 0, 0.054], pillars: stepPillars });
   const physics = new Physics(bot);
   assert.equal(legacyShouldJump(physics, bot, STEP_NODE), false, "fixture must reproduce the legacy probe miss");
-  assert.equal(physics.shouldJump(bot, STEP_NODE), true, "drifted approach must still jump via landing simulation");
+  assert.equal(physics.shouldJump(bot, STEP_NODE), true, "drifted approach still jumps: the node rule is drift-blind");
 }
 
-// 6) 悬浮节点（落点格无支撑）：不跳——那是放置（G30 缺陷 b）的事
+// 5) 悬浮节点（落点格无支撑）：不跳——那是放置（G30 缺陷 b）的事
 {
   const bot = makeBot({ pos: [3.0, 65, 0.5], vel: [0.216, 0, 0], pillars: [] });
   const physics = new Physics(bot);
   assert.equal(physics.shouldJump(bot, new Vec3(5, 66, 0)), false, "floating node must not jump");
 }
 
-// 7) 双高墙节点（y 比脚位高 2）：非单步，不跳
+// 6) 双高墙节点（y 比脚位高 2）：非单步，不跳
 {
   const bot = makeBot({ pos: [3.0, 65, 0.5], vel: [0.216, 0, 0], pillars: [[5, 65, 0], [5, 66, 0]] });
   const physics = new Physics(bot);
   assert.equal(physics.shouldJump(bot, new Vec3(5, 67, 0)), false, "2-up node is not a step; placement branch owns it");
 }
 
-// 8) 落地模拟与执行器到达判据同口径：模拟成功的起跳点，用同一物理推进 20 tick
-//    确实到达节点邻域（|dx|,|dz| ≤ 0.35, |dy| < 1）——钉住"模拟说了算"的诚实性。
+// 7) 模拟器口径钉（执行器 sprint 分支仍消费 canStraightLine/canWalkJump）：
+//    canWalkJump 判可达的起跳点，用同一物理推进 20 tick 确实到达节点邻域
+//    （|dx|,|dz| ≤ 0.35, |dy| < 1）——模拟器自身的诚实性边界。
 {
   const bot = makeBot({ pos: [3.8, 65, 0.3], vel: [0.216, 0, 0], pillars: stepPillars });
   const physics = new Physics(bot);
@@ -162,7 +161,7 @@ function legacyShouldJump(physics, bot, nextPoint) {
 `;
 
 describe("pathfinder shouldJump (G30 executor rewrite)", () => {
-	test("landing simulation replaces the drift-blind direction probe and the staircase dead band", () => {
+	test("pure node rule replaces the drift-blind direction probe, distance bands and simulation gating", () => {
 		execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], { stdio: "pipe" });
 	});
 });

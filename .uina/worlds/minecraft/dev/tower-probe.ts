@@ -1,12 +1,15 @@
 /**
- * G30 残余 (b) 对拍探针（批35 入库，creeper-probe 同例）：损伤阶梯的塔升放置编排。
+ * G30 残余 (b) 对拍探针（批35 入库，creeper-probe 同例）：损伤阶梯的逐级爬升可靠性。
  *
  * 场景：1:1 下行走廊中抽掉一级踏步支撑（--gap 1，默认）制造 1 深坑，
  * 回程 goto 必须经"落入坑 → 1by1 tower（place+跳）→ 续爬"才能出去；
  * --gap 0 为对照（无坑，纯 1:1 链式跳——批35 纯节点规则修复的回归观测）。
- * 采样 200ms：debugState（路径头/挖置标志）、键位、位置、速度、placeMisses。
- * 批35 实证（known-gaps §G30）：坑区 place 全程不触发，bot 坑沿震荡+周期撤退，
- * goto 12s NoCloser 诚实判死——修复目标是让放置序列启动，不是放宽看门狗。
+ * 采样 200ms：debugState（路径节点含 toPlace/toBreak 长度、挖置标志）、键位、
+ * 位置、速度、placeMisses。
+ * 批35 实证（known-gaps §G30）：塔升放置链路完整工作（A* 规划塔升节点，执行器
+ * 坑沿完成放置并跨缺口续爬）；残余 = 缺口跨越后连续 1 级台阶的弹跳彩票
+ * （4 轮 3 绿 1 红），失败轮表现为个别台阶弹跳数秒 → 撤退重爬 → NoCloser 判死。
+ * 修法方向：阶梯段冲刺跳行为与弹跳恢复节拍；本探针即该专项的复现入口。
  */
 
 import { mkdtempSync } from "node:fs";
@@ -18,8 +21,8 @@ import { closeHarness, openHarness, sleep, waitForStill } from "./harness.js";
 import { makeScenario } from "./scenario.js";
 
 const USER = process.env.MC_DEV_USER ?? "UinaDev";
-/** --gap 0：不抽支撑（复现挖升卡死形态）；--gap 1（默认）：抽支撑（塔升放置形态）。 */
-const WITH_GAP = process.argv.includes("--gap") === false || process.argv[process.argv.indexOf("--gap") + 1] !== "0";
+/** --gap 0：不抽支撑（纯链式跳对照）；缺省或 --gap 1：抽支撑（塔升放置形态）。 */
+const WITH_GAP = !(process.argv.includes("--gap") && process.argv[process.argv.indexOf("--gap") + 1] === "0");
 
 const MINE = {
 	body: { x1: 12040, y1: 180, z1: 11996, x2: 12055, y2: 200, z2: 12011 },

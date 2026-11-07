@@ -664,7 +664,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..52f835ca6d7f59419eff12d1b30d2148
    }
  }
 diff --git a/lib/physics.js b/lib/physics.js
-index ef9e3897b44fd023455f1f0b8adc315d628fa85f..ecea03420fb248582279d149e7bffdfeba16dd9c 100644
+index ef9e3897b44fd023455f1f0b8adc315d628fa85f..cd97725be68d205adc7801791c58c583e6c6e532 100644
 --- a/lib/physics.js
 +++ b/lib/physics.js
 @@ -1,4 +1,5 @@
@@ -673,7 +673,7 @@ index ef9e3897b44fd023455f1f0b8adc315d628fa85f..ecea03420fb248582279d149e7bffdfe
  
  class Physics {
    constructor (bot) {
-@@ -67,6 +68,76 @@ class Physics {
+@@ -67,6 +68,77 @@ class Physics {
      return false
    }
  
@@ -717,14 +717,15 @@ index ef9e3897b44fd023455f1f0b8adc315d628fa85f..ecea03420fb248582279d149e7bffdfe
 +   * that function also returns true when a *delayed* jump is what makes the node
 +   * reachable, so steps were never jumped and the path got reset as stuck.
 +   *
-+   * G30 rewrite (three rounds, each driven by the real-server mine return).
-+   * Batch 19 decided the jump by probing cells 0.6/1.2/1.8 blocks along the
-+   * bot→node direction: a ±0.5 block sub-grid drift tilted that vector into a
++   * G30 rewrite (two intermediate designs rejected, each by a 200ms real-server
++   * probe). Batch 19 decided the jump by probing cells 0.6/1.2/1.8 blocks along
++   * the bot→node direction: a ±0.5 block sub-grid drift tilted that vector into a
 +   * neighbouring column (wall or air), the jump key never fired and stair climbs
-+   * became a coin flip. The first batch-35 rewrite located the face geometrically
++   * became a coin flip. Both batch-35 intermediates located the face geometrically
 +   * and delegated to the landing simulation (canWalkJump from the real position
-+   * and velocity) with a <0.6 dead band for the touching state. The real server
-+   * killed both parts of that design: on a 1-wide 1:1 staircase each jump LANDS
++   * and velocity) — first with a hard <0.6 dead band for the touching state, then
++   * with the band gated on near-zero speed. The real server killed both: on a
++   * 1-wide 1:1 staircase each jump LANDS
 +   * at the far edge of the next step, ~0.3 from the following face, and ground
 +   * friction eats the landing momentum within one or two ticks — so the dead band
 +   * refused the chain jump and the step assist backed the bot off a ledge one

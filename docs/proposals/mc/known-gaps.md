@@ -1,6 +1,6 @@
 # Minecraft World 缺陷与欠缺清单
 
-日期：2026-11-07（批34 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
+日期：2026-11-07（批35 更新）。范围：`.uina/worlds/minecraft` 及其 Host 接缝。
 
 本文由审查轮产初版、施工批次持续更新：关闭条目在关闭时写入"关闭事实"（含证据口径），开放条目保留现象/证据/修法要点三段；取舍（§8）登记后不修。历史措辞（如早期"未施工、未复跑"）只描述登记当轮，不代表当前状态。批26 的施工范围（RuntimeArchiveReader、profile 查询参数、离线 saveFromRun、交付 envelope、完整 M4）属设计合同剩余项，见 [multi-world-v3.md](multi-world-v3.md) §7/§10 与 development-plan §10.3 批25 条，不在本清单重复登记。
 

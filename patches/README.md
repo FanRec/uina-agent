@@ -34,12 +34,12 @@ and adds a run-up retry: touching the step face with ~zero speed backs off 200�
 Batch 19 decided `shouldJump` by probing 1.2/1.8 blocks along the bot→node direction with the 0.6
 probe still clear (takeoff must start ≥0.89 blocks from the face — jumping while touching it zeroes
 horizontal speed and the 0.02/tick air control cannot recover it). Batch 35 (G30, the mine-task
-return leg) went through two rewrites, each driven by 200ms-resolution real-server probes
-(`dev:mc:tower-probe`): the direction probe is blind to sub-grid drift (a ±0.5 block offset tilted
-the probe vector into a neighbouring column, the jump key never fired), and both successor designs —
-geometric face distance with a landing-simulation arbiter, with and without a momentum-gated <0.6
-dead band — pinned the climb one level up. On a 1-wide 1:1 staircase every jump LANDS at the far
-edge of the next step, ~0.3 from the following face, and ground friction eats the landing momentum
+return leg) went through two rejected intermediate designs, each driven by 200ms-resolution
+real-server probes (`dev:mc:tower-probe`): the direction probe is blind to sub-grid drift (a ±0.5
+block offset tilted the probe vector into a neighbouring column, the jump key never fired), and both
+successors — geometric face distance with a landing-simulation arbiter, with and without a
+momentum-gated <0.6 dead band — pinned the climb one level up. On a 1-wide 1:1 staircase every jump
+LANDS at the far
 within a tick or two, so any touching-state refusal turns the step assist into a ledge-dropper
 (backing off a one-block-deep step falls to the level below) and the climb shuttles until the
 NoCloser watchdog kills it. The simulation itself is structurally optimistic about the touching
@@ -52,8 +52,9 @@ step that genuinely cannot be cleared ends in the stall/NoCloser watchdogs with 
 server: the no-gap 1:1 corridor climb went from never-finishing to 13.7s end-to-end, and the mine
 task returned 4/4 consecutive greens (`returned`+`haul`+`ore_gone` on server verdicts). T0:
 `mc-pathfinder-jump-decision` (includes the legacy probe as a fixture contrast for the drift shape
-and the touching states). Residual: the tower-placement choreography after a damaged step never
-initiates (G30 (b), registered in known-gaps with probe evidence).
+and the touching states). Residual (G30 (b), probe-refined): the tower-placement chain over a
+damaged step works end to end — what remains unreliable is the per-step climb after the gap
+crossing (bounce lottery + retreat/re-plan), tracked in known-gaps with `dev:mc:tower-probe`.
 
 **Search legality (G25, batch 26).** `lib/movements.js` `getMoveDiagonal` used to validate only the
 cheaper of the two orthogonal corner lines (`min(cost1, cost2)`), so a diagonal whose *other* corner
