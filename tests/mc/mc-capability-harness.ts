@@ -126,6 +126,8 @@ export interface EntityFixture {
 	position: { x: number; y: number; z: number };
 	distance: number;
 	item: { name: string; count: number } | null;
+	/** 苦力怕引燃状态（批33）：undefined 按 null（未知）处理。 */
+	ignited?: boolean | null;
 }
 
 export interface HarnessState {
@@ -182,6 +184,18 @@ export interface HarnessHooks {
 	attackDead?: boolean;
 	/** fight 测试（批29）：deadEntities 观察集（drive 派发的攻击不再走证据窗）。 */
 	deadEntities?: Set<number>;
+	/**
+	 * fight 测试（批33）：feedback 流替身的每次 apply 副作用（键位/攻击派发时的
+	 * 世界变化，例如目标消失、掉落出现）。frame 序号从 0 起。
+	 */
+	onNearApply?: (
+		input: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown },
+		frameIndex: number,
+	) => void;
+	/** feedback 流替身的节拍间隔 ms（默认 25，模拟物理拍节奏防热旋）。 */
+	feedbackPaceMs?: number;
+	/** feedback 流替身最多产出的帧数（防失控；默认 400）。 */
+	feedbackMaxFrames?: number;
 	/** SurfaceProbe 注入（surface/fight 测试）；缺省 null。 */
 	surface?: () => SurfaceProbe | null;
 	/** openContainer 打开的窗口（工作台/熔炉）；不提供则调用即失败。 */
@@ -407,6 +421,59 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		deadEntities() {
 			calls.push("deadEntities");
 			return hooks.deadEntities ?? new Set<number>();
+		},
+		feedback(sensors: Record<string, unknown>) {
+			calls.push(`feedback:${Object.keys(sensors).join(",")}`);
+			let seq = 1000;
+			let frameIndex = 0;
+			const pace = hooks.feedbackPaceMs ?? 25;
+			const maxFrames = hooks.feedbackMaxFrames ?? 400;
+			const stream = {
+				async next(_after: number | null, signal: AbortSignal) {
+					if (frameIndex >= maxFrames) {
+						// 帧数耗尽按流死亡结算：fight 会话退段重扫（外层 deadline 兜底）。
+						throw Object.assign(new Error("fake feedback stream exhausted"), { code: "CONTROL_INVALID" });
+					}
+					await new Promise((resolve, reject) => {
+						const timer = setTimeout(resolve, pace);
+						signal.addEventListener(
+							"abort",
+							() => {
+								clearTimeout(timer);
+								reject(Object.assign(new Error("feedback wait cancelled"), { code: "INTERRUPTED" }));
+							},
+							{ once: true },
+						);
+					});
+					if (signal.aborted) throw Object.assign(new Error("feedback wait cancelled"), { code: "INTERRUPTED" });
+					seq += 1;
+					frameIndex += 1;
+					hooks.onSelf?.(selfState);
+					return {
+						stream: "op:t",
+						operation: "op:t",
+						body: "body:t",
+						sequence: seq,
+						step: { sequence: seq },
+						sampledAt: Date.now(),
+						validUntil: Date.now() + 250,
+						self: fact(selfState),
+						sensors: {},
+					} as never;
+				},
+				async apply(_frame: unknown, input: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }) {
+					calls.push("nearApply");
+					hooks.onNearApply?.(input, frameIndex);
+					return {
+						receipt: { effect: "eff:t:20", dispatch: "sent", completion: "met", evidence: [] },
+						appliedStep: { sequence: seq },
+					};
+				},
+				async close() {
+					calls.push("feedbackClose");
+				},
+			};
+			return stream;
 		},
 		async awaitEvidence() {
 			calls.push("awaitEvidence");

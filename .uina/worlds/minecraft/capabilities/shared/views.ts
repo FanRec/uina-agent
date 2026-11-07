@@ -56,6 +56,8 @@ export interface EntityEntryView {
 	position: Vec3;
 	distance: number;
 	item: { name: string; count: number } | null;
+	/** 苦力怕引燃状态（entities@1 透传）；非苦力怕或元数据未到为 null。 */
+	ignited: boolean | null;
 }
 
 /** 读查询值；null value 原样返回（调用方决定 NOT_FOUND/WRONG_STATE）。 */

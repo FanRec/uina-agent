@@ -56,6 +56,8 @@ export interface EntityEntry {
 	distance: number;
 	/** 掉落物栈；只有 item 实体可能非 null（未收到元数据时为 null）。 */
 	item: { name: string; count: number } | null;
+	/** 苦力怕引燃状态；非苦力怕或元数据未到为 null，不猜。 */
+	ignited: boolean | null;
 }
 
 const entitiesDefinition: CapabilityDefinition = {
@@ -132,6 +134,7 @@ const entitiesDefinition: CapabilityDefinition = {
 					position: entity.position,
 					distance: Math.round(dist * 100) / 100,
 					item: entity.item,
+					ignited: entity.ignited,
 				});
 			}
 			matched.sort((a, b) => a.distance - b.distance || a.ref.networkId - b.ref.networkId);

@@ -411,6 +411,8 @@ interface ClientEntityValue {
   metadata: { schema: ExactRef; value: JsonValue } | null;
   /** 掉落物栈；只有 item 实体可能非 null（元数据未到/解析失败为 null）。 */
   item: { name: string; count: number } | null;
+  /** 苦力怕引燃状态（metadata[16]）；非苦力怕/元数据未到/读不出为 null，不猜（批33）。 */
+  ignited: boolean | null;
 }
 interface ClientEntitiesValue { extent: "tracked"; entities: ClientEntityValue[]; selfRef: EntityRef | null }
 interface ClientWorldValue {

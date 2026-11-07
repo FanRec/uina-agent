@@ -6,15 +6,18 @@
  * true=观察到受击，false=窗口内没观察到，null=窗口未走完（中止/断线）。
  * 不把"没看到"写成"打中了"，也不把 miss 当失败——攻击确实执行过。
  *
- * fight@1（批 12，批29 近身拍重构）是一次战斗会话：选目标 → 换最好武器/盾 →
- * 追击 → 近身拍循环（steering 走位 + 冷却好随拍派发攻击，不被证据窗冻结）→
- * 按 stance 决定进退。身体与导航用顶层交替拍（withBody 攻击拍 ↔ navigate 追击），
+ * fight@1（批 12，批29 近身拍重构，批33 feedback 流迁移）是一次战斗会话：
+ * 选目标 → 换最好武器/盾 → 追击 → 近身段（一次 withBody 持有 + feedback 流
+ * 连续物理拍：键位每拍重装、扫描/决策不再造成键位空档，占空比 ~100%）→
+ * 按 stance 决定进退。近身段与导航顶层交替（withBody 段 ↔ navigate 追击），
  * 不嵌套租赁；safety 介入经同一队列优先，会话抛 INTERRUPTED 并保留 kills/hp。
  * 击杀只认 Driver 的死亡观察（连接级 entityDead 累积）+ 目标缺席结算；
  * 目标失踪（无死亡观察、连续缺席）不算击杀；掉落只记死亡位置附近新出现的
  * 可确认掉落物。会话结束用明确 ended（targets_cleared/retreated/
  * retreat_failed/target_lost/timeout）：retreated 是经核验的成功撤退（拉开到清除
  * 距离且威胁没有跟到贴身）；retreat_failed 如实报告撤离未脱险，不冒充成功。
+ * 苦力怕 fuse 感知（批33）：entities@1 的 ignited 事实进硬危险判定——
+ * 引燃即拉开并持续续锁，不等 fuse 半径内的下一次接触。
  */
 
 import type { ControlInput, ControlOwner, EntityRef, PointTarget, SelfState } from "../../contracts/body.js";
@@ -61,8 +64,11 @@ const RANGED_EVIDENCE_MS = 1500;
 const KILL_DROP_RADIUS = 4;
 /** 撤退结算的"贴近威胁"判据：结算扫描里活跃敌对实体在这个半径内就不算脱险。 */
 const RETREAT_NEAR_RADIUS = 8;
-/** 近身拍（批29）：每个 steering 拍的物理步数（5 tick ≈ 250ms）。 */
-const BEAT_TICKS = 5;
+/**
+ * 近身段（批33）段内重扫间隔：击杀/缺席/撤退/进度按这个节奏结算，帧间走位
+ * 用最近一次扫描的目标位置（≤300ms 陈旧，与批29 每拍决策同量级）。
+ */
+const NEAR_SCAN_INTERVAL_MS = 300;
 /**
  * 近身拍出手间距：原版实体交互有效距离 3 格（合同 ENTITY_REACH=4 是 attack@1
  * 的派发上限，超 3 的挥击会被服务端静默拒绝）——出手门限收紧到 3.2。
@@ -229,6 +235,8 @@ interface TargetState {
 	lost: boolean;
 	/** 连续缺席扫描计数（死亡观察到达窗；见 TARGET_LOST_SCANS）。 */
 	absentScans: number;
+	/** 苦力怕引燃状态（每轮扫描刷新；非苦力怕/未知为 null）。 */
+	ignited: boolean | null;
 }
 
 interface KillRecord {
@@ -278,6 +286,7 @@ function toTarget(entry: EntityEntryView): TargetState {
 		killed: false,
 		lost: false,
 		absentScans: 0,
+		ignited: entry.ignited,
 	};
 }
 
@@ -616,29 +625,73 @@ export const combatModule: MinecraftCapabilityModule = {
 					let bestGap = Number.POSITIVE_INFINITY;
 					let nearestId = -1;
 					let lastSwingAt = 0;
-					// 上一近身拍的拍末自采样（drive 的 end Fact）；非 drive 路径后为 null。
-					let beatEnd: SelfState | null = null;
-					// 苦力怕硬危险锁（networkId → 解锁时刻）；会话内有效。
+					// 苦力怕硬危险锁（networkId → 解锁时刻）；会话内有效。引燃事实会持续续锁。
 					const creeperLocks = new Map<number, number>();
 					// 最近一次硬危险拍时刻（no_progress 时钟在其后一个窗口内冻结）。
 					let lastHardAt = 0;
-					// 近身拍状态（批29）：绕走侧与迟滞场；目标切换时场重置。
+					// 近身段状态：绕走侧与迟滞场；目标切换时场重置。
 					let strafeSide: 1 | -1 = 1;
 					let strafeFlipAt = Date.now() + STRAFE_PERIOD_MS;
 					let prevInterest: SlotMap | null = null;
-					// 连接级死亡观察的本地镜像：每拍在 withBody 内合并，循环顶的
-					// 跟踪用它结算击杀（拍间至多滞后一拍 ≈ BEAT_TICKS）。
+					// 连接级死亡观察的本地镜像：每轮扫描在持身体期间合并。
 					const deadSeen = new Set<number>();
+
+					// 目标跟踪/击杀结算（外层与近身段共用）：死亡观察命中 = 击杀；连续
+					// TARGET_LOST_SCANS 次缺席且无死亡观察 = target_lost（§4）。
+					const assess = async (
+						selfPos: Vec3,
+					): Promise<{
+						scan: EntityEntryView[];
+						nearest: TargetState | null;
+						nearestGap: number;
+						liveCount: number;
+						anyAbsent: boolean;
+					}> => {
+						const scan = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
+						let liveCount = 0;
+						let nearest: TargetState | null = null;
+						let nearestGap = Number.POSITIVE_INFINITY;
+						let anyAbsent = false;
+						for (const target of targets) {
+							if (target.killed || target.lost) continue;
+							const found = scan.find((entry) => entry.ref.networkId === target.ref.networkId);
+							if (found == null) {
+								// 缺席先给死亡观察一个到达窗（deadSeen 是连接级累积）。
+								if (deadSeen.has(target.ref.networkId)) {
+									target.killed = true;
+									kills.push({
+										name: target.name,
+										drops: await dropsNear(ctx, target.lastPosition, radius, seenItems),
+									});
+									continue;
+								}
+								target.absentScans += 1;
+								anyAbsent = true;
+								if (target.absentScans >= TARGET_LOST_SCANS) target.lost = true;
+								continue;
+							}
+							target.absentScans = 0;
+							target.lastPosition = found.position;
+							target.ignited = found.ignited;
+							liveCount += 1;
+							const gap = distance(selfPos, found.position);
+							if (gap < nearestGap) {
+								nearestGap = gap;
+								nearest = target;
+							}
+						}
+						// 见过的 item 实体进差集基线——必须在击杀归属之后。
+						for (const entry of scan) if (entry.item != null) seenItems.add(entry.ref.networkId);
+						return { scan, nearest, nearestGap, liveCount, anyAbsent };
+					};
+
 					for (;;) {
 						if (ctx.signal.aborted) onInterrupted();
 						if (Date.now() >= deadline) {
 							ended = "timeout";
 							break;
 						}
-						// 自状态：上一近身拍的拍末采样直接复用（≤1 拍陈旧，250ms 级），
-						// 没有就用 world 读；消费即重置。
-						const self = beatEnd ?? (await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state"));
-						beatEnd = null;
+						const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 						hpAfter = self.health;
 						if (retreatHealth != null && self.health != null && self.health < retreatHealth) {
 							const retreat = await withdraw(
@@ -655,50 +708,13 @@ export const combatModule: MinecraftCapabilityModule = {
 							retreatedReason = "low_health";
 							break;
 						}
-						const scan = await scanEntities(ctx, radius + FIGHT_SCAN_MARGIN);
-						let liveCount = 0;
-						let nearest: TargetState | null = null;
-						let nearestGap = Number.POSITIVE_INFINITY;
-						let anyAbsent = false;
-						for (const target of targets) {
-							if (target.killed || target.lost) continue;
-							const found = scan.find((entry) => entry.ref.networkId === target.ref.networkId);
-							if (found == null) {
-								// 缺席先给死亡观察一个到达窗（deadSeen 是拍内合并的连接级
-								// 累积）：有死亡观察 = 击杀；连续 TARGET_LOST_SCANS 次缺席且
-								// 无死亡观察 = target_lost，不冒认击杀（§4）。
-								if (deadSeen.has(target.ref.networkId)) {
-									target.killed = true;
-									kills.push({
-										name: target.name,
-										drops: await dropsNear(ctx, target.lastPosition, radius, seenItems),
-									});
-									continue;
-								}
-								target.absentScans += 1;
-								anyAbsent = true;
-								if (target.absentScans >= TARGET_LOST_SCANS) target.lost = true;
-								continue;
-							}
-							target.absentScans = 0;
-							target.lastPosition = found.position;
-							liveCount += 1;
-							const gap = distance(self.place.position, found.position);
-							if (gap < nearestGap) {
-								nearestGap = gap;
-								nearest = target;
-							}
-						}
-						// 见过的 item 实体进差集基线——必须在击杀归属之后：
-						// 本轮死亡位置附近的新掉落归本轮击杀，其余才成为后续的"已见"。
-						for (const entry of scan) if (entry.item != null) seenItems.add(entry.ref.networkId);
+						const { nearest, nearestGap, liveCount, anyAbsent } = await assess(self.place.position);
 						if (targets.every((target) => target.killed)) {
 							ended = "targets_cleared";
 							break;
 						}
 						if (liveCount === 0) {
-							// 有缺席目标但还没到判失联的次数：给死亡事件留一个到达窗再扫，
-							// 不空转（连续快扫会让缺席计数在事件到达前跑满）。
+							// 有缺席目标但还没到判失联的次数：给死亡事件留一个到达窗再扫。
 							if (anyAbsent && !targets.some((target) => target.lost)) {
 								await sleepAbortable(200, ctx.signal);
 								continue;
@@ -706,6 +722,7 @@ export const combatModule: MinecraftCapabilityModule = {
 							ended = "target_lost";
 							break;
 						}
+						if (nearest == null) continue;
 						// no_progress：迟迟无法接近也无法命中，主动脱离（cleared 才结算 retreated）。
 						// bestGap 按目标身份跟踪：击杀后 nearest 换人，距离正常变大不是停滞。
 						if (nearest!.ref.networkId !== nearestId) {
@@ -717,8 +734,7 @@ export const combatModule: MinecraftCapabilityModule = {
 							bestGap = nearestGap;
 							lastProgressAt = Date.now();
 						} else if (Date.now() - lastHardAt < NO_PROGRESS_MS_VALUE) {
-							// 硬危险（苦力怕 fuse 半径）的进退节奏是策略不是卡死：锁定期间
-							// 冻结 no_progress 时钟，不让看门狗打断刻意的 hit-and-away。
+							// 硬危险（苦力怕 fuse 半径/引燃）的进退节奏是策略不是卡死。
 							lastProgressAt = Date.now();
 						} else if (Date.now() - lastProgressAt > NO_PROGRESS_MS_VALUE) {
 							const retreat = await withdraw(
@@ -735,7 +751,6 @@ export const combatModule: MinecraftCapabilityModule = {
 							retreatedReason = "no_progress";
 							break;
 						}
-						if (nearest == null) continue;
 						if (weaponMode === "ranged") {
 							if (nearestGap > RANGED_STANDOFF_MAX) {
 								await chaseLeg(deps, ctx, owner, nearest.lastPosition, 2, deadline, onInterrupted);
@@ -751,106 +766,261 @@ export const combatModule: MinecraftCapabilityModule = {
 								}
 								await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
 							}
-						} else if (nearestGap > BEAT_SWING_REACH) {
-							// 追击判定 = 能否出手（3.2）。交接间距 = 3：交棒后第一拍立即
-							// 接管出手/走位；交棒更深（2 格）会在引燃半径内留下键位空档的
-							// 站立窗（苦力怕对拍实证被追到 1 格炸），更浅则第一拍够不着。
+							continue;
+						}
+						if (nearestGap > BEAT_SWING_REACH) {
+							// 引燃/锁定期内的苦力怕不追（creeper-probe 实证：近身段在出手圈
+							// 外退出后，不认识 fuse 状态的追击会把 bot 送回爆炸半径——逃离/
+							// 追击振荡净拉开 ≈0）。背向拉开一条腿；引燃会在玩家出 3 格后
+							// 自行衰减，锁定期过后恢复正常追击。
+							const lockedCreeper =
+								nearest.name === "creeper" &&
+								(nearest.ignited === true || (creeperLocks.get(nearest.ref.networkId) ?? 0) > Date.now());
+							if (lockedCreeper) {
+								const away = fleeLegTarget(self.place.position, nearest.lastPosition, 0, 8);
+								await chaseLeg(deps, ctx, owner, away, 2, deadline, onInterrupted);
+								lastHardAt = Date.now();
+								continue;
+							}
+							// 追击判定 = 能否出手（3.2）。交接间距 = 3：交棒后第一拍立即接管
+							// 出手/走位；交棒更深（2 格）会在引燃半径内留下键位空档的站立窗
+							// （苦力怕对拍实证被追到 1 格炸），更浅则第一拍够不着。
 							// 交棒点落在出手门限之外时，"已在容差内秒完成"的追击会空转
 							// 到 no_progress（真服实证）。
 							await chaseLeg(deps, ctx, owner, nearest.lastPosition, CHASE_HANDOVER, deadline, onInterrupted);
-						} else {
-							// 近身拍（批29）：steering 决定走位（围攻避让/苦力怕硬遮罩），
-							// 冷却好且够得着就随拍派发攻击——循环不再被证据窗冻结。
-							// 举盾是拍间的机会动作（攻击拍不带 use：using 状态会吞攻击）。
-							if (Date.now() >= strafeFlipAt) {
-								strafeSide = strafeSide === 1 ? -1 : 1;
-								strafeFlipAt = Date.now() + STRAFE_PERIOD_MS;
-							}
-							const steer = fightSteering(
-								self.place.position,
-								nearest.lastPosition,
-								scan
-									.filter(
-										(entry) =>
-											entry.kind === "hostile" &&
-											distance(self.place.position, entry.position) <= DEFAULT_STEER_PARAMS.dangerRadius,
-									)
-									.map((entry) => {
-										const gap = distance(self.place.position, entry.position);
-										if (entry.name === "creeper" && gap <= DEFAULT_STEER_PARAMS.creeperHardRadius) {
-											creeperLocks.set(entry.ref.networkId, Date.now() + CREEPER_LOCK_MS);
-										}
-										const locked = (creeperLocks.get(entry.ref.networkId) ?? 0) > Date.now();
-										return {
-											x: entry.position.x,
-											z: entry.position.z,
-											name: entry.name,
-											hard: entry.name === "creeper" && (gap <= DEFAULT_STEER_PARAMS.creeperHardRadius || locked),
-										};
-									}),
-								strafeSide,
-								prevInterest,
-							);
-							prevInterest = steer.cur;
-							if (steer.hardRetreat) lastHardAt = Date.now();
-							const swing = Date.now() - lastSwingAt >= ATTACK_COOLDOWN_MS && nearestGap <= BEAT_SWING_REACH;
-							if (swing) lastSwingAt = Date.now();
-							// 硬危险拍：转身背向威胁前跑——原版后退不能 sprint，面朝威胁
-							// 的"后退拉开"与苦力怕同速，永远跑不出 fuse 半径（真服实测）。
-							// 本拍因此放弃瞄准/攻击/举盾，拉开速度优先。
-							const fleeing =
-								steer.hardRetreat &&
-								steer.hardAt != null &&
-								!swing &&
-								(!steer.dir ||
-									steer.dir.x * (steer.hardAt.x - self.place.position.x) +
-										steer.dir.z * (steer.hardAt.z - self.place.position.z) <=
-										0);
-							let lookTarget: PointTarget | EntityRef = nearest.ref;
-							let keys: ControlInput["keys"];
-							if (fleeing && steer.hardAt != null) {
-								const away = {
-									x: self.place.position.x - steer.hardAt.x,
-									z: self.place.position.z - steer.hardAt.z,
-								};
-								const len = Math.hypot(away.x, away.z) || 1;
-								lookTarget = {
-									x: self.place.position.x + (away.x / len) * 5,
-									y: self.place.position.y,
-									z: self.place.position.z + (away.z / len) * 5,
-								};
-								keys = { forward: true, sprint: true };
-							} else {
-								keys =
-									steer.dir == null
-										? { back: true }
-										: { ...dirToKeys(steer.dir, nearest.lastPosition, self.place.position) };
-							}
+							continue;
+						}
+
+						// ---- 近身段（批33）：一次 withBody 持有 + feedback 流连续物理拍 ----
+						// 键位每物理拍重装，扫描/决策不再造成键位空档（占空比 ~100%）；
+						// 段内每 NEAR_SCAN_INTERVAL_MS 重扫结算击杀/缺席/撤退/进度。
+						let segmentExit: "cleared" | "lost" | "low_health" | "no_progress" | "deadline" | "out_of_reach" | null =
+							null;
+						while (segmentExit == null) {
 							try {
 								await ctx.withBody(async (scope: BodyCallScope) => {
-									const driven = await scope.player.drive(
-										{
-											keys,
-											lookAt: lookTarget,
-											...(swing ? { attack: nearest!.ref } : {}),
-											...(shieldEquipped && !swing && !fleeing
-												? { use: { mode: "hold" as const, hand: "off" as const } }
-												: {}),
-										},
-										BEAT_TICKS,
-									);
-									for (const id of scope.player.deadEntities()) deadSeen.add(id);
-									// 复用 drive 的拍末自采样做下一拍的自状态（省一次 world 读，
-									// 缩短拍间站立窗口）；非 drive 路径重置回循环顶读取。
-									beatEnd = driven.end.value;
+									const stream = await scope.player.feedback({});
+									let after: number | null = null;
+									let lastScanAt = 0;
+									let scan: EntityEntryView[] = [];
+									try {
+										while (segmentExit == null) {
+											if (ctx.signal.aborted) onInterrupted();
+											const now = Date.now();
+											if (now >= deadline) {
+												segmentExit = "deadline";
+												break;
+											}
+											if (now - lastScanAt >= NEAR_SCAN_INTERVAL_MS) {
+												const scanSelf = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+												hpAfter = scanSelf.health;
+												if (retreatHealth != null && scanSelf.health != null && scanSelf.health < retreatHealth) {
+													segmentExit = "low_health";
+													break;
+												}
+												const assessed = await assess(scanSelf.place.position);
+												scan = assessed.scan;
+												lastScanAt = now;
+												if (targets.every((target) => target.killed)) {
+													segmentExit = "cleared";
+													break;
+												}
+												if (assessed.liveCount === 0) {
+													if (!assessed.anyAbsent || targets.some((target) => target.lost)) {
+														segmentExit = "lost";
+														break;
+													}
+													// 缺席等待窗：不导航不攻击，等死亡观察到达（下轮扫描结算）。
+												} else if (assessed.nearest != null) {
+													if (assessed.nearest.ref.networkId !== nearestId) {
+														nearestId = assessed.nearest.ref.networkId;
+														bestGap = Number.POSITIVE_INFINITY;
+														prevInterest = null;
+													}
+													if (assessed.nearestGap < bestGap - 0.5) {
+														bestGap = assessed.nearestGap;
+														lastProgressAt = now;
+													} else if (now - lastHardAt < NO_PROGRESS_MS_VALUE) {
+														lastProgressAt = now;
+													} else if (now - lastProgressAt > NO_PROGRESS_MS_VALUE) {
+														segmentExit = "no_progress";
+														break;
+													}
+												}
+											}
+											if (segmentExit != null) break;
+											// 目标全部处于缺席等待窗时没有可打目标：中性拍保持输入新鲜。
+											const nearest = targets.find(
+												(target) => !target.killed && !target.lost && target.ref.networkId === nearestId,
+											);
+											if (nearest == null) {
+												const frame = await stream.next(after, ctx.signal);
+												after = frame.sequence;
+												try {
+													await stream.apply(frame, { keys: {} });
+												} catch {
+													/* 中性拍失败无后果，下一帧重来 */
+												}
+												continue;
+											}
+											const frame = await stream.next(after, ctx.signal);
+											after = frame.sequence;
+											const frameSelf = frame.self.value;
+											if (frameSelf == null) continue; // 自事实缺失帧：下一帧再应用
+											hpAfter = frameSelf.health;
+											if (Date.now() >= strafeFlipAt) {
+												strafeSide = strafeSide === 1 ? -1 : 1;
+												strafeFlipAt = Date.now() + STRAFE_PERIOD_MS;
+											}
+											const gap = distance(frameSelf.place.position, nearest.lastPosition);
+											if (gap > BEAT_SWING_REACH) {
+												segmentExit = "out_of_reach";
+												break;
+											}
+											const steer = fightSteering(
+												frameSelf.place.position,
+												nearest.lastPosition,
+												scan
+													.filter(
+														(entry) =>
+															entry.kind === "hostile" &&
+															distance(frameSelf.place.position, entry.position) <= DEFAULT_STEER_PARAMS.dangerRadius,
+													)
+													.map((entry) => {
+														const hostileGap = distance(frameSelf.place.position, entry.position);
+														if (
+															entry.name === "creeper" &&
+															(hostileGap <= DEFAULT_STEER_PARAMS.creeperHardRadius || entry.ignited === true)
+														) {
+															creeperLocks.set(entry.ref.networkId, Date.now() + CREEPER_LOCK_MS);
+														}
+														const locked = (creeperLocks.get(entry.ref.networkId) ?? 0) > Date.now();
+														return {
+															x: entry.position.x,
+															z: entry.position.z,
+															name: entry.name,
+															hard:
+																entry.name === "creeper" &&
+																(hostileGap <= DEFAULT_STEER_PARAMS.creeperHardRadius ||
+																	entry.ignited === true ||
+																	locked),
+														};
+													}),
+												strafeSide,
+												prevInterest,
+											);
+											prevInterest = steer.cur;
+											if (steer.hardRetreat) lastHardAt = Date.now();
+											// 引燃的苦力怕不进攻击节奏（fuse 在烧，跑优先）；
+											// 其余目标冷却好且够得着就随拍派发攻击。
+											const swing =
+												nearest.ignited !== true &&
+												Date.now() - lastSwingAt >= ATTACK_COOLDOWN_MS &&
+												gap <= BEAT_SWING_REACH;
+											if (swing) lastSwingAt = Date.now();
+											// 硬危险拍：转身背向威胁前跑——原版后退不能 sprint，面朝威胁
+											// 的"后退拉开"与苦力怕同速，永远跑不出 fuse 半径（真服实测）。
+											// 本拍因此放弃瞄准/攻击/举盾，拉开速度优先。
+											const fleeing =
+												steer.hardRetreat &&
+												steer.hardAt != null &&
+												!swing &&
+												(!steer.dir ||
+													steer.dir.x * (steer.hardAt.x - frameSelf.place.position.x) +
+														steer.dir.z * (steer.hardAt.z - frameSelf.place.position.z) <=
+														0);
+											let lookTarget: PointTarget | EntityRef = nearest.ref;
+											let keys: ControlInput["keys"];
+											if (fleeing && steer.hardAt != null) {
+												const away = {
+													x: frameSelf.place.position.x - steer.hardAt.x,
+													z: frameSelf.place.position.z - steer.hardAt.z,
+												};
+												const len = Math.hypot(away.x, away.z) || 1;
+												lookTarget = {
+													x: frameSelf.place.position.x + (away.x / len) * 5,
+													y: frameSelf.place.position.y,
+													z: frameSelf.place.position.z + (away.z / len) * 5,
+												};
+												keys = { forward: true, sprint: true };
+											} else {
+												keys =
+													steer.dir == null
+														? { back: true }
+														: { ...dirToKeys(steer.dir, nearest.lastPosition, frameSelf.place.position) };
+											}
+											const input: ControlInput = {
+												keys,
+												lookAt: lookTarget,
+												...(swing ? { attack: nearest.ref } : {}),
+												...(shieldEquipped && !swing && !fleeing
+													? { use: { mode: "hold" as const, hand: "off" as const } }
+													: {}),
+											};
+											try {
+												await stream.apply(frame, input);
+											} catch (error) {
+												const code = (error as { code?: string }).code;
+												if (code === "FRAME_EXPIRED") continue;
+												if (code === "REFERENCE_STALE") {
+													// 目标在扫描与应用之间失联：本帧只保持走位，
+													// 击杀/缺席由下轮扫描按事实结算。
+													try {
+														await stream.apply(frame, { keys, lookAt: lookTarget });
+													} catch {
+														/* 下一帧重来 */
+													}
+													continue;
+												}
+												throw error;
+											}
+											for (const id of scope.player.deadEntities()) deadSeen.add(id);
+										}
+									} finally {
+										await stream.close();
+									}
 								});
 							} catch (error) {
 								if (ctx.signal.aborted) onInterrupted();
-								// 扫描与派发之间目标失联（被打落平台/被移走）：本拍放弃，
-								// 下一轮扫描按事实结算——还在就继续打，缺席按死亡观察/缺席窗结算。
-								if ((error as { code?: string }).code !== "REFERENCE_STALE") throw error;
+								const code = (error as { code?: string }).code;
+								// 段内流死亡（目标在应用与安装之间失联等）：退段重扫，
+								// 外层按最新事实重新分流；其余控制/连接失败如实上抛。
+								if (code === "REFERENCE_STALE" || code === "CONTROL_INVALID") continue;
+								throw error;
 							}
 						}
+						if (segmentExit === "cleared") {
+							ended = "targets_cleared";
+							break;
+						}
+						if (segmentExit === "lost") {
+							ended = "target_lost";
+							break;
+						}
+						if (segmentExit === "deadline") {
+							ended = "timeout";
+							break;
+						}
+						if (segmentExit === "low_health" || segmentExit === "no_progress") {
+							const self2 = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							hpAfter = self2.health;
+							const retreat = await withdraw(
+								deps,
+								ctx,
+								owner,
+								probe,
+								params.surfaceBeforeFlee,
+								deadline,
+								segmentExit === "low_health"
+									? nearestAnchor(targets, self2.place.position)
+									: (targets.find((target) => !target.killed && !target.lost)?.lastPosition ?? self2.place.position),
+								onInterrupted,
+							);
+							ended = retreat.cleared ? "retreated" : "retreat_failed";
+							retreatedReason = segmentExit;
+							break;
+						}
+						// out_of_reach：回到外层重新扫描分流（追击或再接战）。
 					}
 					const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 					return plain({

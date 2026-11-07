@@ -373,10 +373,20 @@ function entityRefOf(id: number, stamp: ClientFactStamp): EntityRef {
 	};
 }
 
+/**
+ * 苦力怕引燃位：metadata[16] 的数值 1 = fuse 已点燃（dev/creeper-probe 真服实测）。
+ * 元数据未到/索引不存在/值不是数值一律 null——不把"没看到"猜成"没点燃"。
+ */
+function creeperIgnited(metadata: { value?: unknown }[] | null | undefined): boolean | null {
+	const entry = metadata?.[16];
+	if (entry == null || typeof entry.value !== "number") return null;
+	return entry.value === 1;
+}
+
 function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 	const { bot, stamp } = ctx;
 	const entities: ClientEntitiesValue["entities"] = [];
-	// 实体元数据只取了掉落物栈，其余仍未采集；coverage 保持 partial 是事实，不是保守。
+	// 实体元数据只取了掉落物栈与苦力怕引燃位，其余仍未采集；coverage 保持 partial 是事实，不是保守。
 	const unknown: string[] = ["entity metadata other than item stacks is not captured"];
 	const unresolved: number[] = [];
 	for (const entity of Object.values(bot.entities)) {
@@ -387,6 +397,7 @@ function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 			uuid?: string;
 			position?: { x: number; y: number; z: number };
 			velocity?: { x: number; y: number; z: number };
+			metadata?: { value?: unknown }[] | null;
 		};
 		if (e?.id == null) continue;
 		const ref: EntityRef = entityRefOf(e.id, stamp);
@@ -400,6 +411,8 @@ function entitiesFact(ctx: FactViewContext): Fact<ClientEntitiesValue> {
 			velocity: e.velocity ? { x: e.velocity.x, y: e.velocity.y, z: e.velocity.z } : null,
 			metadata: null,
 			item,
+			// 苦力怕引燃位（dev/creeper-probe 真服实证：metadata[16]→1 = fuse 点燃）。
+			ignited: e.name === "creeper" ? creeperIgnited(e.metadata) : null,
 		});
 	}
 	if (unresolved.length > 0) {

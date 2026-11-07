@@ -20,6 +20,7 @@ type TestEntity = EntityEntryView;
 function entity(name: string, kind: TestEntity["kind"], x: number, z: number, networkId = 1): TestEntity {
 	return {
 		ref: { connection: "conn:t", incarnation: "inc:t", appearance: "ap:t", networkId },
+		ignited: null,
 		name,
 		kind,
 		position: { x, y: 64, z },

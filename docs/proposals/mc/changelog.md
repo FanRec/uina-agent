@@ -1,5 +1,11 @@
 # 设计变更记录
 
+## 2026-11-07 · 批33 fight@1 近身段 feedback 流迁移 + 苦力怕 fuse 感知（G29 主体关闭）
+
+- **feedback 流迁移（G29 ①）**：近身段从"每拍 withBody + drive BEAT_TICKS"改为一次 withBody 持有 + feedback 流连续物理拍——键位每物理拍重装，扫描/决策不再造成键位空档（占空比 ~100%，原 ~50%）。段内每 300ms 重扫结算击杀/缺席/撤退/进度（assess 助手共用），steering/攻击/举盾逐拍应用。
+- **fuse 感知（G29 ②）**：`entities@1` 新增苦力怕 `ignited` 事实（driver 捕获 metadata[16]）；三处消费——引燃目标不进攻击节奏、近身段硬危险立即拉开持续续锁、**外层追击分支拒绝回追引燃/锁定中的苦力怕**（creeper-probe 实证：不认识 fuse 状态的追击造成逃离/追击振荡，净拉开 ≈0）。
+- 验收：B04 五轮 hp 18.83–19.47（批29 包络 13.4–20；验收线收紧到 ≥18）；mc-capability-fight 重写 11 项（feedback 流替身）；tests/mc 107 文件 892 项（唯一 FAIL 为 mcp-extension-loading 环境预存）。击杀路径（targets_cleared 击杀苦力怕）未达成，残余见 known-gaps G29。
+
 ## 2026-11-07 · 批32 explore@1 前沿覆盖重写（四向游标退场，M6/批次 B 收口）
 
 explore@1 从四向 24 格腿游标替换为前沿覆盖探索（refactor-v2 M6，01-DESIGN §6"不建第二世界数据库"落地）：

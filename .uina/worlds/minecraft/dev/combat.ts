@@ -274,10 +274,13 @@ async function main(): Promise<void> {
 			} else {
 				throw new Error(`expected targets_cleared/target_lost, got ${JSON.stringify(value)}`);
 			}
-			// 验收线 = 实测包络（干净场地 13.4–19.2，见 G29）：接触即引燃、拉开
-			// 后被残余爆炸擦伤是当前机制的预期行为；贴身爆炸（<8）或死亡不合格。
-			// 通往"无伤击杀"的缺口（feedback 流占空比 + fuse 状态感知）登记 G29。
-			if ((value.hp.after ?? 0) < 10)
+			// 验收线 = 批33 实测包络：feedback 流 100% 占空比 + fuse 感知（ignited
+			// 不攻击不追击）+ 引燃期外层拒绝回追后，五轮 18.83–19.47（擦伤 ≤1.2）。
+			// 批29 包络是 13.4–20（逃离占空比 ~50%，引燃期被追回贴爆）。击杀路径
+			// （targets_cleared 且 kills 含 creeper）仍未达成——1.21 引燃期苦力怕
+			// 继续逼近，逃逸净速度只够拉开 ~2m，20 血需 4 个接触周期，当前策略
+			// 总是中途引爆；残余登记 G29。
+			if ((value.hp.after ?? 0) < 18)
 				throw new Error(`blast damage beyond the registered envelope: hp ${value.hp.before}->${value.hp.after}`);
 			return `${value.ended}, hp ${value.hp.before}->${value.hp.after}`;
 		});

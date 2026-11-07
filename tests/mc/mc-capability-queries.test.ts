@@ -320,6 +320,7 @@ describe("entities@1", () => {
 				velocity: null,
 				metadata: null,
 				item: null,
+				ignited: null,
 			},
 			{
 				ref: { connection: "c", incarnation: "i", appearance: "a", networkId: 7 },
@@ -329,6 +330,7 @@ describe("entities@1", () => {
 				velocity: null,
 				metadata: null,
 				item: null,
+				ignited: null,
 			},
 			{
 				ref: { connection: "c", incarnation: "i", appearance: "a", networkId: 8 },
@@ -338,6 +340,7 @@ describe("entities@1", () => {
 				velocity: null,
 				metadata: null,
 				item: null,
+				ignited: null,
 			},
 			{
 				ref: { connection: "c", incarnation: "i", appearance: "a", networkId: 9 },
@@ -347,6 +350,7 @@ describe("entities@1", () => {
 				velocity: null,
 				metadata: null,
 				item: null,
+				ignited: null,
 			},
 		],
 	};

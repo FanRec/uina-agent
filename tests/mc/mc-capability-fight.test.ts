@@ -31,13 +31,13 @@ const FIGHT = { radius: 16, maxTimeMs: 6000 };
 
 describe("fight@1 会话", () => {
 	test("balanced：换最好武器 + 盾，击杀（死亡观察）→ targets_cleared", async () => {
-		const zombie = entity("zombie", "hostile", 12.5, 10); // 距离 2.5 ≤ 接战距离拍内攻击
+		const zombie = entity("zombie", "hostile", 12.5, 10); // 距离 2.5 ≤ 出手门限，直接进近身段
 		const state = baseState([zombie], { iron_sword: 1, stone_axe: 1, shield: 1 });
 		const h = makeHarness(state, {
-			// 近身拍（批29）：drive 派发攻击，死亡观察来自连接级累积；模型里
-			// 死亡 = 目标从扫描集合消失 + 死亡观察已到达。
+			// 近身段（批33）：feedback 流连续拍派发攻击，死亡观察来自连接级累积；
+			// 模型里死亡 = 目标从扫描集合消失 + 死亡观察已到达。
 			deadEntities: new Set([zombie.ref.networkId]),
-			onDrive: () => {
+			onNearApply: () => {
 				state.entities = [];
 			},
 		});
@@ -56,7 +56,25 @@ describe("fight@1 会话", () => {
 		// 最好近战 = stone_axe(9) > iron_sword(6)；盾在 balanced 下装到 offhand
 		expect(h.calls).toContain("equip:hand");
 		expect(h.calls).toContain("equip:offhand");
-		expect(h.calls).toContain("drive");
+		expect(h.calls).toContain("feedback:");
+	}, 15000);
+
+	test("近身段连续拍派发攻击并保持单次身体持有", async () => {
+		const zombie = entity("zombie", "hostile", 12.5, 10);
+		const state = baseState([zombie], { iron_sword: 1, shield: 1 });
+		const h = makeHarness(state, {
+			deadEntities: new Set<number>(),
+			onNearApply: () => {
+				state.entities = [];
+			},
+			feedbackPaceMs: 5,
+		});
+		await h.callable("fight@1").invoke(h.ctx, { ...FIGHT, maxTimeMs: 3000 });
+		// 近身段以 feedback 流持有身体（不是每拍 withBody + drive）。
+		expect(h.calls).toContain("feedback:");
+		expect(h.calls.filter((call) => call === "nearApply").length).toBeGreaterThan(1);
+		// 段内不反复获取身体：一个近身段 = 一次 feedback 流（缺席窗后 target_lost 退出）。
+		expect(h.calls.filter((call) => call.startsWith("feedback:")).length).toBe(1);
 	}, 15000);
 
 	test("击杀掉落只记死亡位置附近新出现的 item 实体", async () => {
@@ -64,7 +82,7 @@ describe("fight@1 会话", () => {
 		const state = baseState([zombie], {});
 		const h = makeHarness(state, {
 			deadEntities: new Set([zombie.ref.networkId]),
-			onDrive: () => {
+			onNearApply: () => {
 				const drop = entity("item", "other", 12.8, 10.2);
 				drop.item = { name: "rotten_flesh", count: 2 };
 				state.entities = [drop];
@@ -82,7 +100,7 @@ describe("fight@1 会话", () => {
 		const h = makeHarness(state, {
 			// 死亡观察为空（目标只是消失）；缺席到达窗后判 target_lost。
 			deadEntities: new Set<number>(),
-			onDrive: () => {
+			onNearApply: () => {
 				state.entities = [];
 			},
 		});
@@ -169,6 +187,27 @@ describe("fight@1 会话", () => {
 		expect(withBow.calls).toContain("endUse");
 		expect(withBow.calls).toContain("awaitEvidence");
 	}, 20000);
+
+	test("引燃的苦力怕：fuse 感知 → 立即硬危险拉开，不进攻击节奏", async () => {
+		const creeper = entity("creeper", "hostile", 13, 10); // gap 3 ≤ 出手门限
+		creeper.ignited = true;
+		const state = baseState([creeper], { iron_sword: 1 });
+		const applied: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }[] = [];
+		const h = makeHarness(state, {
+			onNearApply: (input) => applied.push(input),
+			feedbackPaceMs: 5,
+		});
+		const result = (await h.callable("fight@1").invoke(h.ctx, {
+			...FIGHT,
+			maxTimeMs: 2000,
+		})) as { ended: string };
+		// 有近身段输入（fuse 感知不等于站桩），且全部是转身冲刺拉开的逃离拍。
+		expect(applied.length).toBeGreaterThan(0);
+		expect(applied.some((input) => input.keys?.forward === true && input.keys?.sprint === true)).toBe(true);
+		// 引燃期间零攻击派发：fuse 在烧，跑优先。
+		expect(applied.every((input) => input.attack === undefined)).toBe(true);
+		expect(result.ended).toBe("timeout");
+	}, 15000);
 
 	test("radius 内无敌对 → NOT_FOUND", async () => {
 		const h = makeHarness(baseState([entity("cow", "passive", 12, 10)], {}));

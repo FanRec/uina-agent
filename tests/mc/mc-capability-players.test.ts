@@ -68,6 +68,7 @@ function entityEntry(id: number, type: string, position: { x: number; y: number;
 		velocity: null,
 		metadata: null,
 		item: null,
+		ignited: null,
 	};
 }
 

@@ -80,6 +80,11 @@ export interface ClientEntityValue {
 	metadata: { schema: ExactRef; value: JsonValue } | null;
 	/** 掉落物栈（只有 item 实体有）；未收到元数据或解析失败为 null，不猜。 */
 	item: { name: string; count: number } | null;
+	/**
+	 * 苦力怕引燃状态（metadata[16]，creeper-probe 真服实证 fuse 信号）；
+	 * 非苦力怕、元数据未到或读不出为 null，不猜。
+	 */
+	ignited: boolean | null;
 }
 
 /** extent 仅保证当前 tracked 集合，不证明范围外不存在。 */

@@ -310,9 +310,10 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### entities · `entities@1`
 - 输入 `{ radius?: 32, kind?: "hostile"|"passive"|"player"|"all", limit?: 32 }`
-- 返回 `{ entities:[{ ref, name, kind, position, distance, health?, held? }], scanned:{ radius } }`
+- 返回 `{ entities:[{ ref, name, kind, position, distance, health?, held?, ignited? }], scanned:{ radius } }`
 - `ref` 是稳定引用（连接+世代+网络 id），可直接传给 `attack`/`fight`/`follow`。
 - **批16 起玩家实体 name 输出用户名**：kind 仍按底层 type 判定；从名单事实（players@1）按跟踪代次 ref join 出用户名，名单未到或关联不上时保持 `"player"`，不加 unknown。
+- **批33 起 `ignited` 输出苦力怕引燃状态**：true = fuse 已点燃（driver 捕获 metadata[16]，creeper-probe 真服实证引燃信号）；非苦力怕、元数据未到或读不出为 null，不猜。
 - 例：`{ kind:"hostile", radius:16 } → { entities:[{ref:"s3:7:1042",name:"zombie",kind:"hostile",position:{x:124,y:64,z:-25},distance:6.4}] }`
 
 ### players · `players@1`
@@ -796,7 +797,9 @@ await mc.call("chat@1", {text:"/list"});
 
 实现说明（2026-11-06 批26）：`withdraw` 拍的结算从"返回终点"改为核验性 `{cleared, at}`——anchor 距离 + 活跃敌对实体近身复查；四个调用点按 cleared 结算 retreated/retreat_failed。开场低于接战线的撤退路径同口径，且其 `at` 与会话结束路径统一为 `{position, dimension}`。
 
-实现说明（2026-11-07 批29）：近身段从"攻击 + 600ms 证据窗冻结 + 冷却睡眠"改为**连续控制拍**——每拍 ~250ms：16 槽 context steering（interest=向目标推进+切向绕走，danger=各敌对接近度；苦力怕进 fuse 半径硬遮罩朝向它的槽并进入 3s 锁定期，锁定期内转身背向冲刺拉开，no_progress 时钟冻结）决定键位，攻击在冷却好且 ≤3.2 格时随 drive 同拍派发（原版实体交互有效距离 3 格；追击在 3 格交接给拍循环，不再冲到贴脸）。击杀归属改读 `deadEntities()`（连接级 entityDead 累积）：目标缺席 + 死亡观察命中 = 击杀，连续 2 次缺席且无死亡观察才 target_lost；不再要求死亡发生在攻击证据窗内（爆炸自杀的苦力怕如实落 target_lost——爆炸不产生 entityDead）。举盾是拍间机会动作（攻击拍不带 use：using 状态会吞攻击）。真服门 `dev:mc:combat` 8 步（批29 起新增 B04 苦力怕与 stop 抢占步）连续两轮全绿；苦力怕残余爆炸擦伤（13–20 血落点）与其解法（feedback 流占空比 + fuse 状态感知）登记 known-gaps G29。
+实现说明（2026-11-07 批29）：近身段从"攻击 + 600ms 证据窗冻结 + 冷却睡眠"改为**连续控制拍**——每拍 ~250ms：16 槽 context steering（interest=向目标推进+切向绕走，danger=各敌对接近度；苦力怕进 fuse 半径硬遮罩朝向它的槽并进入 3s 锁定期，锁定期内转身背向冲刺拉开，no_progress 时钟冻结）决定键位，攻击在冷却好且 ≤3.2 格时随 drive 同拍派发（原版实体交互有效距离 3 格；追击在 3 格交接给拍循环，不再冲到贴脸）。击杀归属改读 `deadEntities()`（连接级 entityDead 累积）：目标缺席 + 死亡观察命中 = 击杀，连续 2 次缺席且无死亡观察才 target_lost；不再要求死亡发生在攻击证据窗内（爆炸自杀的苦力怕如实落 target_lost——爆炸不产生 entityDead）。举盾是拍间机会动作（攻击拍不带 use：using 状态会吞攻击）。
+
+实现说明（2026-11-07 批33）：近身段改为**一次 withBody 持有 + feedback 流连续物理拍**（G29 ①：键位每拍重装，扫描/决策不再造成键位空档，占空比 ~100%，原 ~50%）——段内每 300ms 重扫结算击杀/缺席/撤退/进度，steering/攻击/举盾逐物理拍应用；段与导航顶层交替不变。G29 ② fuse 感知：`ignited` 事实三处消费——引燃目标不进攻击节奏（fuse 在烧，跑优先）、近身段硬危险立即拉开并持续续锁、**外层追击分支拒绝回追引燃/锁定中的苦力怕**（creeper-probe 实证：不认识 fuse 状态的追击会把 bot 送回爆炸半径，逃离/追击振荡净拉开 ≈0）。验收：B04 五轮 18.83–19.47（批29 包络 13.4–20；验收线收紧到 ≥18）；击杀路径（targets_cleared 且 kills 含 creeper）残余见 known-gaps G29。
 
 ### 记录
 
