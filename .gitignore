@@ -23,6 +23,13 @@ notes/
 /generated/
 /.uina/worlds/bilibili-live/tmp-test/
 
+# 根 tmp/：批次探针日志、一次性绘图/整理脚本等中途产物，整理后再进 dev/ 或 docs/
+/tmp/
+# 编辑器（zcode）的会话计划缓存，属本地工具状态
+/.zcode/
+# .uina 根下的一次性分析脚本（如导出使用面扫描），命名沿用 tmp- 前缀
+/.uina/tmp-*.mjs
+
 # World 本地运行状态：一律位于 .uina/world-data，不随源码提交。
 /.uina/world-data/
 
