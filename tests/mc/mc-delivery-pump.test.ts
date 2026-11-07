@@ -260,7 +260,7 @@ async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> 
 	}
 }
 
-test("G6 digest events ride minecraft_digest without an events@1 pointer; other notices keep theirs", async () => {
+test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest 专用通道", async () => {
 	const events: WorldEvent[] = [];
 	const listeners = new Set<
 		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
@@ -295,34 +295,33 @@ test("G6 digest events ride minecraft_digest without an events@1 pointer; other 
 		const send = (ref: string, payload: unknown) => {
 			for (const listener of listeners) listener([{ ref, observedAt: "t", payload } as never]);
 		};
-		send("digest:n:1", { kind: "digest", self: { dimension: "overworld" }, inventory: { counts: {} }, world: {} });
-		await until(() => events.length === 1);
-		expect(events[0]!.type).toBe("minecraft_digest");
-		const text = JSON.parse(events[0]!.text!);
-		expect(text.kind).toBe("digest");
-		expect(text.observedAt).toBe("t");
-		expect(text.nextCall).toBeUndefined();
 		send("ev:n:2", { kind: "safety_changed", intervention: {} });
+		await until(() => events.length === 1);
+		expect(events[0]!.type).toBe("minecraft_event");
+		expect(JSON.parse(events[0]!.text!).nextCall).toEqual({
+			action: "runs",
+			params: { op: "record", ref: "ev:n:2" },
+		});
+		// 世界状态不再作为独立消息上行：只可能是事实事件（历史可查的那几种）。
+		send("ev:n:3", { kind: "digest", self: { dimension: "overworld" } });
 		await until(() => events.length === 2);
 		expect(events[1]!.type).toBe("minecraft_event");
 		expect(JSON.parse(events[1]!.text!).nextCall).toEqual({
-			action: "runs",
-			params: { op: "record", ref: "ev:n:2" },
+			action: "observe",
+			params: { selector: "events@1" },
 		});
 	} finally {
 		await pump.close();
 	}
 });
 
-test("G6 while the host is busy only the newest digest is held; it flushes on idle", async () => {
+test("需要立即重新决策的事件走 urgent；其余事实排队等下一次决策", async () => {
 	const events: WorldEvent[] = [];
 	const listeners = new Set<
 		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
 	>();
-	let busy = true;
 	const ctx: ServiceCompanionContext = {
 		signal: new AbortController().signal,
-		isBusy: () => busy,
 		delivery: {
 			namespace: "n",
 			session: "s",
@@ -344,21 +343,25 @@ test("G6 while the host is busy only the newest digest is held; it flushes on id
 		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
 		rpc: async () => ({ items: [] }),
 	} as unknown as MinecraftExecutor;
-	const pump = new DeliveryPump(executor, ctx, 10);
+	const pump = new DeliveryPump(executor, ctx, 60_000);
+	const deliver = async (payload: Record<string, unknown>): Promise<WorldEvent> => {
+		const before = events.length;
+		for (const listener of listeners) listener([{ ref: `ev:${before}`, observedAt: "t", payload } as never]);
+		await until(() => events.length > before);
+		return events.at(-1)!;
+	};
 	try {
 		pump.start();
-		const send = (seq: string) => {
-			for (const listener of listeners)
-				listener([{ ref: `digest:n:${seq}`, observedAt: "t", payload: { kind: "digest", seq } } as never]);
-		};
-		send("A");
-		send("B");
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		expect(events).toHaveLength(0);
-		busy = false;
-		await pump.reconcile();
-		await until(() => events.length === 1);
-		expect(JSON.parse(events[0]!.text!).seq).toBe("B");
+		// 当前执行前提失效或有人在等回应：插队重新决策。
+		expect((await deliver({ kind: "death" })).delivery).toBe("urgent");
+		expect((await deliver({ kind: "connection", state: "disconnected" })).delivery).toBe("urgent");
+		expect((await deliver({ kind: "chat", channel: "private", self: false })).delivery).toBe("urgent");
+		expect((await deliver({ kind: "safety_changed", ended: "blocked" })).delivery).toBe("urgent");
+		expect((await deliver({ kind: "safety_changed", ended: "timeout" })).delivery).toBe("urgent");
+		// 其余事实不打断当前思考。
+		expect((await deliver({ kind: "connection", state: "ready" })).delivery).toBeUndefined();
+		expect((await deliver({ kind: "chat", channel: "private", self: true })).delivery).toBeUndefined();
+		expect((await deliver({ kind: "safety_changed", ended: "safe" })).delivery).toBeUndefined();
 	} finally {
 		await pump.close();
 	}

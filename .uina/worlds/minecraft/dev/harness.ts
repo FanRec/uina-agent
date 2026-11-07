@@ -56,6 +56,8 @@ export interface DevHarness {
 	capabilities: BuiltCapabilities;
 	bot: MineflayerBot;
 	log: (message: string) => void;
+	/** 请求前状态帧（正式链路 = 宿主经 executor.rpc("state.snapshot")，这里直接走同进程 dispatch）。 */
+	snapshot(): Promise<{ text: string; sampledAt: string; connected: boolean; unknown: string[] }>;
 	close(): Promise<void>;
 }
 export async function openHarness(
@@ -129,6 +131,13 @@ export async function openHarness(
 			capabilities: side.capabilities,
 			bot: side.host.bot,
 			log,
+			snapshot: () =>
+				side.dispatch("state.snapshot", {}, AbortSignal.timeout(5000)) as Promise<{
+					text: string;
+					sampledAt: string;
+					connected: boolean;
+					unknown: string[];
+				}>,
 			close: async () => {
 				if (heartbeat) clearInterval(heartbeat);
 				await side.close();

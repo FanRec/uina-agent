@@ -188,6 +188,34 @@ describe("Runtime effect settlement", () => {
 		expect(snapshotFromRow(h.runs().find((r) => r.run === summary.run))).toMatchObject({ value: "recovered" });
 	});
 
+	// 根调用失败不等于"什么都没做"：调用侧在错误里点的进度必须成为 Run 的终态进度，
+	// 否则模型会把"采到 9/16 才放弃"读成"一个都没采"，按 0 重做。
+	test("a failed root keeps the progress the call reported in its failure", async () => {
+		const h = harness(() => [
+			callable("collect@1", async (ctx) => {
+				await ctx.progress({ acquired: 3 });
+				await ctx.progress({ acquired: 7 });
+				// 最后一次增量已确认但还没走 ctx.progress：失败里带的值才是真值。
+				throw callFailure({
+					code: "TARGET_NOT_MET",
+					source: "capability",
+					message: "gave up after block attempts with 9/16",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+					progress: { acquired: 9, remaining: 7 },
+				});
+			}),
+		]);
+		const summary = await h.finish(await h.submit("collect@1"));
+		expect(summary).toMatchObject({ phase: "finished", outcome: "failed" });
+		expect(summary.progress).toEqual({ acquired: 9, remaining: 7 });
+		expect(snapshotFromRow(h.runs().find((row) => row.run === summary.run)!)).toMatchObject({
+			progress: { acquired: 9, remaining: 7 },
+			progressComplete: true,
+		});
+	});
+
 	test("a closed child scope must finish descendant cleanup before the parent settles", async () => {
 		let started: () => void = () => {};
 		let closing: () => void = () => {};
