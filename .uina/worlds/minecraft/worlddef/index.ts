@@ -132,6 +132,18 @@ export function createMinecraftWorld(
 		description: nativeGuide,
 		executionMode: "parallel",
 		defaultState: { enabled: false },
+		/**
+		 * 请求前状态帧（批37）：模型每次决策都读一份当前观察。
+		 *
+		 * 无活动会话时返回 null——"没在玩 MC"不值得每次请求都提醒一次。
+		 * 有会话但采样失败时由伴生侧返回明确的不可用正文（断线后不沿用旧坐标）。
+		 */
+		requestContext: async () => {
+			const session = controller?.session;
+			if (!session) return null;
+			const frame = await session.executor.rpc<{ text: string }>("state.snapshot", {});
+			return frame.text;
+		},
 		actions: Object.fromEntries(
 			Object.entries(actionSchemas).map(([name, parameters]) => [
 				name,

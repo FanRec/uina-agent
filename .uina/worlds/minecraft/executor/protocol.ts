@@ -207,6 +207,17 @@ const definitions = {
 		}),
 		cancellable: true,
 	},
+	// 请求前状态帧（批37）：一次 facts.sample 同一提交边界，返回有界正文与可用性事实。
+	// 只读、不消费消息、不推进任何水位——transformContext 也可能被上下文检视触发。
+	"state.snapshot": {
+		input: object({}),
+		output: shaped({
+			text: { type: "string" },
+			sampledAt: ref,
+			connected: { type: "boolean" },
+			unknown: { type: "array", items: { type: "string" } },
+		}),
+	},
 	// G11 图片出口：只按 map@1 已产出的 ImageFileRef 读取，伴生进程核验目录/摘要后回 base64。
 	read_image: {
 		input: object({ path: ref, sha256: ref, bytes: integer, mimeType: ref }),

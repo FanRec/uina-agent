@@ -43,7 +43,7 @@
     "dev:mc:session": "tsx .uina/worlds/minecraft/dev/session-live.ts",
     "dev:mc:climb": "tsx .uina/worlds/minecraft/dev/climb.ts",
     "dev:mc:transit": "tsx .uina/worlds/minecraft/dev/transit.ts",
-    "dev:mc:digest": "tsx .uina/worlds/minecraft/dev/digest.ts",
+    "dev:mc:state-frame": "tsx .uina/worlds/minecraft/dev/state-frame.ts",
     "dev:mc:terrain-nav": "tsx .uina/worlds/minecraft/dev/terrain-nav.ts",
     "dev:mc:upstream-nav": "tsx .uina/worlds/minecraft/dev/upstream-nav.ts",
     "dev:mc:nav-perf": "tsx .uina/worlds/minecraft/dev/nav-perf-probe.ts",

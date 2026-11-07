@@ -37,9 +37,9 @@ import { createLibrary } from "../library/index.js";
 import { readCallSource } from "../library/origin.js";
 import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
-import { startDigestPush } from "../world/digest.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
+import { sampleStateFrame } from "../world/state-frame.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,
@@ -150,21 +150,18 @@ export async function openExecutionSide(
 		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
 	});
 	capabilities.callables.push(...(options.callables ?? []));
-	// G6 节流 digest：三个段落复用现有查询读取器（与 observe 同口径），经 onGameEvent 上行。
-	const digestReader = (ref: ExactRef) => {
+	// 状态帧（批37）：只读采样 + 文本投影，复用现有查询读取器（与 observe 同口径）。
+	// 不再有定时推送：状态由宿主在每次模型请求前经 `state.snapshot` 取一份当前快照。
+	const currentReader = (ref: ExactRef) => {
 		const reader = capabilities.readers.get(ref);
-		if (reader?.kind !== "current") throw new Error(`digest requires a current reader for ${ref}`);
+		if (reader?.kind !== "current") throw new Error(`state frame requires a current reader for ${ref}`);
 		return reader;
 	};
-	const digest = startDigestPush({
-		facts,
-		readers: {
-			self: digestReader("self@1"),
-			inventory: digestReader("inventory@1"),
-			world: digestReader("world@1"),
-		},
-		emit: ({ observedAt, payload }) => options.onGameEvent?.({ ref: mint("digest"), observedAt, payload }),
-	});
+	const stateReaders = {
+		self: currentReader("self@1"),
+		inventory: currentReader("inventory@1"),
+		world: currentReader("world@1"),
+	};
 	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
 	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
 	// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
@@ -213,18 +210,22 @@ export async function openExecutionSide(
 			evidence: world,
 			onSafetyChanged: (record) => {
 				options.onChanged?.();
-				if (record.finishedAt)
-					options.onGameEvent?.({
-						ref: record.record,
-						observedAt: record.finishedAt,
-						payload: plain({
-							kind: "safety_changed",
-							intervention: record.intervention,
-							record: record.record,
-							ended: record.ended,
-							outcome: record.outcome,
-						}),
-					});
+				if (!record.finishedAt) return;
+				// 取消/失效不是要模型知情的事实：前者是宿主自己关门（世界关闭、停用）时的收尾，
+				// 后者由连接/死亡事件承担。这两种推出去只会在最不该说话的时刻吵一下。
+				if (record.ended === "cancelled" || record.ended === "invalidated") return;
+				options.onGameEvent?.({
+					ref: record.record,
+					observedAt: record.finishedAt,
+					payload: plain({
+						kind: "safety_changed",
+						intervention: record.intervention,
+						record: record.record,
+						ended: record.ended,
+						outcome: record.outcome,
+						interruptedRun: record.interruptedRun,
+					}),
+				});
 			},
 			verifiers: buildVerifiers(),
 			dbPath: join(init.sessionDataDir, "runtime.db"),
@@ -360,7 +361,6 @@ export async function openExecutionSide(
 			(closePromise ??= (async () => {
 				closing = true;
 				importantEvents.close();
-				digest.close();
 				const errors: unknown[] = [];
 				const owner = getRuntime().inspectOwner();
 				if (owner) {
@@ -481,6 +481,10 @@ export async function openExecutionSide(
 				case "observe":
 					value = await world.read({ ref: p.selector as ExactRef, input: p.input ?? {} });
 					break;
+				// 请求前状态快照（批37）：一次采样同一提交边界，返回有界文本 + 可用性事实。
+				case "state.snapshot":
+					value = sampleStateFrame({ facts, readers: stateReaders });
+					break;
 				case "read_image": {
 					// G11：只接受 map@1 实际产出的 ImageFileRef；核验 realpath/摘要后回 base64。
 					const ref = payload as unknown as Parameters<typeof readExportedImage>[1];
@@ -513,7 +517,6 @@ export async function openExecutionSide(
 		};
 	} catch (error) {
 		importantEvents.close();
-		digest.close();
 		await Promise.allSettled([
 			host.close(),
 			world.close(),

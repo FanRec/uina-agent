@@ -1439,6 +1439,9 @@ export class RuntimeEngine {
 			state.unknownEffects = this.queue.unknownEffectsFor(state.run);
 			state.value = rootThrew == null ? root.value : null;
 			state.error = rootThrew != null ? { code: rootThrew.code, message: rootThrew.message } : null;
+			// 失败终态同样要带可信进度。调用侧在错误里点明了"做到哪一步"（collect 采到
+			// 9/16 才放弃），丢掉它会让模型把半件事读成零件事、按 0 重做。
+			if (rootThrew?.progress != null) state.progress = rootThrew.progress;
 			// §5.6 五态：根调用结算 + 运行级控制未知 → unknown
 			state.outcome =
 				!state.started && !state.everStarted

@@ -2,7 +2,6 @@
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import type { GameNotice } from "../contracts/executor.js";
 import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
 import type { MinecraftExecutor } from "./index.js";
 import type { DeliveryAttempt } from "./ledger-worker.js";
@@ -27,8 +26,6 @@ export class DeliveryPump {
 	private pendingCount: number | null = null;
 	private hostState: HostDeliveryState = { kind: "unavailable", reason: "not checked" };
 	private failures = 0;
-	/** G6：主脑忙碌时只保留最新一份 digest，空闲即补发——避免长任务期间 followUp 刷屏。 */
-	private heldDigest: GameNotice | null = null;
 	private readonly activation = `delivery:${randomUUID()}`;
 	constructor(
 		private readonly executor: MinecraftExecutor,
@@ -39,17 +36,13 @@ export class DeliveryPump {
 		this.unsubscribeSide = this.executor.subscribe((events) => {
 			this.wake(0);
 			for (const event of events) {
-				// G6 digest：独立事件类型 minecraft_digest（不指向 events@1）；忙时只保最新一份。
-				if ((event.payload as { kind?: string } | null)?.kind === "digest") {
-					this.heldDigest = event;
-					this.flushDigest();
-					continue;
-				}
 				this.emitNotice({
 					id: event.ref,
 					type: "minecraft_event",
 					origin: "external",
 					channel: "world",
+					// 需要尽快重新决策的事件（玩家私聊/死亡/断线）走 steer；其余排队等下一次决策。
+					...(urgentEvent(event.payload) ? { delivery: "urgent" as const } : {}),
 					text: JSON.stringify({
 						...event,
 						nextCall:
@@ -69,27 +62,7 @@ export class DeliveryPump {
 		this.timer = setTimeout(() => {
 			this.timer = null;
 			void this.reconcile().catch(() => {});
-			this.flushDigest();
 		}, ms);
-	}
-	/** 空闲（主脑不在回合中）才投递保留的 digest；isBusy 不可用时与普通事件同权直发。 */
-	private flushDigest(): void {
-		const event = this.heldDigest;
-		if (!event || this.stopped) return;
-		if (this.ctx.isBusy?.() === true) return;
-		this.heldDigest = null;
-		const payload = event.payload;
-		this.emitNotice({
-			id: event.ref,
-			type: "minecraft_digest",
-			origin: "external",
-			channel: "world",
-			text: JSON.stringify(
-				payload != null && typeof payload === "object" && !Array.isArray(payload)
-					? { observedAt: event.observedAt, ...payload }
-					: { observedAt: event.observedAt, payload },
-			),
-		});
 	}
 	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
 	private emitNotice(notice: EventNotice): void {
@@ -324,10 +297,34 @@ export class DeliveryPump {
 	async close(): Promise<void> {
 		this.stopped = true;
 		if (this.timer) clearTimeout(this.timer);
-		this.heldDigest = null;
 		this.unsubscribe?.();
 		this.unsubscribeSide?.();
 		await this.running;
+	}
+}
+
+/**
+ * 需要立即重新决策的事件（urgent → steer）：当前执行前提已失效，或有人在等回应。
+ * 其余事实走 queued——不打断当前思考，等下一次决策回合一起处理。
+ */
+function urgentEvent(payload: unknown): boolean {
+	const value = payload as
+		| { kind?: string; state?: string; channel?: string; self?: boolean; ended?: string }
+		| null
+		| undefined;
+	if (value == null) return false;
+	switch (value.kind) {
+		case "death":
+			return true;
+		case "connection":
+			return value.state === "disconnected";
+		case "chat":
+			return value.channel === "private" && value.self === false;
+		// 本地安全响应已尽力仍未脱险：等到下一个回合可能就晚了。
+		case "safety_changed":
+			return value.ended === "blocked" || value.ended === "timeout";
+		default:
+			return false;
 	}
 }
 
