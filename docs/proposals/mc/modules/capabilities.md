@@ -794,6 +794,8 @@ await mc.call("chat@1", {text:"/list"});
 
 实现说明（2026-11-06 批26）：`withdraw` 拍的结算从"返回终点"改为核验性 `{cleared, at}`——anchor 距离 + 活跃敌对实体近身复查；四个调用点按 cleared 结算 retreated/retreat_failed。开场低于接战线的撤退路径同口径，且其 `at` 与会话结束路径统一为 `{position, dimension}`。
 
+实现说明（2026-11-07 批29）：近身段从"攻击 + 600ms 证据窗冻结 + 冷却睡眠"改为**连续控制拍**——每拍 ~250ms：16 槽 context steering（interest=向目标推进+切向绕走，danger=各敌对接近度；苦力怕进 fuse 半径硬遮罩朝向它的槽并进入 3s 锁定期，锁定期内转身背向冲刺拉开，no_progress 时钟冻结）决定键位，攻击在冷却好且 ≤3.2 格时随 drive 同拍派发（原版实体交互有效距离 3 格；追击在 3 格交接给拍循环，不再冲到贴脸）。击杀归属改读 `deadEntities()`（连接级 entityDead 累积）：目标缺席 + 死亡观察命中 = 击杀，连续 2 次缺席且无死亡观察才 target_lost；不再要求死亡发生在攻击证据窗内（爆炸自杀的苦力怕如实落 target_lost——爆炸不产生 entityDead）。举盾是拍间机会动作（攻击拍不带 use：using 状态会吞攻击）。真服门 `dev:mc:combat` 8 步（批29 起新增 B04 苦力怕与 stop 抢占步）连续两轮全绿；苦力怕残余爆炸擦伤（13–20 血落点）与其解法（feedback 流占空比 + fuse 状态感知）登记 known-gaps G29。
+
 ### 记录
 
 #### remember · `remember@1` · act · P1

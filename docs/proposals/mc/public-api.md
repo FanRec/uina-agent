@@ -298,6 +298,11 @@ interface BodyOps {
   attack(target: EntityRef, options?: {evidenceMs?: number}): Promise<AttackOutcome>;
   // 批 12：证据窗口——不派发动作，等待该实体在窗口内的受击/死亡观察（远程命中与击杀确认）
   awaitEvidence(target: EntityRef, options?: {evidenceMs?: number}): Promise<{hit: boolean | null; dead: boolean | null}>;
+  // 批 29：本连接观察到的死亡实体（entityDead 持续累积，跨资格会话有效；
+  // 读它不派发也不等待）。战斗会话用它把击杀归属从阻塞式证据窗里解出来——
+  // 循环保持移动，目标缺席 + 此集合命中 = 击杀。networkId 只在连接内无歧义，
+  // 断线/化身更换后清空。PlayerPort 持有累积，BodySession 是只读视图。
+  deadEntities(): ReadonlySet<number>;
   useItem(hand: Hand): Promise<EffectReceipt>; // 一次激活，持续使用由 drive/feedback 的 hold 表达
   endUse(): Promise<EffectReceipt>; // 结束所属的原生使用状态，可能释放蓄力效果
   interact(input: { target: BlockTarget | EntityRef; hand: Hand; face?: Vec3; cursor?: Vec3 }): Promise<EffectReceipt>;

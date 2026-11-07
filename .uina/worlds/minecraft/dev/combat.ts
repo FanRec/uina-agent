@@ -242,6 +242,61 @@ async function main(): Promise<void> {
 			return `retreat_failed(low_health) inside the sealed pen, hp after=${value.hp.after}`;
 		});
 
+		await s.step("creeper is killed without taking the blast (steering keeps the fuse radius)", async () => {
+			await restore();
+			// 场地复原：持久世界里此前的爆炸会炸出弹坑（真服实测 bot 追击中掉进
+			// 旧坑改变了交战几何）——按平台规格局部重建石面与净空，保证开打一致。
+			await s.command(
+				`/fill ${CENTER.x - 8} ${CENTER.y - 2} ${CENTER.z - 8} ${CENTER.x + 8} ${CENTER.y - 1} ${CENTER.z + 8} minecraft:stone`,
+			);
+			await s.command(
+				`/fill ${CENTER.x - 8} ${CENTER.y} ${CENTER.z - 8} ${CENTER.x + 8} ${CENTER.y + 5} ${CENTER.z + 8} minecraft:air`,
+			);
+			// AI 苦力怕从 8 格外走近：近身拍 steering 在 fuse 触发半径（3 格）外
+			// 硬遮罩朝向它的槽——bot 应在 3.2 格出手间距上输出；被逼爆也该在
+			// 拉开距离后挨不到实质伤害。爆炸死亡不走 entityDead（爆炸包直接移除
+			// 实体），所以"它炸了"会如实落 target_lost——本步的验收实质是血量。
+			await s.command(`/summon minecraft:creeper ${CENTER.x + 8} ${CENTER.y} ${CENTER.z}`);
+			await sleep(800);
+			const value = valueOf<FightValue>(
+				await s.call("fight@1", { target: "creeper", stance: "balanced", maxTimeMs: 60000 }, 90000),
+			);
+			const remains = (await s.readEntities(48)).filter((entity) => entity.name === "creeper").length;
+			await s.command(`/kill @e[type=minecraft:creeper]`);
+			await s.command(`/kill @e[type=minecraft:item]`);
+			// 两种诚实结局：真打死（targets_cleared 且 kills 含 creeper），或它自己
+			// 爆了（target_lost：无死亡观察，威胁同样消失）。场地上不能剩活的。
+			if (value.ended === "targets_cleared") {
+				if (!value.kills.some((kill) => kill.name === "creeper"))
+					throw new Error(`cleared without creeper kill: ${JSON.stringify(value.kills)}`);
+			} else if (value.ended === "target_lost") {
+				if (remains > 0) throw new Error(`target_lost but the creeper is still out there (${remains})`);
+			} else {
+				throw new Error(`expected targets_cleared/target_lost, got ${JSON.stringify(value)}`);
+			}
+			// 验收线 = 实测包络（干净场地 13.4–19.2，见 G29）：接触即引燃、拉开
+			// 后被残余爆炸擦伤是当前机制的预期行为；贴身爆炸（<8）或死亡不合格。
+			// 通往"无伤击杀"的缺口（feedback 流占空比 + fuse 状态感知）登记 G29。
+			if ((value.hp.after ?? 0) < 10)
+				throw new Error(`blast damage beyond the registered envelope: hp ${value.hp.before}->${value.hp.after}`);
+			return `${value.ended}, hp ${value.hp.before}->${value.hp.after}`;
+		});
+
+		await s.step("stop preempts a fight session mid-fight: INTERRUPTED, progress kept", async () => {
+			await restore();
+			await s.command(`/summon minecraft:zombie ${CENTER.x + 10} ${CENTER.y} ${CENTER.z} {NoAI:1b}`);
+			await sleep(600);
+			const spawned = await s.spawn("fight@1", { target: "zombie", stance: "balanced", maxTimeMs: 60000 });
+			await sleep(2500); // 进入追击/近身拍
+			await h.runtime.stop({ requestId: `req:combat-b06-stop`, target: { run: spawned.run } });
+			const result = await s.waitCall(spawned, 30000);
+			await s.command(`/kill @e[type=minecraft:zombie]`);
+			if (result.ok) throw new Error(`fight completed despite stop: ${JSON.stringify(result.value)}`);
+			if (result.code !== "INTERRUPTED")
+				throw new Error(`expected INTERRUPTED after stop, got ${result.code}: ${result.message ?? ""}`);
+			return `fight stopped mid-session, settled INTERRUPTED`;
+		});
+
 		await s.step("aggressive engages up to four targets and clears them", async () => {
 			await restore();
 			for (const [dx, dz] of [

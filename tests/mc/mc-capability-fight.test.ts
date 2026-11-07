@@ -33,7 +33,14 @@ describe("fight@1 会话", () => {
 	test("balanced：换最好武器 + 盾，击杀（死亡观察）→ targets_cleared", async () => {
 		const zombie = entity("zombie", "hostile", 12.5, 10); // 距离 2.5 ≤ 接战距离拍内攻击
 		const state = baseState([zombie], { iron_sword: 1, stone_axe: 1, shield: 1 });
-		const h = makeHarness(state);
+		const h = makeHarness(state, {
+			// 近身拍（批29）：drive 派发攻击，死亡观察来自连接级累积；模型里
+			// 死亡 = 目标从扫描集合消失 + 死亡观察已到达。
+			deadEntities: new Set([zombie.ref.networkId]),
+			onDrive: () => {
+				state.entities = [];
+			},
+		});
 		const result = (await h.callable("fight@1").invoke(h.ctx, FIGHT)) as {
 			ended: string;
 			kills: { name: string; drops: Record<string, number> }[];
@@ -49,17 +56,18 @@ describe("fight@1 会话", () => {
 		// 最好近战 = stone_axe(9) > iron_sword(6)；盾在 balanced 下装到 offhand
 		expect(h.calls).toContain("equip:hand");
 		expect(h.calls).toContain("equip:offhand");
-		expect(h.calls).toContain("attack");
+		expect(h.calls).toContain("drive");
 	}, 15000);
 
 	test("击杀掉落只记死亡位置附近新出现的 item 实体", async () => {
 		const zombie = entity("zombie", "hostile", 12.5, 10);
 		const state = baseState([zombie], {});
 		const h = makeHarness(state, {
-			onAttack: () => {
+			deadEntities: new Set([zombie.ref.networkId]),
+			onDrive: () => {
 				const drop = entity("item", "other", 12.8, 10.2);
 				drop.item = { name: "rotten_flesh", count: 2 };
-				state.entities!.push(drop);
+				state.entities = [drop];
 			},
 		});
 		const result = (await h.callable("fight@1").invoke(h.ctx, FIGHT)) as {
@@ -72,9 +80,10 @@ describe("fight@1 会话", () => {
 		const zombie = entity("zombie", "hostile", 12.5, 10);
 		const state = baseState([zombie], {});
 		const h = makeHarness(state, {
-			attackDead: false,
-			onAttack: () => {
-				state.entities = []; // 目标在受击后从跟踪集合消失，但没有死亡观察
+			// 死亡观察为空（目标只是消失）；缺席到达窗后判 target_lost。
+			deadEntities: new Set<number>(),
+			onDrive: () => {
+				state.entities = [];
 			},
 		});
 		const result = (await h.callable("fight@1").invoke(h.ctx, FIGHT)) as {

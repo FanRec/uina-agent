@@ -303,6 +303,12 @@ export interface BodyOps {
 	/** 证据窗口：不派发动作，等待该实体在窗口内的受击/死亡观察（批 12）。 */
 	awaitEvidence(target: EntityRef, options?: { evidenceMs?: number }): Promise<EvidenceOutcome>;
 	/**
+	 * 本资格会话内观察到的死亡实体（批 29）：networkId 集合，由 Driver 的
+	 * entityDead 事件持续累积，读它不派发也不等待。战斗会话用它把"击杀归属"
+	 * 从阻塞式证据窗里解出来——循环保持移动，死亡在扫描缺席时按此集合结算。
+	 */
+	deadEntities(): ReadonlySet<number>;
+	/**
 	 * 证据窗口（批 18）：不派发动作，等待身体相关事件在窗口内出现。
 	 * mount/dismount 的证据是 set_passengers/attach_entity 原始包——mineflayer 对
 	 * "空 passengers 下马"不发事件，事件层不可靠，这里统一走协议事实。

@@ -98,6 +98,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 		mintOp: () => `op:${++serial}`,
 		mintEff: () => `eff:${++serial}`,
 		onClosed: () => {},
+		deadEntities: () => new Set<number>(),
 		publishWindow: (observation) => observations.push(observation),
 	};
 	const session = new BodySessionImpl("body:window-test", ownerT(1), deps);

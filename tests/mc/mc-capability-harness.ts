@@ -180,6 +180,8 @@ export interface HarnessHooks {
 	onAttack?: () => void;
 	/** attack 替身返回的死亡证据（默认 true）。 */
 	attackDead?: boolean;
+	/** fight 测试（批29）：deadEntities 观察集（drive 派发的攻击不再走证据窗）。 */
+	deadEntities?: Set<number>;
 	/** SurfaceProbe 注入（surface/fight 测试）；缺省 null。 */
 	surface?: () => SurfaceProbe | null;
 	/** openContainer 打开的窗口（工作台/熔炉）；不提供则调用即失败。 */
@@ -401,6 +403,10 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 				hit: true,
 				dead: hooks.attackDead ?? true,
 			};
+		},
+		deadEntities() {
+			calls.push("deadEntities");
+			return hooks.deadEntities ?? new Set<number>();
 		},
 		async awaitEvidence() {
 			calls.push("awaitEvidence");

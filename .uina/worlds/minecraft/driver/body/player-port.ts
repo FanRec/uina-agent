@@ -45,10 +45,41 @@ export class PlayerPortImpl implements PlayerPort {
 	/** 屏障不成立的会话所属连接；仅在同一连接上阻止新资格（§10.5）。 */
 	private brokenBarrierConnection: Ref | null = null;
 	private readonly recorder: EffectRecorder;
+	/** 连接级死亡观察（批 29 deadEntities）：跨资格会话累积，断线/化身更换清空。 */
+	private readonly deadLog = new Set<number>();
+	private detachDead: (() => void) | null = null;
 
 	constructor(deps: PlayerPortDeps) {
 		this.deps = deps;
 		this.recorder = new EffectRecorder(deps.sink);
+		// 连接身份失效时死亡观察一并作废：networkId 只在连接内无歧义。
+		deps.host.on((notice) => {
+			if (
+				notice.kind === "disconnected" ||
+				notice.kind === "incarnation_changed" ||
+				notice.kind === "incarnation_invalidated"
+			) {
+				this.resetDeadTap();
+			}
+		});
+	}
+
+	/** 首次授予时挂上 entityDead 累积监听；连接变更后重挂。 */
+	private ensureDeadTap(): void {
+		if (this.detachDead != null) return;
+		const bot = this.deps.bot();
+		if (bot == null) return;
+		const onEntityDead = (entity: { id?: number } | null): void => {
+			if (entity?.id != null) this.deadLog.add(entity.id);
+		};
+		bot.on("entityDead", onEntityDead as never);
+		this.detachDead = () => bot.removeListener("entityDead", onEntityDead as never);
+	}
+
+	private resetDeadTap(): void {
+		this.deadLog.clear();
+		this.detachDead?.();
+		this.detachDead = null;
 	}
 
 	async acquire(owner: ControlOwner, signal: AbortSignal): Promise<BodySession> {
@@ -129,6 +160,7 @@ export class PlayerPortImpl implements PlayerPort {
 		let onAbort: (() => void) | null = null;
 		let session: BodySessionImpl;
 		try {
+			this.ensureDeadTap();
 			session = new BodySessionImpl(this.deps.mintBody(), owner, {
 				assertActionAllowed: this.deps.assertActionAllowed,
 				requireRetirement: this.deps.requireRetirement,
@@ -140,6 +172,7 @@ export class PlayerPortImpl implements PlayerPort {
 				bot: this.deps.bot,
 				mintOp: this.deps.mintOp,
 				mintEff: this.deps.mintEff,
+				deadEntities: () => this.deadLog,
 				onClosed: (barrierProven) => {
 					if (onAbort != null) signal.removeEventListener("abort", onAbort);
 					this.deps.arbiter.releaseBody();

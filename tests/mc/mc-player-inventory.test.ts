@@ -45,6 +45,7 @@ function harness(version = "1.21.11") {
 			mintOp: () => `op:${++serial}`,
 			mintEff: () => `eff:${++serial}`,
 			onClosed: () => {},
+			deadEntities: () => new Set<number>(),
 		},
 	);
 	protocolFor(bot as unknown as MineflayerBot);

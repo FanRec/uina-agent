@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-07 · 批29 战斗近身拍重构（证据窗冻结解耦 + Context Steering + deadEntities 缝）
+
+fight@1 近身段从"攻击 + 600ms 证据窗冻结 + 冷却睡眠"（站桩 ~2s/拍，无任何走位）重构为**连续控制拍**（~250ms/拍，边打边走）。三件套：
+
+- **16 槽 context steering**（`capabilities/shared/combat-steering.ts`，算法：Game AI Pro 2 第 18 章，对照 Cortico combat-context.ts，MIT 归属）：interest = 向目标推进 + 切向绕走（2s 换向迟滞），danger = 各敌对接近度叠加；苦力怕进 fuse 半径硬遮罩朝向它的槽并进入 3s 锁定期，锁定期转身背向冲刺拉开（原版后退不能 sprint——面朝威胁的后退与苦力怕同速，永远跑不出 fuse 半径，对拍实证）、no_progress 时钟冻结。纯函数 T0 13 项。
+- **`deadEntities()` 身体缝**（contracts/body.ts + public-api §4）：PlayerPort 持有连接级 entityDead 累积（跨资格会话有效，断线/化身更换清空），BodySession 只读视图，scoped-body 只读直通。击杀归属从阻塞式证据窗解出：目标缺席 + 死亡观察命中 = 击杀；连续 2 次缺席且无死亡观察才 target_lost（给死亡事件留到达窗）。攻击不再等证据——冷却好且 ≤3.2 格随 drive 同拍派发（原版实体交互有效距离 3 格，ENTITY_REACH=4 只是 attack@1 派发上限）。
+- **追击交接重定**：goto 在 3 格停手交棒给拍循环（对拍实证 goto 冲到 0.12 格贴脸，引燃后无处可逃；2 格交棒则留下键位空档站立窗被追到 1 格炸）；追击触发线统一为"能否出手"（3.2）——engageDistance 只作站位/撤退语义，否则 aggressive 的 1.6 触发线与 3 格交棒错位导致追击空转 no_progress。
+
+**对拍定案**（`dev:mc:creeper-probe`，100ms 外部采样 + 苦力怕 metadata 变化，一轮抓全）：引燃信号 = metadata[16]→1；修复前 keys=FS 全程未断、bot sprint 冲到 0.12 格站到爆炸；修复后交接过冲→引燃→转身逃离→残余爆炸擦伤。场景污染教训入库：爆炸在持久世界留弹坑改变交战几何，B04 步骤先局部重建场地再开打。**真服 combat 门 8/8 连续两轮**（新增 B04 苦力怕步：验收线 = 实测包络 hp ≥10，干净场地实测 13.4–20；B06 stop 抢占步：会话中 stop → INTERRUPTED）；三僵尸/格挡/围死/aggressive-4/目标失踪 5 步原语义保持。tests/mc 106 文件 868 项、全仓 3272 项通过（唯一 FAIL 为 tts httpx 环境缺失，与批26–28 同类）；`pnpm typecheck` 过。**残余登记 G29**：无伤击杀苦力怕需要 feedback 流占空比 + fuse 状态感知（metadata[16] 已定位），归 M4 后续切片。
+
 ## 2026-11-07 · 批28 关闭 A* think budget 残余（启发式加权：山头穿越从 5s Timeout 到实机到达）
 
 G25 关闭时登记的 M2 搜索预算项**搜索半部关闭**：24 格山头穿越 A* 5s think budget 搜不完（5.8 万节点诚实 Timeout）的根因定性为**启发式引导缺失**——欧氏启发式在爬升地形严重低估真实代价，无偏置 A* 沿山体等值线泛洪。真服画像（新增 `dev:mc:nav-perf`：gain-16 山头目标直接驱动 getPathFromTo）实测定案：w=1 → 10,974 节点/428ms；w=3 → 556 节点/11ms（÷20），路径代价 +6.7%、步数更少（46→43），跨次完全确定；平地/水域对照无害（w≥2 节点均 ÷10 量级）。**修复 = `patches/mineflayer-pathfinder@2.4.5.patch` 新 hunk `heuristicWeight`**：加权 A* 只改扩展顺序——g 代价、移动合法性、isEnd、bestNode 选择（h 单调）全部不动；`searchRadius` 的 maxCost 剪枝保持 raw 启发式尺度（初版误用加权 h 对 raw maxCost 剪枝，start 处即全剪枝，T0 当场抓出后修正）；默认 1 = 上游原序，`driver/mineflayer/pathfinder.ts` `applyMovementsConfig` 单一口径设 3（规划与执行共用，S2 接缝不漂移）。**端到端**：真 goto 山头目标 28.5s 实际到达（gap 1.70）——原失败形态 5–10s Timeout 零到达。**验收**：T0 新增 `mc-pathfinder-heuristic-weight`（曼哈顿锥形山、山后目标：默认=上游原序逐节点一致、w=3 节点 ÷8、真实 g 代价有界、maxCost raw 口径可达峰顶）；真服 `dev:mc:upstream-nav` 连续三轮 7/7（gate 4520–4536ms、S3 4536–5041ms、S4 9596–10119ms——加权路径略长使执行慢 1–3s，属"代价换搜索"的正常反映）、climb 6/6（三级阶梯 4442ms）、terrain-nav 6/6；tests/mc 104 文件 854 项、全仓 3257 项通过（唯一 FAIL 为 tts-bridge-protocol 的 httpx 环境缺失，与批26/27 同类）；`pnpm typecheck` 过。**S3 水中爬岸方差不随本修复关闭**并拆出登记 **G28**：该几何 A* 搜索本身毫秒级，批28 当日 w=1（与本补丁严格等价）亦两轮 TIMEOUT，加权后 4536–5041ms 到达——方差主体在水节点出发的移动控制与规划交互（归 M3/水域控制工作项），不在搜索规模；S3 断言保持 20s 不放宽。诊断基建：upstream-nav 的 nav() 增 2s 位置轨迹采样与搜索指标失败输出（区分"原地打转"与"绕行不达"，terrain-nav 同款）；冷启动首轮 S2/S3 双失败未在后续 6 轮复现，如实记录不解释。

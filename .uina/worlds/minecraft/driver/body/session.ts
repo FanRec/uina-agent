@@ -86,6 +86,12 @@ export interface BodySessionDeps {
 	mintEff: () => Ref;
 	/** 会话 closed 后回调（PlayerPort 由此清当前资格并核查屏障是否成立）。 */
 	onClosed: (barrierProven: boolean) => void;
+	/**
+	 * 本连接观察到的死亡实体（批 29 deadEntities 合同）：PlayerPort 持有的连接级
+	 * entityDead 累积，跨资格会话有效（战斗拍循环在会话间隙发生的击杀不丢）。
+	 * networkId 在连接内不复用；断线/化身更换由 PlayerPort 清空重建。
+	 */
+	deadEntities: () => ReadonlySet<number>;
 }
 
 function isIntVec(v: Vec3): boolean {
@@ -716,6 +722,10 @@ export class BodySessionImpl implements BodySession {
 		} finally {
 			this.exitOp();
 		}
+	}
+
+	deadEntities(): ReadonlySet<number> {
+		return this.deps.deadEntities();
 	}
 
 	/**

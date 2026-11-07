@@ -51,6 +51,8 @@ export function scopedBody(session: BodySession, scope: { signal: AbortSignal; o
 	const player = new Proxy(session, {
 		get(target, key) {
 			if (key === "close" || key === "runScoped") return undefined;
+			// 只读观察直通：不进 Operation 生命周期，也不当 Promise 包装（同步方法）。
+			if (key === "deadEntities") return () => target.deadEntities();
 			if (key === "openContainer")
 				return (at: Parameters<BodyOps["openContainer"]>[0]) =>
 					run(async () => windowView(await target.openContainer(at)));
