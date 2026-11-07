@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-07 · 批28–30 审查轮（死字段清理 + 记录口径修正）
+
+对批28–30 自查一轮，修四类问题：
+
+- **`StanceParams.engageDistance` 死字段删除**（mobility.ts）：批29 把追击触发统一到出手门限 3.2 后，stance 的"接战距离"档（2/3/1 格）不再有任何运行时消费者——按"未接线机制应删除"处理。同步：mc-mobility 的 stance 表断言、capabilities.md §4 fight 表删"距离"列并注明（出手间距由服务端 3 格实体交互上限统一决定）。
+- **测试计数修正**：批29 条目 868→869 项、批30 条目 100/777→107 文件/873 项，统一为 `vitest run tests/mc` 过滤器口径（与批27 的 103/853 同基，含 tests/mcp-*）；计数经各提交点 `git grep -c "\btest("` 与 HEAD 实跑双重核对（纯 tests/mc 目录为 95/96/98/99 文件）。
+- **清洁**：combat-steering 的 `slotDir` 收回私有（无外部消费者）；dead-entities 测试的 Harness 接口删未用 `identity` 字段；dev/build.ts 末尾空行；四处测试文件的导入排序。
+- 全仓 vitest 3276 项通过（唯一 FAIL 为 tts httpx 环境缺失同类）；`pnpm typecheck` 过。
+
 ## 2026-11-07 · 批30 施工站位分区批量（多站位真轮转 + 走位按站位批量 + 轮数放开）
 
 build@1 放置调度三处替换（`capabilities/actions/build.ts`）：
@@ -8,7 +17,7 @@ build@1 放置调度三处替换（`capabilities/actions/build.ts`）：
 - **逐格走位 → 每站位一走**：旧实现每个够不着的格付一次完整 walk（`walked` 集只保证同格不重复）；新调度走一次到站位、站位内所有格连续放（组内按列自下而上保持——成品列是墙，寻路只绕行）。走失败整组如实 defer，下一轮按当前位置重分区。
 - **固定 4 轮 → 收敛终止**：支撑链深度（悬挑、门顶）不再受轮数限制——defer 格带因（`no clickable support face yet` / out-of-reach 细节 / 走位失败）进下一轮重分区，真实终止 = 一轮零建成；上界 16 轮纯安全网。几何无解格如实 `no candidate vantage within reach`（T0 断言与"无支撑面"可分辨）。
 
-`ready 集显式预测器不做`：列内自下而上 + 中心向外 + 站位分区已覆盖其排序价值，全格 DAG 是过度设计（01-DESIGN §5 "只构建真实依赖"）。T0 新增 `mc-construction-vantages`（候选序/13 格长墙分区/orphan 判定 3 项）；`mc-capability-build` 的无支撑格断言按新原因更新。真服 `dev:mc:build` 13 步全绿（新增 11 格长墙步：两端格超出单站位射程，分区经 pad 站位 22 格 11.6s 建完——旧代码这两格必 failed）。tests/mc 100 文件、全仓 3276 项通过（唯一 FAIL 为 tts httpx 环境缺失同类）；`pnpm typecheck` 过。
+`ready 集显式预测器不做`：列内自下而上 + 中心向外 + 站位分区已覆盖其排序价值，全格 DAG 是过度设计（01-DESIGN §5 "只构建真实依赖"）。T0 新增 `mc-construction-vantages`（候选序/13 格长墙分区/orphan 判定 3 项）；`mc-capability-build` 的无支撑格断言按新原因更新。真服 `dev:mc:build` 13 步全绿（新增 11 格长墙步：两端格超出单站位射程，分区经 pad 站位 22 格 11.6s 建完——旧代码这两格必 failed）。tests/mc 过滤器口径 107 文件 873 项（含 tests/mcp-*）、全仓 3276 项通过（唯一 FAIL 为 tts httpx 环境缺失同类）；`pnpm typecheck` 过。
 
 ## 2026-11-07 · 批29 战斗近身拍重构（证据窗冻结解耦 + Context Steering + deadEntities 缝）
 
@@ -18,7 +27,7 @@ fight@1 近身段从"攻击 + 600ms 证据窗冻结 + 冷却睡眠"（站桩 ~2s
 - **`deadEntities()` 身体缝**（contracts/body.ts + public-api §4）：PlayerPort 持有连接级 entityDead 累积（跨资格会话有效，断线/化身更换清空），BodySession 只读视图，scoped-body 只读直通。击杀归属从阻塞式证据窗解出：目标缺席 + 死亡观察命中 = 击杀；连续 2 次缺席且无死亡观察才 target_lost（给死亡事件留到达窗）。攻击不再等证据——冷却好且 ≤3.2 格随 drive 同拍派发（原版实体交互有效距离 3 格，ENTITY_REACH=4 只是 attack@1 派发上限）。
 - **追击交接重定**：goto 在 3 格停手交棒给拍循环（对拍实证 goto 冲到 0.12 格贴脸，引燃后无处可逃；2 格交棒则留下键位空档站立窗被追到 1 格炸）；追击触发线统一为"能否出手"（3.2）——engageDistance 只作站位/撤退语义，否则 aggressive 的 1.6 触发线与 3 格交棒错位导致追击空转 no_progress。
 
-**对拍定案**（`dev:mc:creeper-probe`，100ms 外部采样 + 苦力怕 metadata 变化，一轮抓全）：引燃信号 = metadata[16]→1；修复前 keys=FS 全程未断、bot sprint 冲到 0.12 格站到爆炸；修复后交接过冲→引燃→转身逃离→残余爆炸擦伤。场景污染教训入库：爆炸在持久世界留弹坑改变交战几何，B04 步骤先局部重建场地再开打。**真服 combat 门 8/8 连续两轮**（新增 B04 苦力怕步：验收线 = 实测包络 hp ≥10，干净场地实测 13.4–20；B06 stop 抢占步：会话中 stop → INTERRUPTED）；三僵尸/格挡/围死/aggressive-4/目标失踪 5 步原语义保持。tests/mc 106 文件 868 项、全仓 3272 项通过（唯一 FAIL 为 tts httpx 环境缺失，与批26–28 同类）；`pnpm typecheck` 过。**残余登记 G29**：无伤击杀苦力怕需要 feedback 流占空比 + fuse 状态感知（metadata[16] 已定位），归 M4 后续切片。
+**对拍定案**（`dev:mc:creeper-probe`，100ms 外部采样 + 苦力怕 metadata 变化，一轮抓全）：引燃信号 = metadata[16]→1；修复前 keys=FS 全程未断、bot sprint 冲到 0.12 格站到爆炸；修复后交接过冲→引燃→转身逃离→残余爆炸擦伤。场景污染教训入库：爆炸在持久世界留弹坑改变交战几何，B04 步骤先局部重建场地再开打。**真服 combat 门 8/8 连续两轮**（新增 B04 苦力怕步：验收线 = 实测包络 hp ≥10，干净场地实测 13.4–20；B06 stop 抢占步：会话中 stop → INTERRUPTED）；三僵尸/格挡/围死/aggressive-4/目标失踪 5 步原语义保持。tests/mc 过滤器口径 106 文件 869 项、全仓 3272 项通过（唯一 FAIL 为 tts httpx 环境缺失，与批26–28 同类）；`pnpm typecheck` 过。**残余登记 G29**：无伤击杀苦力怕需要 feedback 流占空比 + fuse 状态感知（metadata[16] 已定位），归 M4 后续切片。
 
 ## 2026-11-07 · 批28 关闭 A* think budget 残余（启发式加权：山头穿越从 5s Timeout 到实机到达）
 

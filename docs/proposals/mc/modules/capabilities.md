@@ -782,13 +782,13 @@ await mc.call("chat@1", {text:"/list"});
 - 做：一次战斗会话：选目标 → 自动换最好的武器/盾 → 追击 → 按冷却攻击 → 走位（不站岩浆/悬崖边）→ 按 `stance` 决定进退。`weapon:"ranged"` 用弓/弩。
 - `stance` 是**真实决策规则**，不是形容词：
 
-  | stance | 接战血量 | 撤退血量 | 目标数上限 | 距离 | 远程偏好 | 逃跑方向 |
-  |---|---|---|---|---|---|---|
-  | `balanced` | ≥ 60% | < 40% | 2 | 2 格 | 有弓且血厚才用 | 背向最近威胁 |
-  | `cautious` | ≥ 85% | < 60% | 1 | 3 格 | 优先 | 先 `surface` 再撤 |
-  | `aggressive` | ≥ 35% | < 20% | 4 | 1 格 | 只对远程怪 | 不主动撤 |
+  | stance | 接战血量 | 撤退血量 | 目标数上限 | 远程偏好 | 逃跑方向 |
+  |---|---|---|---|---|---|
+  | `balanced` | ≥ 60% | < 40% | 2 | 有弓且血厚才用 | 背向最近威胁 |
+  | `cautious` | ≥ 85% | < 60% | 1 | 优先 | 先 `surface` 再撤 |
+  | `aggressive` | ≥ 35% | < 20% | 4 | 只对远程怪 | 不主动撤 |
 
-  stance 提供默认值；retreatHealth 是可选绝对生命值阈值（0..当前 maxHealth，0 表示不因血量主动撤退），显式给出覆盖 stance 的撤退血量规则。其他委托与急停约束仍生效；有效阈值随 CallRecord 记录。其余内部权重不逐项开放，精细控制仍可用 body.loop。
+  stance 提供默认值；retreatHealth 是可选绝对生命值阈值（0..当前 maxHealth，0 表示不因血量主动撤退），显式给出覆盖 stance 的撤退血量规则。其他委托与急停约束仍生效；有效阈值随 CallRecord 记录。其余内部权重不逐项开放，精细控制仍可用 body.loop。（批30 起 stance 不再带"接战距离"档：出手间距由服务端 3 格实体交互上限统一决定，追击/出手门限见下方批29/30 实现说明。）
 - 会话结束：目标清除、撤退、撤离未脱险、目标失去跟踪或期限到；对应 ended=targets_cleared/retreated/retreat_failed/target_lost/timeout。期限到是本次会话结束，stop/掉线等中断仍抛错，不能把目标失踪当击杀。
 - 返回 `{ended, kills:[{name,drops:{[item]:number}}], hp:{before,after}, retreated?:"low_health"|"no_progress", stance, retreatHealth, at}`；击杀/掉落仅记录可确认部分。
 - 失败 `NOT_FOUND`（启动时没有目标）、`INTERRUPTED`、`DISCONNECTED`

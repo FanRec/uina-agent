@@ -752,11 +752,11 @@ export const combatModule: MinecraftCapabilityModule = {
 								await sleepAbortable(ATTACK_COOLDOWN_MS, ctx.signal);
 							}
 						} else if (nearestGap > BEAT_SWING_REACH) {
-							// 追击判定 = 能否出手（3.2）：engageDistance 只作站位/撤退语义，
-							// 不再当追击触发线——否则 goto 交棒点（3）落在触发线之外时，
-							// "已在容差内秒完成"的追击会空转到 no_progress（真服实证）。
-							// 交接间距 = 3：交棒后第一拍立即接管出手/走位；深入到 2 会在
-							// 引燃半径内留下键位空档的站立窗（苦力怕对拍实证被追到 1 格炸）。
+							// 追击判定 = 能否出手（3.2）。交接间距 = 3：交棒后第一拍立即
+							// 接管出手/走位；交棒更深（2 格）会在引燃半径内留下键位空档的
+							// 站立窗（苦力怕对拍实证被追到 1 格炸），更浅则第一拍够不着。
+							// 交棒点落在出手门限之外时，"已在容差内秒完成"的追击会空转
+							// 到 no_progress（真服实证）。
 							await chaseLeg(deps, ctx, owner, nearest.lastPosition, CHASE_HANDOVER, deadline, onInterrupted);
 						} else {
 							// 近身拍（批29）：steering 决定走位（围攻避让/苦力怕硬遮罩），

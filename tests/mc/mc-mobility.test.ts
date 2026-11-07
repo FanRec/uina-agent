@@ -3,17 +3,17 @@
  * 会话测试用共享替身（世界读数/导航替身）；寻路与跟踪真值由真服场景验收。
  */
 import { describe, expect, test } from "vitest";
-import type { SurfaceProbe } from "../../.uina/worlds/minecraft/contracts/world.js";
 import {
-	FOLLOW_LOST_SCANS,
 	bestMeleeWeapon,
 	effectiveRetreatHealth,
+	FOLLOW_LOST_SCANS,
 	fleeLegTarget,
 	matchFollowTarget,
 	stanceParams,
 } from "../../.uina/worlds/minecraft/capabilities/shared/mobility.js";
-import { failureOf, key, makeHarness, type EntityFixture, type HarnessState } from "./mc-capability-harness.js";
 import type { EntityEntryView } from "../../.uina/worlds/minecraft/capabilities/shared/views.js";
+import type { SurfaceProbe } from "../../.uina/worlds/minecraft/contracts/world.js";
+import { type EntityFixture, failureOf, type HarnessState, key, makeHarness } from "./mc-capability-harness.js";
 
 type TestEntity = EntityEntryView;
 
@@ -71,20 +71,17 @@ describe("纯决策", () => {
 			engageRatio: 0.6,
 			retreatRatio: 0.4,
 			maxTargets: 2,
-			engageDistance: 2,
 		});
 		expect(stanceParams("cautious")).toMatchObject({
 			engageRatio: 0.85,
 			retreatRatio: 0.6,
 			maxTargets: 1,
-			engageDistance: 3,
 			surfaceBeforeFlee: true,
 		});
 		expect(stanceParams("aggressive")).toMatchObject({
 			engageRatio: 0.35,
 			retreatRatio: 0.2,
 			maxTargets: 4,
-			engageDistance: 1,
 		});
 	});
 

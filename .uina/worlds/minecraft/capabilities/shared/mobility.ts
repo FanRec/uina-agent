@@ -100,7 +100,6 @@ export interface StanceParams {
 	/** 撤退血量比例：低于它主动撤退。 */
 	retreatRatio: number;
 	maxTargets: number;
-	engageDistance: number;
 	/** ranged 偏好：cautious 优先；balanced 有弓且血厚才用；aggressive 只对远程怪。 */
 	ranged: "priority" | "thick_only" | "ranged_mobs_only";
 	/** cautious 的逃跑方向：先回到露天可站（surface）再撤。 */
@@ -115,7 +114,6 @@ export function stanceParams(stance: FightStance): StanceParams {
 				engageRatio: 0.85,
 				retreatRatio: 0.6,
 				maxTargets: 1,
-				engageDistance: 3,
 				ranged: "priority",
 				surfaceBeforeFlee: true,
 			};
@@ -124,7 +122,6 @@ export function stanceParams(stance: FightStance): StanceParams {
 				engageRatio: 0.35,
 				retreatRatio: 0.2,
 				maxTargets: 4,
-				engageDistance: 1,
 				ranged: "ranged_mobs_only",
 				surfaceBeforeFlee: false,
 			};
@@ -133,7 +130,6 @@ export function stanceParams(stance: FightStance): StanceParams {
 				engageRatio: 0.6,
 				retreatRatio: 0.4,
 				maxTargets: 2,
-				engageDistance: 2,
 				ranged: "thick_only",
 				surfaceBeforeFlee: false,
 			};

@@ -1,10 +1,10 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, test } from "vitest";
 import type { ControlOwner } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { type PlayerPortDeps, PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
-import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
-import { EventEmitter } from "node:events";
+import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 
 /**
  * deadEntities（批29）：连接级死亡观察的确定性单测。
@@ -24,7 +24,6 @@ const ownerT = (serial: number): ControlOwner => ({
 interface Harness {
 	port: PlayerPortImpl;
 	bus: EventEmitter;
-	identity: { connection: string; incarnation: string };
 	notices: ((notice: { kind: string }) => void)[];
 	setIdentity(incarnation: string): void;
 }
@@ -70,7 +69,6 @@ function makeHarness(): Harness {
 	return {
 		port: new PlayerPortImpl(deps),
 		bus: bot as unknown as EventEmitter,
-		identity,
 		notices,
 		setIdentity: (incarnation: string) => {
 			identity.incarnation = incarnation;

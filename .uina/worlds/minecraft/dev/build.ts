@@ -479,7 +479,6 @@ async function main(): Promise<void> {
 			}
 			return `11-wall (22 cells) complete in ${elapsed}ms via vantage zones`;
 		});
-
 	} finally {
 		s.finish();
 		await closeHarness(h);

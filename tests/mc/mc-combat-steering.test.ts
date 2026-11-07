@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
+	blurSlots,
 	DEFAULT_STEER_PARAMS,
 	decideSlot,
 	dirToKeys,
-	blurSlots,
 	fightSteering,
 	HARD,
 	newSlotMap,

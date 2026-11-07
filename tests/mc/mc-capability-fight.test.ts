@@ -3,7 +3,7 @@
  * 接战/撤退阈值与目标失踪口径。真实战斗行为由真服场景验收。
  */
 import { describe, expect, test } from "vitest";
-import { failureOf, makeHarness, type EntityFixture, type HarnessState } from "./mc-capability-harness.js";
+import { type EntityFixture, failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 let nextId = 100;
 

@@ -24,7 +24,7 @@ export function newSlotMap(): SlotMap {
 	return new Float64Array(SLOTS);
 }
 
-export function slotDir(i: number): { x: number; z: number } {
+function slotDir(i: number): { x: number; z: number } {
 	const a = (i / SLOTS) * Math.PI * 2;
 	return { x: Math.cos(a), z: Math.sin(a) };
 }
