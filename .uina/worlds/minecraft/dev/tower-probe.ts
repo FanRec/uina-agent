@@ -97,7 +97,7 @@ async function main(): Promise<void> {
 			gapBlock?.name ?? "unreadable",
 		);
 
-		// ---- 采样：200ms 一拍，直到程序结束。
+		// ---- 采样：100ms 一拍（物理 50ms/拍，逐拍分辨率），直到程序结束。
 		const bot = h.bot as unknown as MineflayerBot & {
 			pathfinder?: {
 				debugState?: () => {
@@ -113,6 +113,7 @@ async function main(): Promise<void> {
 			try {
 				const p = bot.entity.position;
 				const v = bot.entity.velocity;
+				const grounded = (bot.entity as unknown as { onGround?: boolean }).onGround ? 1 : 0;
 				const debug = bot.pathfinder?.debugState?.();
 				const misses = (bot as unknown as { placeMisses?: { x: number; y: number; z: number }[] }).placeMisses ?? [];
 				const keys = bot.controlState as unknown as Record<string, boolean>;
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
 				const placeNode = debug?.path?.find((n) => (n.toPlace ?? 0) > 0);
 				samples.push(
 					`${new Date().toISOString().slice(11, 23)} pos=${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` +
-						` vel=${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)}` +
+						` vel=${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)} g=${grounded}` +
 						` path=${debug?.path?.length ?? -1} head=${head ? `${head.x},${head.y},${head.z}+${head.toPlace ?? 0}` : "-"}` +
 						` placeNode=${placeNode ? `${placeNode.x},${placeNode.y},${placeNode.z}+${placeNode.toPlace}` : "-"}` +
 						` dig=${debug?.digging ? 1 : 0} placing=${debug?.placing ? 1 : 0} miss=${misses.length} ${keyStr}`,
@@ -131,7 +132,7 @@ async function main(): Promise<void> {
 			} catch {
 				// 采样不给 goto 让路：读数失败跳过这一拍。
 			}
-		}, 200);
+		}, 100);
 
 		// ---- 回程 goto。
 		const acceptance = await h.runtime.submit(

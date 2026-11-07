@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..c5e0a5e7eb473b8632060bbaf16e74925c1eb5d1 100644
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..4617c5f2de72b3183e95c50af985b8287054175b 100644
 --- a/index.js
 +++ b/index.js
 @@ -9,7 +9,6 @@ const Lock = require('./lib/lock')
@@ -191,7 +191,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..c5e0a5e7eb473b8632060bbaf16e7492
            })
            .catch(_ignoreError => {})
        }
-@@ -608,24 +714,57 @@ function inject (bot) {
+@@ -608,26 +714,81 @@ function inject (bot) {
      bot.setControlState('forward', true)
      bot.setControlState('jump', false)
  
@@ -206,39 +206,63 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..c5e0a5e7eb473b8632060bbaf16e7492
        bot.setControlState('sprint', false)
 -    } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
 -      bot.setControlState('jump', false)
+-      bot.setControlState('sprint', true)
+-    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
+-      bot.setControlState('jump', true)
 +    } else if (stateMovements.allowSprinting && (physics.canStraightLine(path, true) || physics.canSprintJump(path))) {
 +      bot.setControlState('jump', jumpNow)
        bot.setControlState('sprint', true)
--    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
--      bot.setControlState('jump', true)
--      bot.setControlState('sprint', true)
 -    } else if (physics.canStraightLine(path)) {
 -      bot.setControlState('jump', false)
+-      bot.setControlState('sprint', false)
+-    } else if (physics.canWalkJump(path)) {
+-      bot.setControlState('jump', true)
 +    } else if (physics.canStraightLine(path) || physics.canWalkJump(path)) {
 +      bot.setControlState('jump', jumpNow)
        bot.setControlState('sprint', false)
--    } else if (physics.canWalkJump(path)) {
--      bot.setControlState('jump', true)
-+    } else {
+     } else {
+-      bot.setControlState('forward', false)
 +      // The straight-line simulations failed — usually grazing a wall corner
 +      // or the panel of an open door with a slightly drifted box. Freezing
 +      // here deadlocks: the bot can stand inside the opened panel's collision
 +      // band, and pressing forward is the only way to slide out (collision
 +      // resolves the graze). The futility watchdog below bounds dead ends.
        bot.setControlState('sprint', false)
-+    }
-+
+     }
+ 
 +    // Step assist: a jump started while already touching a step face cannot clear
 +    // it — the collision has eaten the horizontal speed and air control (0.02/tick)
 +    // is far too weak to win it back before landing, so the bot just bounces. Back
 +    // off for a growing moment to get a run-up, like a player would, then let
 +    // shouldJump fire again once there is room.
++    //
++    // The back-off owns the GROUND only (G30, batch 36), and its back key dies
++    // with the ground contact. The landing-tick jump of a 1:1 staircase starts
++    // from a touching, zero-speed state — exactly the trigger condition here — so
++    // an assist that survived the takeoff would fight the arc in mid-air: probe
++    // frames show forward:1 + back:1 pressed together (the movement branch and
++    // the stale assist cancel out), the hop goes straight up and down, and the
++    // bot re-lands 0.1 short of the arrival window it had already reached. While
++    // airborne the movement branches above own the keys; the assist resumes on
++    // the next grounded tick if its window is still open and the step still was
++    // not cleared. The flat-ground run-up (batch 19) never leaves the ground
++    // while backing, so it is unaffected.
 +    const nowMs = performance.now()
 +    const speed = Math.hypot(bot.entity.velocity.x, bot.entity.velocity.z)
-+    if (physics.stepAt(bot, nextPoint, 0.6) && speed < 0.12) {
-+      if (stuckSince === 0) stuckSince = nowMs
-     } else {
-+      stuckSince = 0
++    const grounded = bot.entity.onGround === true
++    if (grounded) {
++      if (physics.stepAt(bot, nextPoint, 0.6) && speed < 0.12) {
++        if (stuckSince === 0) stuckSince = nowMs
++      } else {
++        stuckSince = 0
++      }
++    } else if (backing) {
++      // airborne mid-back-off: release the stale back key now — forward+back
++      // pressed together cancel out and turn the in-progress jump into a
++      // vertical stall. The backOff/backUntil timers keep their values, so the
++      // assist still resumes on the next grounded tick inside its window.
++      bot.setControlState('back', false)
++      backing = false
 +    }
 +    if (stuckSince !== 0 && nowMs - stuckSince > 150) {
 +      backOff = Math.min(backOff + 200, 900)
@@ -247,18 +271,19 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..c5e0a5e7eb473b8632060bbaf16e7492
 +    } else if (nowMs - backUntil > 600) {
 +      backOff = 0
 +    }
-+    if (nowMs < backUntil) {
-       bot.setControlState('forward', false)
--      bot.setControlState('sprint', false)
++    if (grounded && nowMs < backUntil) {
++      bot.setControlState('forward', false)
 +      bot.setControlState('back', true)
 +      bot.setControlState('jump', false)
 +      backing = true
-+    } else if (backing) {
++    } else if (backing && grounded) {
 +      bot.setControlState('back', false)
 +      backing = false
-     }
- 
++    }
++
      // check for futility
+     if (performance.now() - lastNodeTime > 3500) {
+       // should never take this long to go to the next node
 diff --git a/lib/astar.js b/lib/astar.js
 index e7a82cbaee433e9baf494b45d0a6eeeeaa89a045..ea2f183acaff4cee5714056f5866d77e7521e1b7 100644
 --- a/lib/astar.js

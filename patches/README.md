@@ -53,8 +53,13 @@ server: the no-gap 1:1 corridor climb went from never-finishing to 13.7s end-to-
 task returned 4/4 consecutive greens (`returned`+`haul`+`ore_gone` on server verdicts). T0:
 `mc-pathfinder-jump-decision` (includes the legacy probe as a fixture contrast for the drift shape
 and the touching states). Residual (G30 (b), probe-refined): the tower-placement chain over a
-damaged step works end to end — what remains unreliable is the per-step climb after the gap
-crossing (bounce lottery + retreat/re-plan), tracked in known-gaps with `dev:mc:tower-probe`.
+damaged step works end to end — what remained unreliable was the per-step climb after the gap
+crossing (bounce lottery, ~20% red rounds). Batch 36 fixed it in `lib/index.js`: the step assist
+now owns the GROUND only — on takeoff it releases its stale back key immediately (frames showed
+forward+back pressed together, cancelling the arc into a vertical stall that re-landed 0.1 short
+of the arrival window), while the backOff/backUntil timers persist so the assist still resumes on
+the next grounded tick inside its window. The batch-19 flat-ground run-up never leaves the ground
+while backing and is unaffected. Probe 10/10 consecutive greens (baseline 8/10), mine task 4/4.
 
 **Search legality (G25, batch 26).** `lib/movements.js` `getMoveDiagonal` used to validate only the
 cheaper of the two orthogonal corner lines (`min(cost1, cost2)`), so a diagonal whose *other* corner
