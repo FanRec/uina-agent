@@ -8,8 +8,8 @@
  */
 
 import { describe, expect, test } from "vitest";
-import type { BuildPlanValue, ConstructionTargetCell } from "../../.uina/worlds/minecraft/contracts/world.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { BuildPlanValue, ConstructionTargetCell } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /** self 在 10,64,10：把目标放在相邻列，射程与支撑都好安排。 */
@@ -271,7 +271,9 @@ describe("build@1 施工执行", () => {
 		expect(error.progress).toMatchObject({
 			remaining: [{ at: { x: 11, y: 70, z: 10 }, target: "oak_planks" }],
 		});
-		expect(JSON.stringify(error.progress)).toContain("no clickable support face");
+		// 批30 起原因按真实结局记：6 格高的格没有任何候选站位够得着（几何无解），
+		// 而不是"有站位但没支撑面"——两种失败在 remaining 里可分辨。
+		expect(JSON.stringify(error.progress)).toContain("no candidate vantage within reach");
 		expect(harness.calls.filter((call) => call.startsWith("goto:"))).toEqual([]);
 	});
 

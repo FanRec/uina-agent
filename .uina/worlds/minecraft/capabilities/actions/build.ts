@@ -30,7 +30,7 @@ import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/wor
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
-import { BLOCK_REACH, blockReach } from "../shared/reach.js";
+import { BLOCK_REACH, EYE_HEIGHT } from "../shared/reach.js";
 import { buildTargetSchema } from "../shared/schema.js";
 import { fail } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
@@ -44,8 +44,12 @@ const LEG_TIMEOUT_MS = 8_000;
 /** remaining 明细的截断上限：progress 超 2048 字节会被 runtime 清空（runtime/rows.ts）。 */
 const REMAINING_DETAIL_LIMIT = 128;
 const PROGRESS_EVERY = 8;
-/** 放置阶段的轮数上限：每轮至少建成一格才会继续，所以真实轮数远小于这个数。 */
-const MAX_PASSES = 4;
+/**
+ * 放置阶段的轮数上限（安全网）：真实终止条件是"一轮零建成即停"。支撑链深度
+ * （悬挑、门顶要等邻格）决定真实轮数——固定 4 轮会让深链结构如实的 remaining
+ * 变成猜测（批30 放开）。
+ */
+const MAX_PASSES = 16;
 
 const BUILD_PLAN_REF: ExactRef = "build.plan@1";
 
@@ -184,102 +188,103 @@ async function clearCell(deps: CapabilityDeps, ctx: CallContext, owner: ControlO
 }
 
 /**
- * 站位候选，按优先级：**盒中心**，其次盒外靠近目标那一侧的地面格。
+ * 站位选择与放置调度（批30）：
  *
- * 盒中心先试是实测结论：一个 5×5×4 的小屋，站在中心时**全部 74 个目标格都在 4.5 射程内**
- * （墙最远 2 格、屋顶最高 4 格），于是整栋房子不需要任何横向走位。反过来，站在盒外
- * 就只有同侧够得着，另一侧必须绕行——而绕行需要跨过 1 格高的成品面，这在本机是已知
- * 未修的 Driver 缺口（G21 贴面起跳楔死，真服实测 goto 必然 TIMEOUT）。
- * 中心进不去（墙已经立起来）才退回盒外站位。
- *
- * 候选按序尝试：走失败就换下一个，全都不行才如实报拿不到。
+ * 旧实现"只试首站位 + 逐格走位"的两个真实代价：盒外 pad 候选永远轮不到
+ * （v0=盒中心走过去仍然够不着就整格失败）；每个够不着的格都付一次完整 walk。
+ * 新调度每轮做一次**站位分区**：盒中心 + 四侧 pad 的候选序里，每格取第一个
+ * 几何射程满足的站位，同站位格批量执行——每站位一次走位，候选序列真实轮转。
  */
-async function vantageCandidates(ctx: CallContext, cell: Vec3, box: Box, self: SelfState): Promise<Vec3[]> {
-	const y = Math.floor(self.place.position.y);
+
+/** 眼位到方块中心的距离（合成 SelfState 只用 place.position，见 reach.blockReach）。 */
+function reachFrom(vantage: Vec3, cell: Vec3): number {
+	return Math.hypot(
+		cell.x + 0.5 - (vantage.x + 0.5),
+		cell.y + 0.5 - (vantage.y + EYE_HEIGHT),
+		cell.z + 0.5 - (vantage.z + 0.5),
+	);
+}
+
+function flatDist(from: Vec3, to: Vec3): number {
+	return Math.hypot(from.x - (to.x + 0.5), from.z - (to.z + 0.5));
+}
+
+/** 全盒共享的站位候选（有序：盒中心，四侧 pad 1，四侧 pad 2）。y = 当前立足层。 */
+export function boxVantages(box: Box, groundY: number): Vec3[] {
 	const centerX = Math.round((box.min.x + box.max.x) / 2);
 	const centerZ = Math.round((box.min.z + box.max.z) / 2);
-	const east = cell.x >= centerX;
-	const south = cell.z >= centerZ;
-	const candidates: Vec3[] = [{ x: centerX, y, z: centerZ }];
-	// 再多一个"朝目标挪一格"的候选，但只在**一步之内**（≤2.2 格，走 stepTo 而不是 goto）。
-	// 5×5 小屋的远角从盒中心量是 4.76，刚好超出 4.5；挪一格就落到 2.5。
-	// 不限距离地挑"最近的盒内格"会把每次放置都变成一次横向赶路，实测反而全面 TIMEOUT。
-	const stepped = { x: cell.x + Math.sign(centerX - cell.x), y, z: cell.z + Math.sign(centerZ - cell.z) };
-	const stepFlat = Math.hypot(self.place.position.x - (stepped.x + 0.5), self.place.position.z - (stepped.z + 0.5));
-	if (stepFlat <= 2.2 && (stepped.x !== cell.x || stepped.z !== cell.z)) candidates.push(stepped);
+	const sides: [number, number][] = [
+		[1, 0],
+		[-1, 0],
+		[0, 1],
+		[0, -1],
+	];
+	const candidates: Vec3[] = [{ x: centerX, y: groundY, z: centerZ }];
 	for (const pad of [1, 2]) {
-		candidates.push(
-			{ x: east ? box.max.x + pad : box.min.x - pad, y, z: cell.z },
-			{ x: cell.x, y, z: south ? box.max.z + pad : box.min.z - pad },
-		);
+		for (const [dx, dz] of sides) {
+			candidates.push({
+				x: dx > 0 ? box.max.x + pad : dx < 0 ? box.min.x - pad : centerX,
+				y: groundY,
+				z: dz > 0 ? box.max.z + pad : dz < 0 ? box.min.z - pad : centerZ,
+			});
+		}
 	}
-	const standable: Vec3[] = [];
-	for (const at of candidates) {
-		const here = await readBlockAt(ctx.world, at);
-		// 未加载不当成可站（null），只认空气/可替换。
-		if (here != null && here.name !== "air" && !isReplaceableName(here.name)) continue;
-		const below = await readBlockAt(ctx.world, { x: at.x, y: at.y - 1, z: at.z });
-		if (below == null || isReplaceableName(below.name)) continue;
-		standable.push(at);
-	}
-	return standable;
+	return candidates;
 }
 
 /**
- * 放一格。
- * - `no-support`（还没有可点的面）不是失败：交给调用方下一轮再来，绝不为此走位；
- * - `out-of-reach` 走到盒外的一个站位再判，同一格只走一次（`walked` 记着）；
+ * 站位分区：每格取候选序里第一个几何射程满足的站位，同站位格归一组。
+ * 谁都够不着的格进 orphans（调用方如实 defer——几何上无解，重轮也不会变）。
+ */
+export function assignVantageZones<T extends { at: Vec3 }>(
+	cells: T[],
+	vantages: Vec3[],
+): { groups: { vantage: Vec3; cells: T[] }[]; orphans: T[] } {
+	const groups = new Map<string, { vantage: Vec3; cells: T[] }>();
+	const orphans: T[] = [];
+	for (const cell of cells) {
+		const serving = vantages.find((vantage) => reachFrom(vantage, cell.at) <= BLOCK_REACH);
+		if (serving == null) {
+			orphans.push(cell);
+			continue;
+		}
+		const key = cellKey(serving);
+		const group = groups.get(key);
+		if (group == null) groups.set(key, { vantage: serving, cells: [cell] });
+		else group.cells.push(cell);
+	}
+	return { groups: [...groups.values()], orphans };
+}
+
+/**
+ * 放一格（批30：不再逐格走位——站位由分区批量安排）。
+ * - `no-support` / 放置未落：defer 给下一轮（相邻格可能本轮稍后建成）；
+ * - `out-of-reach`：defer 带因（下一轮按当前站位重新分区，可能就够着了）；
  * - 其余结局按事实结算。
  */
 async function placeCellTarget(
-	deps: CapabilityDeps,
 	ctx: CallContext,
-	owner: ControlOwner,
 	at: Vec3,
 	spec: BlockSpec,
 	replace: boolean,
-	box: Box,
-	walked: Set<string>,
-): Promise<CellResult | { kind: "defer" }> {
-	for (let attempt = 0; attempt < 2; attempt++) {
-		const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-		const pre = await inspectPlacement(ctx.world, self, at, spec, { replace });
-		if (pre.kind === "already") return { kind: "done", counted: "skipped" };
-		if (pre.kind === "conflict") return { kind: "failed", reason: `cell holds ${pre.by}` };
-		if (pre.kind === "missing") return { kind: "failed", reason: `no ${pre.name} left in the inventory` };
-		if (pre.kind === "no-support") return { kind: "defer" };
-		if (pre.kind === "out-of-reach") {
-			const key = cellKey(at);
-			if (attempt > 0 || walked.has(key)) return { kind: "failed", reason: `unreachable (${pre.detail})` };
-			walked.add(key);
-			const vantages = await vantageCandidates(ctx, at, box, self);
-			if (vantages.length === 0) return { kind: "failed", reason: `no standable spot to build from for ${pre.detail}` };
-			// 走位预算只花一次：走到第一个可行站位就用它重判射程；走失败立刻如实报，
-			// 不把整批预算耗在反复尝试上（每次失败都是整整一个 walk 超时）。
-			const walkError = await walkToward(deps, ctx, owner, vantages[0]!);
-			if (walkError != null) {
-				return {
-					kind: "failed",
-					reason: `walk to ${vantages[0]!.x},${vantages[0]!.y},${vantages[0]!.z} failed (${walkError})`,
-				};
-			}
-			const reached = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-			if (blockReach(reached, at) > BLOCK_REACH) {
-				return { kind: "failed", reason: `still out of reach after walking (${pre.detail})` };
-			}
-			continue;
-		}
-		const outcome = await ctx.withBody(async (scope: BodyCallScope) =>
-			commitPlacement(ctx, scope, self, spec, pre.aims, pre.heldName),
-		);
-		if (outcome.kind === "placed") return { kind: "done", counted: "placed" };
-		const after = await readBlockAt(ctx.world, at);
-		if (matchesDeclared(spec, after)) return { kind: "done", counted: "placed" };
-		// 所有支撑面都没成：不是终局。可能只是相邻格还没放好（门顶、悬挑），
-		// 交给下一轮再试；轮数上界与"这轮毫无进展就停"共同保证不会无限重试。
-		return { kind: "defer" };
-	}
-	return { kind: "failed", reason: "unreachable" };
+): Promise<CellResult | { kind: "defer"; reason: string }> {
+	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+	const pre = await inspectPlacement(ctx.world, self, at, spec, { replace });
+	if (pre.kind === "already") return { kind: "done", counted: "skipped" };
+	if (pre.kind === "conflict") return { kind: "failed", reason: `cell holds ${pre.by}` };
+	if (pre.kind === "missing") return { kind: "failed", reason: `no ${pre.name} left in the inventory` };
+	if (pre.kind === "no-support") return { kind: "defer", reason: "no clickable support face yet" };
+	if (pre.kind === "out-of-reach") return { kind: "defer", reason: pre.detail };
+	const outcome = await ctx.withBody(async (scope: BodyCallScope) =>
+		commitPlacement(ctx, scope, self, spec, pre.aims, pre.heldName),
+	);
+	if (outcome.kind === "placed") return { kind: "done", counted: "placed" };
+	const after = await readBlockAt(ctx.world, at);
+	if (matchesDeclared(spec, after)) return { kind: "done", counted: "placed" };
+	// 所有支撑面都没成：不是终局。可能只是相邻格还没放好（门顶、悬挑），
+	// 交给下一轮再试；轮数上界与"这轮毫无进展就停"共同保证不会无限重试。
+	const detail = outcome.kind === "not_met" ? `got ${outcome.actual ?? "nothing"}` : "outcome unknown";
+	return { kind: "defer", reason: `placement not confirmed (${detail})` };
 }
 
 /**
@@ -420,63 +425,76 @@ export const buildModule: MinecraftCapabilityModule = {
 						if (processed % PROGRESS_EVERY === 0) await ctx.progress(progress());
 					}
 
-					// 4. 放置阶段：**按列自下而上**，多轮。
+					// 4. 放置阶段：**站位分区批量**，多轮收敛。
 					//
-					//    两件事必须一起做，否则真服上根本建不完：
-					//    a) 上层的格子常常要等邻居先放好才有可点的面（屋顶内圈、悬挑），一轮到底必然漏格；
-					//    b) 列内自下而上，任何已完成的列都是 ≥3 高的墙，寻路只能绕行。
-					//       按层铺会让"1 格高的成品面"连成片，寻路会尝试跨上去，而 1 格上坡在
-					//       本机是已知未修的 Driver 缺口（G21 贴面起跳楔死）——整批走位都会 TIMEOUT。
-					//
-					//    某一轮什么都没建成即停：剩下的确实是当前做不了的。
+					//    三件事必须一起做，否则真服上建不完或走位浪费：
+					//    a) 上层的格子常常要等邻居先放好才有可点的面（屋顶内圈、悬挑）——
+					//       一轮到底必然漏格，靠"defer → 下一轮"收敛，一轮零建成即停；
+					//    b) 站位分区：每格按候选序（盒中心 → 四侧 pad）取第一个几何射程
+					//       满足的站位，同站位格一批执行——每站位一次走位，而不是每格一次；
+					//    c) 组内按列自下而上，任何已完成的列都是 ≥3 高的墙，寻路只能绕行；
+					//       组序先"当前就站在该站位"（零走位），再按平距从近到远。
 					const box = boxOf(plan.targets);
-					const boxCenter = {
-						x: (box.min.x + box.max.x) / 2,
-						z: (box.min.z + box.max.z) / 2,
-					};
-					const walked = new Set<string>();
+					/** defer 原因跟格走（最后一轮的分区/执行结论）。 */
+					const deferReasons = new Map<string, string>();
 					let queue = sets;
 					for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
-						const deferred: ConstructionTargetCell[] = [];
-						const columns = new Map<string, ConstructionTargetCell[]>();
-						for (const cell of queue) {
-							const key = `${cell.at.x},${cell.at.z}`;
-							const column = columns.get(key);
-							if (column == null) columns.set(key, [cell]);
-							else column.push(cell);
+						const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+						const herePos = selfNow.place.position;
+						// 当前脚位是第一候选：站着的地方不需要可站性核验，射程内的格
+						// 零走位直接进"这里"组（相邻格 already/skip 不付任何动作）。
+						const hereCandidate = { x: Math.floor(herePos.x), y: Math.floor(herePos.y), z: Math.floor(herePos.z) };
+						const vantageY = Math.floor(herePos.y);
+						// 其余站位候选世界核验（一次/候选/轮）：只认空气/可替换 + 下方实心。
+						const vantages: Vec3[] = [hereCandidate];
+						for (const candidate of boxVantages(box, vantageY)) {
+							if (cellKey(candidate) === cellKey(hereCandidate)) continue;
+							const here = await readBlockAt(ctx.world, candidate);
+							if (here != null && here.name !== "air" && !isReplaceableName(here.name)) continue;
+							const below = await readBlockAt(ctx.world, { x: candidate.x, y: candidate.y - 1, z: candidate.z });
+							if (below == null || isReplaceableName(below.name)) continue;
+							vantages.push(candidate);
 						}
-						// 由盒中心向外：先把智能体送进空盒，再一圈一圈往外建。
-						// 按"离玩家远近"排序会把外墙先立起来，随后中心就被自己封死——
-						// 真服实测：走进去的最后一次机会在墙合拢之前，之后每一次 goto 都是 TIMEOUT。
-						const anchors = [...columns.values()]
-							.map((column) => column[0]!.at)
-							.sort(
-								(a, b) =>
-									Math.abs(a.x - boxCenter.x) +
-										Math.abs(a.z - boxCenter.z) -
-										(Math.abs(b.x - boxCenter.x) + Math.abs(b.z - boxCenter.z)) ||
-									a.y - b.y ||
-									a.x - b.x ||
-									a.z - b.z,
-							);
+						// 分区：每格取第一个射程满足的站位；没有的如实 defer（几何上无解）。
+						const { groups: groupList, orphans } = assignVantageZones(queue, vantages);
+						const groups = new Map(groupList.map((group) => [cellKey(group.vantage), group]));
+						const deferred: ConstructionTargetCell[] = [];
+						for (const cell of orphans) {
+							deferred.push(cell);
+							deferReasons.set(cellKey(cell.at), "no candidate vantage within reach");
+						}
+						// 组序：当前就站在该站位（零走位）优先，其余按平距从近到远。
+						const ordered = [...groups.values()].sort(
+							(a, b) =>
+								(flatDist(herePos, a.vantage) <= 2 ? 0 : 1) - (flatDist(herePos, b.vantage) <= 2 ? 0 : 1) ||
+								flatDist(herePos, a.vantage) - flatDist(herePos, b.vantage),
+						);
 						let builtThisPass = 0;
-						for (const anchor of anchors) {
-							const column = columns.get(`${anchor.x},${anchor.z}`)!;
-							column.sort((a, b) => a.at.y - b.at.y);
-							for (const cell of column) {
+						for (const group of ordered) {
+							stopIfDone("building");
+							// 每站位一走：走失败整组如实 defer（下一轮重分区，可能换到别的站位）。
+							if (flatDist(herePos, group.vantage) > 2) {
+								const walkError = await walkToward(deps, ctx, owner, group.vantage);
+								if (walkError != null) {
+									for (const cell of group.cells) {
+										deferred.push(cell);
+										deferReasons.set(
+											cellKey(cell.at),
+											`walk to vantage ${cellKey(group.vantage)} failed (${walkError})`,
+										);
+									}
+									continue;
+								}
+							}
+							// 组内按列自下而上（y 升序，同列从地面往屋顶）。
+							group.cells.sort((a, b) => a.at.y - b.at.y || a.at.x - b.at.x || a.at.z - b.at.z);
+							for (const cell of group.cells) {
 								stopIfDone("building");
-								const result = await placeCellTarget(
-									deps,
-									ctx,
-									owner,
-									cell.at,
-									cell.block as BlockSpec,
-									raw.replace === true,
-									box,
-									walked,
-								);
-								if (result.kind === "defer") deferred.push(cell);
-								else {
+								const result = await placeCellTarget(ctx, cell.at, cell.block as BlockSpec, raw.replace === true);
+								if (result.kind === "defer") {
+									deferred.push(cell);
+									deferReasons.set(cellKey(cell.at), result.reason);
+								} else {
 									account(cell, result);
 									if (result.kind === "done") builtThisPass += 1;
 								}
@@ -490,7 +508,7 @@ export const buildModule: MinecraftCapabilityModule = {
 						unfinished.set(cellKey(cell.at), {
 							at: cell.at,
 							target: targetLabel(cell),
-							reason: "no clickable support face appeared after several passes",
+							reason: deferReasons.get(cellKey(cell.at)) ?? "no clickable support face appeared after several passes",
 						});
 					}
 

@@ -451,6 +451,35 @@ async function main(): Promise<void> {
 				throw new Error(`TIMEOUT reported nothing left: ${JSON.stringify(progress)}`);
 			return `TIMEOUT with ${counts?.remainingCount} left, ${counts?.placed} placed, ${counts?.skipped} skipped`;
 		});
+		await s.step("an 11-wall beyond one vantage's reach is built via vantage zones (batch30)", async () => {
+			// 旧实现"只试首站位"：两端格从盒中心走过去仍够不着 → 整格 failed。
+			// 新调度按候选序分区（中心 + 四侧 pad），每站位一走、站位内批量。
+			// 本步自包含（清包给料、自带锚点），放在门禁末尾不影响蓝图步的库存前提。
+			const x0 = 9604;
+			const wallZ = 9610;
+			await s.command(`/fill ${x0} 200 ${wallZ} ${x0 + 10} 202 ${wallZ} minecraft:air`);
+			await s.command(`/kill @e[type=minecraft:item]`);
+			await s.command(`/clear ${USER}`);
+			await s.command(`/give ${USER} minecraft:stone 64`);
+			const cells = [];
+			for (let dx = 0; dx <= 10; dx++) {
+				cells.push({ at: { x: x0 + dx, y: 200, z: wallZ }, block: "stone" });
+				cells.push({ at: { x: x0 + dx, y: 201, z: wallZ }, block: "stone" });
+			}
+			const started = Date.now();
+			const result = valueOf<BuildValue>(await s.call("build@1", { cells } as JsonValue, 240000));
+			const elapsed = Date.now() - started;
+			if (result.placed !== 22) {
+				throw new Error(`placed ${result.placed}/22, remaining ${JSON.stringify(result.remaining).slice(0, 300)}`);
+			}
+			const westFoot = await s.readBlock({ x: x0, y: 200, z: wallZ });
+			const eastTop = await s.readBlock({ x: x0 + 10, y: 201, z: wallZ });
+			if (westFoot?.name !== "stone" || eastTop?.name !== "stone") {
+				throw new Error(`end cells missing: west=${westFoot?.name} eastTop=${eastTop?.name}`);
+			}
+			return `11-wall (22 cells) complete in ${elapsed}ms via vantage zones`;
+		});
+
 	} finally {
 		s.finish();
 		await closeHarness(h);
