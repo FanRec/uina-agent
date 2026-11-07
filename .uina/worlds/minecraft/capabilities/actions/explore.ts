@@ -288,6 +288,9 @@ export const exploreModule: MinecraftCapabilityModule = {
 					if (initial != null) return plain({ found: initial, traveled: 0, scanned: 1 });
 					const map = new ObservationMap(self.place.dimension);
 					const owner: ControlOwner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId };
+					// 上一轮观察的整数格位置：原地迭代（软记账换批）不重复观察/扫描。
+					let lastObservedCell: string | null = null;
+					const cellOf = (at: Vec3): string => `${Math.floor(at.x)},${Math.floor(at.y)},${Math.floor(at.z)}`;
 					const outcome = await deps.runtime().navigate(owner, async (): Promise<ExploreFound> => {
 						for (;;) {
 							if (ctx.signal.aborted) interrupted(traveled, scanned);
@@ -312,12 +315,18 @@ export const exploreModule: MinecraftCapabilityModule = {
 								);
 							}
 							// 观察 → 扫描 → 选前沿 → 走；失败段只判死该格，其余前沿照常参选。
+							// 原地软记账迭代（位置未变）不重复观察/扫描—— region 入图与
+							// until 扫描在原地没有新信息，直到 bot 真的动了再做。
 							map.markVisited(here.place.position);
-							map.ingest(await observeAround(ctx, here));
-							scanned += 1;
-							const hit = await scanCurrent(ctx, until, here);
-							await ctx.progress({ traveled: Math.round(traveled * 100) / 100, scanned });
-							if (hit != null) return hit;
+							const cell = cellOf(here.place.position);
+							if (cell !== lastObservedCell) {
+								lastObservedCell = cell;
+								map.ingest(await observeAround(ctx, here));
+								scanned += 1;
+								const hit = await scanCurrent(ctx, until, here);
+								await ctx.progress({ traveled: Math.round(traveled * 100) / 100, scanned });
+								if (hit != null) return hit;
+							}
 							const ranked = rankFrontiers(here.place.position, map.frontiers(), map, raw.direction ?? "any");
 							if (ranked.length === 0) {
 								// 失败映射（capabilities.md 冻结）：一步都没走成 = 起步无前沿 UNREACHABLE；

@@ -502,7 +502,8 @@ test("a failed hop is dead but the loop keeps trying remaining frontiers", async
 	);
 	const failure = await failureOf(invoke({ until: { block: "diamond_ore" } } as JsonValue));
 	expect(failure).toMatchObject({ code: "UNREACHABLE" });
-	expect(failure.progress).toMatchObject({ traveled: 0, scanned: 18 });
+	// 原地软记账迭代不重复观察/扫描（位置未变没有新信息）：scanned 只计真实扫描。
+	expect(failure.progress).toMatchObject({ traveled: 0, scanned: 2 });
 	expect(s.gotoCalls).toHaveLength(16);
 	// 判死的是具体格：16 个目标互不相同，同一格不重复派发。
 	const targets = new Set(s.gotoCalls.map((call) => `${call.at.x},${call.at.y},${call.at.z}`));

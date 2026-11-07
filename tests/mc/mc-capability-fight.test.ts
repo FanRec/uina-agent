@@ -33,11 +33,13 @@ describe("fight@1 会话", () => {
 	test("balanced：换最好武器 + 盾，击杀（死亡观察）→ targets_cleared", async () => {
 		const zombie = entity("zombie", "hostile", 12.5, 10); // 距离 2.5 ≤ 出手门限，直接进近身段
 		const state = baseState([zombie], { iron_sword: 1, stone_axe: 1, shield: 1 });
+		const applied: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }[] = [];
 		const h = makeHarness(state, {
 			// 近身段（批33）：feedback 流连续拍派发攻击，死亡观察来自连接级累积；
 			// 模型里死亡 = 目标从扫描集合消失 + 死亡观察已到达。
 			deadEntities: new Set([zombie.ref.networkId]),
-			onNearApply: () => {
+			onNearApply: (input) => {
+				applied.push(input);
 				state.entities = [];
 			},
 		});
@@ -57,14 +59,18 @@ describe("fight@1 会话", () => {
 		expect(h.calls).toContain("equip:hand");
 		expect(h.calls).toContain("equip:offhand");
 		expect(h.calls).toContain("feedback:");
+		// 出手门限内的第一拍随 apply 派发攻击（attack 走 ControlInput，不是证据窗）。
+		expect(applied.some((input) => input.attack != null)).toBe(true);
 	}, 15000);
 
 	test("近身段连续拍派发攻击并保持单次身体持有", async () => {
 		const zombie = entity("zombie", "hostile", 12.5, 10);
 		const state = baseState([zombie], { iron_sword: 1, shield: 1 });
+		const applied: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }[] = [];
 		const h = makeHarness(state, {
 			deadEntities: new Set<number>(),
-			onNearApply: () => {
+			onNearApply: (input) => {
+				applied.push(input);
 				state.entities = [];
 			},
 			feedbackPaceMs: 5,
@@ -73,6 +79,9 @@ describe("fight@1 会话", () => {
 		// 近身段以 feedback 流持有身体（不是每拍 withBody + drive）。
 		expect(h.calls).toContain("feedback:");
 		expect(h.calls.filter((call) => call === "nearApply").length).toBeGreaterThan(1);
+		// 出手门限内的拍随 apply 派发攻击；非攻击拍举盾（use hold）。
+		expect(applied.some((input) => input.attack != null)).toBe(true);
+		expect(applied.some((input) => input.use != null)).toBe(true);
 		// 段内不反复获取身体：一个近身段 = 一次 feedback 流（缺席窗后 target_lost 退出）。
 		expect(h.calls.filter((call) => call.startsWith("feedback:")).length).toBe(1);
 	}, 15000);

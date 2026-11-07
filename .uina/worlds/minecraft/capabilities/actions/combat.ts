@@ -685,6 +685,26 @@ export const combatModule: MinecraftCapabilityModule = {
 						return { scan, nearest, nearestGap, liveCount, anyAbsent };
 					};
 
+					// 撤退结算（三处共用）：核验性 withdraw 按 cleared 落 retreated/retreat_failed。
+					// 返回结算值由调用点赋给 ended——闭包内赋值对 TS 控制流不可见。
+					const runRetreat = async (
+						reason: "low_health" | "no_progress",
+						anchor: Vec3,
+					): Promise<"retreated" | "retreat_failed"> => {
+						retreatedReason = reason;
+						const retreat = await withdraw(
+							deps,
+							ctx,
+							owner,
+							probe,
+							params.surfaceBeforeFlee,
+							deadline,
+							anchor,
+							onInterrupted,
+						);
+						return retreat.cleared ? "retreated" : "retreat_failed";
+					};
+
 					for (;;) {
 						if (ctx.signal.aborted) onInterrupted();
 						if (Date.now() >= deadline) {
@@ -694,18 +714,7 @@ export const combatModule: MinecraftCapabilityModule = {
 						const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 						hpAfter = self.health;
 						if (retreatHealth != null && self.health != null && self.health < retreatHealth) {
-							const retreat = await withdraw(
-								deps,
-								ctx,
-								owner,
-								probe,
-								params.surfaceBeforeFlee,
-								deadline,
-								nearestAnchor(targets, self.place.position),
-								onInterrupted,
-							);
-							ended = retreat.cleared ? "retreated" : "retreat_failed";
-							retreatedReason = "low_health";
+							ended = await runRetreat("low_health", nearestAnchor(targets, self.place.position));
 							break;
 						}
 						const { nearest, nearestGap, liveCount, anyAbsent } = await assess(self.place.position);
@@ -725,8 +734,8 @@ export const combatModule: MinecraftCapabilityModule = {
 						if (nearest == null) continue;
 						// no_progress：迟迟无法接近也无法命中，主动脱离（cleared 才结算 retreated）。
 						// bestGap 按目标身份跟踪：击杀后 nearest 换人，距离正常变大不是停滞。
-						if (nearest!.ref.networkId !== nearestId) {
-							nearestId = nearest!.ref.networkId;
+						if (nearest.ref.networkId !== nearestId) {
+							nearestId = nearest.ref.networkId;
 							bestGap = Number.POSITIVE_INFINITY;
 							prevInterest = null; // 目标切换：方向迟滞场作废
 						}
@@ -737,18 +746,7 @@ export const combatModule: MinecraftCapabilityModule = {
 							// 硬危险（苦力怕 fuse 半径/引燃）的进退节奏是策略不是卡死。
 							lastProgressAt = Date.now();
 						} else if (Date.now() - lastProgressAt > NO_PROGRESS_MS_VALUE) {
-							const retreat = await withdraw(
-								deps,
-								ctx,
-								owner,
-								probe,
-								params.surfaceBeforeFlee,
-								deadline,
-								nearest!.lastPosition,
-								onInterrupted,
-							);
-							ended = retreat.cleared ? "retreated" : "retreat_failed";
-							retreatedReason = "no_progress";
+							ended = await runRetreat("no_progress", nearest.lastPosition);
 							break;
 						}
 						if (weaponMode === "ranged") {
@@ -1004,20 +1002,12 @@ export const combatModule: MinecraftCapabilityModule = {
 						if (segmentExit === "low_health" || segmentExit === "no_progress") {
 							const self2 = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 							hpAfter = self2.health;
-							const retreat = await withdraw(
-								deps,
-								ctx,
-								owner,
-								probe,
-								params.surfaceBeforeFlee,
-								deadline,
+							ended = await runRetreat(
+								segmentExit,
 								segmentExit === "low_health"
 									? nearestAnchor(targets, self2.place.position)
 									: (targets.find((target) => !target.killed && !target.lost)?.lastPosition ?? self2.place.position),
-								onInterrupted,
 							);
-							ended = retreat.cleared ? "retreated" : "retreat_failed";
-							retreatedReason = segmentExit;
 							break;
 						}
 						// out_of_reach：回到外层重新扫描分流（追击或再接战）。

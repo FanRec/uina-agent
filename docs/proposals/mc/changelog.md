@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-07 · 批32–33 审查轮（重复 retreat 收敛 + 无效扫描消除 + 测试断言补齐）
+
+对批32/批33 自查一轮，修五处：
+
+- **fight@1 撤退结算三处去重**：外层血量检查、外层 no_progress、近身段退段翻译三处重复的 withdraw 结算收敛为 `runRetreat(reason, anchor)`；返回结算值由调用点赋给 `ended`——闭包内赋值对 TS 控制流不可见，内联赋值会在 return 处触发类型误收窄。近身段冗余 `!` 断言（`if (nearest == null) continue` 后已收窄）一并清理。
+- **explore@1 原地软记账迭代不再重复观察/扫描**：位置未变的迭代（plan 判不可达换批、判死记账）跳过 region 入图与 until 扫描——原地没有新信息；封闭/贴墙场景的软记账轮次从 ~0.4s/轮降到 ~0.1s/轮。`scanned` 语义随之收紧为"只计真实扫描"（capabilities.md 实现说明同步）。
+- **测试断言补齐**：mc-capability-fight 补两条核心语义断言——近身段的 apply 确实携带 `attack`（ControlInput 派发，非证据窗）与非攻击拍 `use` hold；此前没有任何断言覆盖"攻击真的派发了"。
+- **harness 死旋钮清理**：`feedbackMaxFrames`（无测试消费，帧上限硬编码 400 兜底）与 `onNearApply` 的 `frameIndex` 参数（无消费者）删除。
+- 验收：typecheck 过；tests/mc 过滤器口径 107 文件 892 项（唯一 FAIL 为 mcp-extension-loading 环境预存）；真服 `dev:mc:combat` 8/8（B04 本轮 hp 20→20 零擦伤，retreat 路径 B02/B05 正常）、`dev:mc:explore-frontier` 4/4（traveled 24.22 与批32 记录一致）。
+
 ## 2026-11-07 · 批33 fight@1 近身段 feedback 流迁移 + 苦力怕 fuse 感知（G29 主体关闭）
 
 - **feedback 流迁移（G29 ①）**：近身段从"每拍 withBody + drive BEAT_TICKS"改为一次 withBody 持有 + feedback 流连续物理拍——键位每物理拍重装，扫描/决策不再造成键位空档（占空比 ~100%，原 ~50%）。段内每 300ms 重扫结算击杀/缺席/撤退/进度（assess 助手共用），steering/攻击/举盾逐拍应用。

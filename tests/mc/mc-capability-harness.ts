@@ -186,16 +186,11 @@ export interface HarnessHooks {
 	deadEntities?: Set<number>;
 	/**
 	 * fight 测试（批33）：feedback 流替身的每次 apply 副作用（键位/攻击派发时的
-	 * 世界变化，例如目标消失、掉落出现）。frame 序号从 0 起。
+	 * 世界变化，例如目标消失、掉落出现）。
 	 */
-	onNearApply?: (
-		input: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown },
-		frameIndex: number,
-	) => void;
+	onNearApply?: (input: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }) => void;
 	/** feedback 流替身的节拍间隔 ms（默认 25，模拟物理拍节奏防热旋）。 */
 	feedbackPaceMs?: number;
-	/** feedback 流替身最多产出的帧数（防失控；默认 400）。 */
-	feedbackMaxFrames?: number;
 	/** SurfaceProbe 注入（surface/fight 测试）；缺省 null。 */
 	surface?: () => SurfaceProbe | null;
 	/** openContainer 打开的窗口（工作台/熔炉）；不提供则调用即失败。 */
@@ -427,10 +422,9 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			let seq = 1000;
 			let frameIndex = 0;
 			const pace = hooks.feedbackPaceMs ?? 25;
-			const maxFrames = hooks.feedbackMaxFrames ?? 400;
 			const stream = {
 				async next(_after: number | null, signal: AbortSignal) {
-					if (frameIndex >= maxFrames) {
+					if (frameIndex >= 400) {
 						// 帧数耗尽按流死亡结算：fight 会话退段重扫（外层 deadline 兜底）。
 						throw Object.assign(new Error("fake feedback stream exhausted"), { code: "CONTROL_INVALID" });
 					}
@@ -463,7 +457,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 				},
 				async apply(_frame: unknown, input: { keys?: Record<string, boolean>; attack?: unknown; use?: unknown }) {
 					calls.push("nearApply");
-					hooks.onNearApply?.(input, frameIndex);
+					hooks.onNearApply?.(input);
 					return {
 						receipt: { effect: "eff:t:20", dispatch: "sent", completion: "met", evidence: [] },
 						appliedStep: { sequence: seq },
