@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804d221c1e8 100644
+index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..c5e0a5e7eb473b8632060bbaf16e74925c1eb5d1 100644
 --- a/index.js
 +++ b/index.js
 @@ -9,7 +9,6 @@ const Lock = require('./lib/lock')
@@ -21,14 +21,22 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
    let returningPos = null
    let stopPathing = false
    const physics = new Physics(bot)
-@@ -36,6 +39,16 @@ function inject (bot) {
+@@ -36,6 +39,24 @@ function inject (bot) {
  
    bot.pathfinder = {}
  
 +  // 批34 诊断：只读暴露执行器活动状态（路径节点/目标/挖置标志）。
 +  // 供适配层与诊断探针收敛"规划认路、执行不走"类缺陷；不参与任何控制路径。
++  // 批35：节点携带 toBreak/toPlace 长度（Vec3.clone 会丢掉放置信息，塔升编排
++  // 诊断需要知道放置节点是否还在路径里、执行器有没有消费到它）。
 +  bot.pathfinder.debugState = () => ({
-+    path: path.map((p) => p.clone()),
++    path: path.map((p) => ({
++      x: p.x,
++      y: p.y,
++      z: p.z,
++      toBreak: p.toBreak == null ? null : p.toBreak.length,
++      toPlace: p.toPlace == null ? null : p.toPlace.length,
++    })),
 +    goal: stateGoal == null ? null : { x: stateGoal.x, y: stateGoal.y, z: stateGoal.z, range: stateGoal.range },
 +    digging,
 +    placing,
@@ -38,7 +46,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
    bot.pathfinder.thinkTimeout = 5000 // ms
    bot.pathfinder.tickTimeout = 40 // ms, amount of thinking per tick (max 50 ms)
    bot.pathfinder.searchRadius = -1 // in blocks, limits of the search area, -1: don't limit the search
-@@ -49,7 +62,10 @@ function inject (bot) {
+@@ -49,7 +70,10 @@ function inject (bot) {
      let fastest = Number.MAX_VALUE
      let bestTool = null
      for (const tool of availableTools) {
@@ -50,7 +58,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
        const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
        if (digTime < fastest) {
          fastest = digTime
-@@ -168,9 +184,15 @@ function inject (bot) {
+@@ -168,9 +192,15 @@ function inject (bot) {
    function postProcessPath (path) {
      for (let i = 0; i < path.length; i++) {
        const curPoint = path[i]
@@ -68,7 +76,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
          curPoint.x = Math.floor(curPoint.x) + 0.5
          curPoint.y = Math.floor(curPoint.y)
          curPoint.z = Math.floor(curPoint.z) + 0.5
-@@ -397,6 +419,12 @@ function inject (bot) {
+@@ -397,6 +427,12 @@ function inject (bot) {
  
    bot.on('blockUpdate', (oldBlock, newBlock) => {
      if (!oldBlock || !newBlock) return
@@ -81,7 +89,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
      if (isPositionNearPath(oldBlock.position, path) && oldBlock.type !== newBlock.type) {
        resetPath('block_updated', false)
      }
-@@ -518,12 +546,57 @@ function inject (bot) {
+@@ -518,12 +554,57 @@ function inject (bot) {
          fullStop()
        }
  
@@ -142,7 +150,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
          }, err => {
            console.error(err)
            lockUseBlock.release()
-@@ -559,7 +632,26 @@ function inject (bot) {
+@@ -559,7 +640,26 @@ function inject (bot) {
                  bot.setControlState('sneak', false)
                  if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
                })
@@ -170,7 +178,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
                  resetPath('place_error')
                })
                .then(() => {
-@@ -567,6 +659,12 @@ function inject (bot) {
+@@ -567,6 +667,12 @@ function inject (bot) {
                  placing = false
                  lastNodeTime = performance.now()
                })
@@ -183,7 +191,7 @@ index b38bd30c0c1babb4d7d3d396067ed828d9dc9f6a..7ffcbf9e6184b2de3ee736b4afdff804
            })
            .catch(_ignoreError => {})
        }
-@@ -608,24 +706,57 @@ function inject (bot) {
+@@ -608,24 +714,57 @@ function inject (bot) {
      bot.setControlState('forward', true)
      bot.setControlState('jump', false)
  

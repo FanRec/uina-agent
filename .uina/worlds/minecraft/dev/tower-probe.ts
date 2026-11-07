@@ -98,7 +98,7 @@ async function main(): Promise<void> {
 		const bot = h.bot as unknown as MineflayerBot & {
 			pathfinder?: {
 				debugState?: () => {
-					path: { x: number; y: number; z: number }[];
+					path: { x: number; y: number; z: number; toBreak: number | null; toPlace: number | null }[];
 					goal: unknown;
 					digging: boolean;
 					placing: boolean;
@@ -117,11 +117,13 @@ async function main(): Promise<void> {
 				const keyStr = ["forward", "back", "jump", "sprint", "sneak"]
 					.map((k) => `${k[0]}:${keys[k] ? 1 : 0}`)
 					.join(" ");
+				const placeNode = debug?.path?.find((n) => (n.toPlace ?? 0) > 0);
 				samples.push(
 					`${new Date().toISOString().slice(11, 23)} pos=${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` +
 						` vel=${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)}` +
-						` path=${debug?.path?.length ?? -1} head=${head ? `${head.x},${head.y},${head.z}` : "-"} ` +
-						`dig=${debug?.digging ? 1 : 0} place=${debug?.placing ? 1 : 0} miss=${misses.length} ${keyStr}`,
+						` path=${debug?.path?.length ?? -1} head=${head ? `${head.x},${head.y},${head.z}+${head.toPlace ?? 0}` : "-"}` +
+						` placeNode=${placeNode ? `${placeNode.x},${placeNode.y},${placeNode.z}+${placeNode.toPlace}` : "-"}` +
+						` dig=${debug?.digging ? 1 : 0} placing=${debug?.placing ? 1 : 0} miss=${misses.length} ${keyStr}`,
 				);
 			} catch {
 				// 采样不给 goto 让路：读数失败跳过这一拍。
