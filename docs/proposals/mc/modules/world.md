@@ -385,9 +385,11 @@ Driver stamp 只是其中一个输入。失效只按**查询实际可见边界**
 
 WorldWatch 只提示重新看。完整聊天、死亡和所选历史事件从对应记录查询，不依赖 changed 穷举。World 不根据 Watch 定时器开炉、移动、避险或创建 Run；主动复查仍由能力和 Runtime 取得新身体执行。
 
-### 9.5 节流 digest 推送（批20，G6）
+### 9.5 请求前状态帧（批37，取代批20 的节流 digest）
 
-Watch 是"等变化的拉取原语"；digest 是"有变化就推的摘要"：`world/digest.ts` 订阅 facts 的 changed/reset，前缘节流 10s（`DIGEST_INTERVAL_MS` 集中策略值），按查询依赖采样——三段（self/inventory/world）复用现有查询读取器，同一 `facts.sample` 提交边界，与 observe 同口径；规范化 JSON 哈希去重，同一份不重复，facts reset 后清哈希（重连即使内容相同也补发一份）。采样失败（未附着/断线）不造摘要，重连后的 reset+changed 自然补发。digest 是 ephemeral 推送：不落 `world-history.db`、不进 `events@1`，经 `onGameEvent` 事件管道上行、由 Executor 以独立事件类型 `minecraft_digest` 交付；"主脑忙时只保最新一份"在 DeliveryPump 侧（见 [executor §1](executor.md)）。时间只取粗粒度相位与天数、位置取整数格——连续量进 digest 会让去重失效。
+Watch 是"等变化的拉取原语"；状态帧是"每次决策前读一眼"：`world/state-frame.ts` 只有采样与文本投影，没有定时器、没有订阅、没有去重、不落历史、不发消息。一次 `facts.sample` 提交边界采三段（self/inventory/world），复用现有查询读取器，与 observe 同口径，不建第二套事实提取。站位取脚下那一格（与全世界 `Math.floor` 的方块坐标一致，不是四舍五入）；背包超 10 种折叠成种类数加剩余项数；生命/饥饿没收到时说"未知"而不是留白（省略会被读成满血，填 0 会被读成已死）；未附着活连接时明确说"未连接，不要按旧坐标行动"，不沿用旧值。读取器报的字段级缺口（如地面上没有氧气）不算降级，只有整段读不到才进 `unknown`。
+
+状态不是待办事项：旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义，所以它既不进 `events@1` 也不排队——由 `state.snapshot` 只读 RPC 出，`WorldDef.requestContext` 在每次模型请求前取一份，经 `turn.transformContext`（`tail` 相位）附在该次投影尾部。宿主侧 250ms 超时即本轮不注入。
 
 <a id="retention"></a>
 

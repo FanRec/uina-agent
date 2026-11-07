@@ -125,6 +125,8 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批20（2026-11-03）关闭横向缺口 G6/G7/G8：G6 节流 digest 推送（`world/digest.ts` 按查询依赖采样、10s 前缘节流、内容哈希去重、独立事件类型 `minecraft_digest`、主脑忙时只保最新一份）；G7 `inventory@1 {since}` 增量游标（协议槽位变更标记 → 差量 + 变化后总数）；G8 `run {wait}` 按调用短窗覆盖（0 只受理不等）。真服 `pnpm dev:mc:digest` 7/7；tests/mc 771 项全绿。剩余横向缺口 G9/G10（运行时调度）、G12/G13（认证与平台）、G14–G17（复验与终态报告）、G24（tunnel 上行净空）登记于 [known-gaps](proposals/mc/known-gaps.md)。
 
+批37（2026-11-08）把 G6 的关闭方式整个换掉：状态不再推送。digest 链路（定时采样、10s 节流、内容哈希去重、`minecraft_digest` 事件类型、忙时只保最新一份）全删，改为 `world/state-frame.ts` 采样 + `state.snapshot` 只读 RPC，由 `WorldDef.requestContext` 经 `turn.transformContext`（`tail` 相位）在每次模型请求前注入一份当前快照，宿主侧 250ms 超时即本轮不注入。理由是推送本身选错了方向——旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义，而每次现读一次既能保证新鲜又不在空闲时产生任何 Subject 输入。同批事件按种类分流（死亡/断线/私聊/本地没脱险 → steer，其余排队）、已脱险的安全干预带 `interruptedRun` 上报而取消/失效不上报、同一世界的后续输入在宿主侧合成一次决策、失败终态保留调用侧报告的进度。真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧都是身体当前所在格）；接缝由 world-request-context、qq-world-framework-seams、smoke 覆盖；tests/mc 与接缝共 941 项通过（`mcp-extension-loading` 为既有基线红）。
+
 ## QQ World
 
 

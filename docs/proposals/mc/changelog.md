@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-08 · 批37 状态不推送（G6 换实现）+ 事件按种类分流
+
+- **删掉批20 的 digest 整条链路**（G6 的关闭方式换掉，缺口本身仍关闭）：`world/digest.ts`（changed/reset 订阅、10s 前缘节流 `DIGEST_INTERVAL_MS`、规范化 JSON 哈希去重、reset 清哈希、主脑忙时只保最新一份）、事件类型 `minecraft_digest`、`dev/digest.ts` 场景、`mc-world-digest.test.ts`、`worlddef/schema.ts` 指南里的 digest 描述。理由是方向错：**旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义**——节流与去重都在把"过时的东西"发得更省，问题不在发多少，在于该不该发。
+- **新增请求前状态帧**：`world/state-frame.ts` 只有采样与文本投影（无定时器/订阅/去重/历史/消息），一次 `facts.sample` 采 self/inventory/world 三段（复用 `capabilities.readers` 的现有读取器，与 observe 同口径）。宿主侧 `WorldDef.requestContext`（`src/extensions/world-framework/types.ts`）经 `turn.transformContext`（`tail` 相位）在**每次模型请求前**取一份，250ms 超时即本轮不注入；RPC 出口为窄只读 `state.snapshot`。
+- **投影口径的三处判断**：站位取 `Math.floor`（与全世界方块坐标一致，`tp 9850.5` 差一格，四舍五入会指到隔壁方块）；背包超 10 种折叠成种类数 + 剩余项数，空背包只说一次空；生命/饥饿没收到说"未知"（省略会被读成满血，填 0 会被读成已死）。读取器报的字段级缺口（地面上"oxygen not received"）**不算降级**——早先把它并进 `unknown`，真服第一轮就暴露每帧带三条噪声。
+- **事件只剩"发生了什么"并按种类分流**：`minecraft_event` 的 death、connection disconnected、玩家私聊（`self===false`）、安全干预 `blocked|timeout` 走 `urgent`（宿主投成 steer，当前执行前提已失效或有人在等回应），其余 `queued`（等下一次决策一起处理）。安全干预 `safe` 仍上报（被打断的 Run 完成记录只说 `cancelled`，不说因果），带 `interruptedRun`；`cancelled|invalidated` 不上报（前者是宿主关门的收尾，后者由连接/死亡事件承担）。
+- **宿主侧两处配套**：followUp 合批从按 `origin` 改成按世界 ref——同一次行动的"世界变了"（external）与"结果出来了"（internal）合成一次请求；失败终态保留调用侧报告的 `progress`（异常终止的 Run 也要说出"做到哪一步"）。
+- 验收：真服 `pnpm dev:mc:state-frame` **7/7**（三段齐全无未知、空闲 15s 零事件、`/give` 后下一次采样立即可见、`inventory@1 {since}` 增量不变、**走路 35 格 20s 零事件且 20 次采样全部等于身体当前所在格**、events@1 无状态帧泄漏）；`mc-state-frame` 10 项、`mc-delivery-pump`、`mc-runtime-settlement`、`qq-world-framework-seams` 12 项、`world-request-context` 2 项、`smoke` 27 项；biome format / boundaries / tsc 干净，tests/mc + 接缝 941 项通过（`mcp-extension-loading` 为既有基线红）。
+
 ## 2026-11-07 · 批36 审查轮（G30 关闭事实衔接 + 探针头注 + 引用修复）
 
 - **known-gaps G30 批36 条目补现象衔接**：批35 审查轮的现象改判（塔升放置链路完整工作，残余 = 逐级爬升彩票）原只存在于被替换的残余小节，批36 关闭条目直接从机制讲起——补一句改判承接，登记按"现象可信"可读。
@@ -192,7 +201,7 @@ M0 依赖审查（逐文件亲读上游 2.4.5 全部 lib + Cortico 对照 + 已�
 
 ## 2026-11-03 · 批20 感知效率包：G6 节流推送 + G7 增量游标 + G8 按调用短窗
 
-- **G6 节流 digest 推送**（`world/digest.ts` 新模块）：模型不主动 read 就不知道世界在变。digest 按查询依赖生成——三段（self/inventory/world）直接复用 `capabilities.readers` 的现有读取器，同一 `facts.sample` 提交边界采样，与 observe 口径一致，不建第二套事实提取。前缘节流 10s（`DIGEST_INTERVAL_MS`，集中策略值不新增配置面）、规范化 JSON 哈希去重（"同一份不重复"；`world/watch.ts` 的 `canonical` 导出复用）、facts reset 后清哈希（重连即使内容相同也补发一份）。上行走既有事件管道（`onGameEvent` → executor 事件 → `DeliveryPump`），以独立事件类型 **minecraft_digest** 交付：不指向 events@1（不污染历史）、无 nextCall；**主脑忙碌（`isBusy`）时只保留最新一份待发、空闲即补发**——长任务期间 digest 不刷屏。时间只取粗粒度相位与天数（ticks 连续变化会让去重永远失效）、位置取整数格。
+- **G6 节流 digest 推送**（`world/digest.ts` 新模块，**批37 已整体删除，见 2026-11-08 条**）：模型不主动 read 就不知道世界在变。digest 按查询依赖生成——三段（self/inventory/world）直接复用 `capabilities.readers` 的现有读取器，同一 `facts.sample` 提交边界采样，与 observe 口径一致，不建第二套事实提取。前缘节流 10s（`DIGEST_INTERVAL_MS`，集中策略值不新增配置面）、规范化 JSON 哈希去重（"同一份不重复"；`world/watch.ts` 的 `canonical` 导出复用）、facts reset 后清哈希（重连即使内容相同也补发一份）。上行走既有事件管道（`onGameEvent` → executor 事件 → `DeliveryPump`），以独立事件类型 **minecraft_digest** 交付：不指向 events@1（不污染历史）、无 nextCall；**主脑忙碌（`isBusy`）时只保留最新一份待发、空闲即补发**——长任务期间 digest 不刷屏。时间只取粗粒度相位与天数（ticks 连续变化会让去重永远失效）、位置取整数格。
 - **G7 inventory@1 增量游标**：协议层补每槽位最后变更 revision（`playerSlotMarks()`；全量重同步只标内容真变的槽位，光标移动只推 revision 不算槽位变更，respawn/end 清空）→ `view.inventoryChanges(since)` 暴露差量（标记不可用回 null 不猜）→ `inventory@1` 输入 `{since?}`：同游标回 `changes:[]` + 变化后总数、有变化回 `{revision, changes:[{slot,item|null}], counts, usedSlots, freeSlots}`（不含全量 slots/layout/gear）、标记不可用退回全量并如实标注 unknown、游标超前（含跨重启 revision 归零）如实 `INVALID_INPUT`。其余查询仍全量，按真实消费者逐个补。
 - **G8 run 按调用短窗**：`run` 入参增 `wait`（ms，≥0；continue 的 entry 不加）——默认仍 3000ms，`wait:0` 只受理不等（完成走 minecraft_completion 通知），更久的显式等待仍用 `runs.wait`。落到 `executor/facade.ts` 的短窗覆盖点，指南同步。
 - 指南（nativeGuide）补三句：run 短窗与 wait 覆盖、minecraft_digest 的含义与节流口径、inventory@1 {since} 语义。
