@@ -1,5 +1,18 @@
 # 设计变更记录
 
+## 2026-11-07 · 批34 审查轮（记录口径修正 + serverData 收敛）
+
+- **轮次口径修正**（development-plan §10.3 与 known-gaps G30 同步）：mine 修复前为 11 轮回程全挂（returned ×10、shaft ×1，含 06-07/06-10/06-14 三轮调试），原记"六轮"；场地修复后为 3 轮 2 绿 1 红，原记"4 轮 2 绿 2 红"；探针为 v1–v10 十轮，原记"v2–v10"九个编号；shelter 实为 9/12（3 红集中在竞技场/断言打磨期，随后 9 连绿），原记"5/5"；night 5 绿 1 红。轮次经 task-runs 各批 summary.jsonl 逐条重读核对。
+- **`scenario.ts` serverData 收敛为单行转发**：原包装函数体只 return，注释描述的却是 serverReply 层的回执形状合同——注释随合同归属下移。
+- 验收：`pnpm typecheck` 过；tests/mc 定点 mc-spatial-planner 18 项、mc-goto-loiter 1 项绿。
+
+## 2026-11-07 · 批34 任务级基线（三任务竞技场 + 服务端判决 + NoCloser 看门狗；G30 登记）
+
+- **任务级基线 `dev:mc:task`**（dev/task.ts + task-programs.ts）：固定竞技场跑完整 Program（SHELTER 采木→合成→建屋 / MINE tunnel 下行→collect→回地面 / NIGHT 午夜清怪），终态由服务端判决——scenario.ts 新增服务端真值断言面（serverProbe/serverInventory/serverHealth/serverBlock/serverPos + 事件游标切窗替代旧"扫 40 条+关键字"）。三条纪律：准备与断言在宿主、程序只做玩法动作、失败强制归因（记录落 task-runs/&lt;batch&gt;/）。**程序吞错自报成功被服务端 returned 断言拦截**——基线纪律首轮即实证。
+- **基线暴露 mine 回程 11 轮全挂 → 十轮探针（v1–v10）钉死根因链 → G30 登记**：几何排除（planCorridor 双向净空不变量，T0 锁死）、规划排除（route.plan 干跑带塔/禁塔都有路线）、执行器定罪（debugState 实证 12s 持路径却原地徘徊）——三个缺陷形态：shouldJump 角点探测亚格漂移盲区、塔升放置成功后重规划不接续（悬浮头节点）、GoalNear 早停不可精确重入。修复尝试 shouldJump 中心对齐扰动批19 实测 run-up 窗口，撤销留批35 专项。
+- **随批落地**：goto.ts 圈禁看门狗（NoCloser→UNREACHABLE 12s，"在动但不靠近"不再烧满墙钟）；pathfinder 补丁只读 debugState 诊断口；场地自毁修复（矿石格 (12049,191) 恰是阶梯末级踏步块，collect 挖它=回程楼梯口被自己斩首——移至 (12054,191)，vein 改石头消除计数干扰）。
+- 验收：场地修复后 mine returned 首绿（3 轮 2 绿 1 红，残余=G30 跳跃彩票 + collect 东壁漏采）；shelter 9/12、night 5 绿 1 红（围死方差，断言如实捕获）；climb/terrain-nav/upstream-nav 回归全绿；tests/mc rg 口径 100 文件 782 项全绿；`pnpm typecheck` 过。
+
 ## 2026-11-07 · 批32–33 审查轮（重复 retreat 收敛 + 无效扫描消除 + 测试断言补齐）
 
 对批32/批33 自查一轮，修五处：

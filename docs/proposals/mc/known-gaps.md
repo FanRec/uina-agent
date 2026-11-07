@@ -114,8 +114,8 @@
 
 ### G30 · 自挖走廊逆行与自由导航爬阶不可靠（批34 登记）
 
-- **现象**：mine 任务级基线（`dev:mc:task`）回程腿失败——bot 挖到矿后走不回地面起点。任务级服务端判决（serverPos）修复前六轮全挂（baseline-b34 ×4、mine-fix1..4）；场地修复（矿石移出阶梯动线，见备注）后 4 轮 2 绿 2 红，`returned` 沦为跳跃彩票。
-- **证据链**（探针 v2–v10，日志在 tmp/probe-mine-return-v*.log，探针用后即弃，结论固化于此）：
+- **现象**：mine 任务级基线（`dev:mc:task`）回程腿失败——bot 挖到矿后走不回地面起点。任务级服务端判决（serverPos）修复前 11 轮回程全挂（returned ×10、shaft ×1：06-07/06-10/06-14 三轮 + baseline-b34 ×4 + mine-fix1..4）；场地修复（矿石移出阶梯动线，见备注）后 3 轮 2 绿 1 红，`returned` 沦为跳跃彩票。
+- **证据链**（探针 v1–v10，日志在 tmp/probe-mine-return-v*.log，探针用后即弃，结论固化于此）：
   1. **几何排除**：`planCorridor` 挖除集满足双向净空不变量——每踏步低位列覆盖 floor..floor+2（3 格净空），与 G24 已证可行的几何等价；不变量已锁死为 T0（`mc-spatial-planner`）。
   2. **规划排除**：`route.plan@1` 干跑（goto 同配置 digThrough/placeToReach）整路与逐踏步二分全部 ok——带塔 place×3（重建被斩首的踏步）、禁塔 dig×9（另走挖掘路线），A* 两条配置都有路线。
   3. **执行器定罪**：`bot.pathfinder.debugState()`（补丁新增只读诊断口）显示执行器 12s 持有合理路径却原地徘徊——y 恒 191 不上台阶、z 恒 12000.5 不进到达窗、x ±1.4 振荡（step-assist 退避循环）；全程仅 1 次放置、18+ 次无效 equip（lockPlaceBlock 被 1s placeBlock 等待占满）。

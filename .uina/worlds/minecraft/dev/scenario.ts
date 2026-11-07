@@ -330,11 +330,9 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 		return { health, food };
 	};
 
-	const serverData = async (selector: string, path: string): Promise<string> => {
-		const text = await serverReply(`/data get entity ${selector} ${path}`);
-		// 命令回执有两种形状：拿到数据与"没有这个标签"。都不匹配时把原文交回调用方判断。
-		return text;
-	};
+	// /data get 回执有两种形状（拿到数据 / 没有这个标签）；解析归各 serverXxx，这里只取原文。
+	const serverData = (selector: string, path: string): Promise<string> =>
+		serverReply(`/data get entity ${selector} ${path}`);
 
 	const serverPos = async (selector: string): Promise<Vec3 | null> => {
 		const text = await serverData(selector, "Pos");
