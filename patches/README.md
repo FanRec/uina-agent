@@ -21,16 +21,39 @@ ascending corridor, sealed-shaft fast-fail, flat 30-block walk) and `pnpm dev:mc
 and goto suites cover the planner side. Reevaluate the whole file when upgrading the pinned
 dependency.
 
-**Executor correctness (G21, batch 19).** `lib/physics.js` adds `stepAt(bot, nextPoint, d)` — probe
-for "solid at feet level, air above" `d` blocks along the travel direction — and rewrites `shouldJump`
-to jump only when a step exists at 1.2/1.8 blocks with the 0.6 probe still clear. Upstream
-`canStraightLine` treated "only clears if you jump early enough" as "walkable", so the executor never
-pressed jump and every one-block step ended in `resetPath('stuck')` (which does not emit `path_stop`,
-so the goto promise never settled and burned the 40s wall clock). `lib/index.js` routes every
-movement branch through that single `jumpNow` decision and adds a run-up retry: touching the step
-face with ~zero speed backs off 200–900ms first. Real-server measurement: takeoff must start ≥0.89
-blocks from the face; jumping while touching it zeroes horizontal speed and the 0.02/tick air control
-cannot recover it.
+**Executor correctness (G21, batch 19; jump decision rewritten for G30, batch 35).** `lib/physics.js`
+adds `stepAt(bot, nextPoint, d)` — probe for "solid at feet level, air above" `d` blocks along the
+travel direction, kept for the run-up back-off in `lib/index.js` — and `stepBlockOf(bot, nextPoint)`,
+the floor block of a single-block step-up node (null for flat/drop nodes, tower moves, and nodes
+whose support is missing). Upstream `canStraightLine` treated "only clears if you jump early enough"
+as "walkable", so the executor never pressed jump and every one-block step ended in
+`resetPath('stuck')` (which does not emit `path_stop`, so the goto promise never settled and burned
+the 40s wall clock). `lib/index.js` routes every movement branch through a single `jumpNow` decision
+and adds a run-up retry: touching the step face with ~zero speed backs off 200–900ms first.
+
+Batch 19 decided `shouldJump` by probing 1.2/1.8 blocks along the bot→node direction with the 0.6
+probe still clear (takeoff must start ≥0.89 blocks from the face — jumping while touching it zeroes
+horizontal speed and the 0.02/tick air control cannot recover it). Batch 35 (G30, the mine-task
+return leg) went through two rewrites, each driven by 200ms-resolution real-server probes
+(`dev:mc:tower-probe`): the direction probe is blind to sub-grid drift (a ±0.5 block offset tilted
+the probe vector into a neighbouring column, the jump key never fired), and both successor designs —
+geometric face distance with a landing-simulation arbiter, with and without a momentum-gated <0.6
+dead band — pinned the climb one level up. On a 1-wide 1:1 staircase every jump LANDS at the far
+edge of the next step, ~0.3 from the following face, and ground friction eats the landing momentum
+within a tick or two, so any touching-state refusal turns the step assist into a ledge-dropper
+(backing off a one-block-deep step falls to the level below) and the climb shuttles until the
+NoCloser watchdog kills it. The simulation itself is structurally optimistic about the touching
+state: its reached-check is satisfied by the jump start, while Paper 1.21.11 silently bounces
+exact-touch positions (the prismarine-physics WALL_GAP patch), so a sim-approved touching jump still
+fails on the wire. The shipped decision is a pure node rule — press jump exactly when the next path
+node is a single-block step up with support — with the two states it gets wrong owned by mechanisms
+that already exist: a hop that bounces off the face ends in the step assist's run-up back-off, and a
+step that genuinely cannot be cleared ends in the stall/NoCloser watchdogs with attribution. Real
+server: the no-gap 1:1 corridor climb went from never-finishing to 13.7s end-to-end, and the mine
+task returned 4/4 consecutive greens (`returned`+`haul`+`ore_gone` on server verdicts). T0:
+`mc-pathfinder-jump-decision` (includes the legacy probe as a fixture contrast for the drift shape
+and the touching states). Residual: the tower-placement choreography after a damaged step never
+initiates (G30 (b), registered in known-gaps with probe evidence).
 
 **Search legality (G25, batch 26).** `lib/movements.js` `getMoveDiagonal` used to validate only the
 cheaper of the two orthogonal corner lines (`min(cost1, cost2)`), so a diagonal whose *other* corner

@@ -49,6 +49,7 @@
     "dev:mc:nav-perf": "tsx .uina/worlds/minecraft/dev/nav-perf-probe.ts",
     "dev:mc:explore-frontier": "tsx .uina/worlds/minecraft/dev/explore-frontier.ts",
     "dev:mc:creeper-probe": "tsx .uina/worlds/minecraft/dev/creeper-probe.ts",
+    "dev:mc:tower-probe": "tsx .uina/worlds/minecraft/dev/tower-probe.ts",
     "dev:mc:task": "tsx .uina/worlds/minecraft/dev/task.ts",
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",
     "build:web": "tsc -p tsconfig.web.json && node scripts/copy-web-static.mjs",

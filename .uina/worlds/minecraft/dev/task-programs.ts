@@ -66,7 +66,9 @@ async function main(mc, input) {
   let walkError = null;
   try {
     step('return_goto', input.start);
-    await mc.call('goto@1', { at: input.start, tolerance: 2, digThrough: true, maxTimeMs: input.returnMs });
+    // tolerance 1：GoalNear 半径 2 会把"井口内一格、低一格"判为到达（G30 缺陷 c 的
+    // 早停形态）——回起点必须站上出发平台，tolerance 1 + goto 的 nodeGap 复核兜底。
+    await mc.call('goto@1', { at: input.start, tolerance: 1, digThrough: true, maxTimeMs: input.returnMs });
   } catch (error) {
     gotoError = String((error && error.code) || '') + ' ' + String((error && error.message) || error);
     step('goto_failed', gotoError);

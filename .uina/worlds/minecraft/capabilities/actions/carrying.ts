@@ -650,7 +650,10 @@ export const carryingModule: MinecraftCapabilityModule = {
 							if (frontier.length === 0) {
 								fail(
 									"NOT_FOUND",
-									`no ${harvestable.map((source) => source.block).join("/")} left within ${radius} blocks`,
+									`no ${harvestable.map((source) => source.block).join("/")} left within ${radius} blocks` +
+										(lastSkip.current == null
+											? ""
+											: ` (last skipped cell: ${lastSkip.current.code}: ${lastSkip.current.message})`),
 									{
 										hint: "widen radius, or move to where the block occurs",
 										dispatch: mined > 0 ? "sent" : "not_sent",

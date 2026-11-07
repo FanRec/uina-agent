@@ -88,7 +88,11 @@ const descriptor: CallableDescriptor = {
 			"the corridor is connected and was walked through end to end; dug counts only server-confirmed breaks; stopped:'unbreakable' keeps the dug prefix",
 	},
 	errors: [
-		{ code: "UNREACHABLE", meaning: "corridor crosses fluid or unloaded chunks, or a leg could not advance" },
+		{
+			code: "UNREACHABLE",
+			meaning:
+				"corridor crosses fluid or unloaded chunks, a planned floor has no support (existing carve-out), or a leg could not advance",
+		},
 		{ code: "TARGET_NOT_MET", meaning: "a corridor cell was dispatched but the server did not confirm the break" },
 		{ code: "MISSING_TOOL", meaning: "harvest requirements known but no inventory tool matches a requested tool" },
 		{ code: "WRONG_STATE", meaning: "target in another dimension, or block harvest requirements unknown" },
@@ -268,6 +272,29 @@ export const tunnelModule: MinecraftCapabilityModule = {
 						);
 						if (targetIndex <= stoodIndex) break;
 						const legTo = columns[targetIndex]!.floor;
+						// 走拍前核验目标脚位可站立：planCorridor 的地板落在既有挖空上时（G30 缺陷 c
+						// 的形态——重入与既有阶梯错位一格，脚位/支撑格恰是既有走廊的空气），bot
+						// 永远站不上去，走位只能烧满预算再给出"卡住"这种无归因结局。先读支撑格，
+						// 空气即如实快速失败；未加载（null）不猜，交给既有走位归因。
+						const floorSupport = await readValue<{ block: { name: string } | null }>(
+							ctx.world,
+							"block@1",
+							{ at: { x: legTo.x, y: legTo.y - 1, z: legTo.z } },
+							ctx.signal,
+							"corridor floor support",
+						);
+						if (floorSupport?.block?.name === "air") {
+							fail(
+								"UNREACHABLE",
+								`corridor floor ${legTo.x},${legTo.y},${legTo.z} has no support (air below): the plan intersects an existing carve-out`,
+								{
+									hint: "re-enter the existing corridor from a station aligned with it (stepTo) or tunnel from its bottom node",
+									dispatch: "not_sent",
+									progress: { dug },
+									recoverable: true,
+								},
+							);
+						}
 						const trace: string[] = [];
 						try {
 							// digThrough:true（surface@1 同款，真服已验证）：让寻路消化客户端/服务端

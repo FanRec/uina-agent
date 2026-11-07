@@ -70,6 +70,22 @@ describe("tunnel@1", () => {
 		});
 	});
 
+	test("corridor floor over an existing carve-out fails UNREACHABLE with support attribution", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 64, z: 10 }, { x: 14, y: 65, z: 10 });
+		// G30 缺陷 c 形态：远端列的支撑格是既有走廊的空气——重入错位一格，脚位悬空。
+		state.blocks.set(key({ x: 14, y: 63, z: 10 }), { name: "air", properties: {} });
+		const h = makeHarness(state, {
+			onDig: (target) => state.blocks.set(key(target.block), { name: "air", properties: {} }),
+		});
+		await expect(invoke(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } })).rejects.toMatchObject({
+			code: "UNREACHABLE",
+			message: expect.stringContaining("no support (air below)"),
+		});
+	});
+
 	test("corridor crossing unloaded chunks fails UNREACHABLE, does not guess", async () => {
 		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
 		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });

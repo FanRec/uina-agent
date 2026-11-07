@@ -656,7 +656,7 @@ index a7e35053cde64e3cd32880af2aafa5f03e919ff8..52f835ca6d7f59419eff12d1b30d2148
    }
  }
 diff --git a/lib/physics.js b/lib/physics.js
-index ef9e3897b44fd023455f1f0b8adc315d628fa85f..e2590106e94f47cd41127b8472198c79ef4aa984 100644
+index ef9e3897b44fd023455f1f0b8adc315d628fa85f..ecea03420fb248582279d149e7bffdfeba16dd9c 100644
 --- a/lib/physics.js
 +++ b/lib/physics.js
 @@ -1,4 +1,5 @@
@@ -665,29 +665,10 @@ index ef9e3897b44fd023455f1f0b8adc315d628fa85f..e2590106e94f47cd41127b8472198c79
  
  class Physics {
    constructor (bot) {
-@@ -67,6 +68,50 @@ class Physics {
+@@ -67,6 +68,76 @@ class Physics {
      return false
    }
  
-+  /**
-+   * Whether the bot has to leave the ground on this tick to climb the step it is
-+   * walking towards.
-+   *
-+   * The executor used to read canStraightLine() as "walk, no jump needed" — but
-+   * that function also returns true when a *delayed* jump is what makes the node
-+   * reachable, so steps were never jumped and the path got reset as stuck. Simply
-+   * holding jump does not work either: a jump started while already touching the
-+   * step face loses all horizontal speed to the collision, and air control
-+   * (0.02/tick) is far too weak to win it back before landing, so the bot just
-+   * bounces in place.
-+   *
-+   * The decision therefore comes from the blocks ahead, never from the node: the
-+   * executor only advances to a step node once the bot is 0.35 from the node
-+   * below it, which is already too close to jump from. Probing 1.2 and 1.8 blocks
-+   * along the direction of travel fires about 1.5 blocks before the face, which
-+   * keeps the run-up intact — measured on Paper 1.21.11: takeoff closer than 0.89
-+   * from the face never clears the step.
-+   */
 +  /** Solid at feet level with air above it, `d` blocks along the travel direction. */
 +  stepAt (bot, nextPoint, d) {
 +    const p = bot.entity.position
@@ -704,13 +685,58 @@ index ef9e3897b44fd023455f1f0b8adc315d628fa85f..e2590106e94f47cd41127b8472198c79
 +    return !above || above.boundingBox === 'empty'
 +  }
 +
++  /**
++   * The block a single-block step-up move lands against: the floor block of the
++   * node column, one below the node. Null for everything else a walk does not
++   * jump — same-level and drop nodes, tower moves (the placement branch owns
++   * those jumps) and nodes whose support is missing (a floating node needs a
++   * placement, never a jump).
++   */
++  stepBlockOf (bot, nextPoint) {
++    const feetY = Math.floor(bot.entity.position.y + 0.1)
++    if (nextPoint.y - feetY !== 1) return null
++    const x = Math.floor(nextPoint.x)
++    const z = Math.floor(nextPoint.z)
++    const block = bot.blockAt(new Vec3(x, nextPoint.y - 1, z), false)
++    if (!block || block.boundingBox !== 'block') return null
++    return new Vec3(x, nextPoint.y - 1, z)
++  }
++  /**
++   * Whether the bot has to leave the ground on this tick to climb the step it is
++   * walking towards.
++   *
++   * The executor used to read canStraightLine() as "walk, no jump needed" — but
++   * that function also returns true when a *delayed* jump is what makes the node
++   * reachable, so steps were never jumped and the path got reset as stuck.
++   *
++   * G30 rewrite (three rounds, each driven by the real-server mine return).
++   * Batch 19 decided the jump by probing cells 0.6/1.2/1.8 blocks along the
++   * bot→node direction: a ±0.5 block sub-grid drift tilted that vector into a
++   * neighbouring column (wall or air), the jump key never fired and stair climbs
++   * became a coin flip. The first batch-35 rewrite located the face geometrically
++   * and delegated to the landing simulation (canWalkJump from the real position
++   * and velocity) with a <0.6 dead band for the touching state. The real server
++   * killed both parts of that design: on a 1-wide 1:1 staircase each jump LANDS
++   * at the far edge of the next step, ~0.3 from the following face, and ground
++   * friction eats the landing momentum within one or two ticks — so the dead band
++   * refused the chain jump and the step assist backed the bot off a ledge one
++   * block deep, dropping it to the level below: an endless shuttle. And the
++   * simulation itself is structurally optimistic about the touching state — its
++   * reached-check is satisfied by the jump start, while Paper 1.21.11 silently
++   * bounces exact-touch positions (the prismarine-physics WALL_GAP patch), so a
++   * sim-approved touching jump still fails on the wire.
++   *
++   * The decision is therefore a pure node rule: press jump exactly when the next
++   * path node is a single-block step up with support (stepBlockOf). Every hop is
++   * individually safe (no face contact until the last one), the chain re-jump on
++   * each landing climbs staircases without needing a run-up, and the two states
++   * the rule gets wrong are owned by the mechanisms that already exist: a hop
++   * that bounces off the face ends in the step assist's run-up back-off
++   * (touching + slow), and a step that genuinely cannot be cleared ends in the
++   * stall/NoCloser watchdogs with attribution. No distance bands, no simulation.
++   */
 +  shouldJump (bot, nextPoint) {
-+    // Already touching the face means the run-up is gone; the executor backs off
-+    // instead of jumping on the spot (see the step assist in index.js).
-+    return (
-+      (this.stepAt(bot, nextPoint, 1.2) || this.stepAt(bot, nextPoint, 1.8)) &&
-+      !this.stepAt(bot, nextPoint, 0.6)
-+    )
++    return this.stepBlockOf(bot, nextPoint) != null
 +  }
 +
    canStraightLineBetween (n1, n2) {
