@@ -81,6 +81,10 @@ export interface FactsHarness {
 	disconnect(): void;
 	bot(): FakeBot;
 	emitMessage(text: string): void;
+	/** 换代但不断线：更新身份并发出 incarnation_changed。 */
+	changeIncarnation(incarnation: string): void;
+	/** 换服：更新连接与化身身份（不自动发通知，由调用方显式 setState/reconnect）。 */
+	setIdentity(connection: string, incarnation: string): void;
 }
 
 export function makeFactsHarness(
@@ -96,6 +100,8 @@ export function makeFactsHarness(
 	const listeners = new Set<(notice: unknown) => void>();
 	let state: HostState = options.state ?? "ready";
 	let bot = options.bot ?? makeBot();
+	let connection = "conn:t:1";
+	let incarnation = "inc:t:1";
 	const notify = (notice: unknown): void => {
 		for (const fn of [...listeners]) fn(notice);
 	};
@@ -104,7 +110,7 @@ export function makeFactsHarness(
 			return state;
 		},
 		get identity() {
-			return state === "ready" ? { connection: "conn:t:1", incarnation: "inc:t:1" } : null;
+			return state === "ready" ? { connection, incarnation } : null;
 		},
 		get bot() {
 			return state === "ready" ? bot : null;
@@ -144,6 +150,14 @@ export function makeFactsHarness(
 		bot: () => bot,
 		emitMessage: (text) => {
 			bot.emit("messagestr", text, null, { text }, "someone");
+		},
+		changeIncarnation: (next) => {
+			incarnation = next;
+			notify({ kind: "incarnation_changed", identity: { connection, incarnation } });
+		},
+		setIdentity: (nextConnection, nextIncarnation) => {
+			connection = nextConnection;
+			incarnation = nextIncarnation;
 		},
 	};
 }
