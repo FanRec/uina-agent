@@ -6,7 +6,6 @@
  * - 重连后装配生效：status.active.addons / describe(kind:"addon") / 包内能力可调用；
  * - 纵向闭环：example.press@1 在 BodyScope 内发自定义通道 → 服务端计数 → 事实回读 → 动作结算；
  * - 包内静态知识：example.recipes@1 与 item@1 的 example:uina_token（sourcesComplete=false）；
- * - 诚实失败：无 SpectatorPlus 时 /spectate 发送后 gameMode 未变 → EFFECT_UNCONFIRMED；
  * - 冻结语义：连接期间改 addons.json 不热替换，重连才生效。
  *
  * 用法：先启动 dev-env 服务器（含 uina-example-plugin），再 `pnpm dev:mc:addons`。
