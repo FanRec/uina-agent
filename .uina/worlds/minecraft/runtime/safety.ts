@@ -43,10 +43,12 @@ export class RuntimeSafety {
 	isLive(intervention: Ref) {
 		return this.active?.record.intervention === intervention && !this.active.abort.signal.aborted;
 	}
+	/** 第一次取消决定终止理由与起因；`abort()` 对已中止的信号本来就是空操作，起因也得跟着只认第一次。 */
 	cancel(reason = "cancelled", cause: SafetyCause | null = null) {
-		if (!this.active) return;
-		this.active.cause = cause;
-		this.active.abort.abort(reason);
+		const active = this.active;
+		if (!active || active.abort.signal.aborted) return;
+		active.cause = cause;
+		active.abort.abort(reason);
 	}
 	async close() {
 		this.cancel();
