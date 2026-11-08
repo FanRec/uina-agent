@@ -4,6 +4,25 @@ import type { QueuedInput } from "../session/types.js";
 
 export type QueuedMessage = QueuedInput;
 
+/** 一回合最多带多少条排队输入一起决策。 */
+export const MAX_TURN_ITEMS = 8;
+/** 一回合最多带多少字符正文；单条超长时仍会领走它，否则它永远出不去。 */
+export const MAX_TURN_CHARS = 6000;
+
+export interface TurnBatchPolicy {
+	/** 一回合最多带多少条。 */
+	maxItems: number;
+	/** 一回合最多带多少字符正文。 */
+	maxChars: number;
+}
+
+const DEFAULT_BATCH: TurnBatchPolicy = { maxItems: MAX_TURN_ITEMS, maxChars: MAX_TURN_CHARS };
+
+/** Runtime 来源的 followUp：合批消费防事件风暴独占唯一 active run；合批依据是来源种类，不属于任何具体频道。 */
+export function isRuntimeFollowUp(item: QueuedMessage): boolean {
+	return item.mode === "followUp" && item.source?.kind === "runtime";
+}
+
 export class InputQueues {
 	private order = 0;
 	private readonly steer: QueuedMessage[] = [];
@@ -56,6 +75,34 @@ export class InputQueues {
 		}
 		this.steer.sort((a, b) => a.order - b.order);
 		this.followUp.sort((a, b) => a.order - b.order);
+	}
+
+	/**
+	 * 算出这一回合要消费的条目，只算不改（所有权转移仍归 startRun 的移除点）。
+	 *
+	 * 三条边界：steer 先走且单独成批（它是立刻改变方向的一句话）；非运行时来源不合批
+	 * （用户的真实发言不能被别的消息挤进同一句）；运行时来源只在同一世界内合并。
+	 *
+	 * 预算是硬边界：超了只领前缀，剩下的留在队列里等下一回合——回合成功后会自动续跑，
+	 * 所以积压再深也不会把一次请求撑爆。预算只在已经领到东西之后才起作用：单条就超长时
+	 * 也必须先领走，否则它永远出不去。
+	 */
+	batchForTurn(policy: TurnBatchPolicy = DEFAULT_BATCH): QueuedMessage[] | undefined {
+		const first = this.steer[0] ?? this.followUp[0];
+		if (!first) return undefined;
+		if (!isRuntimeFollowUp(first)) return [first];
+		const world = first.source?.ref;
+		const batch: QueuedMessage[] = [];
+		let chars = 0;
+		for (const candidate of this.followUp) {
+			if (!isRuntimeFollowUp(candidate)) break;
+			if (world !== undefined && candidate.source?.ref !== world) break;
+			const full = batch.length >= policy.maxItems || chars + candidate.text.length > policy.maxChars;
+			if (batch.length > 0 && full) break;
+			batch.push(candidate);
+			chars += candidate.text.length;
+		}
+		return batch;
 	}
 
 	all(): QueuedMessage[] {

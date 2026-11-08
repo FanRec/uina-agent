@@ -44,7 +44,7 @@ import {
 	requestToolDefs,
 	resolveProjectionPolicy,
 } from "./projection.js";
-import { InputQueues, type QueuedMessage } from "./queue.js";
+import { InputQueues, isRuntimeFollowUp, type QueuedMessage } from "./queue.js";
 import { commitRewindTransition } from "./rewind.js";
 import { type StreamCollectorResult, TurnStreamCollector } from "./stream-collector.js";
 
@@ -90,11 +90,6 @@ function yieldToLoop(): Promise<void> {
 		};
 		port2.postMessage(0);
 	});
-}
-
-/** Runtime 来源的 followUp：合批消费防事件风暴独占唯一 active run；合批依据是来源种类，不属于任何具体频道。 */
-function isRuntimeFollowUp(item: QueuedMessage): boolean {
-	return item.mode === "followUp" && item.source?.kind === "runtime";
 }
 
 export interface AgentInput {
@@ -1216,24 +1211,11 @@ export class Subject {
 
 	private async drainQueuesIntoRun(): Promise<void> {
 		if (this.activity) return;
-		const item = this.queues.peek("steer") ?? this.queues.peek("followUp");
-		if (!item) return;
+		const batch = this.queues.batchForTurn();
+		if (!batch) return;
 		this.resumingQueue = false;
-		let queuedInputs = [item];
-		if (isRuntimeFollowUp(item)) {
-			// 同一世界连续产生的事实集中成一个决策回合：事件（external）与执行完成（internal）
-			// 属于同一段经历，分开读会让模型先按半个因果做决定、下一条又推翻。跨世界、
-			// 用户发言与 steer 都是硬边界——真实先后顺序不能为合并让步。
-			// 没有 ref 的运行时来源没有世界身份，退回"同种类即可合批"的旧语义。
-			const world = item.source?.ref;
-			queuedInputs = [];
-			for (const candidate of this.queues.all().filter((candidate) => candidate.order >= item.order)) {
-				if (!isRuntimeFollowUp(candidate)) break;
-				if (world !== undefined && candidate.source?.ref !== world) break;
-				queuedInputs.push(candidate);
-			}
-		}
-		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item, { queuedInputs });
+		const item = batch[0]!;
+		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item, { queuedInputs: batch });
 	}
 
 	/** Applies runtime-provided model/thinking facts at a run-safety point.
