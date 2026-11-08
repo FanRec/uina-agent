@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectModelHistory } from "../src/agent/projection.js";
+import { MAX_TURN_ITEMS } from "../src/agent/queue.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
@@ -441,6 +442,37 @@ describe("Subject", () => {
 		expect(contains(0, "有人发来一条消息")).toBe(false);
 		expect(contains(1, "有人发来一条消息")).toBe(true);
 		expect(contains(1, "建塔失败")).toBe(false);
+	});
+
+	// 积压再深也不能把一次请求撑爆。此前合批没有任何容量概念：100 条事件一次性提交历史、
+	// 再一次性塞进请求，超预算就整回合失败——而队列已经空了，没有东西会再叫醒它。
+	test("积压 100 条同世界 follow-up 时分批消费，一条不剩", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		const batches: number[] = [];
+		harness.subscribe((event) => {
+			if (event.type === "turn_start") batches.push(event.inputRefs?.length ?? 0);
+		});
+		harness.subject.seedQueue(
+			Array.from({ length: 100 }, (_, index) => ({
+				id: `mc-backlog-${index}`,
+				order: index + 1,
+				mode: "followUp" as const,
+				text: `第 ${index} 条：玩家在附近放下一个箱子`,
+				source: { kind: "runtime" as const, type: "minecraft_event", ref: "minecraft", origin: "external" as const },
+			})),
+		);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		// 每一批都有界；剩下的靠回合成功后的自动续跑领完，不需要任何新的调度机制。
+		expect(batches.length).toBeGreaterThan(1);
+		for (const count of batches) expect(count).toBeLessThanOrEqual(MAX_TURN_ITEMS);
+		expect(batches.reduce((sum, count) => sum + count, 0)).toBe(100);
+		expect(scenario.calls.length).toBe(batches.length);
 	});
 
 	test("同一世界的 steer 插队先处理，但不吞掉排队中的 follow-up", async () => {
