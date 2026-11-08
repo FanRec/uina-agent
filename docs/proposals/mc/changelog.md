@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-08 · 批41 审查收尾：缺失必须说出来
+
+- **状态帧缺一段也要说**：`state.snapshot` 原来在 `runtime.list {activeOnly:true}` 失败时静默省掉活跃任务段。world.md §9.5 已经写明"让位置空着会被读成世界没变，那比没有状态更危险"，这里模型会把"没读到"当成"没有活跃任务"。现在查询失败与查到 0 条分开：前者正文写明"本次未能读取，不代表没有活跃任务；需要确认请 runs.list"，世界 Facts 照给，不编假列表、不用旧缓存。
+- **宿主没有批量入口时让对账显式失败**：`DeliveryPump.deliver()` 原来只往 `this.error` 写一句就返回，而 `reconcile()` 的成功分支紧接着把 `error` 清成 null——诊断永远看不到这批事件根本没交出去。改成由 `drain()` 抛错，走既有的退避与诊断路径。不退回逐条投递：那会让第一条独占模型回合，与集中交付的初衷相反。`dev/session-live.ts` 的 stub 只给 `emitEvent`，这条分支真实可达。
+- **批量回执缺条不留在途**：`emitEvents` 少回一条时原来 `continue` 跳过，`inputs` 里留一个永远退不了的假在途记录，也不报错。现在与明确拒收同样处理：删在途、记 `DELIVERY_UNCONFIRMED`、下一轮换新 attempt 重投。
+- **清理**：`InputRejected.retryable` 五个构造点全传 `false`，删掉死参数，`isRetryableRejection` 收敛成一个 instanceof 判断；`DeliveryPump.prepare` 的 `"tool"` 通道参数删掉（写入侧只剩 input，读取侧保留联合类型以退役旧账本）；`delivery.ts` 文件头的"双通道"注释、`runner.ts` 与 `types.ts` 里"缺省时只能退回单条"的承诺改成与实现一致。
+- 验收：三条新增用例在修复前分别红在诊断被清成 null、假在途 `b` 未删、`null` 参数没有不可用分支；修复后 `mc-run-digest` 7 项与 `mc-delivery-pump` 15 项全绿。定向 9 文件 103 项全绿；全量默认池 330 文件 3370 项里本批相关 8 文件全绿，30 项失败中 28 项是批41 已登记的既有基线红（UI/ANSI 系列、`tts-bridge-protocol` 缺 Python httpx、`refactor-regression` 的 computeWordDiff），另有 3 个真实 OS/超时类 MC 文件在全量并行下波动（`RPC_TIMEOUT` 取代 `CONNECT_FAILED`），单进程复跑 22 项全绿；`tests/mc --pool=vmThreads` 111 文件 920 项：`mcp-extension-loading` 2 项是既有基线红，其余 918 项通过；`pnpm typecheck`（biome 825 文件 / boundaries 10 规则 / 双 tsc）通过；`pnpm build` 需用 node 24.13.1（PATH 上的 node 22 缺 node-gyp 头文件），已通过。
+- 明确没做：真实 Minecraft 服与真实模型的对照窗口仍未跑，不能把自动化绿灯当真服验收。
+
 ## 2026-11-08 · 批41 顶层只回答受理，完成通知集中入队
 
 - **工具层不再等结果**：`run`/`chat`/`runs.continue` 删掉默认 3 秒等待窗与公开 `wait`，只回 `accepted`/`not_accepted`/`unknown`。旧实现里同一个结果有两条通道——窗口内完成就把终态当工具结果返回，超时就先回 `accepted`、终态再从完成通知来一次；模型分不清拿到的是受理还是终态。删除后任务快慢只决定通知什么时候到，Program 内的 `await mc.call()` 不变。`runs.wait` 保留，但不再是模型的默认工作流。
