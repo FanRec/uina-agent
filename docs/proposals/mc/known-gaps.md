@@ -155,7 +155,7 @@
 | G14 | 30 分钟真实模型自主游玩 | 9B 暴露**重复死亡 + OwnerLost 门关闭后不恢复**；批10 补了自保与恢复但**未重跑同一窗口**，"自主生存"仍为空。批22 已把窗口就绪：`dev/i2.ts` 增请求预算（`--max-requests` 默认 500，达限即 interrupt）、观察扩展（self 健康与氧气、death 事件游标计数、runs 门状态与 safety 介入）、扰动演练（`--chaos`：窗口 60% 处 SIGKILL 伴生 → owner_lost → 模型须 `runs recover` 自开门，批9B 断链的直接复验开关）；真模型窗口待执行。批41 的顶层纯异步受理与完成通知集中交付同样待该窗口复验——本轮只有自动化回归，真服与真实模型对照未跑 |
 | ~~G15~~ | **复杂避障**（✅ 已于 2026-11-04 批22 关闭，残余见 G25） | 关闭方式：批9B 的静默挂死根治——`driver/goto.ts` 看门狗三形态收束（上膛后 3s 位移停滞 / 上膛后 goal 被上游清空 2.5s 宽限仍不结算 / 非挖掘 10s 零位移总兜底，均 Stalled → UNREACHABLE，墙钟不再烧尽）；新增自然地形验收场景 `dev:mc:terrain-nav`（自寻真树、水候选拒绝、批9B 复刻 lane 柱、树绕行/digThrough、24 格穿越、explore） | 真服源码/产物各 6/6：树绕行 4.5–7s 到达、digThrough 对照到达、穿越 19.7s 到达或 9.9s 诚实失败、explore 25–40 格、批9B 复刻到达（平原 7.1s）或 12s 诚实失败（山地）；climb 回归 6/6（密封竖井 100ms 快速失败不受影响）；执行器残余登记 G25 |
 | G16 | 断电、长期负载、历史库增长成本 | **断电子项批22 已闭**：`tests/mc/mc-executor-kill-write.test.ts`——伴生在 runtime.db 写活动窗口被 SIGKILL → autoRecover 托管重建回 ready → 取证（独立进程）证 meta 身份不变、恢复只增不删、无半行损坏、owner_lost 如实关闭、探针 DISCONNECTED 诚实结算（3 次稳定）；`dev:mc:history --stats` 体量观测手段就绪。长期负载与历史库增长两项随 G14 窗口（i2.ts 预算/观察/扰动已就绪，真模型窗口待执行） |
-| G17 | 51 项终态报告 | 不存在；需按 `capabilities/index.ts` 的 `builtinCatalog`（批24 审查轮起唯一目录入口，`buildCapabilities` 别名已删）实际模块与 `capabilities.md` 的 16+35 逐项对照出状态表 |
+| G17 | 51 项终态报告 | 不存在；需按 `capabilities/index.ts` 的 `createCapabilityCatalog()`（批43 起唯一装配入口，`builtinCatalog`/`buildCapabilities` 已删）实际模块与 `capabilities.md` 的 16+35 逐项对照出状态表 |
 
 ## 7. P2 文档漂移（✅ 已于 2026-11-03 批21 全部修复）
 
@@ -216,6 +216,25 @@
 - **excavate 计划集合守恒**：`remainingCount` 包含从未轮到的格，`reasons` 汇总，`remaining` 为 64 条有界样本；读取方块抛错时该格仍算未访问。证据：`mc-spatial-actions.test.ts` C11（64−5=59）。
 - **collect 候选安全**：`tried` 记录 `permanent/transient/unknown`；已派发/有 effect 的 mine TIMEOUT 不换候选；候选耗尽但"挖除数>入包数"时先有界清扫地面掉落（SHELTER 由 `NOT_FOUND` 转 PASS）。证据：`mc-capability-carrying.test.ts` C10 与真服 SHELTER。
 - **MINE 任务级终验**：返程与背包以最新 `self@1`/`inventory@1` 核验，任一不满足 `mc.decide`；宿主把 `awaiting_decision` 记 `NEEDS_DECISION`，不再打印 returned 后正常结束。证据：`dev:mc:task --task mine` 服务端 Oracle 四项全绿。
+
+## Addon（2026-11-08）：已知缺口
+
+合同见 [addons.md](addons.md)；以下是明确登记、当前不修的边界：
+
+- **无热重载**：Profile 的 `addons.json` 在 connect 时冻结；安装/启停/卸载都不影响活动连接，
+  必须 disconnect→connect 才生效。这是设计选择（避免执行中途替换能力目录），不是遗漏。
+- **`prepare` 的预构造 client 分支无真服示例**：类型、冲突失败路径与透传已实现；只验证了
+  `version` 覆盖的拒绝路径，没有用自定义 `minecraft-protocol` client 跑过真服。
+- **`serverRequirement` 只是声明**：不做服务端探测；`Compatible` 必须由具体能力在调用时证明
+  （例如 `example.press@1` 以服务端计数前进为准）。目录里的 `note` 已明确这一点。
+- **SpectatorPlus 只覆盖服务端语义**：真实 SpectatorPlus 插件未安装，只验证了 `/spectate` + `gameMode`
+  回读路径与无插件时的 `EFFECT_UNCONFIRMED`；HUD/GUI/附身界面属于真实 Java 客户端 Mod，Bot 侧不伪造。
+- **协议窄口 1.21.11**：`custom_payload` 编解码与 `minecraft:register` 注册按该版本实现；
+  其它版本会 `UNSUPPORTED_PROTOCOL`，没有多版本适配。
+- **Addon 事实不持久化**：连接绑定，断线清空、重连不继承；跨会话的模组状态必须由服务端重新发布。
+- **`minecraft:register` 是 1.13+ 传统机制**：真服（Paper 1.21.11）实测必需——不注册则服务端
+  收到上行 payload 但不回包；若未来服务端移除该机制，需要按版本替换注册方式。
+- **未做**：包签名/来源校验、依赖自动安装（依赖交给 npm/pnpm）、运行时资源配额（CPU/内存隔离）。
 
 ## 附：不要照抄的部分
 

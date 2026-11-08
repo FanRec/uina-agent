@@ -10,15 +10,16 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|---|
 | Driver（受控玩家）、World（观察与记录） | 连接级 1.21.11 协议窄口、玩家/容器/工作站共享确认、独立库存/采矿/牌面、统一查询校验、窗口会话（批2/3/修复轮）、feedback 与默认自保（批10）、领域记录与 places/route（批11）、Watch 类别化失效与断线证据链（批23）；地图/图片出口（批17） | 2026-11-04 |
 | Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁（含 priority 档，批21）、效果与恢复；Owner/心跳/三门（批4）、固定记录与交付处置（批6）、决策/续段/替换/抢占（批9B）、feedback（批10）；schema v6 | 2026-11-03 |
-| 能力面（16 查询 + 35 动作） | **51/51 全部落地**（批19 transit 收口）；批20 G6 节流 digest / G7 inventory@1 {since} / G8 run {wait}；批21 G9 priority / G10 FRAME_EXPIRED hint / G24 tunnel 上行加高；批22 G15 关闭（残余 G25）；批24 静态 Catalog（`builtinCatalog.bind`，describe 离线可发现）；**批37 G6 关闭方式换成请求前状态帧**（`state.snapshot` + `WorldDef.requestContext`，digest 链路已删） | 2026-11-08 |
+| 能力面（16 查询 + 35 动作） | **51/51 全部落地**（批19 transit 收口）；批20 G6 节流 digest / G7 inventory@1 {since} / G8 run {wait}；批21 G9 priority / G10 FRAME_EXPIRED hint / G24 tunnel 上行加高；批22 G15 关闭（残余 G25）；批24 静态 Catalog（批43 起 `createCapabilityCatalog()`/`builtinDescriptors`，describe 离线可发现）；**批37 G6 关闭方式换成请求前状态帧**（`state.snapshot` + `WorldDef.requestContext`，digest 链路已删） | 2026-11-08 |
 | 会话与多世界（session / Profile） | **批25**：`session` 动作（status/list/connect/disconnect）、World 启用默认不入服、Profile 身份文件与 `sessions/<profileId>/` 数据根、Executor 双根 + 目录 Job 跨 Profile 唯一、close 三事实、connection.wait 入服回执、离线 describe/library；设计合同见 [multi-world-v3.md](multi-world-v3.md)；批26 剩 RuntimeArchiveReader/profile 查询/离线 saveFromRun/交付 envelope/M4 | 2026-11-05 |
+| Addon（非原版兼容） | **已落地**：Manifest/Profile 选择/Companion 装配/统一 Catalog/连接级协议（prepare+attach+`minecraft:register`）/addon facts/包内知识/`directory.snapshot`；示例 `example-mod` 真服纵向闭环 + SpectatorPlus 诚实失败；合同见 [addons.md](addons.md) | 2026-11-08 |
 | Library（程序、蓝图与经验） | 批 8 三类文件 CRUD、来源保存与统一发现；批25 收敛宿主常驻唯一写入口（Companion 只读、离线 validator、无会话可读写）；蓝图解释/施工留 Construction | 2026-11-05 |
 | Executor（Uina 接入、IPC、进程与通知） | 批 4 Windows x64 双 Job、受管 bootstrap/Companion、私有 IPC、身份/launch 账本；批 6 正式 WorldDef、请求凭证、可靠通知与 BodyEndpoint；批25 双根 + close 三事实 + connection.wait + blocked 重试语义 | 2026-11-05 |
 | Host 持久交付接缝 | 批 5：journal v4、工具/输入元数据与提交索引、inspect/retire、Extension/World 来源绑定 | 2026-10-25 |
 | Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行、正式入口、快照与取消；9A 可等待查询与 waitUntil；9B 决策/checkpoint；批10 feedback/loop；批21 priority 透传 | 2026-11-03 |
 | refactor-v2（批次 A 导航 / 批次 B 战斗+施工+探索） | **批26–33 已实施并真服验证**（01-DESIGN 的"待实施"口径已过时）：G25 贴角对角线+Paper 贴面回弹双根因修复（三补丁入库）、G26/G27 关闭（upstream-nav 7/7）、A* 启发式加权 w=3（批28）、fight@1 近身拍 context steering + feedback 流 + fuse 感知（批29/33）、build@1 站位分区批量（批30）、explore@1 前沿覆盖重写（批32）；剩余 = 批次 C（M7 生存/M8 生产/M9 体验/M10 收敛）未开工 | 2026-11-07 |
 | 任务级基线（批34） | `dev:mc:task` 三任务竞技场（SHELTER/MINE/NIGHT，完整 Program，终态服务端判决，失败强制归因，记录落 task-runs/）；暴露 mine 回程 11 轮全挂 → 探针钉死执行器缺陷集群登记 **G30**（批35/36 关闭 (a)(c)(b)）；goto 圈禁看门狗 NoCloser；场地自毁修复（矿石格=阶梯末级踏步块） | 2026-11-07 |
-| 真实 Minecraft 游玩验收 | 真服场景 36 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查各有独立验收）+ 任务级基线 `dev:mc:task`；确定性回归 tests/mc 109 文件 **901/903**（vmThreads，重负载限 4 worker；`mcp-extension-loading` 2 项为既有基线红）；真模型 30 分钟窗口 G14 待跑 | 2026-11-08 |
+| 真实 Minecraft 游玩验收 | 真服场景 37 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查/Addon 各有独立验收）+ 任务级基线 `dev:mc:task`；确定性回归 tests/mc 109 文件 **901/903**（vmThreads，重负载限 4 worker；`mcp-extension-loading` 2 项为既有基线红）；真模型 30 分钟窗口 G14 待跑 | 2026-11-08 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件，SessionController 拥有会话生命周期。
 
@@ -33,6 +34,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
 | [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、51 项能力覆盖；**§10 当前施工总纲（批次、就绪队列与分责任验收）** | 实施负责人，按依赖推进 |
 | [multi-world-v3.md](multi-world-v3.md) | 多世界自治设计合同（M1/M2/M3.1 已落地，M3.2/M3.3/M4 为批26 施工范围） | 批26 实施者 |
+| [addons.md](addons.md) | Addon 合同：Manifest、Profile 选择、连接级协议与通道注册、事实/知识边界、CLI 与真服夹具 | 扩展实现者/运维 |
 | [refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md) | 下一轮重构/打磨执行包（2026-11-06，基线 a0c9a596）：M0–M10 工作包、三条接缝、验收场景与 Agent 指令；**待核实的设计候选与执行指令，不是现行合同**——已确认的决策与进度回填 development-plan/known-gaps/modules 后，整包转 archive | 下一轮实施负责人 |
 | [development-guide.md](development-guide.md) | 统一接缝、复用/重构、真实环境优先及适量验证 | 所有开发者，开工前阅读 |
 | [contracts.md](contracts.md) | 所有权、依赖与跨模块协作导航；算法链接所属模块 | 实现者（跨模块时） |

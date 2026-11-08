@@ -1,5 +1,18 @@
 # 设计变更记录
 
+## 2026-11-08 · 批43 Addon：非原版环境的独立可安装能力
+
+- **装配唯一入口**：删除 `builtinCatalog` 固定目录与 `openExecutionSide({callables})` 旁路；Runtime、World、describe 与 Addon 贡献现在消费同一次 `CapabilityCatalog.create/bind`。测试/开发注入改走 `callableModule`（仍进同一次 Catalog），不再有第二套注册表。
+- **包与 Profile 分离**：`addons/<id>/package.json` 的 `uinaMinecraft` 只读解析（不执行代码）；`sessions/<profileId>/addons.json` 的 `enabled` 是显式列表，connect 时冻结并产出 digest。未启用的包不 import、不出现在目录、动作 `NOT_FOUND`。
+- **连接级协议**：`prepare`（建客户端前）与 `attach`（建客户端后）两个时机；`ConnectionPort` 只给只读订阅与 `publishFact`，写入口只在 `CallContext.protocol`（BodyScope 内）。事实绑定 connection/incarnation，断线清空、旧连接迟到发布丢弃。
+- **真服钉出的协议事实**：Paper 1.21.11 **只向已声明通道投递** clientbound `custom_payload`。此前客户端只发不收，服务端收到 press 却不回包，动作如实 `EFFECT_UNCONFIRMED`。修复：`onCustomPayload` 与 `protocol.send` 都先走 `registerChannels`（`minecraft:register`，NUL 分隔，每连接每通道一次），attach 早于 login 时排队到 login 补发。这条不注册就收不到，不是可选项。
+- **ref 命名空间**：按规格只要求 `<namespace>.<name>@<version>`，不把前缀绑死成 addon id（`example.machine@1` 合法）；跨包/与内置重名由 Catalog 唯一性校验显式拒绝。包状态新增 `contributed.refs`，目录不再靠 id 前缀猜能力归属（否则 `example-mod` + `example.*` 会漏列）。
+- **目录与 IPC**：新增固定方法 `directory.snapshot`（launch/connection/descriptors/addons/selection 纯 JSON）；`session.status.active.addons = {digest, ids}`；活动会话拿不到快照即 `EXECUTOR_UNAVAILABLE`，不回退旧目录。
+- **示例与夹具**：`examples/addons/example-mod`（自定义通道 → 服务端计数 → addon fact → current 查询 → BodyScope 动作回读确认；`example:uina_token` 由 Paper 插件真实发放）；`examples/addons/spectatorplus`（只用 `chat@1` + `world@1`，无插件时诚实失败）。`dev-env/uina-plugin` 用服务器 libraries 编译，不引 Gradle/Maven。
+- **运维**：`addons/manage.ts` + `pnpm mc:addon`（list/inspect/install/enable/disable/remove/status）；安装拒绝覆盖同 id，卸载拒绝仍被 Profile 启用的包。
+- 验收：新增 `mc-addons.test.ts`（37）与 `mc-addon-protocol.test.ts`（14）全绿；`mc-protocol.test.ts` 增通道注册与注册失败重试用例；真服 `pnpm dev:mc:addons` 9/9（安装≠启用、冻结、重连生效、初始事实未知、纵向写入、重复写入、SpectatorPlus 诚实失败、连接期 disable 不卸载）；`npx tsc --noEmit` 全绿；tests/mc 109 文件 861 passed / 13 skipped（唯一失败为既有 `node_api.h` 环境项；注意 `vitest run tests/mc` 的路径过滤会连带匹配 `tests/mcp-*`，统计口径以排除后的结果为准）。
+- 明确没做：Addon 热重载、`prepare` 预构造 client 的真服示例、`serverRequirement` 服务端探测、SpectatorPlus HUD/GUI、多协议版本；见 [known-gaps.md](known-gaps.md) 的 Addon 段。
+
 ## 2026-11-08 · 批42 教学接缝与执行闭环
 
 - **教学分三层**：`WorldDef.environmentGuide` 是可选只读 getter，`WorldActivation` 在 `turn.prepare` 把活动世界的短正文追加到 systemPrompt（多世界依次追加、停用由 scope 摘除、不写 Session、不注入为用户消息）。Minecraft 的 ENV 在 `onStart` 预载，无活动会话返回 null；`nativeGuide` 从 1.75KB 混杂 API 长文压成入口；六份官方只读 Guide 通过既有 `describe {kind:'guide'}` 按需读正文，不进 Library、永不 callable；`copy-assets` 打包 ENV/Guide/参考 Program，Guide 内每段 JS 与 `safe_mining.js` 由真实 validator 编译校验。
