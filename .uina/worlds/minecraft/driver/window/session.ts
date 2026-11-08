@@ -724,10 +724,15 @@ export class WindowSessionImpl implements WindowSession {
 			this.deps.canCleanup()
 		) {
 			const effect = this.deps.mintEff();
+			// 判定必须在派发**之前**取快照：关闭包本身会让服务端把光标物品塞回背包并发
+			// cursor/slot 更新，派发后再读就把"关闭导致的正常变化"当成了"关不干净"。
+			// 真服实证（task shelter）：一次成功的 craft 因这条 cleanup 记成 unknown，
+			// 整个 Run 被结算成 unknown，尽管房子已经建成、服务端判决全绿。
+			const before = this.view();
+			const cursor = before?.cursor ?? null;
+			const cursorKnown = before !== null && !this.uncertain && !this.busy;
 			try {
 				this.wire.close(native);
-				const cursor = this.view()?.cursor ?? null;
-				const cursorKnown = this.view() !== null && !this.uncertain && !this.busy;
 				this.deps.recorder.record(
 					effect,
 					this.deps.operation,

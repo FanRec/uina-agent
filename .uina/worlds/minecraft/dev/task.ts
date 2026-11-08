@@ -81,6 +81,11 @@ interface ProgramRun {
 	run: string;
 	/** 失败时的调用记录摘录：带 code/message/hint/progress 与 guest console 尾，用于归因。 */
 	raw?: string;
+	/**
+	 * 程序正常返回、但 Run 因未确认的副作用被结算成 unknown 时列出这些 effect。
+	 * 任务判决看的是世界目标（服务端断言），不因机械副作用翻面；但必须如实留痕。
+	 */
+	unknownEffects?: string[];
 }
 
 interface TaskDef {
@@ -136,6 +141,8 @@ function runProgram(
 		if (reply.snapshot.outcome !== "succeeded") {
 			let detail = reply.snapshot.error?.message ?? "";
 			let raw: string | undefined;
+			let returnedValue: JsonValue | undefined;
+			let returnedUnknownEffects: string[] = [];
 			try {
 				const failed = await h.runtime.readRecord(reply.snapshot.record);
 				if (failed.kind === "inline") {
@@ -143,14 +150,31 @@ function runProgram(
 						error?: { code?: string; message?: string; hint?: string; progress?: unknown };
 						progress?: unknown;
 						consoleTail?: string;
+						value?: JsonValue;
 					};
 					raw = JSON.stringify(value).slice(0, 4000);
 					if (value.error != null) {
 						detail = [value.error.code, value.error.message, value.error.hint].filter(Boolean).join(" | ");
 					}
+					returnedValue = value.value;
 				}
 			} catch {
 				/* 记录读不出：保持错误面 */
+			}
+			// unknown 且**带返回值**：程序自己跑完了，只是某个副作用（窗口关闭的光标、
+			// 挖掘确认窗边界）没拿到证据。任务判决看世界目标（服务端断言），不因此翻面；
+			// 未确认的 effect 如实列出，别让"机械副作用未知"冒充"任务失败"。
+			if (reply.snapshot.outcome === "unknown" && returnedValue !== undefined) {
+				returnedUnknownEffects = [...reply.snapshot.unknownEffects];
+				return {
+					ok: true,
+					code: "unknown_effects",
+					message: `${returnedUnknownEffects.length} effect(s) unconfirmed; world goals are judged by the server assertions`,
+					value: returnedValue,
+					run,
+					raw,
+					unknownEffects: returnedUnknownEffects,
+				};
 			}
 			return {
 				ok: false,
@@ -533,6 +557,7 @@ async function runTask(def: TaskDef, batch: string, round: number, git: { rev: s
 			run: program.run,
 			value: program.value ?? null,
 			raw: program.raw ?? null,
+			unknownEffects: program.unknownEffects ?? [],
 		},
 		assertions,
 		failure: failed == null ? null : { name: failed.name, detail: failed.detail },
@@ -562,6 +587,9 @@ async function runTask(def: TaskDef, batch: string, round: number, git: { rev: s
 	const tag = record.pass ? "PASS" : "FAIL";
 	s.log(`${tag} ${def.id} r${round} in ${elapsedMs}ms${failed == null ? "" : ` — ${failed.name}: ${failed.detail}`}`);
 	for (const entry of assertions) s.log(`  ${entry.ok ? "ok  " : "FAIL"} ${entry.name}: ${entry.detail}`);
+	// 未确认副作用不改变任务判决，但必须在人看得到的地方留痕。
+	if (program.unknownEffects != null && program.unknownEffects.length > 0)
+		s.log(`  note unconfirmed effects (not a task failure): ${program.unknownEffects.join(", ")}`);
 	await closeHarness(h).catch((error: unknown) => s.log(`close failed: ${String(error)}`));
 	return record.pass;
 }
