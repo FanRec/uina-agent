@@ -223,8 +223,15 @@
 
 - **无热重载**：Profile 的 `addons.json` 在 connect 时冻结；安装/启停/卸载都不影响活动连接，
   必须 disconnect→connect 才生效。这是设计选择（避免执行中途替换能力目录），不是遗漏。
-- **`prepare` 的预构造 client 分支无真服示例**：类型、冲突失败路径与透传已实现；只验证了
-  `version` 覆盖的拒绝路径，没有用自定义 `minecraft-protocol` client 跑过真服。
+- **真实模组服纵向验证未做**：仓库里只有 Paper 1.21.11（不能装模组），没有 Fabric / Forge /
+  NeoForge 服务端或 mod artifact，因此 `install` 的 Configuration 协商、注册表同步与真实
+  Mod 方块/物品操作都没有真服证据。`dev/probe-first-packet.mjs` 只证明"全部协议贡献挂载后
+  才放行连接"没有首包竞态，正式 `ClientHost` 的真服连接回归也尚未重跑，两者都不能当模组兼容证据。
+- **Wire Registry 未接入解码链**：`bot.registry` 由 `prismarine-registry(<版本>)` 一次性构造，
+  Mineflayer 各插件在装载时就把该对象闭包进 `prismarine-block` / `prismarine-item` /
+  `prismarine-chunk`；Driver 的 `registry_data` 只消费 `minecraft:dialog` 用于界面投影，
+  不进入物品/方块/区块解码。因此服务端新增的 stateId / item id 目前无法被正确解释，
+  换服后也不能复用数字 ID——这条必须等真实 Fabric 服取证后再补窄接缝，不能先造空抽象。
 - **`serverRequirement` 只是声明**：不做服务端探测；`Compatible` 必须由具体能力在调用时证明
   （例如 `example.press@1` 以服务端计数前进为准）。目录里的 `note` 已明确这一点。
 - **SpectatorPlus 集成（2026-11-08）**：两个同名项目容易混淆——Nahu 的 Spigot 插件提供

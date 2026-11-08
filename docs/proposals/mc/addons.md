@@ -87,8 +87,10 @@ Companion 真正加载的包。两者都不推断"应该能用"。
 - 每次 `connect` 读一次并**冻结**：连接期间改文件不生效，重连才重新解析；
 - 解析失败发生在建立执行域之前：`ADDON_NOT_INSTALLED` / `ADDON_VERSION_MISMATCH` /
   `ADDON_DEPENDENCY_MISSING` / `ADDON_PATH_UNTRUSTED` / `ADDON_SELECTION_INVALID`；
-- 冻结计划带 `digest`（id/version/api/config 的 sha256 前 32 hex），出现在
-  `session.status.active.addons.digest` 与 `directory.snapshot.selection.digest`；
+- 冻结计划带 `digest`：按已排序的 `{id, version, api, artifactDigest, configDigest,
+  dependencies}` 取 sha256 前 32 hex，出现在 `session.status.active.addons.digest` 与
+  `directory.snapshot.selection.digest`；它保证能追溯"当时实际用了哪些字节"，
+  不是信任签名，也不防恶意代码；
 - 真实路径必须留在安装根内（符号链接指到别处 → `ADDON_PATH_UNTRUSTED`）。
 
 ## 5. 安装 / 启用 / 卸载
@@ -103,17 +105,33 @@ pnpm mc:addon -- status --profile <64-hex>
 pnpm mc:addon -- enable example-mod --profile <64-hex> --config '{"verifyTimeoutMs":4000}'
 pnpm mc:addon -- disable example-mod --profile <64-hex>
 pnpm mc:addon -- remove example-mod
+pnpm mc:addon -- migrate   # 旧 addons/<id> 布局一次性迁入 store
+pnpm mc:addon -- gc        # 所有会话停止后离线回收无引用 artifact
 ```
 
-- 安装 = 复制已校验的包目录；同 id 已存在时拒绝覆盖（`ADDON_ALREADY_INSTALLED`）；
+包存储是不可变的（`addons/store.ts`）：
+
+```text
+addons/artifacts/<id>/<完整内容摘要>/...   # 安装后不再改写
+addons/installed.json                     # id -> 当前生效摘要，原子替换
+```
+
+- 安装 = 从来源构建暂存目录 → 校验 Manifest、入口与拒绝符号链接 → 计算全目录内容摘要
+  → `rename` 成 artifact 目录 → 原子更新 `installed.json`。同 id 更新只替换映射，
+  不覆盖仍可能被活动会话使用的旧内容；
+- `remove` 只解除映射，不立即删除 artifact；`gc` 要求先停止所有会话再离线回收；
+- 旧布局只用 `migrate` 一次性迁移，迁移后不保留双格式后备；
 - 卸载时任何 Profile 仍启用则拒绝（`ADDON_IN_USE`），先 `disable`；
-- 活动会话继续使用它**已加载**的版本；安装/卸载/启停都不热替换当前连接。
+- Profile 选择文件的读-改-写经 `withFileLock` 串行，写入走同目录临时文件 + `rename`；
+- 活动会话继续使用它**已加载**的确切 artifact 摘要；安装/卸载/启停都不热替换当前连接。
 
 ## 6. 装配
 
 `addons/loader.ts` 是 Companion 侧唯一 import 第三方代码的地方：
 
-1. 只接受 Parent 预检过的 `AddonSelection`（纯值：id/version/root/entry/config）；
+1. 只接受 Parent 预检并冻结的 `AssemblyPlan`（`roots` + 依赖在前的 `ordered` + `digest`）；
+   每个 `ResolvedAddon` 都是纯值，带 `artifactDigest` / `configDigest` / `dependencies` /
+   `requestedBy` / `config`，加载按 `ordered` 顺序、释放按逆序；
 2. 模块必须导出 `{ api: 1, id: <manifest id>, create(ctx) }`，否则 `ADDON_ENTRY_INVALID`；
 3. `create()` 返回贡献对象；抛出的 `CallFailure.code` 原样保留（`ADDON_CONFIG_INVALID` 等）；
 4. 贡献只映射为：`MinecraftCapabilityModule`、`ProtocolExtension`、`KnowledgeSet`；
@@ -130,17 +148,31 @@ pnpm mc:addon -- remove example-mod
 
 ## 8. 连接级协议扩展
 
-两种时机是同一条连接的两个阶段（`contracts/protocol.ts`）：
+一条连接只有一个由 Driver 创建、连接和释放的 minecraft-protocol Client。三个贡献时机（`contracts/protocol.ts`）：
 
-- `prepare(ctx)`：客户端创建前；可覆盖协议版本或提供预构造的 minecraft-protocol client。
-  版本冲突或同时给 client 与 version 时显式失败；
-- `attach(port)`：客户端已创建、登录/配置/Play 包都会到达；只读订阅 + 发布事实；
+- `install(boot)`：**预连接阶段**。Client 已构造、Socket 尚未连接，按依赖拓扑顺序同步装配
+  包处理器、阶段回复与通道声明。`boot.claim(phase, resource)` 独占声明协议资源，第二个
+  Owner 立即以 `ADDON_PROTOCOL_CONFLICT` 失败，不按装载顺序覆盖。全部装配完成并冻结后
+  才放行真实网络连接。Addon 拿不到裸 Client，也不能覆盖协议版本——版本由
+  `ExecutorConfig.connection.version` 固定给出（autoVersion 会抢先发 status ping）。
+- `attach(port)`：放行连接之前挂接；登录/配置/Play 包都会到达；只读订阅 + 发布事实，
   返回的函数在连接退役时执行。
 - `localScreen(event)`：**纯同步编码器**，把 Uina 自己的个人背包窗口事务起止翻译成
   Payload（见 §8.5）。不持有连接、没有发送能力、不参与订阅生命周期。
 
+`ProtocolBootstrap` 只暴露 `minecraftVersion` / `connection`（只读）与 `onPacket` /
+`onPayload` / `declareReceive` / `claim` / `installLowLevel`。Login 与 Configuration 的
+握手回复经 `PhaseContext.replyPacket/replyPayload`，限定为当前阶段与当前连接，是连接级
+协议动作，不是游戏 Effect；Play 阶段改变世界的 Payload 仍只走 Runtime BodyScope 的
+`CallContext.protocol`。受信任底层插件可经 `installLowLevel` 在预连接阶段接触同一个
+Client 的协议底座（隐含 `claim("preconnect", name)`），不成为 Play 任意写入捷径。
+
 `ConnectionPort` 只暴露：`connection` / `incarnation` / `version` / `state()` /
 `onPacket` / `onCustomPayload` / `onEvent` / `publishFact`。没有裸 bot、没有 socket、没有写入口。
+
+`ProtocolBootstrap` 目前**不提供** `registerCodec`：需要扩展 codec 的加载器基础包走
+`installLowLevel`（受信任、只在预连接阶段、隐含 `claim("preconnect", name)`），
+不在普通 SDK 里放一套半成品 codec 注册。等真实 Fabric/NeoForge 服证明必须有时再加窄口。
 
 ### 8.1 通道注册（必须）
 
@@ -153,24 +185,58 @@ pnpm mc:addon -- remove example-mod
 
 这是传输层订阅，不改变世界状态；真正的写入仍然只在 BodyScope 内。
 
-### 8.2 写入
+### 8.2 写入（scoped ProtocolWritePort）
 
 `ProtocolWritePort.send(channel, data)` 只在 `callCtx.withBody(async (scope) => …)` 的
 `scope.protocol` 上存在；普通调用拿不到写端口。通道必须是合法 ResourceLocation，负载 ≤ 32767 字节，
 否则发送前 `INVALID_INPUT`（不把"服务端静默丢弃"伪装成已生效）。
 
-### 8.3 事实
+Runtime 不再把共享写对象交给 BodyScope：`runtime/scoped-protocol.ts` 在每个持 Lease 的
+调用上下文里新建一份端口，绑定本次 Call / Lease / Body 与**建立时的** connection /
+incarnation。每次 `send()` 都重新跑现有的 `assertLease`（内含 Call 活性与执行域闸门）、
+再比对当前 Driver 身份；保存旧引用、Body 退出、子 Call 委托、停止或安全打断、死亡/跨维度、
+断线重连一律以 `dispatch: "not_sent"` 失败，绝不碰真实网络。组合根只注入
+`ProtocolWriteDispatcher`（`driver/protocol-dispatch.ts`）：Runtime 不接触 bot/socket，
+Driver 在写 socket 前再复核一次自己的连接身份。
 
-- `port.publishFact(key, value, unknown?)` → `FactsSource.publishAddonFact` →
+发送是同步提交，不凭空引入 Promise。真实写入成功后，派发事实记进**现有**
+Effect Ledger（`RecordQueue` / `DriverExecutionSink`），合同名 `addon.protocol@1`，
+`kind: "dispatch"` / `dispatch: "sent"` / `completion: "unknown"` / `evidence: []`。
+没有 ACK 或观察证据就不能写成 `met`：网络提交成功不等于服务端动作成功。
+不为自定义 Payload 另建一套效果数据库；写入失败不留"已派发"的假事实，
+记录被拒收时如实以 `dispatch: "sent"` 失败并把该效果留作 unknown 结算。
+
+`send()` 返回本次派发的 effect ref；`confirm(effect, evidence)` 是唯一的补证路径：
+addon 拿到服务端 ACK 或真实观察证据（`world.read` 返回的 `evidence` ref）后，追加一条
+同 effect 的 receipt 事实（`kind: "receipt"` / `dispatch: "sent"` / `completion: "met"`）。
+只能确认本端口自己发出的 effect，且必须带证据；空证据或别的 effect 直接拒绝，
+失败按 `dispatch: "sent"` + 该 effect 报。不调用 `confirm` 就保持 unknown——
+没有证据不能给虚假 `met`。
+
+### 8.3 事实（采集身份与作用域）
+
+- `port.publishFact(key, value, publication)` → `FactsSource.publishAddonFact` →
   `ClientFactView.addonFact(addonId, key)`；
+- `publication` 必须显式给出 `scope`（`connection` / `incarnation`）、`source`
+  （`server` / `derived`）与可选 `unknown`。来源按原始证据确定，不给默认 `server`；
+  例如解码服务端回包是 `server`，addon 自己置的未知占位是 `derived`。
+- 采集事件来源身份在**事件到达时**由 `ConnectionPort` 捕获并经同步上下文带到
+  回调（含异步续段），不是提交时临时读取当前身份；在事件回调之外发布直接拒绝。
+  `FactsSource` 再用采集身份与当前身份逐项比对，旧异步结果不会误标成新事实。
+- `incarnation` 域（身体相关）在换代/身体失效时清除，视图读取也判为不可见；
+  `connection` 域（服务器范围状态）保留到本连接断开；跨连接任何域都不可见。
+  `connecting` / `disconnected` 清空全部。
 - 只接受纯 JSON；函数/循环引用显式抛错，不写半成品；
-- 事实绑定 connection/incarnation；`connecting` / `disconnected` 清空，旧连接迟到的发布被丢弃；
+- 每次发布同时产生一条 `addon.fact@1` 采集证据（`ev:` ref），事实的 `evidence` 指向它；
+  查询回读带着这个 ref，`scope.protocol.confirm` 才有可引用的观察证据，不是空口断言。
+  因此发布要有节制：只在服务端真给了新状态时发，不要逐 tick 发——每条都会进证据流；
 - `unknown` 非空时 `coverage: "partial"`；没有发布过的 key 返回 `null`，不返回零值对象。
 
 ### 8.4 生命周期
 
 `isCurrent()` 按连接代次判定；`dispose()` 解除全部订阅与 attach 登记的释放函数；
 单个 addon 监听器抛错被隔离（记录后继续），不打断底层订阅链上的其它订阅者。
+连接退役后迟到的订阅与发布一律丢弃，不写进新连接的当前事实。
 
 ### 8.5 本地界面展示（`localScreen`）
 
@@ -256,13 +322,19 @@ classpath 编译并安装到 `server/plugins/`；首次发放 `example:uina_toke
 确定性回归：
 
 ```bash
-npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-protocol.test.ts \
+npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-graph.test.ts \
+  tests/mc/mc-addon-protocol.test.ts tests/mc/mc-client-lifecycle.test.ts \
+  tests/mc/mc-protocol-bootstrap.test.ts tests/mc/mc-pending-client.test.ts \
+  tests/mc/mc-scoped-protocol.test.ts tests/mc/mc-scoped-protocol-engine.test.ts \
   tests/mc/mc-local-screen.test.ts tests/mc/mc-client-screen.test.ts tests/mc/mc-protocol.test.ts
 ```
 
 `mc-local-screen` 覆盖个人背包边界（equip/toss/2×2 各一对、失败与取消只收尾一次、
 并发被拒时不产生事件、没有包接收时不补发 close、展示口抛出不改变物品结果）；
-`mc-client-screen` 覆盖 ClientHost 的身份校验、通道声明顺序与单包失败隔离。
+`mc-client-screen` 覆盖 ClientHost 的身份校验、通道声明顺序与单包失败隔离；
+`mc-addon-graph` 覆盖依赖闭包、错误链、artifact 原子性与 IPC schema；
+`mc-protocol-bootstrap` / `mc-pending-client` 覆盖首包前挂载、claim 冲突、阶段回复、
+未连接 Client 构造与放行/回滚；`mc-scoped-protocol*` 覆盖过期写端口与 Effect Ledger 派发。
 
 **观察者画面验收没有自动化**：需要真服 + 真实 Fabric 客户端 + SpectatorPlus 客户端 Mod，
 按 §11 的包配置人工确认。单测只证明"事件成对、字节正确"，不能替代肉眼/录屏。
@@ -279,7 +351,10 @@ pnpm dev:mc:addons
 ## 13. 限制与未完成项
 
 - **未做**：Addon 热重载/热替换（设计上不支持，重连才生效）；运行时卸载已加载包；
-- **未做**：`prepare` 的"提供预构造 client"分支没有真服示例（类型与失败路径已实现）；
+- **未做**：真实 Fabric / Forge / NeoForge 模组服的协商 → 注册表 → 操作纵向验证。当前只有
+  Paper 1.21.11 原版服；`dev/probe-first-packet.mjs` 只证明"全部协议贡献挂载后才放行连接"
+  没有首包竞态，正式 `ClientHost` 的真服连接回归（`dev-env/smoke-connection.mts`）也只覆盖
+  原版登录，两者都不能当作模组兼容证据；
 - **未做**：`serverRequirement` 的服务端探测（只做声明；`Compatible` 需要具体能力自己验证）；
 - **已否决**：`/spectate` 方向的 SpectatorPlus 集成。这里有两个同名项目：Nahu 的 Spigot 插件提供
   `/spectate`；yzxoi 的 `SpectatorPlus`（1.21.11 分支）是 **Fabric 客户端 mod + Paper 插件**，只做
@@ -293,5 +368,7 @@ pnpm dev:mc:addons
 - **未验证**：真实 Fabric 观察者客户端的画面验收。自动化只覆盖到"事件成对 + 字节正确"，
   "观察者真的看到了界面"必须在真服 + 真客户端上肉眼确认，不能用单测代替。
 - **未覆盖**：非 1.21.11 协议（`registerChannels` 与 custom_payload 编解码按 1.21.11 窄口）；
-- **已知**：Addon 事实不持久化，跨连接不继承（这是设计选择：模组状态属于连接）；
+- **已知**：Addon 事实的**当前值**不跨连接继承（连接级内存表，断线清空；`connection` 域
+  保留到断线，`incarnation` 域换代即失效）。每次发布产生的 `addon.fact@1` 采集证据会进
+  证据流与历史库用于追溯，但不会被当成下一次连接的当前状态；
 - **已知**：`minecraft:register` 是 1.13+ 传统机制；若服务端实现不再支持，需要按版本适配。

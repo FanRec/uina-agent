@@ -1,5 +1,46 @@
 # 设计变更记录
 
+## 2026-11-08 · Addon 基础设施重构 S0–S4（设计包 Uina-Addon-Refactor.md）
+
+- **S1 解析与冻结**：`requiresAddons` 从"显式启用 + 精确版本"改为递归依赖闭包 + SemVer 范围 +
+  单 ID 当前激活版本；删除 `AddonSelection` / `AddonPlanEntry`，改为
+  `AssemblyPlan { roots, ordered, digest }`（`ordered` 依赖在前，加载正序、释放逆序）。
+  共享前置的 `requestedBy` 改为闭包完成后一次性定稿，修掉"首次出栈即快照"漏记请求者的缺陷。
+- **S2 包身份与事务**：包存储改为不可变 `addons/artifacts/<id>/<完整内容摘要>/` +
+  `installed.json` 原子映射；安装经暂存目录、拒绝符号链接、全目录摘要后 `rename` 提交；
+  `remove` 只解除映射，`gc` 离线回收，旧布局用 `migrate` 一次性迁移。
+  同 Profile 选择文件的读-改-写经 `withFileLock` 串行。`loadAddons()` 在每个 `create()`
+  返回后立即登记 close，后续任何失败逆序释放并把清理异常聚合到 `cleanupErrors`。
+- **S3 单一 Client 延迟连接**：删除 `ProtocolExtension.prepare` / `PreparedProtocol` /
+  `ProtocolPrepareContext`。Driver 先构造唯一未连接的 `minecraft-protocol Client` →
+  注入 `createBot({ client })` → 按拓扑序 `installAll()` → `claim` 冲突检查 → `finish()`
+  冻结 → 挂 attach/生命周期 → 唯一位置 `resume()` 放行真实连接。`version` 改为必需
+  （`autoVersion` 会在 `createClient` 期间抢先发 status ping，与"放行前无网络活动"冲突）。
+- **S4 scoped 写端口与事实作用域**：删除共享 `ProtocolWritePort` 注入，改为每个持 Lease 的
+  调用上下文新建绑定 Call/Lease/Body/Connection/Incarnation 的端口；`send()` 逐次跑
+  `assertLease` 与身份比对，保存旧引用/Body 退出/子 Call 委托/停止或安全打断/换代/重连
+  一律 `not_sent`。派发事实进现有 Effect Ledger（`addon.protocol@1`，
+  `dispatch=sent` / `completion=unknown` / `evidence=[]`），不新建 Payload 效果库。
+  `send()` 返回 effect，`confirm(effect, evidence)` 是唯一的补证路径：拿到服务端 ACK 或
+  真实观察证据后追加同 effect 的 receipt 事实结算成 `met`，空证据或别人的 effect 直接拒绝；
+  不确认就保持 unknown。
+  Addon 事实改为在采集事件到达时定稿来源身份（`AsyncLocalStorage`，异步续段仍带当时身份），
+  `publishFact` 必须显式给 `scope` / `source`；换代只清 `incarnation` 域，`connection` 域
+  留到断线，视图读取同样按作用域验证，迟到发布被拒绝。每次发布同时产生一条
+  `addon.fact@1` 采集证据，事实的 `evidence` 指向该 `ev:` ref。
+- **审查修复**：`ClientHost` 预连接阶段的协议错误现在先结束真实 Client 再丢引用（原来只把
+  `_bot` 置空，半连接再也关不掉），并封住代次，避免 abort 触发的 `end` 把 `faulted` 翻回
+  `disconnected`；`resolveAddonPlan` 把"映射存在但包读不出来"与"没安装"分开报
+  （`BROKEN_INSTALL` + 原始失败码），不再把坏包说成未安装；`migrate` 改为可重入，半途失败
+  能直接重跑；`dev/addons-live.ts` 的选择文件锁键与运维命令统一为同一个 `addons.json`；
+  连接在 ready 之前结束时会留下 `CONNECTION_FAILED` 诊断，而不是只有一句状态。
+- 门禁：`pnpm typecheck` 通过（`Checked 870 files`、`boundary check ok: 10 rules`）；
+  S4 定向 8 文件 117 项全绿；全量 CI 等价回归仍只有原有 10 个 UI/ANSI/TUI 文件 / 27 项红，
+  无 `tests/mc/*` 失败（通过 3494，S3 基线 3467）。
+- 明确未做：真实 Fabric / Forge / NeoForge 服验证与 Wire Registry 纵向贯通（仓库只有
+  Paper 1.21.11，不能装模组）；`fabric-compat` 不造无实质功能的空壳包。
+  见 [known-gaps.md](known-gaps.md) 的 Addon 段。
+
 ## 2026-11-08 · 批45 SpectatorPlus 个人背包界面桥（被观察方向）
 
 - **只补一个通用接缝**：Core 新增 `LocalScreenActivity`（`kind/phase/session/connection/incarnation`）与
