@@ -235,6 +235,9 @@ export class MinecraftExecutor {
 		if (this.connection || this.ownership.activeProcesses().directory || this.ownership.activeProcesses().account)
 			throw new RpcError("EXECUTOR_OWNERSHIP_UNAVAILABLE", "old execution tree is not proven retired");
 		this.phase = "starting";
+		// 上一次激活的解除结论不能跟着这次启动一起活着：本次激活还没对账，
+		// status 不能报"门已经开过"。
+		this.recovery = { clearedGates: [], blocked: [] };
 		const launch = `launch:${randomUUID()}`;
 		await this.ledger.launch(launch, this.activation);
 		this.checkLifecycle();
