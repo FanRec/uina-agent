@@ -74,7 +74,7 @@ export interface SessionControllerOptions {
 	/** Body 端点注册（worlddef 已校验 ctx.expose 存在）。 */
 	expose: NonNullable<ServiceCompanionContext["expose"]>;
 	executorPolicy?: Partial<ExecutorPolicy>;
-	deliveryPolicy?: { shortWindowMs?: number; pollMs?: number };
+	deliveryPolicy?: { pollMs?: number };
 	/** 旧布局迁移读取的世界包 config.json；可缺席。 */
 	legacyConfig?: unknown;
 	connectTimeoutMs?: number;

@@ -44,7 +44,7 @@ import {
 	requestToolDefs,
 	resolveProjectionPolicy,
 } from "./projection.js";
-import { InputQueues, isRuntimeFollowUp, type QueuedMessage } from "./queue.js";
+import { InputQueues, isRuntimeFollowUp, MAX_TURN_CHARS, type QueuedMessage } from "./queue.js";
 import { commitRewindTransition } from "./rewind.js";
 import { type StreamCollectorResult, TurnStreamCollector } from "./stream-collector.js";
 
@@ -75,7 +75,32 @@ export interface QueueInputOptions {
 	source?: import("../core/types.js").InputSource;
 }
 
-type InputSubmission = { kind: "start"; promptText?: string } | { kind: "queue"; resumeIfIdle: boolean };
+/**
+ * 批量受理的逐条结果。`accepted` 的诚实含义是"已持久入队"——不宣称模型读过它，
+ * 也不宣称回合已经发生。要那个语义看 `input_settled`。
+ */
+export type InputSubmissionOutcome =
+	| { id: string; accepted: true }
+	| { id: string; accepted: false; reason: string; retryable: boolean };
+
+/** 准入拒绝：`retryable` 只说"用同一个 id 再交一次有没有意义"。 */
+class InputRejected extends Error {
+	constructor(
+		message: string,
+		readonly retryable: boolean,
+	) {
+		super(message);
+		this.name = "InputRejected";
+	}
+}
+
+/**
+ * 未知异常按可重试处理：它只可能来自持久化或 IO，同一 id 再交一次是安全的
+ *（重复提交由 id 去重拦住）。只有明确的准入拒绝才不可重试。
+ */
+function isRetryableRejection(error: unknown): boolean {
+	return !(error instanceof InputRejected) || error.retryable;
+}
 
 /** 把一轮请求准备切成多段，让 TUI 心跳与终端 IO 有机会插进来。
  * 用 MessageChannel 而不是 setImmediate/setTimeout：后者在 vi.useFakeTimers()
@@ -702,6 +727,18 @@ export class Subject {
 		}
 	}
 
+	/**
+	 * 持久化并入队；不启动回合。所有输入路径（用户输入、单条受理、批量受理）共用，
+	 * 免得三处各自维护"先持久化还是先入队"的顺序。
+	 */
+	private async enqueueRecord(queued: QueuedMessage): Promise<void> {
+		await this.enqueueInput(queued);
+		if (this.inputDeliveries.get(queued.id)?.active === false) return;
+		this.queues.add(queued);
+		await this.publishInputAccepted(queued);
+		this.notifyQueueChanged();
+	}
+
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
 		const normalized = text.trim();
 		if (!normalized) return Promise.resolve();
@@ -710,34 +747,71 @@ export class Subject {
 		// direct 空闲即开跑；忙时升级为 steer；空闲但已有队列时随队保序。
 		const requestedMode = options.mode ?? (busy ? "steer" : "direct");
 		const mode = requestedMode === "direct" ? (busy ? "steer" : "followUp") : requestedMode;
-		const hadQueuedItems = this.queues.size > 0;
 		const queued = this.queues.create(normalized, mode, { source: options.source });
-		const startImmediately = requestedMode === "direct" && !busy && !hadQueuedItems;
-		return this.submitInput(
-			queued,
-			startImmediately
-				? { kind: "start", promptText: normalized }
-				: { kind: "queue", resumeIfIdle: requestedMode === "direct" && !busy && hadQueuedItems },
-		);
+		// 直启必须同步占住 activeRun：调用方是 `void pushInput(); waitForIdle()`，
+		// 中间夹一次 await 会让 waitForIdle 扑空、把这一轮当成已经结束。
+		if (requestedMode === "direct" && !busy && this.queues.size === 0)
+			return this.startRun(normalized, queued, { needsEnqueueEvent: true });
+		return this.enqueueRecord(queued).then(async () => {
+			if (!this.isBusy()) await this.resumeQueued();
+		});
 	}
 
 	/**
-	 * 规范化后的输入唯一提交路径：直接启动或 queue_enqueued 持久化后入队。
-	 * 调用者在此之前保留各自的输入语义（来源、图片、瞬态快照和 prompt 策略）。
+	 * 准入 + 登记（同步，不写盘、不启动回合）。返回 null 表示这条已经 committed，
+	 * 幂等视作受理成功。单条与批量共用这一条路径，避免两套去重。
 	 */
-	private submitInput(queued: QueuedMessage, submission: InputSubmission): Promise<void> {
-		if (submission.kind === "start") {
-			if (this.isBusy() || this.queues.size > 0) return Promise.reject(new Error("Subject 忙碌，无法直接启动输入"));
-			return this.startRun(submission.promptText, queued, { needsEnqueueEvent: true });
+	private admitInput(input: AgentInput, owner?: InputDeliveryOwner): QueuedMessage | null {
+		if (
+			input.receipt !== undefined &&
+			(!validDeliveryTag(input.receipt) || !owner || !owner.isActive() || this.deliveryClosed)
+		)
+			throw new InputRejected("Invalid receipt or inactive input source", false);
+		if (input.receipt && owner) {
+			if (
+				this.store?.state.deliveryCommits.has(deliveryKey(owner.namespace, input.receipt.key)) ||
+				this.findDelivery(owner.namespace, input.receipt.key)
+			)
+				return null;
 		}
+		if (!validImages(input.images)) throw new InputRejected("图片内容无效", false);
+		if (!input.id || (!input.text?.trim() && !input.render))
+			throw new InputRejected("AgentInput 必须包含 id，且 text 或 render 至少一个非空", false);
+		if (this.inputDeliveries.has(input.id) || this.queues.has(input.id) || this.store?.state.queued.has(input.id))
+			throw new InputRejected(`输入 id 已在队列中: ${input.id}`, false);
+		if (this.store?.state.recordIds.has(input.id))
+			throw new InputRejected(`输入 id 已存在于会话记录中: ${input.id}`, false);
 
-		return this.enqueueInput(queued).then(async () => {
-			if (this.inputDeliveries.get(queued.id)?.active === false) return;
-			this.queues.add(queued);
-			await this.publishInputAccepted(queued);
-			this.notifyQueueChanged();
-			if (submission.resumeIfIdle && !this.isBusy()) await this.resumeQueued();
-		});
+		const queued: QueuedMessage = {
+			...this.queues.create((input.text ?? "").trim(), input.mode, {
+				source: input.source,
+				...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
+				data: input.data,
+				images: input.images,
+			}),
+			id: input.id,
+		};
+		if (input.receipt && owner) {
+			queued.receipt = { ...input.receipt };
+			queued.receiptNamespace = owner.namespace;
+			this.inputDeliveries.set(input.id, {
+				item: queued,
+				owner,
+				since: new Date().toISOString(),
+				order: ++this.deliveryOrder,
+				active: true,
+				phase: "queued",
+			});
+		}
+		if (input.render) this.deferredInputRenders.set(input.id, input.render);
+		return queued;
+	}
+
+	/** 已登记的输入在持久化/回合阶段失败：把所有权还给发送方，不留下假的 pending。 */
+	private failAdmission(queued: QueuedMessage, error: unknown): void {
+		this.deferredInputRenders.delete(queued.id);
+		const attempt = this.inputDeliveries.get(queued.id);
+		if (attempt?.item === queued) attempt.error = error;
 	}
 
 	/** 输入受理的唯一事实出口。调用方必须先完成持久化或明确的直接启动准入。 */
@@ -798,62 +872,62 @@ export class Subject {
 		});
 	}
 
-	accept(input: AgentInput, owner?: InputDeliveryOwner): Promise<void> {
-		if (
-			input.receipt !== undefined &&
-			(!validDeliveryTag(input.receipt) || !owner || !owner.isActive() || this.deliveryClosed)
-		)
-			return Promise.reject(new Error("Invalid receipt or inactive input source"));
-		if (input.receipt && owner) {
-			if (
-				this.store?.state.deliveryCommits.has(deliveryKey(owner.namespace, input.receipt.key)) ||
-				this.findDelivery(owner.namespace, input.receipt.key)
-			)
-				return Promise.resolve();
-		}
-		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
-		if (!input.id || (!input.text?.trim() && !input.render))
-			return Promise.reject(new Error("AgentInput 必须包含 id，且 text 或 render 至少一个非空"));
-		if (this.inputDeliveries.has(input.id) || this.queues.has(input.id) || this.store?.state.queued.has(input.id))
-			return Promise.reject(new Error(`输入 id 已在队列中: ${input.id}`));
-		if (this.store?.state.recordIds.has(input.id)) {
-			return Promise.reject(new Error(`输入 id 已存在于会话记录中: ${input.id}`));
-		}
-
-		const queued: QueuedMessage = {
-			...this.queues.create((input.text ?? "").trim(), input.mode, {
-				source: input.source,
-				...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
-				data: input.data,
-				images: input.images,
-			}),
-			id: input.id,
-		};
-		if (input.receipt && owner) {
-			queued.receipt = { ...input.receipt };
-			queued.receiptNamespace = owner.namespace;
-			this.inputDeliveries.set(input.id, {
-				item: queued,
-				owner,
-				since: new Date().toISOString(),
-				order: ++this.deliveryOrder,
-				active: true,
-				phase: "queued",
+	async accept(input: AgentInput, owner?: InputDeliveryOwner): Promise<void> {
+		const queued = this.admitInput(input, owner);
+		if (!queued) return;
+		// idle 且队列空时同步直启：startRun 首行就占住 activeRun，emitEvent 返回时
+		// 这一轮已在处理，waitForIdle() 才能覆盖它。先入队再异步 resumeQueued 会
+		// 留下 activeRun 的空窗，把尚未提交的回合误判成已经结束。
+		if (!this.isBusy() && this.queues.size === 0)
+			return this.startRun(queued.source?.kind === "runtime" ? undefined : queued.text, queued, {
+				needsEnqueueEvent: true,
+			}).catch((error) => {
+				this.failAdmission(queued, error);
+				throw error;
 			});
+		return this.enqueueRecord(queued)
+			.then(async () => {
+				if (!this.isBusy()) await this.resumeQueued();
+			})
+			.catch((error) => {
+				this.failAdmission(queued, error);
+				throw error;
+			});
+	}
+
+	/**
+	 * 批量受理：逐条走与 `accept` 完全相同的准入与持久化，但全程不启动回合。
+	 *
+	 * 为什么不能直接 `Promise.all(inputs.map(accept))`：idle 时第一条会直启一个
+	 * 完整回合，剩下的只能等它跑完——多份 Completion 串行交付正是这么来的。
+	 * 这里先全部落队，最后只调度一次消费，由现有 `batchForTurn()` 预算决定
+	 * 这一轮带哪些。
+	 *
+	 * 部分成功是允许的：存储没有跨条原子事务。失败的项留在发送方手里，按同一个
+	 * id 重交才安全；已受理的项不回滚。
+	 */
+	async acceptBatch(inputs: readonly AgentInput[], owner?: InputDeliveryOwner): Promise<InputSubmissionOutcome[]> {
+		const outcomes: InputSubmissionOutcome[] = [];
+		for (const input of inputs) {
+			let queued: QueuedMessage | null = null;
+			try {
+				queued = this.admitInput(input, owner);
+				if (queued) await this.enqueueRecord(queued);
+				outcomes.push({ id: input.id, accepted: true });
+			} catch (error) {
+				if (queued) this.failAdmission(queued, error);
+				outcomes.push({
+					id: input.id,
+					accepted: false,
+					reason: errorMessage(error),
+					retryable: isRetryableRejection(error),
+				});
+			}
 		}
-		if (input.render) this.deferredInputRenders.set(input.id, input.render);
-		const startImmediately = !this.isBusy() && this.queues.size === 0;
-		return this.submitInput(
-			queued,
-			startImmediately
-				? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
-				: { kind: "queue", resumeIfIdle: true },
-		).catch((error) => {
-			this.deferredInputRenders.delete(input.id);
-			const attempt = this.inputDeliveries.get(input.id);
-			if (attempt?.item === queued) attempt.error = error;
-			throw error;
-		});
+		// 一条都没进去就不开空回合。调度失败必须有观察者，不能是裸 Promise。
+		if (outcomes.some((outcome) => outcome.accepted) && !this.isBusy())
+			void this.resumeQueued().catch((error) => this.reportError(error));
+		return outcomes;
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -1087,8 +1161,10 @@ export class Subject {
 		let turnStarted = false;
 		try {
 			if (queuedInputs.length > 0) {
-				const committed = await this.consumeQueueItems(queuedInputs, onInputCommitted);
-				if (!committed && queuedInputs.every(isRuntimeFollowUp)) {
+				const batch = await this.consumeQueueItems(queuedInputs, onInputCommitted);
+				// 延迟渲染的正文此刻才成形：超预算的剩余项已退回队列，本轮只带实际提交的这些。
+				queuedInputs = batch.consumed;
+				if (!batch.committed && queuedInputs.every(isRuntimeFollowUp)) {
 					this.abort = null;
 					this.activity = undefined;
 					if (this.queues.size > 0) await this.resumeQueued();
@@ -1542,7 +1618,11 @@ export class Subject {
 		}
 		for (const id of attempts) this.toolDeliveries.delete(id);
 		if (batch.error) throw batch.error;
-		return { stopped: batch.results.some((res) => res.continuation === "stop") };
+		// 结果已全部进 canonical 历史，这时才轮到"还要不要再说一轮"：
+		// 有 stop 就收口；整批都是可让出的委派结果就省掉一次注定没有新信息的请求。
+		const hardStop = batch.results.some((res) => res.continuation === "stop");
+		const allDelegated = batch.results.length > 0 && batch.results.every((res) => res.continuation === "yield");
+		return { stopped: hardStop || allDelegated };
 	}
 
 	private async drainSteerInputs(
@@ -1790,15 +1870,27 @@ export class Subject {
 		});
 	}
 
-	private async consumeQueueItems(items: QueuedMessage[], onCommitted?: () => void): Promise<boolean> {
+	private async consumeQueueItems(
+		items: QueuedMessage[],
+		onCommitted?: () => void,
+	): Promise<{ committed: boolean; consumed: QueuedMessage[] }> {
 		let committedCount = 0;
 		let committedAny = false;
+		let chars = 0;
 		try {
 			for (let index = 0; index < items.length; index++) {
 				const materialized = await this.commitQueueItem(items[index]);
 				committedCount = index + 1;
-				committedAny = materialized || committedAny;
+				committedAny = materialized.committed || committedAny;
 				onCommitted?.();
+				chars += materialized.chars;
+				// 延迟渲染的正文到这一刻才成形：领进来时按空字符串算的预算在这里才有真实数值。
+				// 超预算就把剩余项退回队列——它们的 order 不变，下一轮仍然按原顺序领走。
+				if (chars > MAX_TURN_CHARS && index + 1 < items.length) {
+					for (const rest of items.slice(index + 1)) if (this.ownsInput(rest)) this.queues.add(rest);
+					this.notifyQueueChanged();
+					return { committed: committedAny, consumed: items.slice(0, index + 1) };
+				}
 			}
 		} catch (error) {
 			// Items already committed are canonical; only the uncommitted suffix returns to the mailbox.
@@ -1806,11 +1898,13 @@ export class Subject {
 			this.notifyQueueChanged();
 			throw error;
 		}
-		return committedAny;
+		return { committed: committedAny, consumed: items };
 	}
 
-	private async commitQueueItem(item: QueuedMessage): Promise<boolean> {
-		if (!this.ownsInput(item)) return false;
+	/** `chars` 是这次提交真正进历史的正文长度；延迟渲染只有走到这里才知道。 */
+	private async commitQueueItem(item: QueuedMessage): Promise<{ committed: boolean; chars: number }> {
+		const retired = { committed: false, chars: 0 } as const;
+		if (!this.ownsInput(item)) return retired;
 		const attempt = this.inputDeliveries.get(item.id);
 		const eligible = () =>
 			!item.receipt ||
@@ -1820,12 +1914,12 @@ export class Subject {
 				attempt.owner.isActive() &&
 				!this.deliveryClosed &&
 				!this.store?.state.deliveryCommits.has(deliveryKey(attempt.owner.namespace, item.receipt!.key)));
-		const retire = async () => {
+		const retire = async (): Promise<{ committed: boolean; chars: number }> => {
 			if (attempt && this.inputDeliveries.get(item.id) === attempt) {
 				const reply = await this.retireInputDelivery(attempt);
 				if (reply.kind === "unavailable") throw new Error(reply.reason);
 			}
-			return false;
+			return retired;
 		};
 		if (!eligible()) return retire();
 		if (attempt) attempt.phase = "processing";
@@ -1834,7 +1928,7 @@ export class Subject {
 			if (attempt) await retire();
 			else if (this.store.state.queued.has(item.id)) await this.storeEvent("queue_restored", eventData(item));
 			await this.settleInput(item, { outcome: "retired", reason: "already_recorded" });
-			return false;
+			return retired;
 		}
 		const render = this.deferredInputRenders.get(item.id);
 		if (render) {
@@ -1850,7 +1944,7 @@ export class Subject {
 				if (attempt) await retire();
 				else await this.storeEvent("queue_restored", eventData(item));
 				await this.settleInput(item, { outcome: "retired", reason: "empty_render" });
-				return false;
+				return retired;
 			}
 			item = { ...item, text: rendered.trim() };
 		} else if (!item.text.trim()) {
@@ -1861,7 +1955,7 @@ export class Subject {
 				else await this.storeEvent("queue_restored", eventData(item));
 			}
 			await this.settleInput(item, { outcome: "retired", reason: "missing_render" });
-			return false;
+			return retired;
 		}
 		if (!eligible()) return retire();
 		if (attempt) attempt.phase = "appending";
@@ -1876,7 +1970,7 @@ export class Subject {
 		const message = projectInputMessage(item);
 		if (message) this.history.push(message);
 		await this.settleInput(item, { outcome: "committed" });
-		return true;
+		return { committed: true, chars: item.text.length };
 	}
 
 	private async storeEvent(

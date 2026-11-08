@@ -1,6 +1,6 @@
 /** One report, two presentation channels. Host canonical receipts alone acknowledge Runtime. */
 import { randomUUID } from "node:crypto";
-import type { HostDeliveryState } from "../../../../src/core/types.js";
+import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
 import type { MinecraftExecutor } from "./index.js";
@@ -8,23 +8,44 @@ import type { DeliveryAttempt } from "./ledger-worker.js";
 
 /** minecraft_event 投递失败的补发等待；幂等 id 下重试一次的重复风险低于静默丢失。 */
 const EVENT_RETRY_MS = 1000;
+/**
+ * 一次集中交付的条数上限。它不是正确性参数：超出部分留在 Runtime 的 pending 列表里，
+ * 下一次唤醒再交。取小值只为不让一次唤醒读满一页记录、把 reconcile 拖长。
+ */
+const DELIVERY_BATCH = 8;
 
 type EventNotice = Parameters<NonNullable<ServiceCompanionContext["emitEvent"]>>[0];
+/** 已备好 attempt、等着和同批一起交出去的一条完成通知。 */
+interface Deliverable {
+	ref: DeliveryRef;
+	view: CompletionView;
+	attempt: DeliveryAttempt;
+}
+/** 诊断用的在途输入：本激活派发的，或宿主正在处理的。 */
+interface ActiveInput {
+	channel: "input";
+	attempt: string;
+	createdAt: string;
+	host: HostDeliveryState;
+}
 
 export class DeliveryPump {
+	/**
+	 * 工具调用期间压住该 requestId 的 Completion：受理结果还没进它自己的回合时，
+	 * 不要让同一件事的完成通知抢先成为模型看到的第一个事实。
+	 */
 	readonly heldRequests = new Set<string>();
-	private readonly heldTools = new Set<string>();
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private running: Promise<void> | null = null;
 	private stopped = false;
 	private unsubscribe: (() => void) | null = null;
 	private unsubscribeSide: (() => void) | null = null;
-	private active: (Omit<DeliveryAttempt, "activation"> & { activation?: string }) | null = null;
+	/** 在途输入，按 completionRef 记：宿主回执提交即清。多份完成通知互不占位。 */
+	private readonly inputs = new Map<string, ActiveInput>();
 	private emitting = false;
 	private error: { code: string; message: string } | null = null;
 	private lastCheckedAt: string | null = null;
 	private pendingCount: number | null = null;
-	private hostState: HostDeliveryState = { kind: "unavailable", reason: "not checked" };
 	private failures = 0;
 	private readonly activation = `delivery:${randomUUID()}`;
 	constructor(
@@ -111,16 +132,6 @@ export class DeliveryPump {
 			};
 		}
 	}
-	async toolAttempt(key: string): Promise<{ key: string; attempt: string }> {
-		const attempt = await this.prepare(key, "tool");
-		this.heldTools.add(key);
-		// The Host registers tool attempts synchronously on receipt, ahead of after-hooks.
-		setTimeout(() => {
-			this.heldTools.delete(key);
-			this.wake(this.pollMs);
-		}, 0);
-		return { key, attempt: attempt.attempt };
-	}
 	private async prepare(key: string, channel: "tool" | "input"): Promise<DeliveryAttempt> {
 		const port = this.ctx.delivery!;
 		const attempt: DeliveryAttempt = {
@@ -141,7 +152,7 @@ export class DeliveryPump {
 		if (r.key !== key || r.namespace !== p.namespace || r.session !== p.session)
 			throw new Error("Host receipt scope mismatch");
 		// Host has durably received this input. A lost Runtime ACK reply must not hold the local input slot.
-		if (this.active?.key === key) this.active = null;
+		this.inputs.delete(key);
 		await this.executor.rpc("runtime.settleDelivery", { ref: key, receipt: r });
 	}
 	reconcile(): Promise<void> {
@@ -162,16 +173,35 @@ export class DeliveryPump {
 	}
 	private async drain(): Promise<void> {
 		if (this.ctx.signal.aborted || this.stopped) return;
-		const port = this.ctx.delivery!;
 		const attempts = new Map((await this.executor.ledger.attempts()).map((a) => [a.key, a]));
-		// Recovery only looks up original intentions. It never resends actions.
+		await this.recoverRequests();
+		const scan = await this.scan(this.ctx.delivery!, attempts);
+		this.pendingCount = scan.pending;
+		// 已停用/已取消：这一批不再交出，尝试记录留在账本里，下次启动重投。
+		if (this.stopped || this.ctx.signal.aborted) return;
+		// 先交出能交的，再报对账失败：一条查不到回执不该拖住同一轮里别的完成通知。
+		if (scan.ready.length > 0) this.deliver(scan.ready);
+		if (scan.unconfirmed) throw scan.unconfirmed;
+	}
+	/** 恢复只查原始意图，绝不重发动作。 */
+	private async recoverRequests(): Promise<void> {
 		for (const c of await this.executor.ledger.requests())
 			if (!c.run) {
 				const found = await this.executor.lookup(c.requestId);
 				if (found.kind === "found") await this.executor.ledger.found(c.requestId, found);
 			}
+	}
+	/**
+	 * 对账一页 pending：宿主已提交的回 ACK，正在处理的记进诊断，剩下的收进本轮交付批次。
+	 * 每一条各自判断，谁也不替谁占位——一条卡住不该拖住同一轮里别的完成通知。
+	 */
+	private async scan(
+		port: HostDeliveryPort,
+		attempts: ReadonlyMap<string, DeliveryAttempt>,
+	): Promise<{ pending: number; unconfirmed: Error | null; ready: Deliverable[] }> {
+		const ready: Deliverable[] = [];
 		let cursor: string | undefined;
-		let count = 0;
+		let pending = 0;
 		let unconfirmed: Error | null = null;
 		do {
 			const page = await this.executor.rpc<{ items: DeliveryRef[]; next?: string }>("runtime.pendingDeliveries", {
@@ -179,13 +209,14 @@ export class DeliveryPump {
 				limit: 100,
 			});
 			cursor = page.next;
-			count += page.items.length;
+			pending += page.items.length;
 			for (const ref of page.items) {
-				if (this.stopped || this.ctx.signal.aborted) return;
+				if (this.stopped || this.ctx.signal.aborted) return { pending, unconfirmed, ready };
 				if (this.heldRequests.has(ref.requestId)) continue;
 				const host = await port.inspect(ref.completionRef);
 				this.lastCheckedAt = new Date().toISOString();
-				if (this.active?.key === ref.completionRef) this.hostState = host;
+				const known = this.inputs.get(ref.completionRef);
+				if (known) known.host = host;
 				if (host.kind === "committed") {
 					await this.ack(ref.completionRef, host);
 					continue;
@@ -196,18 +227,7 @@ export class DeliveryPump {
 				}
 				const prior = attempts.get(ref.completionRef);
 				if (host.kind === "pending") {
-					const hold = (state: Extract<HostDeliveryState, { kind: "pending" }>) => {
-						if (state.channel !== "input") return;
-						this.hostState = state;
-						this.active = {
-							key: ref.completionRef,
-							attempt: state.attempt,
-							channel: "input",
-							namespace: port.namespace,
-							session: port.session,
-							createdAt: state.since,
-						};
-					};
+					// 上一次激活留下的输入仍挂在宿主上：不是本轮的投递，按端口规则退役或接管。
 					if (prior?.channel === "input" && prior.activation !== this.activation && host.attempt === prior.attempt) {
 						const retired = await port.retire(ref.completionRef, prior.attempt);
 						if (retired.kind === "committed") {
@@ -218,23 +238,21 @@ export class DeliveryPump {
 							unconfirmed = new Error(retired.reason);
 							continue;
 						}
-						if (this.active?.key === ref.completionRef) this.active = null;
+						this.inputs.delete(ref.completionRef);
 						if (retired.kind === "changed") {
 							if (retired.state.kind === "committed") await this.ack(ref.completionRef, retired.state);
-							else if (retired.state.kind === "pending") hold(retired.state);
+							else if (retired.state.kind === "pending") this.hold(ref.completionRef, retired.state);
 							else if (retired.state.kind === "unavailable") unconfirmed = new Error(retired.state.reason);
 						}
 						continue;
 					}
-					hold(host);
+					this.hold(ref.completionRef, host);
 					continue;
 				}
-				if (this.heldTools.has(ref.completionRef)) continue;
-				if (this.active?.key === ref.completionRef) {
-					if (this.emitting) continue;
-					this.active = null;
-				}
-				if (this.active) continue;
+				// 宿主不认识这条：上一次尝试可能随宿主重启丢了，用新 attempt 重投是唯一正确的动作。
+				if (this.emitting) continue;
+				if (ready.length >= DELIVERY_BATCH) continue;
+				this.inputs.delete(ref.completionRef);
 				let state: DeliveryState;
 				try {
 					state = await this.executor.rpc("runtime.readDelivery", { ref: ref.completionRef });
@@ -243,48 +261,85 @@ export class DeliveryPump {
 					continue;
 				}
 				if (!state.eligible) continue;
-				const view = await this.view(state);
-				const attempt = await this.prepare(ref.completionRef, "input");
-				if (this.stopped || this.ctx.signal.aborted) return;
-				this.active = attempt;
-				this.emitting = true;
-				// emitEvent can encompass a full model turn; never await it inside drain.
-				void Promise.resolve()
-					.then(async () => {
-						const submission = await this.ctx.emitEvent!({
-							id: attempt.attempt,
-							type: "minecraft_completion",
-							channel: "world",
-							origin: "internal",
-							receipt: { key: attempt.key, attempt: attempt.attempt },
-							render: async () => {
-								if (this.stopped) return null;
-								const latest = await this.executor.rpc<DeliveryState>("runtime.readDelivery", {
-									ref: ref.completionRef,
-								});
-								return latest.eligible ? formatCompletion(view) : null;
-							},
-							data: view,
-						});
-						// 没交出去就说清楚；收据那一路（inspect/retire）会负责后面的重投。
-						if (!submission.accepted) throw new Error(submission.reason);
-					})
-					.catch((error) => {
-						this.error = { code: "DELIVERY_UNCONFIRMED", message: String(error) };
-					})
-					.finally(() => {
-						this.emitting = false;
-						this.wake(0);
-					});
+				ready.push({
+					ref,
+					view: await this.view(state),
+					attempt: await this.prepare(ref.completionRef, "input"),
+				});
 			}
 		} while (cursor);
-		this.pendingCount = count;
-		if (unconfirmed) throw unconfirmed;
+		return { pending, unconfirmed, ready };
+	}
+	/**
+	 * 一批完成通知一次交出：每条独立回执、独立结论。没交出去的那条不推进任何状态——
+	 * attempt 已落账，下一次唤醒用新 attempt 重投，不把"宿主拒收"当成交付完成。
+	 *
+	 * emitEvents 可能覆盖一整个模型回合，绝不在 drain 里 await 它。
+	 */
+	private deliver(ready: readonly Deliverable[]): void {
+		if (this.emitting) return;
+		if (!this.ctx.emitEvents) {
+			this.error = { code: "DELIVERY_UNCONFIRMED", message: "宿主没有批量投递入口，完成通知无法交付" };
+			return;
+		}
+		this.emitting = true;
+		const events = ready.map(({ ref, view, attempt }) => ({
+			id: attempt.attempt,
+			type: "minecraft_completion",
+			channel: "world" as const,
+			origin: "internal" as const,
+			receipt: { key: attempt.key, attempt: attempt.attempt },
+			// 正文到宿主真正取用才成形：一次决策看几条由宿主的有界领取预算决定。
+			render: async () => {
+				if (this.stopped) return null;
+				const latest = await this.executor.rpc<DeliveryState>("runtime.readDelivery", { ref: ref.completionRef });
+				return latest.eligible ? formatCompletion(view) : null;
+			},
+			data: view,
+		}));
+		let delivered = 0;
+		// 先记在途，再交出：诊断在整个交付窗口里都能看到这批去了哪里。
+		for (const { attempt } of ready)
+			this.inputs.set(attempt.key, {
+				channel: "input",
+				attempt: attempt.attempt,
+				createdAt: attempt.createdAt,
+				host: { kind: "absent" },
+			});
+		void Promise.resolve()
+			.then(() => this.ctx.emitEvents!(events))
+			.then((submissions) => {
+				for (const [index, item] of ready.entries()) {
+					const submission = submissions[index];
+					if (submission?.accepted) {
+						delivered++;
+						continue;
+					}
+					if (!submission) continue;
+					// 宿主明确没接手：这条不在途，下一次唤醒用新 attempt 重投。
+					this.inputs.delete(item.attempt.key);
+					this.error = { code: "DELIVERY_UNCONFIRMED", message: submission.reason };
+				}
+			})
+			.catch((error: unknown) => {
+				// 整批结果未知：留着在途记录，重投由下一次对账按宿主回执决定。
+				this.error = { code: "DELIVERY_UNCONFIRMED", message: String(error) };
+			})
+			.finally(() => {
+				this.emitting = false;
+				// 全被拒就等下一次轮询：立刻再排一次会把"拒收"变成忙等。
+				if (delivered > 0) this.wake(0);
+			});
+	}
+	/** 宿主正在处理这条输入：记进诊断，不重复投递。工具通道的 pending 不算交付在途。 */
+	private hold(key: string, state: Extract<HostDeliveryState, { kind: "pending" }>): void {
+		if (state.channel !== "input") return;
+		this.inputs.set(key, { channel: "input", attempt: state.attempt, createdAt: state.since, host: state });
 	}
 	async retry(key: string, expectedAttempt: string): Promise<unknown> {
 		const reply = await this.ctx.delivery!.retire(key, expectedAttempt);
 		if (reply.kind === "committed") await this.ack(key, reply);
-		if (reply.kind === "retired" && this.active?.attempt === expectedAttempt) this.active = null;
+		if (reply.kind === "retired" && this.inputs.get(key)?.attempt === expectedAttempt) this.inputs.delete(key);
 		this.wake(0);
 		return reply;
 	}
@@ -292,7 +347,14 @@ export class DeliveryPump {
 		return {
 			observedAt: new Date().toISOString(),
 			pendingCount: this.pendingCount,
-			activeInput: this.active ? { ...this.active, lastCheckedAt: this.lastCheckedAt, host: this.hostState } : null,
+			activeInputs: [...this.inputs].map(([key, input]) => ({
+				key,
+				channel: input.channel,
+				attempt: input.attempt,
+				createdAt: input.createdAt,
+				lastCheckedAt: this.lastCheckedAt,
+				host: input.host,
+			})),
 			lastCheckedAt: this.lastCheckedAt,
 			hostBusy: this.ctx.isBusy?.() ?? null,
 			error: this.error,

@@ -55,6 +55,17 @@ export interface ServiceCompanionContext {
 	/** 投递输入/机会至主脑信道（可选通用能力） */
 	submitInput?: (input: import("../../agent/loop.js").AgentInput) => Promise<void>;
 	emitEvent?: (event: WorldEvent) => Promise<EventSubmission>;
+	/**
+	 * 多条事件一次交出：每条独立结果，全部落队后才调度一次消费。
+	 *
+	 * 只用于"同一批事实"，例如同一世界的多处任务几乎同时完成。它**不**保证一起被模型
+	 * 看到：一次决策带几条仍由宿主的有界领取预算决定。Steer 不要混进来——那会打乱
+	 * "紧急先处理"的边界。
+	 *
+	 * 宿主没有这个入口时字段缺省，调用方必须退回单条并知道"合批不可用"，
+	 * 不能自称已经集中受理。
+	 */
+	emitEvents?: (events: readonly WorldEvent[]) => Promise<readonly EventSubmission[]>;
 	/** 探测主脑是否忙碌（可选通用能力） */
 	isBusy?: () => boolean;
 	/** 世界数据目录（可选） */

@@ -51,6 +51,14 @@ export interface ExtensionAPI {
 	readonly ui: ExtensionUIContext;
 	delivery(scope?: string): HostDeliveryPort;
 	submitInput(input: AgentInput, options?: { deliveryScope?: string; signal?: AbortSignal }): Promise<void>;
+	/**
+	 * 多条输入一次交出：每条独立持久入队、独立结果，全部落队后才调度一次消费。
+	 * 用于同源的成批事实（例如多处任务同时完成），不要用它把 Steer 和普通输入混成一批。
+	 */
+	submitInputs(
+		inputs: readonly AgentInput[],
+		options?: { deliveryScope?: string; signal?: AbortSignal },
+	): Promise<readonly import("../agent/loop.js").InputSubmissionOutcome[]>;
 	reportError(error: unknown): void;
 	on<T extends ExtensionEvent["type"]>(
 		type: T,
@@ -162,6 +170,14 @@ export interface ExtensionRunnerOptions {
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput, owner?: InputDeliveryOwner) => Promise<void>;
+	/**
+	 * 批量受理：逐条入队，不逐条启动回合。返回逐条结果，允许部分成功。
+	 * 缺省时扩展只能走单条路径——调用方必须知道"合批不可用"，不能假装已经集中受理。
+	 */
+	onInputs?: (
+		inputs: readonly AgentInput[],
+		owner?: InputDeliveryOwner,
+	) => Promise<readonly import("../agent/loop.js").InputSubmissionOutcome[]>;
 	delivery?: (namespace: string) => HostDeliveryPort;
 	/** 当前上下文事实（pi.context()）。 */
 	context?: () => Promise<ContextSnapshot>;
@@ -595,6 +611,22 @@ export class ExtensionRunner extends ExtensionHost {
 					});
 				} catch (error) {
 					this.emitOwnedError(scope.id, "submitInput", error);
+					throw error;
+				}
+			},
+			submitInputs: async (inputs, inputOptions) => {
+				assertActive();
+				if (!this.options.onInputs) throw new Error("宿主未提供批量输入入口");
+				try {
+					return await this.options.onInputs(
+						inputs.map((input) => cloneAgentInputForHost(input)),
+						{
+							namespace: deliveryKey(scope.id, inputOptions?.deliveryScope ?? ""),
+							isActive: () => scope.active && !inputOptions?.signal?.aborted,
+						},
+					);
+				} catch (error) {
+					this.emitOwnedError(scope.id, "submitInputs", error);
 					throw error;
 				}
 			},

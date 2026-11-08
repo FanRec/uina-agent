@@ -20,7 +20,7 @@ import { MC_PROTOCOL_VERSION } from "./session-identity.js";
 export function createMinecraftWorld(
 	options: {
 		executorPolicy?: Partial<ExecutorPolicy>;
-		deliveryPolicy?: { shortWindowMs?: number; pollMs?: number };
+		deliveryPolicy?: { pollMs?: number };
 		/** 旧 config.json 路径（迁移与 settings 种子输入）；默认世界包内 config.json。 */
 		legacyConfigPath?: string;
 	} = {},

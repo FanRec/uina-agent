@@ -39,6 +39,7 @@ import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
+import { formatActiveRuns } from "../world/run-digest.js";
 import { sampleStateFrame } from "../world/state-frame.js";
 import { safetyNeedsAttention } from "./safety-route.js";
 
@@ -482,9 +483,20 @@ export async function openExecutionSide(
 					value = await world.read({ ref: p.selector as ExactRef, input: p.input ?? {} });
 					break;
 				// 请求前状态快照（批37）：一次采样同一提交边界，返回有界文本 + 可用性事实。
-				case "state.snapshot":
-					value = sampleStateFrame({ facts, readers: stateReaders });
+				case "state.snapshot": {
+					const frame = sampleStateFrame({ facts, readers: stateReaders });
+					// 活跃任务是请求前事实，不是事件：同一次 RPC 里附上，各自标采样时间。
+					// Runtime 不可用时只丢这一段——环境事实仍然可读，不编一个假的任务列表。
+					let digest: string | null = null;
+					try {
+						const active = await getRuntime().list({ activeOnly: true });
+						digest = formatActiveRuns(active.items, new Date().toISOString());
+					} catch {
+						digest = null;
+					}
+					value = digest ? { ...frame, text: `${frame.text}\n${digest}` } : frame;
 					break;
+				}
 				case "read_image": {
 					// G11：只接受 map@1 实际产出的 ImageFileRef；核验 realpath/摘要后回 base64。
 					const ref = payload as unknown as Parameters<typeof readExportedImage>[1];

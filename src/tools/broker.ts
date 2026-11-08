@@ -44,8 +44,13 @@ export interface ToolExecutionResult {
 	details?: unknown;
 	result: string;
 	status: ToolResultStatus;
-	/** Ends this decision after recording the result; pending inputs remain queued. */
-	continuation?: "stop";
+	/**
+	 * 这批结果之后还要不要继续决策。
+	 * - `stop`：立即收口本轮；
+	 * - `yield`：本工具已把工作可靠交给独立执行端，仅凭这份结果不必再发一次模型请求。
+	 *   只有整批结果都是 `yield` 才让出——混进任何需要模型看见的结果都照常推理。
+	 */
+	continuation?: "stop" | "yield";
 }
 
 interface AjvLike {

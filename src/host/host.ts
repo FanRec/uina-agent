@@ -266,6 +266,8 @@ export class UinaHost {
 				delivery: (namespace) => subject.delivery(namespace),
 				onInput: (input, owner) =>
 					state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input, owner),
+				onInputs: (inputs, owner) =>
+					state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.acceptBatch(inputs, owner),
 				onError: (text) => emit({ type: "error", text }),
 				onNotice: (text) => emit({ type: "notice", text }),
 				onProvider: (name, registered, options) => models.register(name, registered, options),

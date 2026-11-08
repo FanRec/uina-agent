@@ -4,7 +4,7 @@ import type { ServiceCompanionContext } from "../../../../src/extensions/world-f
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { Acceptance, DeliveryState, Entry, Schedule } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
-import { DeliveryPump, formatCompletion } from "./delivery.js";
+import { DeliveryPump } from "./delivery.js";
 import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
 import type { RequestIntent } from "./ledger-worker.js";
@@ -43,7 +43,7 @@ export class MinecraftFacade {
 	constructor(
 		readonly executor: MinecraftExecutor,
 		private readonly ctx: ServiceCompanionContext,
-		private readonly policy: { shortWindowMs?: number; pollMs?: number } = {},
+		policy: { pollMs?: number } = {},
 	) {
 		this.delivery = new DeliveryPump(executor, ctx, policy.pollMs);
 	}
@@ -157,15 +157,14 @@ export class MinecraftFacade {
 				},
 			},
 			signal,
-			// G8：按调用短窗覆盖。0 = 只受理不等（完成走 minecraft_completion）。
-			typeof params.wait === "number" ? params.wait : undefined,
 		);
 	}
-	private async submitRequest(
-		intent: RequestIntent,
-		signal: AbortSignal,
-		waitMs?: number,
-	): Promise<ToolExecutionResult> {
+	/**
+	 * 顶层动作（run / chat / continue）的唯一出口：只等 Runtime 的可靠受理。
+	 * 之后的结算由 Completion 走 Host 投递，这里不捎带终态——等一个"短窗"只会让模型
+	 * 猜服务器时间，并让同一份结果出现工具与投递两条通道。
+	 */
+	private async submitRequest(intent: RequestIntent, signal: AbortSignal): Promise<ToolExecutionResult> {
 		if (!this.executor.status().actionsAllowed)
 			return response({ code: "OWNER_GATE_CLOSED", message: "owner action gate is closed" }, "not_started");
 		const { requestId } = intent.request;
@@ -227,54 +226,29 @@ export class MinecraftFacade {
 				"unknown",
 			);
 		}
-		try {
-			if (accepted.kind !== "accepted")
-				return response(
-					{
-						...accepted,
-						...(accepted.kind === "unknown"
-							? { nextCall: { action: "runs", params: { op: "request", request: requestId } } }
-							: {}),
-					},
-					accepted.kind === "unknown" ? "unknown" : "failed",
-				);
-			if (waitMs === 0) return response(accepted);
-			let waited;
-			try {
-				waited = await this.executor.wait(
-					accepted.snapshot.run,
-					{ timeoutMs: waitMs ?? this.policy.shortWindowMs ?? 3000 },
-					signal,
-				);
-			} catch (error) {
-				if ((error as { code?: string }).code !== "REQUEST_CANCELLED") throw error;
-				return response(accepted);
-			}
-			if (
-				waited.kind !== "result" ||
-				(waited.snapshot.phase !== "finished" && waited.snapshot.phase !== "awaiting_decision")
-			)
-				return response(accepted);
-			const state = await this.executor.rpc<DeliveryState>("runtime.readDelivery", {
-				ref: waited.snapshot.completionRef,
-			});
-			const view = await this.delivery.view(state);
-			const receipt = await this.delivery.toolAttempt(view.completionRef);
-			return {
-				status: view.snapshot.phase === "finished" ? view.snapshot.outcome : "succeeded",
-				result: formatCompletion(view),
-				details: { kind: "result", ...view },
-				receipt,
-			};
-		} catch (error) {
-			return response({
-				...accepted,
-				error: { code: (error as { code?: string }).code ?? "RESULT_UNAVAILABLE", message: String(error) },
-				nextCall: { action: "runs", params: { op: "request", request: requestId } },
-			});
-		} finally {
-			this.delivery.heldRequests.delete(requestId);
-		}
+		// 可靠受理（或确定的拒绝）已经到手，这把锁的使命就到头了；
+		// 请求还在飞的那条路径由上面的 finally 负责解锁。
+		this.delivery.heldRequests.delete(requestId);
+		if (accepted.kind !== "accepted")
+			return response(
+				{
+					...accepted,
+					...(accepted.kind === "unknown"
+						? { nextCall: { action: "runs", params: { op: "request", request: requestId } } }
+						: {}),
+				},
+				accepted.kind === "unknown" ? "unknown" : "failed",
+			);
+		// 受理即结果。完整 snapshot 只描述受理那一刻的相，模型的下一步判断要看新的状态帧。
+		return {
+			...response({
+				kind: "accepted",
+				requestId,
+				run: accepted.snapshot.run,
+				segment: accepted.segment,
+			}),
+			continuation: "yield",
+		};
 	}
 	/**
 	 * `runs.status`（无 run）的模型出口：内部 status 带最多 64KB 执行侧日志尾，
