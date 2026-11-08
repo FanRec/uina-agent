@@ -397,9 +397,9 @@ function urgentEvent(payload: unknown): boolean {
 /**
  * 模型展示投影：只保留该 phase 决策所需字段，每个事实只出现一次。
  *
- * 这不是 CompletionView 的序列化——结构化原件留在工具 details
- * （`facade.execute` 的 `{kind:"result", ...view}`）与后台通知的 event.data，
- * 供前端与 effect 读取。`awaiting_decision` 必须带 decision：runs.continue 只能用它续段。
+ * 这不是 CompletionView 的序列化——结构化原件留在完成通知的 event.data，
+ * 供前端与 effect 读取；工具层只回受理，不带这份正文。
+ * `awaiting_decision` 必须带 decision：runs.continue 只能用它续段。
  */
 export function formatCompletion(view: CompletionView): string {
 	const base = { kind: "result" as const, run: view.run };

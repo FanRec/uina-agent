@@ -368,7 +368,6 @@ export type CompletionView = CompletionHeader & {
 		| { kind: "record"; record: Ref }
 		| { kind: "unavailable"; record: Ref; error: { code: string; message: string } };
 };
-export type RunReply = Acceptance | ({ kind: "result" } & CompletionView);
 export type DeliveryReceipt = import("../../../../src/core/types.js").HostCommitReceipt;
 export interface DeliveryState {
 	delivery: CompletionHeader;
