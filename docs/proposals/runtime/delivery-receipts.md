@@ -49,7 +49,7 @@ ToolExecutionResult、WorldEvent 和内部 AgentInput 各增加可选 receipt:Ho
 3. Subject 按现有工具交换协议追加原始 tool message，连同标记一起持久保存；append 成功后更新 committed 索引。现有 tool_result/tool_finished 都早于这一步，不能代替它。
 4. append 失败仍保留 pending/明确的未知故障；Subject 的工具交换明确放弃结算或宿主退役时，释放其 pending 归属。不能把 Tool.run Promise 返回当作交换已结束，结果可能还在等同批其他工具。进程崩溃后从真实会话记录恢复：没有带标记的 canonical 工具结果，就不伪造 committed。恢复生成的 unknown 工具消息不继承生产者未交付材料的标记。
 
-生产者通过 inspect 获取回执，不需要 Minecraft 专属 Core 事件或扫描 Host 日志。缺失回调由查询补齐；短窗口只需暂缓后台输入至本次工具交还后第一轮状态核对，不持久保存“已交出即可完成”的中间状态。
+生产者通过 inspect 获取回执，不需要 Minecraft 专属 Core 事件或扫描 Host 日志。缺失回调由查询补齐；工具受理期间只需暂缓同请求的后台输入至本次工具交还后第一轮状态核对，不持久保存“已交出即可完成”的中间状态。
 
 ## 4. 运行时输入
 

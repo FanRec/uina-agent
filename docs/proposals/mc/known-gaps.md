@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 | G1 领域记录 | ~~下一工作包的唯一前置~~（已关闭） |
 | 2 | ~~G6 节流推送~~ | **批20 已关闭**——同时修掉"模型不 read 就瞎"和"轮询成本"，面向观众线的前置已就位 |
-| 3 | ~~G8 按调用的短窗~~ | **批20 已关闭**（同批含 G7 增量游标） |
+| 3 | ~~G8 按调用的短窗~~ | **批20 已关闭，批41 换成纯异步受理**（同批含 G7 增量游标） |
 | 4 | ~~G5 剩余能力~~ | 批19 收口 51/51 |
 | 5 | G12 认证 / G13 平台 | 与玩法并行，不阻塞；剩余横向缺口还有 G14（30 分钟真模型窗口——i2.ts 预算/观察/扰动已就绪待跑）、G16 的负载/增长子项（随 G14 窗口）、G17（终态报告，待 G14）；G25 已于批26 关闭，其 A* think budget 搜索加速残余已于批28 关闭（启发式加权，见 G25 关闭事实残余段），S3 水中爬岸耗时方差仍在——归水节点出发的控制/规划不稳，不再归属搜索预算；G26/G27 已于批27 关闭（§4.1） | |
 
@@ -136,7 +136,7 @@
 |---|---|---|---|
 | ~~G6~~ | **无周期性推送**（✅ 已于 2026-11-03 批20 关闭；批37 换掉关闭方式） | 关闭方式（批20）：`world/digest.ts` 按查询依赖采样（self@1/inventory@1/world@1 三个现有读取器，同一 `facts.sample` 提交边界，与 observe 同口径）、前缘节流 10s（`DIGEST_INTERVAL_MS` 集中策略值）、规范化 JSON 哈希去重、facts reset 后补发；`companion/side.ts` 经 `onGameEvent` 上行，`executor/delivery.ts` 以独立事件类型 **minecraft_digest** 交付（不指向 events@1），主脑忙碌（`isBusy`）时只保留最新一份、空闲即补发。时间只取粗粒度相位与天数（ticks 连续变化会让去重失效），位置取整数格。**批37 改写**：推送这个方向本身是错的——旧坐标排队等模型处理没有价值，只有当前值有意义，于是 digest 整条链路（定时器、节流、去重、事件类型、忙时合并）删除，改为 `world/state-frame.ts` 采样 + `state.snapshot` 只读 RPC，由 `WorldDef.requestContext` 在每次模型请求前通过 `turn.transformContext`（`tail` 相位）注入一份当前快照；宿主侧 250ms 超时即本轮不注入 | 真服 `dev:mc:state-frame` 7/7：三段齐全无未知、空闲 15s 零事件、`/give` 后下一次采样立即可见、走路 20s 零事件且每帧都是身体当前所在格、events@1 无状态帧泄漏；注入接缝由 world-request-context（每请求后尾都是那一刻的新值、不落 history）与 qq-world-framework-seams 覆盖 |
 | ~~G7~~ | **查询无增量**（✅ 已于 2026-11-03 批20 关闭，inventory@1 先行） | 关闭方式：`protocol.ts` 增每槽位最后变更 revision 标记（`playerSlotMarks`，全量重同步只标内容真变的槽位，光标只推 revision 不算槽位）；`view.inventoryChanges(since)` 暴露差量（标记不可用回 null 不猜）；`inventory@1` 输入 `{since}` 回 `{revision, changes:[{slot,item|null}], counts, usedSlots, freeSlots}`（差量 + 变化后总数，不含全量 slots）；`since` 超前（含跨重启 revision 归零）如实 INVALID_INPUT。其余查询仍全量，按真实消费者逐个补 | 真服：rev 10→11 差量恰含 emerald +2；单测覆盖同游标/差量/标记不可用回退全量/超前报错四态 |
-| ~~G8~~ | **`run` 短窗全局固定 3000ms**（✅ 已于 2026-11-03 批20 关闭） | 关闭方式：`worlddef/schema.ts` 的 `run` 增 `wait`（ms，≥0），`executor/facade.ts` 按调用覆盖短窗，`wait:0` 只受理不等（完成走 minecraft_completion 通知）；指南同步 | mc-native-facade 单测：默认 3000 / 覆盖 1200 / 0 跳过等待 三态 |
+| ~~G8~~ | **`run` 短窗全局固定 3000ms**（✅ 2026-11-03 批20 关闭；2026-11-08 批41 换成纯异步受理） | 批20 的关闭方式是 `run` 增 `wait`（ms，≥0，`wait:0` 只受理不等）；**批41 整体删除默认 3 秒窗与公开 `wait`**：`run`/`chat`/`runs.continue` 一律只回 `accepted`/`not_accepted`/`unknown`，终态只经 `minecraft_completion` 投递。缺口仍关闭，模型不必再猜服务器时间 | 批20 的三态单测由批41 改写：`mc-native-facade` 覆盖瞬间完成仍只回受理、拒绝保留凭据、unknown 按原 requestId 查证；`mc-continue-facade` 覆盖 continue 新段只回受理 |
 | ~~G9~~ | **普通 Run 之间无优先级**（✅ 已于 2026-11-03 批21 关闭） | 关闭方式：`Schedule` 的 enqueue 变体增 `priority?: boolean`（contracts/runtime.ts，public-api §7 同步）；engine 在独立身体申请与导航申请两处入队前按 `state.request.schedule` 重设队列既有的一次性 `prioritize` 旗标（`runtime/engine.ts` `prioritizeIfRequested`），队列无常驻优先级栈的不变量不破坏 | 插队/一次性消费/safety 仍最前由 `mc-body-queue` 覆盖；engine 接线（priority 先于 FIFO 等待者取得身体 + 无 priority 的 FIFO 控制组）由 `mc-decision-runtime` 真 SQLite 引擎覆盖；facade 透传由 `mc-continue-facade` 覆盖。priority 只作用于本次受理的段，continue 新段不带（worlddef 指南同步） |
 | ~~G10~~ | **两个计算预算不统一**（✅ 已于 2026-11-03 批21 关闭） | 关闭方式：两处 `FRAME_EXPIRED` 统一携带 hint（"inputs must apply within the 250ms feedback frame; chunk long synchronous computation with await mc.sleep(0)…"），数字语义不同（250ms 帧窗 vs 20ms burst）不做常量合并；baseGuide 把"过期帧拒绝"与"mc.sleep(0) 分片"接成因果句 | `mc-feedback` 过期用例断言 hint 含 mc.sleep(0)；engine 侧 failureData 本就透传 hint，零改动 |
 | ~~G11~~ | **Host 无图片出口**（✅ 已于 2026-11-01 批17 关闭） | 关闭方式：`world/map.ts` 产 ImageFileRef + `companion/side.ts` read_image rpc + `executor/facade.ts` observe 产 `ToolExecutionResult.images`；world-tool 本就透传 | 真实 wire：受控 5/5 + 真模型 4/4（模型实际描述画面） |
@@ -152,7 +152,7 @@
 
 | ID | 项 | 状态 |
 |---|---|---|
-| G14 | 30 分钟真实模型自主游玩 | 9B 暴露**重复死亡 + OwnerLost 门关闭后不恢复**；批10 补了自保与恢复但**未重跑同一窗口**，"自主生存"仍为空。批22 已把窗口就绪：`dev/i2.ts` 增请求预算（`--max-requests` 默认 500，达限即 interrupt）、观察扩展（self 健康与氧气、death 事件游标计数、runs 门状态与 safety 介入）、扰动演练（`--chaos`：窗口 60% 处 SIGKILL 伴生 → owner_lost → 模型须 `runs recover` 自开门，批9B 断链的直接复验开关）；真模型窗口待执行 |
+| G14 | 30 分钟真实模型自主游玩 | 9B 暴露**重复死亡 + OwnerLost 门关闭后不恢复**；批10 补了自保与恢复但**未重跑同一窗口**，"自主生存"仍为空。批22 已把窗口就绪：`dev/i2.ts` 增请求预算（`--max-requests` 默认 500，达限即 interrupt）、观察扩展（self 健康与氧气、death 事件游标计数、runs 门状态与 safety 介入）、扰动演练（`--chaos`：窗口 60% 处 SIGKILL 伴生 → owner_lost → 模型须 `runs recover` 自开门，批9B 断链的直接复验开关）；真模型窗口待执行。批41 的顶层纯异步受理与完成通知集中交付同样待该窗口复验——本轮只有自动化回归，真服与真实模型对照未跑 |
 | ~~G15~~ | **复杂避障**（✅ 已于 2026-11-04 批22 关闭，残余见 G25） | 关闭方式：批9B 的静默挂死根治——`driver/goto.ts` 看门狗三形态收束（上膛后 3s 位移停滞 / 上膛后 goal 被上游清空 2.5s 宽限仍不结算 / 非挖掘 10s 零位移总兜底，均 Stalled → UNREACHABLE，墙钟不再烧尽）；新增自然地形验收场景 `dev:mc:terrain-nav`（自寻真树、水候选拒绝、批9B 复刻 lane 柱、树绕行/digThrough、24 格穿越、explore） | 真服源码/产物各 6/6：树绕行 4.5–7s 到达、digThrough 对照到达、穿越 19.7s 到达或 9.9s 诚实失败、explore 25–40 格、批9B 复刻到达（平原 7.1s）或 12s 诚实失败（山地）；climb 回归 6/6（密封竖井 100ms 快速失败不受影响）；执行器残余登记 G25 |
 | G16 | 断电、长期负载、历史库增长成本 | **断电子项批22 已闭**：`tests/mc/mc-executor-kill-write.test.ts`——伴生在 runtime.db 写活动窗口被 SIGKILL → autoRecover 托管重建回 ready → 取证（独立进程）证 meta 身份不变、恢复只增不删、无半行损坏、owner_lost 如实关闭、探针 DISCONNECTED 诚实结算（3 次稳定）；`dev:mc:history --stats` 体量观测手段就绪。长期负载与历史库增长两项随 G14 窗口（i2.ts 预算/观察/扰动已就绪，真模型窗口待执行） |
 | G17 | 51 项终态报告 | 不存在；需按 `capabilities/index.ts` 的 `builtinCatalog`（批24 审查轮起唯一目录入口，`buildCapabilities` 别名已删）实际模块与 `capabilities.md` 的 16+35 逐项对照出状态表 |

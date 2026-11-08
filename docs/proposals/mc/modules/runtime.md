@@ -35,7 +35,7 @@ Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独
 2. 对新请求检查当前 attachment/门及请求键的内存关闭代次，再准备材料。程序按 `SourceRequest`（名字或临时代码）解析一次源码，解析头注释、校验语法并固定 `{name, source, digest}`，不执行用户代码；原生入口固定 descriptor/environment。损坏头/schema 报 `PROGRAM_INVALID`（reason=header）、非法选择子报 `SELECTOR_INVALID`、文件不存在报 `PROGRAM_NOT_FOUND`（program.md §3、§7）。
 3. 准备结果是不可变材料，不是“提交瞬间最新”的承诺。读源码之后作者又改了文件，本段仍执行入场捕获的那份字节；不重读文件、不将 Library/World 读取放进 Runtime 事务伪造原子性。
 4. 在 Runtime 单个短事务内重新检查**自己拥有的** owner 门/Runtime 装配代次、requestId 唯一约束/撤销屏障、替换目标/预期控制 owner 的镜像事实，写 submissions、Run/Segment、固定材料与入口参数。replace_pending 的旧 Run 结论与 preempt_current 指向旧 Run 的停止意图，都和新 Run 同事务提交。Driver 物理变化并不被该事务冻结；实际 acquire/写入仍由 Driver 核验。
-5. Runtime 本地 admission 线性化区持有一次性的 preemption reservation，在单事务之前暂缓发出新的 Driver.acquire，但不封闭旧 Call/Body 的动作准入、不撤销现有控制。preempt_current 必须先确认新受理与指定旧 Run 停止意图一同 commit；commit 成功的同一调度续程里先递增该 Run 的 admission generation、封闭旧范围、取消其调用，再调用 Driver 撤销并等待屏障；reservation 释放后新工作才可获得资格。commit 失败/回滚不改变旧代次或旧 gate，释放 reservation 并照 FIFO 恢复 grant。如此数据库失败不会意外取消旧工作。reservation 不跨 IPC 等待、不阻塞独立 stop/emergency；若旧控制自然结束，只处理已固定的旧 runId，不追着新的当前主人取消。显式 stop 仍独立立即变更代次并撤销。公开 submit/continue 再按 §6 返回 RunReply.result 或 accepted。
+5. Runtime 本地 admission 线性化区持有一次性的 preemption reservation，在单事务之前暂缓发出新的 Driver.acquire，但不封闭旧 Call/Body 的动作准入、不撤销现有控制。preempt_current 必须先确认新受理与指定旧 Run 停止意图一同 commit；commit 成功的同一调度续程里先递增该 Run 的 admission generation、封闭旧范围、取消其调用，再调用 Driver 撤销并等待屏障；reservation 释放后新工作才可获得资格。commit 失败/回滚不改变旧代次或旧 gate，释放 reservation 并照 FIFO 恢复 grant。如此数据库失败不会意外取消旧工作。reservation 不跨 IPC 等待、不阻塞独立 stop/emergency；若旧控制自然结束，只处理已固定的旧 runId，不追着新的当前主人取消。显式 stop 仍独立立即变更代次并撤销。公开 submit/continue 只返回受理（accepted/not_accepted/unknown）；终态与决策一律走完成通知。
 6. commit 回执不明：保留原键，查询权威 Runtime 存储；未确认受理前既不执行新工作，也不因这次抢占撤销旧工作；查到已提交才落实既有停止意图。unknown 不改用新 requestId。lookup.not_found 不排除旧 IPC 稍后提交；明确同键重试仍安全地加入 singleflight/受理唯一约束，无需等旧 attachment 退出。提交后、撤销前崩溃由恢复流程先隔离旧控制并处理持久停止意图，不能越过交接直接启动新 Run。
 
 singleflight 绑定本次准备的真实 attachment/关闭代次，不将旧准备改绑新 owner。代次失效先结束旧准备，重新查持久受理/撤销事实后才能为当前绑定准备。受理提交成功与调度启动之间再次复查请求/Run 关闭代次：已经收到 stop 的工作不能趁提交回调启动。唯一约束冲突只读取胜出的原受理，不将第二份材料发布为新段。
@@ -262,7 +262,7 @@ pendingDeliveries 只按 [public-api §7](../public-api.md) 分页返回 pending
 
 settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。两种交付渠道复用同一回执类型；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
 
-submit/continue 的受理在执行侧完成，ExecutorClient 的 Uina 侧适配再组织短窗口：工具 result 给按 phase 收窄的展示投影（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），details 给完整 CompletionView；两者不互相推导。等待取消不取消已受理 Run。窗口选择、Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
+submit/continue 的受理在执行侧完成，工具层只把受理回执交回模型：完成与决策一律走完成通知，通知正文是按 phase 收窄的展示投影（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），details 给完整 CompletionView；两者不互相推导。等待取消不取消已受理 Run。Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
 
 Run 等待与请求重试不共享一个取消域。wait 默认忽略普通进度，等 finished/awaiting_decision；已有报告立即返回。显式 afterRevision 等一次变化，未来修订拒绝，finished 始终立即返回；超时返回 timeout，不制造 revision，也不取消 Run。小型 CompletionHeader 与正文可用性分开：content=unavailable 不改原 outcome；通知允许交付真实 header 后按 HostCommitReceipt ACK，完整材料故障不能阻塞其他报告。
 
@@ -300,8 +300,8 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 场景 | 必须成立 |
 | --- | --- |
-| 约 200ms 的调用且在短窗口内完成 | 返回持久真实终态/completionRef，正常无额外主动输入 |
-| 窗口超时或工具取消后完成 | 返回 accepted 或结束等待，Run 继续；后台交付相同结论 |
+| 任意 `run`/`chat`/`runs.continue` | 只返回受理（accepted/not_accepted/unknown），不阻塞等终态；Run 继续 |
+| 工具取消后完成 | Run 继续；后台交付相同结论 |
 | 根部 Promise.all 两个 Body 调用 | FIFO 依次执行，取消只删对应项，不段级报错 |
 | preempt_current 校验失败或事务回滚 | 不因此取消旧 Run；独立 stop/emergency 仍立即撤销 |
 | 抢占提交后、撤销前崩溃/commit 回执未知 | 不提前启动新 Run；对账已提交停止意图，恢复先隔离旧控制 |

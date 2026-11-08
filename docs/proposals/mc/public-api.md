@@ -746,11 +746,11 @@ type CompletionView =
       content: CompletionContent<Extract<CompletionReport, {reportKind: "terminal"}>>})
   | (Extract<CompletionHeader, {reportKind: "decision"}> & {
       content: CompletionContent<Extract<CompletionReport, {reportKind: "decision"}>>});
-type RunReply = Acceptance | ({kind: "result"} & CompletionView);
-// RunReply 是 Runtime 侧的语义形状。模型实际收到的是按 phase 收窄的展示投影：
+// 受理即工具层的最终回答：模型收到受理句柄（requestId/run/segment），不给 phase，
+// 也不给完成快照。完成与决策一律由完成通知投递，正文是按 phase 收窄的展示投影：
 // finished 给 outcome/progress/value/error/unknownEffects，awaiting_decision 给
-// decision/reason/progress；正文读不到时给 detail=record|unavailable 与截断标志；
-// 结构化原件仍在工具 details 与事件 data，两者不互相推导。
+// decision/reason/progress；正文读不到时给 detail=record|unavailable 与截断标志。
+// 结构化原件仍在事件 data 与工具 details，两者不互相推导。
 type DeliveryDisposition = "pending" | "committed";
 interface DeliveryState {
   delivery: CompletionHeader; disposition: DeliveryDisposition; // 有界投影；完整正文按 completionRef 读
@@ -834,7 +834,7 @@ interface ExecutorClient {
   attach(origin: Origin): Promise<OwnerState>;
   heartbeat(attachment: Ref): Promise<OwnerState>;
   setOwnerGate(request: { requestId: Ref; attachment: Ref; gate: OwnerGate; closed: boolean; expectedRevision?: number }): Promise<OwnerGateReceipt>;
-  submit(origin: Origin, request: RunRequest, waitSignal?: AbortSignal): Promise<RunReply>;
+  submit(origin: Origin, request: RunRequest): Promise<Acceptance>;
   lookup(requestId: Ref): Promise<SubmissionLookup>;
   read(run: Ref): Promise<RunSummary>;
   readRecord(ref: Ref, options?: {format?: RecordFormat}): Promise<RecordReply>; // 固定 record/completionRef；对象身份 ref 则先固定最新截面
@@ -842,7 +842,7 @@ interface ExecutorClient {
   list(filter: { activeOnly: boolean; cursor?: string }): Promise<{ items: RunSummary[]; next?: string }>;
   wait(run: Ref, options: {afterRevision?: number; timeoutMs?: number}, signal: AbortSignal): Promise<RunWaitReply>;
   stop(command: StopCommand): Promise<StopReceipt>;
-  continue(request: { run: Ref; decision: Ref; requestId: Ref; entry: ContinuedEntry; environment?: "inherit" | "current" }, waitSignal?: AbortSignal): Promise<RunReply>;
+  continue(request: { run: Ref; decision: Ref; requestId: Ref; entry: ContinuedEntry; environment?: "inherit" | "current" }): Promise<Acceptance>;
   pendingDeliveries(page?: {cursor?: string; limit?: number}): Promise<{items: DeliveryRef[]; next?: string}>;
   readDelivery(completionRef: Ref): Promise<DeliveryState>;
   settleDelivery(completionRef: Ref, receipt: DeliveryReceipt): Promise<void>;
@@ -857,7 +857,7 @@ RunSummary/CallSummary 是已提交完整记录的有界投影，省略 progress
 
 CompletionView 的 inline/record/unavailable 只说明本次正文读取形态，不改变报告 outcome。RecordReply 的 file 只用于显式完整记录读取。不可变 record/completionRef 精确读原件；run/segment/call/effect 身份引用先固定最新已提交 record，再返回该截面。列表/调用树仍独立分页，完整对象统一 readRecord；不再公开三种专用完整读取方法。
 
-Runtime 唯一维护受理/撤销、decision 消费、停止、门、记录及交付处置，见 [Runtime](modules/runtime.md)。Executor 唯一维护 façade、短窗口、IPC、Host 对账与文件读出，见 [Executor](modules/executor.md)。Host 回执类型与真实性见 [Host 持久交付回执](../runtime/delivery-receipts.md)。
+Runtime 唯一维护受理/撤销、decision 消费、停止、门、记录及交付处置，见 [Runtime](modules/runtime.md)。Executor 唯一维护 façade、受理出口、IPC、Host 对账与文件读出，见 [Executor](modules/executor.md)。Host 回执类型与真实性见 [Host 持久交付回执](../runtime/delivery-receipts.md)。
 
 ExecutorClient 不把 observe、目录或 Library 变成 Runtime 职责；三者是同一 IPC 上各自所有者的分派。来源、attachment 和当前调用身份来自可信接入，不由模型/guest JSON 授权。
 

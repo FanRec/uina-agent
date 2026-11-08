@@ -44,7 +44,7 @@ Runtime 的事务不覆盖 Library 文件或 World 存储。工作文件、执�
 
 ## 3. 接入与受理
 
-接入生成/保存请求凭证由 [Executor §6](modules/executor.md#6-接入账本与受理查证) 定义；唯一受理、请求撤销与抢占事务由 [Runtime §2/§4.4](modules/runtime.md) 定义。工具等待、Run 停止和整个 World 停用的不同取消范围见 [Executor §2/§7](modules/executor.md)。
+接入生成/保存请求凭证由 [Executor §6](modules/executor.md#6-接入账本与受理查证) 定义；唯一受理、请求撤销与抢占事务由 [Runtime §2/§4.4](modules/runtime.md) 定义。`runs.wait` 的等待、Run 停止和整个 World 停用的不同取消范围见 [Executor §2/§7](modules/executor.md)。
 
 <a id="delivery"></a>
 

@@ -16,9 +16,9 @@
 {"action":"run","params":{"selector":"collect@1","input":{"item":"oak_log","count":8}}}
 ```
 
-短任务直接返回固定结果；长任务返回 `requestId/run/segment`，完成或交还时通知。等待工具回复被取消不停止已受理任务。失败和未知回执给出可直接复制的查询，不让模型猜是否应该重新执行。
+`run`/`chat`/`runs.continue` 只回答**受理**：`accepted` 表示已交给运行时（任务在后台跑，结算由 `minecraft_completion` 通知投递），`not_accepted` 表示没有派发，`unknown` 表示受理结果未知、必须用原 `request` 查证而不是重发。受理回执给 `requestId/run/segment`，不给 phase，也不给完成快照——模型要看当前进度就读状态帧，要结果就等通知，更久的显式等待用 `runs.wait {run,timeoutMs}`。等待工具回复被取消不停止已受理任务。失败和未知回执给出可直接复制的查询，不让模型猜是否应该重新执行。
 
-**批20 起**：`run` 支持按调用短窗覆盖 `{"wait": ms}`（≥0；缺省仍 3000ms，`wait:0` 只受理不等，完成走完成通知；更久的显式等待用 `runs.wait {run,timeoutMs}`）。
+**批 41 起**：默认 3 秒等待窗与公开 `wait` 参数整体删除。原因是同一个结果曾同时存在两条通道——窗口内完成就把终态当工具结果返回，超时就把 `accepted` 返回、终态再从完成通知来一次；模型无法从返回值判断自己拿到的是终态还是受理态，宿主也无法保证两处措辞一致。删除后工具层只有一个语义，任务快慢只决定通知什么时候到。
 
 **批37 起**：世界状态不再推送。`state.snapshot` 是窄的只读 RPC，一次采样给三段的有界文本（见 [world §9.5](world.md)），由 `WorldDef.requestContext` 在每次模型请求前调用、宿主附在投影尾部；空闲世界零输入。事件只承载"发生了什么"：`minecraft_event` 按种类分流——死亡、断线、玩家私聊、本地安全响应没脱险（`blocked`/`timeout`）走 `urgent`（steer，当前执行前提已失效或有人在等回应），其余走 `queued`（等下一次决策一起处理）。已脱险的安全干预带 `interruptedRun` 上报。**批39 起**终止态的上报判据改看起因而非终态值：世界自己关门（`cancelled`）不上报，连接身份变了导致的失效不上报（`connection`/`death` 事实已经说了同一件事），其余一律上报——包括没有连接事实承担的失效（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录），它们意味着"危险触发过、脱险没跑成"，没有任何别的事实替它说。同一世界的后续输入（外部事件与自身完成）在宿主侧合成一次决策。
 
@@ -174,8 +174,8 @@ interface ExecutionSideStatus {
 }
 interface DeliveryDiagnostics {
   observedAt: string; pendingCount: number | null; hostBusy: boolean | null;
-  activeInput: {key: Ref; attempt: Ref; createdAt: string;
-    lastCheckedAt: string | null; host: HostDeliveryState} | null;
+  activeInputs: {key: Ref; channel: "input"; attempt: Ref; createdAt: string;
+    lastCheckedAt: string | null; host: HostDeliveryState}[]; // 本激活派发的与宿主正在处理的，多份互不占位
   item?: {key: Ref; disposition: DeliveryDisposition; eligible: boolean; host: HostDeliveryState};
   error?: {code: string; message: string};
 }
@@ -329,7 +329,7 @@ type ExecutorFrame =
 | 方法组 | 请求/返回的唯一来源 |
 |---|---|
 | init/ready、status、shutdown | 本文启动、状态与关闭合同 |
-| runtime.submit / runtime.continue | public-api §7 的 RunRequest/继续请求 → Acceptance；只办受理，不在服务端开工具短窗口 |
+| runtime.submit / runtime.continue | public-api §7 的 RunRequest/继续请求 → Acceptance；只办受理，不等终态 |
 | 其余 runtime.* | public-api §7 的 ExecutorClient 中 attach/heartbeat/门/lookup/read/list/wait/stop/交付方法；移除函数/signal 参数，信号按 cancel_wait 映射 |
 | observe | 本文 Observe 参数；查询所有者的 Observation |
 | directory.search/describe | public-api §3 的 CallableDirectory |
@@ -337,13 +337,13 @@ type ExecutorFrame =
 
 实现使用“方法名 → 参数 schema、结果 schema、处理函数”的本地表生成类型与校验。启动协议单版本匹配，不做旧协议猜测/兼容分支。JSON 大小在发送前检查、接收后复核；方法/关联 ID/launch 不符是协议错误。Promise<void> 在 wire 固定编码为 null，stub 还原为 void；不能省掉成功回复的 value。相同已完成 id 的迟到回复可丢弃，不回退状态；活动 id 的 method 不符或错误 launch 则封闭该连接并故障退役。RPC id 只在一次 launch 内递增，**不是 requestId**。
 
-bootstrap hello/唯一 init/ready 是业务 channel 开放前的握手消息，校验当前启动身份；hello 的进程创建标识不能由普通业务请求改写。ExecutorClient 的 submit/continue 是 Uina 侧组合方法：受理 RPC 加查询/短窗口，最终返回 RunReply。events 在本地订阅 changed 提示，不把 listener 传到执行侧。所有 Runtime 请求由 channel 绑定 owner/attachment，Origin JSON 只供与绑定核对，不能自行切换归属。
+bootstrap hello/唯一 init/ready 是业务 channel 开放前的握手消息，校验当前启动身份；hello 的进程创建标识不能由普通业务请求改写。ExecutorClient 的 submit/continue 是 Uina 侧组合方法：登记请求原件后发受理 RPC，返回受理回执。events 在本地订阅 changed 提示，不把 listener 传到执行侧。所有 Runtime 请求由 channel 绑定 owner/attachment，Origin JSON 只供与绑定核对，不能自行切换归属。
 
 接入持有 pending RPC 表。发送 API 成功只表示写入传输，不证明对方收到、更不证明受理；无法证明未发送的失败一律按该方法的未知语义处理。submit/continue/stop 的业务结果由受理/停止合同决定，不从通用 RPC error 推导游戏成功或取消。
 
 ### 5.2 取消、背压和提示
 
-每个 request 在执行侧先同步登记，再启动异步 handler。短窗口属于 Uina：工具取消先结束本地窗口，再取消它派生的 read/wait RPC；不向受理 RPC 发送“撤销任务”的取消。cancel_wait 只取消指定读取/等待，不撤回 submit/continue、stop/门或 Library 已开始的写入。受理尚未知时及时返回原键供查证/显式 stop。handler/调用者 scope 结束清理自己的读取资源；已受理 Run 独立存活。
+每个 request 在执行侧先同步登记，再启动异步 handler。工具层不等结果，因此也不存在需要由工具取消去结束的本地窗口；工具取消只取消它自己派生的 read/wait RPC，不向受理 RPC 发送“撤销任务”的取消。cancel_wait 只取消指定读取/等待，不撤回 submit/continue、stop、门或 Library 已开始的写入。受理尚未知时及时返回原键供查证/显式 stop。handler/调用者 scope 结束清理自己的读取资源；已受理 Run 独立存活。
 
 发送方按 Node send 回调推进有界发送缓冲，不能无限调用 send。控制消息先于尚未发送的普通请求；已经交给 IPC 的消息不能越过，故必须限制已交给 IPC 的未回调字节。run_changed/statusChanged 按 run 取最高 revision 合并，不保证逐条到达；完成报告不塞进提示流，接收方补读记录。订阅也先登记再复查，不能靠提示完成运行。
 
@@ -394,7 +394,7 @@ readRecord(ref,{format}) 在一次读取边界固定 RuntimeRecord。auto 初始
 
 导出只接受 Ref，不接受模型指定路径。临时文件完整写入、核对后原子 rename；复用已有文件前核对长度/sha256，不符则从原记录重建，失败清理自有临时件。文件是可再生读取缓存，不是新的权威记录或证据强保留；文件丢失可按同一 record 重新生成，记录已清理就 NOT_FOUND。清理 Library 不删 exports，导出不重放动作、不重新求值程序。
 
-短窗口与通知共用 CompletionView，先读小型 header。recordBytes 由 Runtime 存储路径随固定记录计算，不在 Uina/游戏主循环重新序列化大正文。格式器为信封预留空间；header、完整正文和信封合计能放进默认 16 KiB 展示预算时才读正文并给 content=inline；其余给 content=record 和原引用，不先读全文或导出文件。显式 record 则按上面的独立预算读全文，RecordReply 才可返回文件。格式器输出的是模型展示投影：只保留该 phase 决策所需的必需字段（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），同一事实只写一次；结构化原件仍是 details 里的 CompletionView，两者不互相推导。
+完成通知共用 CompletionView，先读小型 header。recordBytes 由 Runtime 存储路径随固定记录计算，不在 Uina/游戏主循环重新序列化大正文。格式器为信封预留空间；header、完整正文和信封合计能放进默认 16 KiB 展示预算时才读正文并给 content=inline；其余给 content=record 和原引用，不先读全文或导出文件。显式 record 则按上面的独立预算读全文，RecordReply 才可返回文件。格式器输出的是模型展示投影：只保留该 phase 决策所需的必需字段（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），同一事实只写一次；结构化原件仍是 details 里的 CompletionView，两者不互相推导。
 
 实际读取失败时 content=unavailable，仍显示已有真实结论、未知量和记录读取 nextCall。不能因某份载荷故障退役整个通知队列；header/record 引用可正常进入 canonical 并 ACK，完整材料随后由显式查询重读。只有 eligibility 不可核实时暂缓投递，并继续扫描其他项。普通 queries 的导出失败直接失败，不冒充返回完整值。
 
@@ -497,23 +497,23 @@ Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 
 
 事件只是加速信号：input_accepted/input_settled、tool_result 或 turn_end 唤起 inspect，真正依据是 Host delivery 索引。Executor 不扫描会话日志；Host 自己从 Canonical history/Mailbox 派生状态，没有 Minecraft 专属 Core 分支。
 
-### 8.2 直返、后台投递与恢复
+### 8.2 受理屏障、集中投递与恢复
 
-1. 发送受理 RPC 前按 requestId 登记本地暂缓，受理后关联 segment。窗口从确认受理起算，只按该请求原 completionRef 取结果；进度/其他续段不冒认完成。
-2. 窗口内取得 header 就固定选择 result/CompletionView；实际正文读取超时可给 content=unavailable。为直返创建并持久登记 tool attempt，工具结果携带 receipt={key:completionRef,attempt}。窗口到期/工具取消且未选中结果则 accepted；初始受理未知仍给原键，不捏造 accepted。Runtime 此时仍 pending。
-3. Host 在接收已校验工具结果时同步登记 pending 尝试，早于异步后置观察与 canonical append。第一次 Host 对账后解除本地暂缓：committed 则 ACK；pending 工具结果则等待；未交到 Host/明确 absent 才走后台。因此直返前后崩溃不再留下终止重试的持久交接状态。正常快速完成不额外唤醒模型，异常允许同 ref 重复。
-4. 后台分页读 eligible pending 引用并先 inspect(key)。committed 直接 ACK；pending 不重复入队；absent 才准备同一 CompletionView，持久登记新 input attempt 后 emitEvent（带 receipt）。整个 Executor 正常只保留一个活动后台 input，其余报告留 Runtime。投递 Promise 不在串行区内等待，Host 空闲时它可能覆盖整个模型回合。
+1. 派出受理 RPC 前按 `requestId` 登记本地暂缓（`heldRequests`），受理回执到手、或请求仍在不明地飞时解除。这段窗口里对账跳过同一 requestId 的待投递项：工具结果还没进 canonical 历史，完成通知不能抢在它前面被消费。它是因果屏障，不是等结果的时间窗。
+2. 工具只把受理回执（`accepted`/`not_accepted`/`unknown`）交回模型，不读 Completion、不创建 tool attempt、不带 `completionRef` receipt；`unknown` 保留原 requestId 与 `runs.request` 查证入口。Runtime 的交付处置此时仍是 pending。
+3. 结算只有一条通道：后台按 `completionRef` 独立 `inspect(key)`，逐份准备 input attempt，经批量入口持久入队；Host 形成 committed 回执后才 `settleDelivery`。受理窗口里被跳过的项下一轮对账自然补上，不因"工具已返回"丢失，也不因重复投递重跑世界动作。
+4. 后台分页读 eligible pending 引用并先 inspect(key)。committed 直接 ACK；pending 不重复入队；absent 才准备同一 CompletionView，持久登记新 input attempt 后集中交付（带 receipt）。一轮对账把所有可交付的 key 收进一个有界批次（最多 8 个）、一次 `emitEvents` 交出：多份完成通知互不占位，宿主还在处理的那份不挡别的。没交出去的那条不推进状态，下一轮换新 attempt 重投；全被拒不再立即重排，避免忙等。批量受理只等到逐条持久入队，模型回合由宿主随后统一调度，不在对账串行区内等待。
 5. 发出前、deferred render 前以小型 readDelivery 复查 eligibility；当前 decision 过时则 null，不写 ACK；不可核实则暂缓并继续查询。正文是已准备好的固定 View，材料不可读也可交付真实 header。Host input_settled 后查询 receipt，committed 才 ACK。渲染后的最后 decision 展示竞态仍由 continue CAS 阻止重复行动。
 6. 每 5 秒兜底 inspect 活动 key，恢复/事件触发也推进。pending queued/processing 表示 Host 仍持有交付，不因忙碌或超时新增队列项；committed 补齐丢失回调/ACK；absent 释放本地占位并重试；unavailable 保留并暴露 unconfirmed，不假称仍忙或已丢失。重试 1/2/4/8 秒封顶，可取消，均为内部策略。
-7. 旧 activation 的 render 已失效，或操作者明确 delivery.retry 时，以 key/expectedAttempt 调 Host.retire。committed 就 ACK；retired 才换新 attempt；changed 读新状态，不撤销别人的新尝试；unavailable 不加新队列项。只退役交付，不取消工具协议、Run 或其他输入。迟到工具结果可能重复同 key，动作绝不重跑。
+7. 旧 activation 的 render 已失效，或操作者明确 delivery.retry 时，以 key/expectedAttempt 调 Host.retire。committed 就 ACK；retired 才换新 attempt；changed 读新状态，不撤销别人的新尝试；unavailable 不加新队列项。只退役交付，不取消工具协议、Run 或其他输入。迟到的投递可能重复同 key，动作绝不重跑。
 
-delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询状态、createdAt/lastCheckedAt、可得的 hostBusy、最后错误与 nextCall。查询失败显示 unconfirmed；hostBusy 只是辅助显示，不能掩盖回执未知。显式 retry 通过现有端口对账/退役，不增加另一个交付调度器。
+delivery 诊断至少给 pendingCount、各在途输入的 key/attempt/channel 与 Host 查询状态、createdAt/lastCheckedAt、可得的 hostBusy、最后错误与 nextCall。查询失败显示 unconfirmed；hostBusy 只是辅助显示，不能掩盖回执未知。显式 retry 通过现有端口对账/退役，不增加另一个交付调度器。
 
 停用暂停递送，重新启用先核对 Host 状态再处理 pending；不自动恢复旧游戏行动。仍适用的完成通知在持久存储与 Host 最终恢复处理后至少进入会话一次，允许同 ref 重复；已失效 decision 不再主动递送，历史仍可查询。rewind 不撤销已发生的接收事实；已 committed 的普通 retry 只返回原回执，再次查看用 record，不把交付重试当新的主动唤醒。
 
 ### 8.3 通知正文
 
-完成通知至少包含 run/segment/completionRef、terminal 或 decision、真实 outcome 或 reason、根 progress 及其完整性、未知效果总数/引用完整性、record、content 的 inline/record/unavailable 形态，以及下一步调用。缺料时直接保留已完成量和剩余工作；查询错误不变成“已完成”。同一个格式器用于短窗口和后台通知，不能一条渠道写成功、另一条写未知。
+完成通知至少包含 run/segment/completionRef、terminal 或 decision、真实 outcome 或 reason、根 progress 及其完整性、未知效果总数/引用完整性、record、content 的 inline/record/unavailable 形态，以及下一步调用。缺料时直接保留已完成量和剩余工作；查询错误不变成“已完成”。完成通知只有这一个格式器，不能一条渠道写成功、另一条写未知。
 
 普通状态缓存只为 BodyEndpoint/status 提供带时间的一瞥，不通过每次模型请求注入隐式上下文。精确观察与完整结果由工具/通知取得，避免维持第二份不断漂移的模型世界状态。
 
@@ -577,7 +577,7 @@ delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询
 | 验证层 | 必须验证 | 不能据此声称 |
 |---|---|---|
 | 文档静态检查 | 链接/锚点、JSON/JS 示例、严格 TS、schema 的互斥与类型一致、旧协议规则搜索 | IPC、OS 退役或游戏已可用 |
-| 本地自动测试 | 六 action 真实 WorldTool 形状；ledger 失败不派发；取消/预取消；短窗/通知竞态；同键不重复受理；真实 Host 回执、状态丢失与恢复；伪造 ACK 拒绝 | 实际文件系统掉电、父进程崩溃已覆盖 |
+| 本地自动测试 | 六 action 真实 WorldTool 形状；ledger 失败不派发；取消/预取消；受理即返回（无等待窗）；同键不重复受理；真实 Host 回执、状态丢失与恢复；伪造 ACK 拒绝；多份完成通知一次集中交付、各自回执 | 实际文件系统掉电、父进程崩溃已覆盖 |
 | 真实 Node 进程故障注入 | 每个启动边界中断、断 IPC、阻塞主循环、日志峰值、ACK 丢失、shutdown 超时；验证 pending 全部结算且无 action 重放 | Minecraft 服务端效果已核验 |
 | Windows OS 验证 | 两 Job 创建竞争/嵌套/名称寿命、精确进程身份、父进程 taskkill、子孙残留、目录别名、不同 profile 同账号、继承外部 Job、退出不明拒绝接管 | 没实际跑过的平台也兼容 |
 | 源码/构建启动 | tsx 与构建产物分别启动；Worker/WASM/native 缺失明确失败；数据库设置回报符合实值 | 仅测试变换路径通过即可交付构建 |

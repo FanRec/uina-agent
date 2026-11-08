@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-11-08 · 批41 顶层只回答受理，完成通知集中入队
+
+- **工具层不再等结果**：`run`/`chat`/`runs.continue` 删掉默认 3 秒等待窗与公开 `wait`，只回 `accepted`/`not_accepted`/`unknown`。旧实现里同一个结果有两条通道——窗口内完成就把终态当工具结果返回，超时就先回 `accepted`、终态再从完成通知来一次；模型分不清拿到的是受理还是终态。删除后任务快慢只决定通知什么时候到，Program 内的 `await mc.call()` 不变。`runs.wait` 保留，但不再是模型的默认工作流。
+- **整批可让出才让出**：`ToolExecutionResult.continuation` 增 `'yield'`；`settleToolExchange` 在工具结果全部写入 canonical 历史后才判，`stop` 优先，整批都是 `yield` 才结束本轮，混了读结果、失败或 `unknown` 照常请求模型。单个 `accepted` 不再单独产生一次"现在等什么"的请求。
+- **完成通知从单槽改有界集中入队**：`DeliveryPump` 原来一个 `active` 槽加 `emitting` 挡住全部后续投递，多份完成只能串行。现在一轮对账收最多 8 个 key，逐条 `inspect` 与独立 attempt，经新接线 `submitInputs` → `onInputs` → `Subject.acceptBatch` 一次 `emitEvents` 交出；每条保留自己的 `completionRef`、attempt、Host committed 回执与 ACK。批量受理只回答逐条持久入队，不冒充模型已读；被拒的项不留假在途，下一轮换新 attempt 重投，全被拒不再立即重排。消费端仍用批38 的 `batchForTurn()` 预算，不另造队列。
+- **`accept` 的 idle 直启语义保住**：抽出共用准入与持久化后，`accept` 一度变成"先入队再异步唤醒"，`waitForIdle()` 会在 `activeRun` 尚未占住的空窗里返回、把没提交的回合当成已结束（qq 的 read/skip 竞态用例变红）。改回 idle 且队列空时同步直启，与 `pushInput` 同源；批量入口不直启的语义不变。修的是内核语义，没有改测试断言。
+- **请求前状态帧附有界活跃任务**：`world/run-digest.ts` 复用 `runtime.list {activeOnly:true}`，与 `state.snapshot` 同一次请求前路径合成；最多列 4 条、单条摘要 40 字符，超出只给数量与 `runs.list`。两段各自标采样时间，不合成一个原子快照；只读，不推送、不 ACK、不建新 Run。
+- **旧机制清理**：`shortWindowMs`、顶层 `waitMs`、`toolAttempt`、`heldTools`、公开的 `run.wait` schema 与指南句、`RunReply` 类型、`ExecutorClient.submit/continue` 的 `waitSignal`、诊断里的单值 `activeInput` 全部删除；`heldRequests` 保留（受理期间压住同 request 的完成通知）。挖掘掉落观察窗、qq 调度与 driver 挖矿计时的 `waitMs`/短窗是别的含义，不动。
+- 验收：`qq-world-subject-integration` 3 项（修复前红、修复后绿，唯一变量是 `accept` 的直启分支）、`accept-batch` 5 项、`turn-yield` 7 项、`mc-delivery-pump` 13 项、`mc-run-digest` 6 项、MC 定向集 12 文件 61 项、交付相关 6 文件 39 项；`pnpm typecheck`（biome 825 文件 / boundaries 10 规则 / 双 tsc）与 `pnpm build` 通过。全量默认池 330 文件 3367 项：28 项基线红（UI/ANSI 系列、tts-bridge-protocol 缺 Python httpx、refactor-regression 的 computeWordDiff），本批相关文件全绿；tests/mc vmThreads 111 文件 917 项：915 通过，`mcp-extension-loading` 2 项为既有基线红。
+- 明确没做：真实 Minecraft 服与真实模型的对照窗口本轮没跑，不能把自动化绿灯当真服验收；`runs.wait`、BodyLease、Safety、有界领取预算与 `mc.waitUntil` 全部保留；导航、Window、Safety 算法不在本轮范围。
+
 ## 2026-11-08 · 批40 事件投递回答「还归不归我」
 
 - **语义修正**：`ServiceCompanionContext.emitEvent` 之前返回 `Promise<void>`，世界只能靠"抛不抛异常"猜投递结果；而世界停用时它静默返回成功——事件还在世界手里，宿主却以为已经交出去了。现在返回 `EventSubmission`：`{accepted:true}` 表示事件已经离开世界（进了主脑的待处理集合，或已被宿主撤销），`{accepted:false, reason, retryable}` 表示它还在世界手里。
