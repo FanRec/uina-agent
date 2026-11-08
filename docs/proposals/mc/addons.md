@@ -99,6 +99,7 @@ Companion 真正加载的包。两者都不推断"应该能用"。
 ```bash
 pnpm mc:addon -- list
 pnpm mc:addon -- install .uina/worlds/minecraft/examples/addons/example-mod
+pnpm mc:addon -- install .uina/worlds/minecraft/packages/spectatorplus
 pnpm mc:addon -- status --profile <64-hex>
 pnpm mc:addon -- enable example-mod --profile <64-hex> --config '{"verifyTimeoutMs":4000}'
 pnpm mc:addon -- disable example-mod --profile <64-hex>
@@ -189,7 +190,17 @@ pnpm mc:addon -- remove example-mod
 - 活动会话拿不到快照时 `EXECUTOR_UNAVAILABLE`，**不回退**旧目录或内置全集；
 - 离线只给内置 descriptor + 已安装包摘要（不 import 第三方代码）。
 
-## 11. 示例与真服夹具
+## 11. 包源码布局、示例与真服夹具
+
+仓库内两类包，区别是**定位**而不是格式（同一套 Manifest / SDK，安装方式完全相同）：
+
+- `packages/<id>/`：随仓库发布的正式包，按真实集成维护，改动需过测试与验收；
+- `examples/addons/<id>/`：教学示例，可随时重写，不承诺兼容。
+
+`packages/spectatorplus`（正式包）：只用既有 `chat@1` 发 `/spectate <target>`，再读 `world@1`
+的 `gameMode`；没有插件时如实 `EFFECT_UNCONFIRMED`（dispatch `sent`），不假装成功。
+HUD/GUI/附身界面属于真实 Java 客户端 Mod，Bot 侧不覆盖。**SpectatorPlus 服务端插件是外部
+依赖，不由本仓库分发**；`serverRequirement` 只是声明，装没装由运维确认。
 
 `examples/addons/example-mod`（纯 ESM，无依赖）：
 
@@ -205,10 +216,6 @@ pnpm mc:addon -- remove example-mod
 服务端夹具：`dev-env/uina-plugin/`（Paper 1.21.11）。`node build.mjs` 用服务器 libraries 作
 classpath 编译并安装到 `server/plugins/`；首次发放 `example:uina_token` 纸片（PersistentDataContainer
 保存身份）。
-
-`examples/addons/spectatorplus`：只用既有 `chat@1` 发 `/spectate <target>`，再读 `world@1`
-的 `gameMode`；没有插件时如实 `EFFECT_UNCONFIRMED`（dispatch `sent`），不假装成功。
-HUD/GUI/附身界面属于真实 Java 客户端 Mod，Bot 侧不覆盖。
 
 ## 12. 验收
 

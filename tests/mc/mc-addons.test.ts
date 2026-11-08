@@ -456,6 +456,24 @@ describe("loader：只加载预检过的计划", () => {
 		await loaded.close();
 	});
 
+	test("正式包 spectatorplus：只组合既有能力，不开协议扩展", async () => {
+		const dir = join(process.cwd(), ".uina/worlds/minecraft/packages/spectatorplus");
+		const loaded = await loadAddons(await selectionOf([dir]), { minecraftVersion: "1.21.11" });
+		expect(loaded.statuses).toEqual([
+			expect.objectContaining({
+				id: "spectatorplus",
+				state: "loaded",
+				contributed: expect.objectContaining({ actions: 1, queries: 1 }),
+			}),
+		]);
+		expect(loaded.statuses[0]?.contributed.refs).toEqual(
+			expect.arrayContaining(["spectatorplus.mode@1", "spectatorplus.spectate@1"]),
+		);
+		// 只用 chat@1 与 world@1 组合：没有私有通道，因此没有协议扩展。
+		expect(loaded.extensions).toEqual([]);
+		await loaded.close();
+	});
+
 	test("目录按状态里的 ref 清单列出包内能力（不靠 id 前缀猜）", async () => {
 		const exampleDir = join(process.cwd(), ".uina/worlds/minecraft/examples/addons/example-mod");
 		const loaded = await loadAddons(await selectionOf([exampleDir]), { minecraftVersion: "1.21.11" });

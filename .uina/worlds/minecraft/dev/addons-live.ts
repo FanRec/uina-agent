@@ -26,6 +26,8 @@ import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { HostDeliveryPort } from "../../../../src/core/types.js";
 
 const PORT = 25565;
+/** 随仓库发布的正式包；示例包另在 examples/addons 下。 */
+const PACKAGES = fileURLToPath(new URL("../packages", import.meta.url));
 const EXAMPLES = fileURLToPath(new URL("../examples/addons", import.meta.url));
 
 function assert(value: unknown, message: string): asserts value {
@@ -140,7 +142,7 @@ async function main(): Promise<void> {
 
 		await step("T0：安装包 ≠ 启用包——离线状态只报 installed，能力不在目录里", async () => {
 			await installAddon(root, join(EXAMPLES, "example-mod"));
-			await installAddon(root, join(EXAMPLES, "spectatorplus"));
+			await installAddon(root, join(PACKAGES, "spectatorplus"));
 			const inventory = await addonStatus(root);
 			assert(inventory.addons.length === 2, JSON.stringify(inventory.addons));
 			assert(

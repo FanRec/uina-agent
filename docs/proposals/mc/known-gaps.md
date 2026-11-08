@@ -227,8 +227,10 @@
   `version` 覆盖的拒绝路径，没有用自定义 `minecraft-protocol` client 跑过真服。
 - **`serverRequirement` 只是声明**：不做服务端探测；`Compatible` 必须由具体能力在调用时证明
   （例如 `example.press@1` 以服务端计数前进为准）。目录里的 `note` 已明确这一点。
-- **SpectatorPlus 只覆盖服务端语义**：真实 SpectatorPlus 插件未安装，只验证了 `/spectate` + `gameMode`
-  回读路径与无插件时的 `EFFECT_UNCONFIRMED`；HUD/GUI/附身界面属于真实 Java 客户端 Mod，Bot 侧不伪造。
+- **SpectatorPlus 只覆盖服务端语义**：`packages/spectatorplus` 已是随仓库发布的正式包，但真实
+  SpectatorPlus 插件未安装，只验证了 `/spectate` + `gameMode` 回读路径与无插件时的
+  `EFFECT_UNCONFIRMED`；**成功路径（gameMode 真的变成 spectator）从未在真服走通**。HUD/GUI/
+  附身界面属于真实 Java 客户端 Mod，Bot 侧不伪造。服务端插件是外部依赖，不由本仓库分发。
 - **协议窄口 1.21.11**：`custom_payload` 编解码与 `minecraft:register` 注册按该版本实现；
   其它版本会 `UNSUPPORTED_PROTOCOL`，没有多版本适配。
 - **Addon 事实不持久化**：连接绑定，断线清空、重连不继承；跨会话的模组状态必须由服务端重新发布。
