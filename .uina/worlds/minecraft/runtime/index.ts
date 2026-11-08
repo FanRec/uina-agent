@@ -45,7 +45,10 @@ import type { StorageQuery } from "./storage-queries.js";
 
 export interface MinecraftRuntimeOptions {
 	evidence?: import("../contracts/world.js").WorldEvidencePort;
-	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
+	onSafetyChanged?: (
+		record: import("../contracts/runtime.js").SafetyInterventionRecord,
+		cause: import("./safety.js").SafetyCause | null,
+	) => void;
 	/** ctx.verify 注册表（G4）：领域核验器随能力工作包注入。 */
 	verifiers?: ReadonlyMap<import("../contracts/values.js").ExactRef, import("../contracts/runtime.js").EffectVerifier>;
 	/** runtime.db 绝对路径（<worldDataDir>/runtime.db，runtime.md §5.3）。 */

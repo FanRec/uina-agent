@@ -40,6 +40,7 @@ import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
 import { sampleStateFrame } from "../world/state-frame.js";
+import { safetyNeedsAttention } from "./safety-route.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,
@@ -208,12 +209,11 @@ export async function openExecutionSide(
 		});
 		const opened = await MinecraftRuntime.open({
 			evidence: world,
-			onSafetyChanged: (record) => {
+			onSafetyChanged: (record, cause) => {
 				options.onChanged?.();
-				if (!record.finishedAt) return;
-				// 取消/失效不是要模型知情的事实：前者是宿主自己关门（世界关闭、停用）时的收尾，
-				// 后者由连接/死亡事件承担。这两种推出去只会在最不该说话的时刻吵一下。
-				if (record.ended === "cancelled" || record.ended === "invalidated") return;
+				// 未结算的干预还没有"发生了什么"，等终态那条再说。
+				if (record.ended == null) return;
+				if (!safetyNeedsAttention(record.ended, cause)) return;
 				options.onGameEvent?.({
 					ref: record.record,
 					observedAt: record.finishedAt,

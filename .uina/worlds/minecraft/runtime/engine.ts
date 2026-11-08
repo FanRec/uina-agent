@@ -51,7 +51,7 @@ import { RecordQueue } from "./records.js";
 import { RuntimeRefs } from "./refs.js";
 import { callRowOf, canonicalJson, projectSummary, runRowOf, segmentRowOf, sha256Hex, summaryFromRow } from "./rows.js";
 import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
-import { RuntimeSafety } from "./safety.js";
+import { RuntimeSafety, type SafetyCause } from "./safety.js";
 import { scopedBody } from "./scoped-body.js";
 import type {
 	BodyLease,
@@ -129,7 +129,10 @@ function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailur
 
 export interface EngineOptions {
 	evidence?: import("../contracts/world.js").WorldEvidencePort;
-	onSafetyChanged?: (record: import("../contracts/runtime.js").SafetyInterventionRecord) => void;
+	onSafetyChanged?: (
+		record: import("../contracts/runtime.js").SafetyInterventionRecord,
+		cause: SafetyCause | null,
+	) => void;
 	commitAdmission?: (command: import("./runtime-db-worker.js").AdmissionCommand) => Promise<void>;
 	/** ctx.verify 注册表（G4）：组合根随能力工作包注入，不预建框架。 */
 	verifiers?: ReadonlyMap<import("../contracts/values.js").ExactRef, EffectVerifier>;
@@ -1286,7 +1289,9 @@ export class RuntimeEngine {
 		}
 	}
 	async invalidateControl(): Promise<void> {
-		this.safety.cancel("invalidated");
+		// 起因是连接身份变了：这条失效会由 connection/death 事件同时告诉模型，
+		// 所以宿主侧可以据此省略重复提醒。其余失效路径没有这个承担者，必须自己上报。
+		this.safety.cancel("invalidated", "connection");
 		if (this.activeBody) await this.activeBody.interrupt();
 		else {
 			const id = this.bodyLeaseQueue.blockingCall();

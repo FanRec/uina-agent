@@ -13,11 +13,17 @@ export type SafetyWork = (
 	body: BodySession,
 	signal: AbortSignal,
 ) => Promise<"safe" | "blocked" | "timeout" | "invalidated">;
+/**
+ * 这次终止的起因，只用于回答"是不是已经有人替我说过了"。
+ * null = 自己失败（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录），这类必须上报。
+ */
+export type SafetyCause = "connection";
 export class RuntimeSafety {
 	private active: {
 		record: SafetyInterventionRecord;
 		abort: AbortController;
 		promise: Promise<SafetyInterventionRecord>;
+		cause: SafetyCause | null;
 	} | null = null;
 	private last: Ref | null = null;
 	constructor(
@@ -28,7 +34,7 @@ export class RuntimeSafety {
 			guard(): void;
 			interrupt(): Promise<Ref | null>;
 			retain?(owner: Ref, evidence: Ref[]): Promise<void>;
-			changed?(record: SafetyInterventionRecord): void;
+			changed?(record: SafetyInterventionRecord, cause: SafetyCause | null): void;
 		},
 	) {}
 	inspect() {
@@ -37,8 +43,10 @@ export class RuntimeSafety {
 	isLive(intervention: Ref) {
 		return this.active?.record.intervention === intervention && !this.active.abort.signal.aborted;
 	}
-	cancel(reason = "cancelled") {
-		this.active?.abort.abort(reason);
+	cancel(reason = "cancelled", cause: SafetyCause | null = null) {
+		if (!this.active) return;
+		this.active.cause = cause;
+		this.active.abort.abort(reason);
 	}
 	async close() {
 		this.cancel();
@@ -60,8 +68,11 @@ export class RuntimeSafety {
 	}
 	private write(record: SafetyInterventionRecord) {
 		const ticket = this.deps.queue.enqueue({ kind: "safety", value: structuredClone(record) });
+		// cause 只活在这一次干预的生命周期里：它回答"这条终态是不是别人已经通知过了"，
+		// 记录本身的 ended/outcome 已经说清发生了什么，不需要再存一份起因。
+		const cause = this.active?.cause ?? null;
 		void this.deps.queue.flushThrough(ticket).then(
-			() => this.deps.changed?.(record),
+			() => this.deps.changed?.(record, cause),
 			() => {},
 		);
 	}
@@ -94,7 +105,12 @@ export class RuntimeSafety {
 		};
 		const abort = new AbortController();
 		const release = this.deps.bodies.reserve();
-		const state: NonNullable<RuntimeSafety["active"]> = { record, abort, promise: Promise.resolve(record) };
+		const state: NonNullable<RuntimeSafety["active"]> = {
+			record,
+			abort,
+			promise: Promise.resolve(record),
+			cause: null,
+		};
 		this.active = state;
 		let recorded = false;
 		state.promise = (async () => {
