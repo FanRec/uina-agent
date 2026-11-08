@@ -55,17 +55,24 @@ export function goalStateOf(work: { total: number; completed: number; uncertain:
 	return "unsatisfied";
 }
 
+/**
+ * 四态计数之和恒等于 total：这不是各能力的自觉，而是这里逐级夹出来的。
+ * `completed` 先夹进 [0,total]，`blocked` 只能用剩下的额度，`uncertain` 再用
+ * 剩下的，`remaining` 拿最后一份。调用方把同一格同时记进两个桶也不会造出
+ * "completed + blocked > total"这种自相矛盾的摘要。
+ */
 export function goalSummaryOf(input: GoalWorkInput): GoalSummary {
-	const completed = Math.max(0, Math.min(input.total, input.completed));
-	const blocked = Math.max(0, input.blocked ?? 0);
-	const uncertain = Math.max(0, input.uncertain ?? 0);
+	const total = Math.max(0, input.total);
+	const completed = Math.max(0, Math.min(total, input.completed));
+	const blocked = Math.max(0, Math.min(total - completed, input.blocked ?? 0));
+	const uncertain = Math.max(0, Math.min(total - completed - blocked, input.uncertain ?? 0));
 	return {
-		state: goalStateOf({ total: input.total, completed, uncertain }),
+		state: goalStateOf({ total, completed, uncertain }),
 		completed,
-		remaining: Math.max(0, input.total - completed - blocked - uncertain),
+		remaining: total - completed - blocked - uncertain,
 		blocked,
 		uncertain,
-		total: input.total,
+		total,
 	};
 }
 
@@ -88,13 +95,15 @@ export function goalProgress(input: GoalWorkInput): Progress {
 	const goal = goalSummaryOf(input);
 	const outstanding = input.outstanding ?? [];
 	return {
+		// 领域计数先铺，结构字段后写：`goal`/`reasons`/`phase` 的语义由本层定义，
+		// 领域计数撞名也不能把它盖掉（例如某能力顺手也叫 goal）。
+		...(input.extra ?? {}),
 		...(input.phase != null ? { phase: input.phase } : {}),
 		goal: goal as unknown as JsonValue,
 		...(outstanding.length > 0 ? { outstanding: outstanding as unknown as JsonValue } : {}),
 		reasons: reasonsOf(input, goal),
 		...(input.digest != null ? { digest: input.digest } : {}),
 		...(input.current != null ? { current: input.current as unknown as JsonValue } : {}),
-		...(input.extra ?? {}),
 	};
 }
 

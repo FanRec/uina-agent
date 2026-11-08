@@ -16,7 +16,7 @@ import type { JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
-import { GOAL_SAMPLE_LIMIT, goalProgress, sampleOutstanding } from "../shared/goal.js";
+import { GOAL_SAMPLE_LIMIT, goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
 import { GOAL_SUMMARY_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
@@ -384,12 +384,11 @@ export const excavateModule: MinecraftCapabilityModule = {
 						kept,
 						drops: progress.drops,
 						remaining: [],
-						goal: goalProgress({
+						// 收尾复核保证 outstanding 为空才走到这里，四态里只剩"全部完成"。
+						goal: goalSummaryOf({
 							total: planned.length,
 							completed: progress.dug + progress.opened + kept.length,
-							blocked: 0,
-							uncertain: 0,
-						}).goal,
+						}),
 					});
 				},
 		},
