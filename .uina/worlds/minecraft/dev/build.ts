@@ -166,8 +166,11 @@ async function runBuild(
 	if (reply.snapshot.outcome !== "succeeded") {
 		const failed = await failedCallOf(h, spawned.run);
 		const progress = failed.error?.progress as { placed?: number; goal?: { remaining: number } } | undefined;
-		const detail = String(progress?.goal?.remaining ?? "?").slice(0, 1200);
-		throw new Error(`${failed.error?.code}: ${failed.error?.message} [placed ${progress?.placed ?? 0}] ${detail}`);
+		// 失败面只给"还剩多少格"：明细样本在 progress.outstanding 里，完整原文在 Call 记录里。
+		const left = progress?.goal?.remaining;
+		throw new Error(
+			`${failed.error?.code}: ${failed.error?.message} [placed ${progress?.placed ?? 0}, remaining ${left ?? "?"}]`,
+		);
 	}
 	const full = await h.runtime.readRecord(reply.snapshot.record);
 	if (full.kind !== "inline") throw new Error("expected inline development record");

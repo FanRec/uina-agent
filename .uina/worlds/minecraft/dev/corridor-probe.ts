@@ -12,6 +12,10 @@
  * 判据：只要出现"客户端 air / 服务端 stone"，缓存滞后成立，G31 归到读前复核；
  * 若全部一致，则问题在走廊计划或走位本身，回到 planner/stepTo 那一侧。
  *
+ * 结论（2026-11-09 首跑）：两侧一致（卡住格 `below client=gravel server=solid`），
+ * 缓存滞后假设被推翻。真因是自挖沙砾回填——`opened` 记的是"挖过"而不是"现在是空气"，
+ * 修在 tunnel 的走位前重读，G31 已关闭（见 known-gaps.md）。探针留着做同题复现。
+ *
  * 用法：`pnpm dev:mc:corridor-probe`
  */
 
