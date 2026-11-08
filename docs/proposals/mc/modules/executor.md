@@ -174,7 +174,10 @@ interface ExecutionSideStatus {
   retirement: RetirementRequest | null; // 当前 launch 内一旦请求便锁存
 }
 interface DeliveryDiagnostics {
-  observedAt: string; pendingCount: number | null; hostBusy: boolean | null;
+  observedAt: string;
+  pendingCount: number | null; // 积压总数（Runtime 与分页同条件算），不是本轮检查了几条
+  scan: {inspected: number; budget: number; resumable: boolean}; // 本轮检查条数/预算/是否还有续扫位置
+  hostBusy: boolean | null;
   activeInputs: {key: Ref; channel: "input"; attempt: Ref; createdAt: string;
     lastCheckedAt: string | null; host: HostDeliveryState}[]; // 本激活派发的与宿主正在处理的，多份互不占位
   item?: {key: Ref; disposition: DeliveryDisposition; eligible: boolean; host: HostDeliveryState};
@@ -508,7 +511,7 @@ Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 
 6. 每 5 秒兜底 inspect 活动 key，恢复/事件触发也推进。pending queued/processing 表示 Host 仍持有交付，不因忙碌或超时新增队列项；committed 补齐丢失回调/ACK；absent 释放本地占位并重试；unavailable 保留并暴露 unconfirmed，不假称仍忙或已丢失。重试 1/2/4/8 秒封顶，可取消，均为内部策略。
 7. 旧 activation 的 render 已失效，或操作者明确 delivery.retry 时，以 key/expectedAttempt 调 Host.retire。committed 就 ACK；retired 才换新 attempt；changed 读新状态，不撤销别人的新尝试；unavailable 不加新队列项。只退役交付，不取消工具协议、Run 或其他输入。迟到的投递可能重复同 key，动作绝不重跑。
 
-delivery 诊断至少给 pendingCount、各在途输入的 key/attempt/channel 与 Host 查询状态、createdAt/lastCheckedAt、可得的 hostBusy、最后错误与 nextCall。查询失败显示 unconfirmed；hostBusy 只是辅助显示，不能掩盖回执未知。显式 retry 通过现有端口对账/退役，不增加另一个交付调度器。
+delivery 诊断至少给 pendingCount（积压总数）、本轮扫描的 inspected/budget/resumable、各在途输入的 key/attempt/channel 与 Host 查询状态、createdAt/lastCheckedAt、可得的 hostBusy、最后错误与 nextCall。积压总数与"本轮看了几条"必须分开显示：有界扫描下把后者当总数，10000 条积压会伪装成只剩 96 条。查询失败显示 unconfirmed；hostBusy 只是辅助显示，不能掩盖回执未知。显式 retry 通过现有端口对账/退役，不增加另一个交付调度器。
 
 停用暂停递送，重新启用先核对 Host 状态再处理 pending；不自动恢复旧游戏行动。仍适用的完成通知在持久存储与 Host 最终恢复处理后至少进入会话一次，允许同 ref 重复；已失效 decision 不再主动递送，历史仍可查询。rewind 不撤销已发生的接收事实；已 committed 的普通 retry 只返回原回执，再次查看用 record，不把交付重试当新的主动唤醒。
 

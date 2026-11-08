@@ -45,6 +45,19 @@
   是错的（玩家助跑跳本来就能跨 2–4 格）。断言拆开：跨过去了核沟格无方块，没跨过去核失败码
   与近岸位置。跨越的机制（跳跃 / 动量）未定，登记 G32。同时登记 S3 水洞爬岸 1/9 的偶发
   `noPath`（隔离探针 8/8 复现不了）。
+- **本轮审查修正（同日，对着设计包逐条核过之后改的四处）**：
+  - **`pendingCount` 不再谎报积压**：有界扫描落地后它一度变成"本轮扫到的条数"，与
+    `scan.inspected` 重复；积压 10000 条时会显示 96。`pendingDeliveries` 每页增 `total`
+    （与分页同条件的 `COUNT`，同吃 `PENDING_WHERE`），诊断把"积压总数"与"本轮检查条数"
+    分开报。测试里 300 条 pending 的首轮断言 `pendingCount=300` 而 `scan.inspected=96`。
+  - **四态守恒从"调用方自觉"变成结构保证**：`goalSummaryOf` 逐级夹计数——`completed` 先夹进
+    `[0,total]`，`blocked` 只能用剩下的额度，`uncertain` 再用剩下的，`remaining` 拿最后一份。
+    同一格被记进两个桶（重复记账、或计划中途长大）也造不出 `completed+blocked > total`。
+  - **`goalProgress` 先铺领域计数再写结构字段**：`goal`/`reasons`/`phase` 的语义由公共层定义，
+    领域计数撞名不能把它盖掉。`excavate` 的成功返回值改走 `goalSummaryOf`（与 `build` 同口径），
+    不再为了取 `.goal` 先把整份 progress 算一遍。
+  - **`executor.recovery` 每次 `launch` 开头清零**：上一次激活的解除结论不能跟着这次启动活着，
+    否则启动失败时 `status()` 会报"门已经开过"。
 
 ## 2026-11-08 · Addon 基础设施重构 S0–S4（设计包 Uina-Addon-Refactor.md）
 

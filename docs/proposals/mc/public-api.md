@@ -902,7 +902,7 @@ interface ExecutorClient {
   wait(run: Ref, options: {afterRevision?: number; timeoutMs?: number}, signal: AbortSignal): Promise<RunWaitReply>;
   stop(command: StopCommand): Promise<StopReceipt>;
   continue(request: { run: Ref; decision: Ref; requestId: Ref; entry: ContinuedEntry; environment?: "inherit" | "current" }): Promise<Acceptance>;
-  pendingDeliveries(page?: {cursor?: string; limit?: number}): Promise<{items: DeliveryRef[]; next?: string}>;
+  pendingDeliveries(page?: {cursor?: string; limit?: number}): Promise<{items: DeliveryRef[]; next?: string; total: number}>; // cursor 是 rowid 键集；total 是积压总数（与分页同条件）
   readDelivery(completionRef: Ref): Promise<DeliveryState>;
   settleDelivery(completionRef: Ref, receipt: DeliveryReceipt): Promise<void>;
   events(listener: (event:

@@ -262,7 +262,7 @@ Runtime 在段交还或 Run 终结事务中写不可变 CompletionReport、compl
 
 pendingDeliveries 只按 [public-api §7](../public-api.md) 分页返回 pending 且 eligible 的报告引用，readDelivery 读取有界固定 header 和当前 eligibility，正文由 readRecord(completionRef) 取得 inline/file。terminal 可投；decision 仅当前仍未消费、Run 未停止/终结时可投。eligibility 从已有运行事实派生，不新建任务状态机。
 
-分页游标是 **rowid 键集**而不是偏移（2026-11-09）：交付过程中 ACK 会把行从 pending 集合里移走，偏移分页会因此跳过尚未处理的项；键集分页在并发提交下只返回"还没看过的行"。Executor 侧每轮最多检查 96 条（`SCAN_BUDGET`）、最多交 8 条（`DELIVERY_BATCH`），用满预算就记住游标、下一轮继续，扫到末尾回到开头——10000 条积压不会让新完成等 100 轮，也没有任何一条被永久跳过。
+分页游标是 **rowid 键集**而不是偏移（2026-11-09）：交付过程中 ACK 会把行从 pending 集合里移走，偏移分页会因此跳过尚未处理的项；键集分页在并发提交下只返回"还没看过的行"。每页同时返回 `total`（与分页同条件的积压总数），调用方才能把"还剩多少"与"这轮看了多少"分开报。Executor 侧每轮最多检查 96 条（`SCAN_BUDGET`）、最多交 8 条（`DELIVERY_BATCH`），用满预算就记住游标、下一轮继续，扫到末尾回到开头——10000 条积压不会让新完成等 100 轮，也没有任何一条被永久跳过。
 
 settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。交付只经完成通知，回执类型不变；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
 
