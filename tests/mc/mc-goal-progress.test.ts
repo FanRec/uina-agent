@@ -1,5 +1,5 @@
 /**
- * 领域目标对账（capabilities §2.12）：四态语义与摘要投影。
+ * 领域目标对账（capabilities §2.15）：四态语义与摘要投影。
  *
  * 两件事必须成立，否则模型在长任务中断后拿不到续做依据：
  * 1. 四态计数之和恒等于 total，`state` 只按观测证据判定；
@@ -49,6 +49,21 @@ describe("goal summary", () => {
 		const goal = goalSummaryOf({ total: 3, completed: 9, blocked: 9 });
 		expect(goal.completed).toBe(3);
 		expect(goal.remaining).toBe(0);
+	});
+
+	test("同一格被记进两个桶也不会造出自相矛盾的摘要", () => {
+		// 调用方把 blocked/uncertain 数多了（重复记账、或计划中途长大）时，
+		// 四态之和仍必须等于 total：blocked 只能用 completed 剩下的额度。
+		const goal = goalSummaryOf({ total: 5, completed: 2, blocked: 4, uncertain: 4 });
+		expect(goal).toEqual({
+			state: "unsatisfied",
+			completed: 2,
+			remaining: 0,
+			blocked: 3,
+			uncertain: 0,
+			total: 5,
+		});
+		expect(goal.completed + goal.remaining + goal.blocked + goal.uncertain).toBe(goal.total);
 	});
 });
 

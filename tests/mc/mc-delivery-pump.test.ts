@@ -846,6 +846,8 @@ test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", 
 				const page = rows.slice(0, limit);
 				return {
 					items: page.map(([, ref]) => ({ completionRef: ref, requestId: ref })),
+					// 与真实实现同口径：total 是积压总数，不是本页条数。
+					total: pending.size,
 					...(rows.length > limit ? { next: String(page[page.length - 1]![0]) } : {}),
 				};
 			}
@@ -878,6 +880,8 @@ test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", 
 		// 一轮只看 96 条：不是"扫完全部历史待办才处理新内容"。
 		expect(pump.diagnostics().scan.inspected).toBe(96);
 		expect(pump.diagnostics().scan.resumable).toBe(true);
+		// 但积压总数要报真值：96 是"这轮看了多少"，不是"还剩多少"。
+		expect(pump.diagnostics().pendingCount).toBe(total);
 		// 每轮最多交 8 条。
 		expect(delivered.length).toBe(8);
 		// 续扫：后续轮次从上一轮停下的键集位置继续，不重复检查同一条。
