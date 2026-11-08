@@ -211,6 +211,17 @@ test("失效的起因由调用点声明：连接变了算别人说过，自己�
 		// 没有任何"连接变了"的事实替它说，这条失效必须自己上报；起因是空的。
 		expect((await runtime.intervene(trigger, async () => "invalidated")).ended).toBe("invalidated");
 		expect(changes.at(-1)).toEqual(["invalidated", null]);
+		// 关世界也会取消介入，但第一次取消已经定下了起因：后来那次不许把它抹掉。
+		const closing = runtime.intervene(
+			trigger,
+			(_body, signal) =>
+				new Promise<"invalidated">((resolve) => signal.addEventListener("abort", () => resolve("invalidated"))),
+		);
+		await expect.poll(() => runtime.inspectSafety().active).not.toBeNull();
+		await runtime.invalidateControl();
+		await runtime.close();
+		expect((await closing).ended).toBe("invalidated");
+		expect(changes.at(-1)).toEqual(["invalidated", "connection"]);
 	} finally {
 		await runtime.close();
 		await program.close();
