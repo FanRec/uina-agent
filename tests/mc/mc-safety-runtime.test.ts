@@ -154,3 +154,65 @@ test("safety retires an uncooperative guest body; outer program handles interrup
 		await program.close();
 	}
 }, 15000);
+
+test("失效的起因由调用点声明：连接变了算别人说过，自己失败必须上报", async () => {
+	const root = await mkdtemp(join(tmpdir(), "uina-safety-cause-"));
+	const program = await createProgram({
+		dataRoot: root,
+		loadProgram: async () => {
+			throw new Error("unused");
+		},
+	});
+	const port: PlayerPort = {
+		acquire: async () =>
+			({
+				runScoped: async (_scope: unknown, work: () => Promise<unknown>) => work(),
+				close: async () => {},
+			}) as unknown as BodySession,
+		chat: async () => {
+			throw new Error("unused");
+		},
+	};
+	const changes: [string | null, string | null][] = [];
+	const { runtime } = await MinecraftRuntime.open({
+		dbPath: join(root, "runtime.db"),
+		storageId: "s",
+		namespace: "cause",
+		worldOwner: "owner",
+		world: {} as WorldPort,
+		playerPort: port,
+		callables: [],
+		program,
+		onSafetyChanged: (record, cause) => changes.push([record.ended, cause]),
+	});
+	const trigger = {
+		kind: "lava" as const,
+		sample: { value: { inLava: true } as SelfState } as Fact<SelfState>,
+		evidence: [] as string[],
+	};
+	try {
+		const owner = await runtime.attach({ worldOwner: "owner", activation: "a" });
+		await runtime.setOwnerGate({
+			requestId: "enable",
+			attachment: owner.attachment,
+			gate: "disabled",
+			closed: false,
+			expectedRevision: owner.gateRevision,
+		});
+		const hijacked = runtime.intervene(
+			trigger,
+			(_body, signal) =>
+				new Promise<"invalidated">((resolve) => signal.addEventListener("abort", () => resolve("invalidated"))),
+		);
+		await expect.poll(() => runtime.inspectSafety().active).not.toBeNull();
+		await runtime.invalidateControl();
+		expect((await hijacked).ended).toBe("invalidated");
+		expect(changes.at(-1)).toEqual(["invalidated", "connection"]);
+		// 没有任何"连接变了"的事实替它说，这条失效必须自己上报；起因是空的。
+		expect((await runtime.intervene(trigger, async () => "invalidated")).ended).toBe("invalidated");
+		expect(changes.at(-1)).toEqual(["invalidated", null]);
+	} finally {
+		await runtime.close();
+		await program.close();
+	}
+}, 15000);
