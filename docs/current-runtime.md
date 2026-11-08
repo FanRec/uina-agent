@@ -67,6 +67,8 @@ TUI 向 CLI 发出的动作是 `PresentationIntent` 联合（命名空间化：`
 
 每个已启动的 `content` 或 `thinking` 输出 channel 恰好以一个 `output_end` 或 `output_interrupted` 终止。网络错误、取消和协议失败不伪造成正常结束。
 
+续跑队列按预算分批：`InputQueues.batchForTurn` 只领这一回合能承载的前缀（条数上限 + 字符总量，单条就超长时仍放行，否则它永远出不去），剩余留在队列里由回合成功后的续跑继续消费。边界是三条：steer 先走且单独成批，用户发言不与任何输入合批，运行时来源只在同一世界内合并。此前合批没有容量概念——积压一次性提交历史再一次性塞进请求，超预算就整回合失败，而队列已经空了，没有东西会再叫醒它。
+
 ## 会话与恢复
 
 `data/session.jsonl` 按真实时间追加 header、message、input、custom message/entry、rewind 和 lifecycle event。日志是权威事实；Session 从日志推导当前主线与全部历史节点，模型历史与 TUI 从同一主线投影。回溯只允许选择当前主线的安全历史祖先，退出路径只读，外部状态不撤销。设计与阶段验收见 [会话主线与回溯](session-rewind.md)。
