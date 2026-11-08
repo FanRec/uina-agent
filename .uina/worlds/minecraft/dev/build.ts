@@ -98,7 +98,7 @@ interface BuildValue {
 interface Failure {
 	code?: string;
 	message?: string;
-	progress?: { placed?: number; remainingCount?: number } & Record<string, unknown>;
+	progress?: { placed?: number; goal?: { remaining: number } } & Record<string, unknown>;
 }
 
 function kindsOf(plan: PlanValue): Record<string, number> {
@@ -126,7 +126,7 @@ function keepTargetJson(anchor: { x: number; y: number; z: number }): string {
 interface CallFailureRecord {
 	code?: string;
 	message?: string;
-	progress?: { placed?: number; remainingCount?: number } & Record<string, unknown>;
+	progress?: { placed?: number; goal?: { remaining: number } } & Record<string, unknown>;
 }
 
 /**
@@ -165,8 +165,8 @@ async function runBuild(
 	}
 	if (reply.snapshot.outcome !== "succeeded") {
 		const failed = await failedCallOf(h, spawned.run);
-		const progress = failed.error?.progress as { remaining?: unknown[]; placed?: number } | undefined;
-		const detail = JSON.stringify(progress?.remaining ?? []).slice(0, 1200);
+		const progress = failed.error?.progress as { placed?: number; goal?: { remaining: number } } | undefined;
+		const detail = String(progress?.goal?.remaining ?? "?").slice(0, 1200);
 		throw new Error(`${failed.error?.code}: ${failed.error?.message} [placed ${progress?.placed ?? 0}] ${detail}`);
 	}
 	const full = await h.runtime.readRecord(reply.snapshot.record);
@@ -440,9 +440,9 @@ async function main(): Promise<void> {
 			if (reply.snapshot.outcome === "succeeded") throw new Error("build should have run out of budget");
 			const failed = await failedCallOf(h, spawned.run);
 			if (failed.error?.code !== "TIMEOUT") {
-				const progress = failed.error?.progress as { remaining?: unknown[]; placed?: number } | undefined;
+				const progress = failed.error?.progress as { placed?: number; goal?: { remaining: number } } | undefined;
 				throw new Error(
-					`expected TIMEOUT, got ${failed.error?.code} (placed ${progress?.placed ?? 0}) ${JSON.stringify(progress?.remaining ?? []).slice(0, 700)}`,
+					`expected TIMEOUT, got ${failed.error?.code} (placed ${progress?.placed ?? 0}) ${String(progress?.goal?.remaining ?? "?").slice(0, 700)}`,
 				);
 			}
 			const progress = failed.error.progress;
