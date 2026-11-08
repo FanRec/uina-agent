@@ -150,7 +150,7 @@ export function createQqWorld(injected?: {
 					});
 				},
 				emit: async ({ id, conversationRef, cls, origin, render }) => {
-					await ctxRef?.emitEvent?.({
+					const result = await ctxRef?.emitEvent?.({
 						id,
 						type: cls === "internal" ? "qq-internal" : "qq-batch",
 						channel: "world",
@@ -160,6 +160,8 @@ export function createQqWorld(injected?: {
 						data: { conversationRef },
 						render,
 					});
+					// 宿主没接住就得说：调用方靠异常决定记账与重试，不能当成已交付。
+					if (result && !result.accepted) throw new Error(result.reason);
 				},
 				isRequestPending: (ref) => {
 					const fact = journal?.snapshot.requests.get(ref);

@@ -54,7 +54,7 @@ export interface ServiceCompanionContext {
 	signal: AbortSignal;
 	/** 投递输入/机会至主脑信道（可选通用能力） */
 	submitInput?: (input: import("../../agent/loop.js").AgentInput) => Promise<void>;
-	emitEvent?: (event: WorldEvent) => Promise<void>;
+	emitEvent?: (event: WorldEvent) => Promise<EventSubmission>;
 	/** 探测主脑是否忙碌（可选通用能力） */
 	isBusy?: () => boolean;
 	/** 世界数据目录（可选） */
@@ -200,3 +200,18 @@ export interface WorldEvent {
 	render?: () => string | null | Promise<string | null>;
 	data?: unknown;
 }
+
+/**
+ * 事件提交结果——回答"这个事件现在还归不归我"。
+ *
+ * `accepted: true` 表示它**已经不属于世界**：进了主脑的待处理集合（持久化入队，或直接
+ * 启动了一轮），或者已被宿主撤销。世界可以扔掉它，不再重试。
+ *
+ * `accepted: false` 表示它还在世界手里：世界已停用、宿主拒收、存储失败。`retryable`
+ * 只说换一次再来是否有意义；重提必须用同一个 `id`——宿主按 id 去重，换 id 会变成两件事。
+ *
+ * 事件的展示文案（`text`）与延迟渲染（`render`）都可能很长、也可能在写出时已经过时，
+ * 所以"提交成功"只保证这个事件被接管，不保证模型已经读过它。要确认模型处理过，看
+ * 宿主侧的 `input_settled` 事实。
+ */
+export type EventSubmission = { accepted: true } | { accepted: false; reason: string; retryable: boolean };

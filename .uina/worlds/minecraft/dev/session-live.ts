@@ -101,7 +101,7 @@ function stubContext(root: string): { ctx: ServiceCompanionContext; exposed: Map
 		ctx: {
 			signal: new AbortController().signal,
 			worldDataDir: root,
-			emitEvent: async () => {},
+			emitEvent: async () => ({ accepted: true }),
 			onHostEvent: () => () => {},
 			isBusy: () => false,
 			expose: (name: string, value: unknown) => {

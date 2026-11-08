@@ -314,7 +314,11 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       channel: "world",
       delivery: "queued",
       origin: "external",
-    })?.catch((error) => console.error(`[bilibili-live] 事件 ${event.id} 投递失败:`, error));
+    })
+      ?.then((result) => {
+        if (!result.accepted) console.error(`[bilibili-live] 事件 ${event.id} 未被接管:`, result.reason);
+      })
+      .catch((error) => console.error(`[bilibili-live] 事件 ${event.id} 投递失败:`, error));
   };
   const roomStatusNotifier = new RoomStatusNotifier(
     () => notificationEnabled("room_status"),

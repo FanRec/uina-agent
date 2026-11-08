@@ -67,18 +67,20 @@ export class DeliveryPump {
 	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
 	private emitNotice(notice: EventNotice): void {
 		void this.attemptEmit(notice).catch((error: unknown) => {
-			this.error = { code: "EVENT_DELIVERY_FAILED", message: String(error) };
+			this.error = { code: "EVENT_DELIVERY_FAILED", message: error instanceof Error ? error.message : String(error) };
 		});
 	}
+	/**
+	 * 交出去才算投递。`accepted:false` 表示事件还在世界手里，按 `retryable` 决定要不要再试一次；
+	 * 形状非法的报错照旧抛——那是世界自己的 bug，重试没有意义。
+	 */
 	private async attemptEmit(notice: EventNotice, retries = 1): Promise<void> {
-		try {
-			await this.ctx.emitEvent!(notice);
-		} catch (error) {
-			if (retries === 0 || this.stopped) throw error;
-			await new Promise<void>((resolve) => setTimeout(resolve, EVENT_RETRY_MS));
-			if (this.stopped) throw error;
-			await this.attemptEmit(notice, retries - 1);
-		}
+		const result = await this.ctx.emitEvent!(notice);
+		if (result.accepted) return;
+		if (!result.retryable || retries === 0 || this.stopped) throw new Error(result.reason);
+		await new Promise<void>((resolve) => setTimeout(resolve, EVENT_RETRY_MS));
+		if (this.stopped) throw new Error(result.reason);
+		await this.attemptEmit(notice, retries - 1);
 	}
 	async view(state: DeliveryState): Promise<CompletionView> {
 		const header = state.delivery;
@@ -248,8 +250,8 @@ export class DeliveryPump {
 				this.emitting = true;
 				// emitEvent can encompass a full model turn; never await it inside drain.
 				void Promise.resolve()
-					.then(() =>
-						this.ctx.emitEvent!({
+					.then(async () => {
+						const submission = await this.ctx.emitEvent!({
 							id: attempt.attempt,
 							type: "minecraft_completion",
 							channel: "world",
@@ -263,8 +265,10 @@ export class DeliveryPump {
 								return latest.eligible ? formatCompletion(view) : null;
 							},
 							data: view,
-						}),
-					)
+						});
+						// 没交出去就说清楚；收据那一路（inspect/retire）会负责后面的重投。
+						if (!submission.accepted) throw new Error(submission.reason);
+					})
 					.catch((error) => {
 						this.error = { code: "DELIVERY_UNCONFIRMED", message: String(error) };
 					})

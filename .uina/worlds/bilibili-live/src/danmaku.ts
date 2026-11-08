@@ -178,7 +178,10 @@ export class DanmakuWindow {
     id: delivery.id, type: "chat-messages", channel: "world", delivery: "queued", origin: "external",
     data: { roomId: delivery.roomId, epoch: delivery.epoch },
     render: () => this.render(delivery),
-   }).catch(error => this.reject(delivery, error));
+   })
+    // 没交出去就得让 pending 让位，否则这一窗弹幕之后再也不会投。
+    .then(result => { if (!result.accepted) this.reject(delivery, new Error(result.reason)); })
+    .catch(error => this.reject(delivery, error));
   } catch (error) { this.reject(delivery, error); }
  }
 

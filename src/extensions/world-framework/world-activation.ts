@@ -4,6 +4,7 @@ import { appendTailFrame, buildEventFrameGroup, contentAddressedEventId } from "
 import { ResourceScope } from "../lifecycle-scope.js";
 import type { ExtensionAPI } from "../runner.js";
 import {
+	type EventSubmission,
 	type ServiceCompanionContext,
 	WORLD_HOST_EVENT_TYPES,
 	type WorldDef,
@@ -235,29 +236,39 @@ export class WorldActivation {
 					? join(pi.cwd, ".uina/world-data", this.definition.name)
 					: undefined,
 			emitEvent: pi.submitInput
-				? async (event: WorldEvent) => {
-						if (!this.scope.active) return;
+				? async (event: WorldEvent): Promise<EventSubmission> => {
+						// 停用不是"投递成功"：事件仍在世界手里，宿主不该以为已经交出去了。
+						if (!this.scope.active) return { accepted: false, reason: "世界已停用", retryable: false };
 						if (event.channel !== "world") throw new Error("World 事件必须使用 channel: world");
 						if (!event.text && !event.render) throw new Error("World 事件必须提供 text 或 render，拒绝静默丢弃");
 						const render = event.render ? async () => (this.scope.active ? await event.render!() : null) : undefined;
-						await pi.submitInput!(
-							{
-								id: event.id,
-								mode: event.delivery === "urgent" ? "steer" : "followUp",
-								source: {
-									kind: "runtime",
-									type: event.type,
-									ref: this.definition.name,
-									origin: event.origin,
-									channel: event.channel,
+						try {
+							await pi.submitInput!(
+								{
+									id: event.id,
+									mode: event.delivery === "urgent" ? "steer" : "followUp",
+									source: {
+										kind: "runtime",
+										type: event.type,
+										ref: this.definition.name,
+										origin: event.origin,
+										channel: event.channel,
+									},
+									...(event.text ? { text: event.text } : {}),
+									...(render ? { render } : {}),
+									data: event.data,
+									receipt: event.receipt,
 								},
-								...(event.text ? { text: event.text } : {}),
-								...(render ? { render } : {}),
-								data: event.data,
-								receipt: event.receipt,
-							},
-							{ deliveryScope: `world:${this.definition.name}`, signal: this.scope.signal },
-						);
+								{ deliveryScope: `world:${this.definition.name}`, signal: this.scope.signal },
+							);
+						} catch (error) {
+							return {
+								accepted: false,
+								reason: error instanceof Error ? error.message : String(error),
+								retryable: true,
+							};
+						}
+						return { accepted: true };
 					}
 				: undefined,
 			onActivity: pi.on

@@ -126,7 +126,7 @@ export function createRhythmWorld(): WorldDef {
 				isBusy: () => ctx.isBusy?.() ?? false,
 				submitOpportunity: async (text: string) => {
 					if (!ctx.emitEvent) throw new Error("宿主未提供 emitEvent");
-					await ctx.emitEvent({
+					const result = await ctx.emitEvent({
 						id: createPacingOpportunityId(),
 						type: "pacing-opportunity",
 						channel: "world",
@@ -134,11 +134,12 @@ export function createRhythmWorld(): WorldDef {
 						origin: "internal",
 						text,
 					});
+					if (!result.accepted) throw new Error(result.reason);
 				},
 				submitReminder: async (reminder: RhythmReminder) => {
 					if (ctx.signal.aborted) throw new Error("Rhythm 世界已停用，提醒仍待投递");
 					if (!ctx.emitEvent) throw new Error("宿主未提供 emitEvent");
-					await ctx.emitEvent({
+					const result = await ctx.emitEvent({
 						id: createReminderDueId(),
 						type: "reminder-due",
 						channel: "world",
@@ -147,6 +148,7 @@ export function createRhythmWorld(): WorldDef {
 						text: `[提醒到期 ${reminder.reminderRef}]\n${reminder.message}`,
 						data: { reminderRef: reminder.reminderRef, dueAtEpochMs: reminder.dueAtEpochMs },
 					});
+					if (!result.accepted) throw new Error(result.reason);
 				},
 				saveDurableState: (next: RhythmDurableState) => writeJsonAtomic(stateFile, next),
 			};
