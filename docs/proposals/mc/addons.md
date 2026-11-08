@@ -136,6 +136,8 @@ pnpm mc:addon -- remove example-mod
   版本冲突或同时给 client 与 version 时显式失败；
 - `attach(port)`：客户端已创建、登录/配置/Play 包都会到达；只读订阅 + 发布事实；
   返回的函数在连接退役时执行。
+- `localScreen(event)`：**纯同步编码器**，把 Uina 自己的个人背包窗口事务起止翻译成
+  Payload（见 §8.5）。不持有连接、没有发送能力、不参与订阅生命周期。
 
 `ConnectionPort` 只暴露：`connection` / `incarnation` / `version` / `state()` /
 `onPacket` / `onCustomPayload` / `onEvent` / `publishFact`。没有裸 bot、没有 socket、没有写入口。

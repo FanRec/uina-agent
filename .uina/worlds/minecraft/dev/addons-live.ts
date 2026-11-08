@@ -215,10 +215,7 @@ async function main(): Promise<void> {
 			assert(reconnected.state === "connected", JSON.stringify(reconnected).slice(0, 300));
 			const addons = reconnected.active!.addons;
 			assert(addons.digest.length === 32, JSON.stringify(addons));
-			assert(
-				JSON.stringify(addons.ids) === JSON.stringify(["example-mod@1.0.0"]),
-				JSON.stringify(addons),
-			);
+			assert(JSON.stringify(addons.ids) === JSON.stringify(["example-mod@1.0.0"]), JSON.stringify(addons));
 
 			const described = await describe({ kind: "addon", name: "example-mod" });
 			assert(described.status === "succeeded", JSON.stringify(described.details).slice(0, 300));

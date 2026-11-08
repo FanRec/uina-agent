@@ -8,6 +8,8 @@
  *
  * 写入不在这个端口上：改变服务器世界的 Payload 必须由动作在 Runtime 授权的
  * BodyScope 内经 `CallContext.protocol`（ProtocolWritePort）发出。
+ * `localScreen` 是唯一的例外形状，但它**不改变世界**：只把 Uina 自己的本地界面
+ * 活动（个人背包开关）编码成通知，由 Driver 同步派发，且同样没有暴露写端口。
  */
 
 import type { JsonValue, Ref } from "./values.js";

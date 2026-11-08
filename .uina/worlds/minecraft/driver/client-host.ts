@@ -123,6 +123,8 @@ export class ClientHost {
 			throw new Error(`client host already ${this._state}; close first`);
 		}
 		const generation = ++this._attachGeneration;
+		// 上一代（含 prepare 失败的半成品）不得留下可派发的编码器。
+		this._screenExtensions = [];
 		this._disconnect = null;
 		this._lastDimension = null;
 		this._pendingRebirth = false;

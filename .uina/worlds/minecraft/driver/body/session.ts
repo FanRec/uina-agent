@@ -1114,10 +1114,13 @@ export class BodySessionImpl implements BodySession {
 				});
 			const deps = this.operationDeps(bot);
 			const check = this.boundCheck();
+			// 窗口 Operation ref 就是这次事务的稳定身份：展示事件直接复用它，
+			// 不再另发一个只出现在事件里的引用。
+			const operation = this.deps.mintOp();
 			const window = new WindowSessionImpl({
 				...deps,
 				player: true,
-				operation: this.deps.mintOp(),
+				operation,
 				connection: this.identity.connection,
 				incarnation: this.identity.incarnation,
 				guard: () => {
@@ -1141,14 +1144,13 @@ export class BodySessionImpl implements BodySession {
 			// 展示边界：只有真实进入个人背包窗口事务才产生一对 open/close。
 			// 读库存（inventory@1）、捡拾、快捷栏切换都不经过这里；openContainer 走
 			// 原版窗口协议，由服务端自行观察，也不经过这里（否则会和上游镜像互相覆盖）。
-			const presentation = this.deps.mintOp();
 			const screen = (phase: LocalScreenActivity["phase"]): boolean => {
 				try {
 					return (
 						this.deps.host.emitLocalScreen?.({
 							kind: "player_inventory",
 							phase,
-							session: presentation,
+							session: operation,
 							connection: this.identity.connection,
 							incarnation: this.identity.incarnation,
 						}) ?? false
