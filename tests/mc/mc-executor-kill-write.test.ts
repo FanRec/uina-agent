@@ -214,27 +214,10 @@ test("SIGKILL mid-write keeps runtime.db consistent and the executor recoverable
 		const parsed = forensic(PARSE_SCRIPT, dbPath) as { parsed: number };
 		expect(parsed.parsed).toBeGreaterThan(0);
 
-		// 非优雅重启关 owner_lost；开门后受理与结算照常（库真正可用，不只是能读）。
-		// 开门是 CAS：心跳会在读取与调用之间推进 revision，按惯例重读重试。
-		let opened = false;
-		for (let attempt = 0; attempt < 5 && !opened; attempt++) {
-			const reopenedOwner = executor.status().side!.owner!;
-			try {
-				await executor.rpc("runtime.setOwnerGate", {
-					requestId: randomUUID(),
-					attachment: reopenedOwner.attachment,
-					gate: "owner_lost",
-					closed: false,
-					expectedRevision: reopenedOwner.gateRevision,
-				});
-				opened = true;
-			} catch (error) {
-				if (!(error instanceof Error) || !error.message.includes("gate revision")) throw error;
-			}
-		}
-		expect(opened, "owner_lost gate could not be opened after retries").toBe(true);
-		// 门在远端已开，但父侧 side 缓存随心跳/状态刷新才更新（mc-executor-session 的
-		// "parent cache is stale" 语义）：等 actionsAllowed 翻真再提交探针。
+		// 非优雅重启后 owner_lost 由机械对账自动解除（旧执行树已被证明退役），
+		// 不需要模型再走两轮 runs recover；受理与结算照常（库真正可用，不只是能读）。
+		expect(executor.status().recovery.clearedGates).toContain("owner_lost");
+		expect(executor.status().side!.owner!.gates).not.toContain("owner_lost");
 		const gateDeadline = Date.now() + 10000;
 		while (!executor.status().actionsAllowed && Date.now() < gateDeadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));

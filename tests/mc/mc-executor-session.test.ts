@@ -111,7 +111,7 @@ test("real managed bootstrap restores Runtime before game connection, binds owne
 	}
 });
 
-test("IPC loss retires the exact launch; recovery changes attachment and keeps owner_lost until explicit CAS", async () => {
+test("IPC loss retires the exact launch; the rebuilt domain clears owner_lost mechanically", async () => {
 	const dataRoot = await root();
 	let executor: MinecraftExecutor | undefined;
 	try {
@@ -129,13 +129,15 @@ test("IPC loss retires the exact launch; recovery changes attachment and keeps o
 		const recovered = executor.status().side!;
 		expect(recovered.launch).not.toBe(old.launch);
 		expect(recovered.owner!.attachment).not.toBe(old.owner!.attachment);
-		expect(recovered.owner!.gates).toContain("owner_lost");
-		expect(executor.status().actionsAllowed).toBe(false);
+		// 旧执行树在 launch 之前已被证明退役，owner_lost 是机械性的：激活即对账解除，
+		// 模型不需要再走"读 attachment → 带 expected 重调"两轮。
+		expect(recovered.owner!.gates).not.toContain("owner_lost");
+		expect(executor.status().recovery.clearedGates).toContain("owner_lost");
+		expect(executor.status().actionsAllowed).toBe(true);
+		// 旧 attachment 仍然没有资格：过期激活不能借新域复活。
 		await expect(
 			executor.recover({ attachment: old.owner!.attachment, gateRevision: recovered.owner!.gateRevision }),
 		).rejects.toMatchObject({ code: "OWNER_STATE_CHANGED" });
-		await executor.recover({ attachment: recovered.owner!.attachment, gateRevision: recovered.owner!.gateRevision });
-		expect(executor.status().actionsAllowed).toBe(true);
 	} finally {
 		await executor?.close().catch(() => {});
 		await rm(dataRoot, { recursive: true, force: true });
@@ -202,6 +204,36 @@ test("missing initialized Runtime is refused without recreating its database", a
 	}
 });
 
+test("a user emergency gate is never cleared by the mechanical rebuild", async () => {
+	const dataRoot = await root();
+	let executor: MinecraftExecutor | undefined;
+	try {
+		executor = await MinecraftExecutor.open({
+			ownershipDir: dataRoot,
+			sessionDataDir: dataRoot,
+			sharedDataDir: dataRoot,
+			config: config(),
+			policy: { autoRecover: false, closeGraceMs: 3000 },
+		});
+		const owner = executor.status().side!.owner!;
+		await executor.setOwnerGate("emergency", true, owner.gateRevision);
+		(executor as unknown as { connection: { child: ChildProcess } }).connection.child.disconnect();
+		await until(() => executor!.status().phase === "faulted");
+		await executor.recover();
+		const gates = executor.status().side!.owner!.gates;
+		// emergency 是用户主动关的门：重建只解除机械性的 owner_lost，绝不代用户开门。
+		expect(gates).toContain("emergency");
+		expect(gates).toContain("owner_lost");
+		expect(executor.status().recovery.blocked.map((entry) => entry.gate)).toEqual(
+			expect.arrayContaining(["emergency", "owner_lost"]),
+		);
+		expect(executor.status().actionsAllowed).toBe(false);
+	} finally {
+		await executor?.close().catch(() => {});
+		await rm(dataRoot, { recursive: true, force: true });
+	}
+});
+
 test("concurrent recover callers share exactly one launch across the ledger await", async () => {
 	const dataRoot = await root();
 	let executor: MinecraftExecutor | undefined;
@@ -240,7 +272,9 @@ test("concurrent recover callers share exactly one launch across the ledger awai
 			release();
 			await Promise.allSettled([first, second]);
 		}
-		expect(executor.status().side!.owner!.gates).toContain("owner_lost");
+		// 这次重建同样走机械对账：owner_lost 被自动解除，旧 attachment 不复活。
+		expect(executor.status().side!.owner!.gates).not.toContain("owner_lost");
+		expect(executor.status().recovery.clearedGates).toContain("owner_lost");
 	} finally {
 		release?.();
 		await executor?.close().catch(() => {});

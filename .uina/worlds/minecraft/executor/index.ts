@@ -63,6 +63,11 @@ export interface PlatformSessionStatus {
 	fault: { code: string; message: string } | null;
 	policy: ExecutorPolicy;
 	diagnostics: { tail: string; discardedBytes: number };
+	/**
+	 * 本次激活的机械对账结果。`clearedGates` 是执行域已经证明退役后自动解除的门，
+	 * 模型不需要再走 `runs recover`；`blocked` 是仍然关着、需要人/模型处理的门。
+	 */
+	recovery: { clearedGates: ("disabled" | "owner_lost")[]; blocked: { gate: string; reason: string }[] };
 }
 interface Connection {
 	launch: string;
@@ -116,6 +121,7 @@ export class MinecraftExecutor {
 	private recoveryRemaining = 1;
 	private readyOnce = false;
 	private lastRetirementClean = false;
+	private recovery: PlatformSessionStatus["recovery"] = { clearedGates: [], blocked: [] };
 	private tail = Buffer.alloc(0);
 	private discardedBytes = 0;
 	private readonly listeners = new Set<(events: import("../contracts/executor.js").GameNotice[]) => void>();
@@ -342,8 +348,11 @@ export class MinecraftExecutor {
 			this.lastFault = null;
 			this.readyOnce = true;
 			this.startHeartbeat(connection);
-			// Explicit activation may clear disabled only. Emergency/owner_lost remain independent.
-			if (owner.gates.includes("disabled")) await this.setOwnerGate("disabled", false, owner.gateRevision);
+			// 显式激活可以清 disabled。emergency / owner_lost 是独立门，但 owner_lost 是
+			// 机械性的：能走到这里说明旧执行树已被证明退役（launch 本身拒绝未退役的旧树），
+			// 旧控制不可能再写世界。此时继续关着只会让模型花两轮 runs recover 做同一件事。
+			// emergency 是用户主动关的门，永不自动解除。
+			this.recovery = await this.reconcileGates(owner);
 			this.side = (await peer.call("status", {})) as unknown as ExecutionSideStatus;
 		} catch (error) {
 			stopHello();
@@ -353,8 +362,42 @@ export class MinecraftExecutor {
 			throw error;
 		}
 	}
-	private startHeartbeat(connection: Connection): void {
-		this.stopHeartbeat();
+	/**
+	 * 激活后的机械对账：能证明安全的门直接开，开不了的门留下具体原因。
+	 *
+	 * 自动解除的严格边界（public-api §7.3）：
+	 * - 只在旧执行域已确认退役之后——`launch` 本身拒绝未退役的旧树，所以走到这里是证明；
+	 * - 不碰 emergency（用户主动关的门）；
+	 * - 门状态持久提交未确认时保持关闭，并如实回报 persistence。
+	 *
+	 * 这条路径替代的是"模型先 runs recover 拿 attachment、再调一次带 expected 的 recover"
+	 * 这两轮纯机械往返；`runs recover` 仍然保留给显式重连与人工干预。
+	 */
+	private async reconcileGates(owner: OwnerState): Promise<PlatformSessionStatus["recovery"]> {
+		const cleared: ("disabled" | "owner_lost")[] = [];
+		const blocked: { gate: string; reason: string }[] = [];
+		let current = owner;
+		if (current.gates.includes("disabled")) {
+			const receipt = await this.setOwnerGate("disabled", false, current.gateRevision);
+			current = receipt.state;
+			if (receipt.persistence === "confirmed" && !current.gates.includes("disabled")) cleared.push("disabled");
+			else blocked.push({ gate: "disabled", reason: receipt.error ?? "gate state was not persisted" });
+		}
+		if (current.gates.includes("emergency")) {
+			blocked.push({ gate: "emergency", reason: "closed by the user; never cleared automatically" });
+			if (current.gates.includes("owner_lost"))
+				blocked.push({ gate: "owner_lost", reason: "held closed while emergency is closed" });
+			return { clearedGates: cleared, blocked };
+		}
+		if (current.gates.includes("owner_lost")) {
+			const receipt = await this.setOwnerGate("owner_lost", false, current.gateRevision);
+			current = receipt.state;
+			if (receipt.persistence === "confirmed" && !current.gates.includes("owner_lost")) cleared.push("owner_lost");
+			else blocked.push({ gate: "owner_lost", reason: receipt.error ?? "gate state was not persisted" });
+		}
+		return { clearedGates: cleared, blocked };
+	}
+	private startHeartbeat(connection: Connection): void {		this.stopHeartbeat();
 		this.lastRetirementClean = false;
 		connection.lastHeartbeat = performance.now();
 		this.heartbeatTimer = setInterval(() => {
@@ -439,6 +482,7 @@ export class MinecraftExecutor {
 			fault: this.lastFault,
 			policy: { ...this.policy },
 			diagnostics: { tail: this.tail.toString("utf8"), discardedBytes: this.discardedBytes },
+			recovery: { clearedGates: [...this.recovery.clearedGates], blocked: [...this.recovery.blocked] },
 		};
 	}
 	async inspect(): Promise<PlatformSessionStatus> {

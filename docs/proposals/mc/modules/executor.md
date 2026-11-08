@@ -121,7 +121,8 @@ type MinecraftRunsParams =
 - wait 缺省等待当前 Run 的完成或待决策报告，已是二者之一立即返回 kind=result。显式 afterRevision 则等待一次修订变化：当前 revision 更大即 changed，已 finished 即 result；afterRevision 大于当前值报 REVISION_INVALID。默认模式忽略普通 progress 唤醒，避免模型反复轮询。timeoutMs 缺省无限、0 为立即检查；超时返回 kind=timeout 和同一当前投影，取消只结束查询。读与登记必须复查以避免丢唤醒。
 - request({request}) → SubmissionLookup；found 提供原 segment、当前小投影和原 completionRef，历史报告用该 completionRef 读取。cancelled 表示从未受理且已持久撤销；unavailable 保持未知。retry 复用原键和原请求，见 §6.2。
 - stop 支持 run 或 request 二选一，模型不生成停止命令 ID。只有 requestId 时也能撤销该意图；停止不关闭其他 Run 的门，见 §6.3。
-- recover 不带 expected 只重建/核对；带完整 {attachment,gateRevision} 才解除 owner_lost，且本次不能再重建实例。两项缺一拒绝；不能解除 emergency，见 §7.3。
+- recover 不带 expected 只重建/核对；带完整 {attachment,gateRevision} 才显式解除 owner_lost，且本次不能再重建实例。两项缺一拒绝；不能解除 emergency，见 §7.3。
+- **机械对账在激活时自动完成**（2026-11-09 起）：`launch` 只有在旧执行树被证明退役后才开始，所以新域 attach 成功即证明旧控制不可能再写世界。此时 `disabled` 与 `owner_lost` 由 Executor 自动解除，`status().recovery` 如实报告 `{clearedGates, blocked}`；`emergency` 永不自动解除，且它关着时 `owner_lost` 一并保持关闭。`runs recover` 仍保留给显式重连与人工干预。
 
 <a id="observation-images"></a>
 
@@ -475,7 +476,7 @@ library 的写入直接在执行侧完成；取消或断线后写入程度不明
 
 非 clean 启动由 Runtime 记录 owner_lost，即使故障前尚未来得及持久该门；已有 disabled/emergency/stop 意图一并优先恢复。本地和远端任一已确认关闭的 emergency 都保持关闭，状态不明不得推断已解除。原停止意图两侧均未确认持久时，不承诺断电后能恢复它；未清理启动仍阻止自动准入并要求核对。
 
-status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论和未核实材料的查询入口，并生成带 expected={attachment,gateRevision} 的完整 nextCall。带 expected 的 recover 只核验本次已存在连接，不重建、不重新读取新 attachment 替换参数；实例不在或任一字段不符就 OWNER_STATE_CHANGED。Executor 捕获匹配连接后，Runtime 再核验 RPC 绑定的 attachment 与门 CAS；连接中途更替也必须失败。这样再次崩溃即使门修订没变，旧确认也不能放开新实例。成功仅解除 owner_lost，允许新工作/显式 continue，不复活旧运行。正常启用只解除 disabled。
+status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论（`recovery.clearedGates/blocked`）和未核实材料的查询入口，并生成带 expected={attachment,gateRevision} 的完整 nextCall。带 expected 的 recover 只核验本次已存在连接，不重建、不重新读取新 attachment 替换参数；实例不在或任一字段不符就 OWNER_STATE_CHANGED。Executor 捕获匹配连接后，Runtime 再核验 RPC 绑定的 attachment 与门 CAS；连接中途更替也必须失败。这样再次崩溃即使门修订没变，旧确认也不能放开新实例。成功仅解除 owner_lost，允许新工作/显式 continue，不复活旧运行。正常启用解除 disabled，并在旧域已退役的前提下同时机械解除 owner_lost（见 §7 的自动对账）。
 
 ### 7.4 BodyEndpoint
 
