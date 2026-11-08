@@ -5,6 +5,7 @@
  * Runtime 是 acquire 的唯一调用方；能力/程序经 withBody 拿 BodyCallScope。
  */
 
+import type { UiActInput, UiActReceipt } from "./ui.js";
 import type { EffectReceipt, Fact, JsonValue, Place, Ref, Vec3 } from "./values.js";
 import type { WorldQuery } from "./world.js";
 
@@ -360,6 +361,12 @@ export interface BodyOps {
 	lookAt(target: PointTarget | EntityRef): Promise<EffectReceipt>;
 	writeSign(target: BlockTarget, input: { side: "front" | "back"; lines: SignText }): Promise<EffectReceipt>;
 	openContainer(target: BlockTarget | EntityRef): Promise<WindowSession>;
+	/**
+	 * 对"已经打开的服务器界面"做一次短暂受控操作（点击槽位/提交 Dialog/激活文本动作/关闭）。
+	 * 不要求 openContainer：菜单可能由 /menu、NPC 或聊天链接打开，观察是连接级的。
+	 * 只在派发瞬间持有身体资格；不预测槽位结果、不自动重试；完成判据与物品 CAS 分开。
+	 */
+	uiAct(input: UiActInput): Promise<UiActReceipt>;
 	/**
 	 * 玩家自带窗口（window 0，含 2×2 合成格与结果槽）的作用域：期间独占身体，退出时强制关闭。
 	 * 与 openContainer 打开的窗口互斥；回调式是因为生命周期与身体资格是同一条作用域，

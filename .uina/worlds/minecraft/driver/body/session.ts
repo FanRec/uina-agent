@@ -40,6 +40,7 @@ import type {
 } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
 import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
+import type { UiActInput, UiActReceipt } from "../../contracts/ui.js";
 import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { WorldQuery } from "../../contracts/world.js";
@@ -51,11 +52,13 @@ import { type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
 import { opensWindow } from "../window/layout.js";
 import { WindowSessionImpl } from "../window/session.js";
+import { windowStateFor } from "../window/state.js";
 import { FeedbackController } from "./feedback.js";
 import { runEquip, runToss } from "./inventory.js";
 import { runMining } from "./mining.js";
 import type { BodyOperationDeps } from "./operation.js";
 import { runSign } from "./sign.js";
+import { runUiAct } from "./ui-act.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
 type MFEntity = NonNullable<MineflayerBot["entities"][string]>;
@@ -1393,6 +1396,48 @@ export class BodySessionImpl implements BodySession {
 		} finally {
 			this.openingWindow = false;
 			releaseView();
+			this.exitOp();
+		}
+	}
+
+	/**
+	 * 对已打开的服务器界面做一次受控写操作（ui.act@1）。
+	 *
+	 * 与 openContainer 的区别：菜单可能由 /menu、NPC 或聊天链接打开，没有 BlockTarget，
+	 * 也不需要持有 WindowSession。这里只在派发瞬间核验身体资格，不占用窗口所有权——
+	 * 因此同一个菜单可以被反复读取（ui@1）、逐次点击，而不会被某个长事务锁住。
+	 * 与 ownedWindow 互斥：物品事务进行中不允许并发点击同一个窗口。
+	 */
+	async uiAct(input: UiActInput): Promise<UiActReceipt> {
+		const bot = this.botForWrite();
+		if (this.ownedWindow !== null || this.openingWindow)
+			throw fail({
+				code: "CONTROL_CONFLICT",
+				source: "capability",
+				message: "a window Operation owns this body; finish it before acting on the server interface",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		const check = this.boundCheck();
+		this.enterOp();
+		try {
+			return await runUiAct(
+				{
+					bot,
+					protocol: protocolFor(bot),
+					signal: this.signal,
+					guard: check,
+					canCleanup: () => true,
+					recorder: this.recorder,
+					mintOp: this.deps.mintOp,
+					mintEff: this.deps.mintEff,
+					state: windowStateFor(protocolFor(bot)),
+					connection: this.identity.connection,
+					incarnation: this.identity.incarnation,
+				},
+				input,
+			);
+		} finally {
 			this.exitOp();
 		}
 	}

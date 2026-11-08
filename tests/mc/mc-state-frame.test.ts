@@ -51,6 +51,9 @@ function rig(
 				freeSlots: 33,
 			}),
 			world: reader({ timeOfDay: "night", dayCount: 3, weather: "clear", biome: "plains" }),
+			// 默认没有界面、没有 HUD：两者都不该占行（kind="none" 是"确实没有"）。
+			ui: reader({ kind: "none", screenRef: null, uiRevision: 0, unknown: [] }),
+			hud: reader(null),
 			...overrides,
 		},
 	};

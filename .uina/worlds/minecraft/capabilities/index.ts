@@ -9,6 +9,7 @@
  * 目录与执行分叉。测试与可信本地模块经 CapabilityCatalog.create 注入，不改此清单。
  */
 
+import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
 import { activityModule } from "./actions/activity.js";
 import { buildModule } from "./actions/build.js";
 import { buildingModule } from "./actions/building.js";
@@ -31,9 +32,10 @@ import { stationsModule } from "./actions/stations.js";
 import { surfaceModule } from "./actions/surface.js";
 import { transitModule } from "./actions/transit.js";
 import { tunnelModule } from "./actions/tunnel.js";
+import { uiActModule } from "./actions/ui.js";
 import { CapabilityCatalog, type MinecraftCapabilityModule } from "./catalog.js";
-import { buildPlanModule } from "./queries/build-plan.js";
 import { bodyModule } from "./queries/body.js";
+import { buildPlanModule } from "./queries/build-plan.js";
 import { containerLastModule } from "./queries/containers.js";
 import { environmentModule } from "./queries/environment.js";
 import { eventsModule } from "./queries/events.js";
@@ -44,7 +46,7 @@ import { playersModule } from "./queries/players.js";
 import { regionModule } from "./queries/region.js";
 import { routePlanModule } from "./queries/route-plan.js";
 import { terrainModule } from "./queries/terrain.js";
-import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
+import { uiQueryModule } from "./queries/ui.js";
 
 export type { BuiltCapabilities } from "./catalog.js";
 
@@ -67,6 +69,8 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 	mapModule,
 	routePlanModule,
 	buildPlanModule,
+	// 连接级界面/HUD 观察：不占 Body，菜单由插件主动打开时同样可读。
+	uiQueryModule,
 	// 动作（Runtime 执行面）
 	chatModule,
 	navigationModule,
@@ -90,6 +94,7 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 	activityModule,
 	ridingModule,
 	transitModule,
+	uiActModule,
 ];
 
 /**

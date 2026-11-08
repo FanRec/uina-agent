@@ -21,9 +21,9 @@ function jsBlocks(markdown: string): string[] {
 	return [...markdown.matchAll(/```(?:js|javascript)\n([\s\S]*?)```/g)].map((m) => m[1]!);
 }
 
-test("六份官方 Guide 与 ENV 常驻正文都在有界成本内、无过时合同", async () => {
+test("七份官方 Guide 与 ENV 常驻正文都在有界成本内、无过时合同", async () => {
 	const files = (await readdir(guidesDir)).filter((name) => name.endsWith(".md"));
-	expect(files).toHaveLength(6);
+	expect(files).toHaveLength(7);
 	for (const file of files) {
 		const text = await readFile(guidesDir + file, "utf8");
 		expect(text.length, file).toBeGreaterThan(200);

@@ -68,7 +68,8 @@
     "verify:file-events": "tsx scripts/verify-file-events.mts",
     "bench:ui": "tsx scripts/ui-frame-bench.ts",
     "diagnose:frames": "tsx scripts/diagnose-frame-log.mts",
-    "dev:mc:window-probe": "tsx .uina/worlds/minecraft/driver/mineflayer/window-probe.ts"
+    "dev:mc:window-probe": "tsx .uina/worlds/minecraft/driver/mineflayer/window-probe.ts",
+    "dev:mc:ui": "tsx .uina/worlds/minecraft/dev/ui-server.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

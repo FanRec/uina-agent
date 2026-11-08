@@ -21,7 +21,15 @@ export type CurrentReader = Extract<QueryReader, { kind: "current" }>;
 
 export interface StateFrameOptions {
 	facts: Pick<ClientFactsPort, "sample">;
-	readers: { self: CurrentReader; inventory: CurrentReader; world: CurrentReader };
+	readers: {
+		self: CurrentReader;
+		inventory: CurrentReader;
+		world: CurrentReader;
+		/** ui@1：当前服务器界面（没有界面时返回 kind="none"，不是缺失）。 */
+		ui: CurrentReader;
+		/** hud@1：计分板/BossBar/Title；从未收到时为 null。 */
+		hud: CurrentReader;
+	};
 }
 
 export interface StateFrame {
@@ -111,6 +119,61 @@ function inventoryText(inventory: Record<string, unknown> | null): string | null
 	return `背包${entries.length}种${used}${free == null ? "" : ` 空${free}格`}：${head.join(" ")}${folded > 0 ? ` …+${folded}种` : ""}`;
 }
 
+/**
+ * 当前服务器界面摘要：只报"有界面 + 它是什么 + 身份"，不塞整份菜单。
+ * 没有界面时不占行（kind="none" 是"确实没有"，不是"不知道"）。
+ * screenRef/uiRevision 一定带上：下一次 ui.act 必须用它们，模型自己编不出来。
+ */
+function uiText(ui: Record<string, unknown> | null): string | null {
+	if (ui == null) return null;
+	const ref = typeof ui.screenRef === "string" ? `${ui.screenRef} rev${String(ui.uiRevision ?? 0)}` : null;
+	if (ui.kind === "container") {
+		const container = ui.container as
+			| { windowType?: unknown; layout?: { status?: unknown }; slots?: unknown[] }
+			| undefined;
+		const type = typeof container?.windowType === "string" ? container.windowType.replace(/^minecraft:/, "") : "window";
+		const title = (ui.title as { text?: unknown } | null | undefined)?.text;
+		const label = typeof title === "string" && title.length > 0 ? `「${title}」` : "";
+		const slots = Array.isArray(container?.slots) ? container.slots.length : 0;
+		const status = container?.layout?.status;
+		const note = status === "known" ? "" : `（布局${status === "partial" ? "部分" : "未知"}，只读）`;
+		return `界面：${type}${label} 非空槽${slots}${note}${ref == null ? "" : ` [${ref}]`}`;
+	}
+	if (ui.kind === "dialog") {
+		const dialog = ui.dialog as
+			| { title?: { text?: unknown } | null; buttons?: unknown[]; inputs?: unknown[]; phase?: unknown }
+			| undefined;
+		const title = dialog?.title?.text;
+		const label = typeof title === "string" && title.length > 0 ? `「${title}」` : "";
+		const buttons = Array.isArray(dialog?.buttons) ? dialog.buttons.length : 0;
+		const inputs = Array.isArray(dialog?.inputs) ? dialog.inputs.length : 0;
+		return `界面：Dialog${label} 按钮${buttons} 输入${inputs}${ref == null ? "" : ` [${ref}]`}`;
+	}
+	return null;
+}
+
+/** HUD 摘要：计分板/标题是插件常驻信息，模型不该为了看它去读整个查询。 */
+function hudText(hud: Record<string, unknown> | null): string | null {
+	if (hud == null) return null;
+	const parts: string[] = [];
+	const board = hud.scoreboard as
+		| { display?: unknown; title?: { text?: unknown } | null; lines?: unknown[] }
+		| null
+		| undefined;
+	if (board != null) {
+		const title = typeof board.title?.text === "string" ? `「${board.title.text}」` : "";
+		const lines = Array.isArray(board.lines) ? board.lines.length : 0;
+		parts.push(`计分板${typeof board.display === "string" ? board.display : ""}${title}${lines}行`);
+	}
+	const bars = Array.isArray(hud.bossBars) ? hud.bossBars.length : 0;
+	if (bars > 0) parts.push(`BossBar${bars}条`);
+	const title = (hud.title as { text?: unknown } | null | undefined)?.text;
+	if (typeof title === "string" && title.length > 0) parts.push(`标题「${title}」`);
+	const actionBar = (hud.actionBar as { text?: unknown } | null | undefined)?.text;
+	if (typeof actionBar === "string" && actionBar.length > 0) parts.push(`动作栏「${actionBar}」`);
+	return parts.length === 0 ? null : `HUD：${parts.join("·")}`;
+}
+
 function buildText(options: StateFrameOptions, view: ClientFactView, failed: string[]): string {
 	const self = section(options.readers.self, view, "self", failed);
 	const inventory = section(options.readers.inventory, view, "inventory", failed);
@@ -127,6 +190,12 @@ function buildText(options: StateFrameOptions, view: ClientFactView, failed: str
 	if (environment) lines.push(environment);
 	const bag = inventoryText(inventory);
 	if (bag) lines.push(bag);
+	// 界面与 HUD 排在背包之后：它们只在"确实有"时占行，菜单打开时模型立刻看得到身份与修订号。
+	const ui = section(options.readers.ui, view, "ui", failed);
+	const uiLine = uiText(ui);
+	if (uiLine) lines.push(uiLine);
+	const hudLine = hudText(section(options.readers.hud, view, "hud", failed));
+	if (hudLine) lines.push(hudLine);
 	// 段落整段读不到必须说出来：留空会让模型以为"那里什么都没有"。
 	if (lines.length === 0) lines.push(`Minecraft 状态不可读（缺失段落：${failed.join("、") || "全部"}）`);
 	return lines.join("\n");

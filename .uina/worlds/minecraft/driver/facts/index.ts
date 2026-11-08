@@ -29,11 +29,15 @@ import type {
 } from "../../contracts/client-facts.js";
 import { emptyFactRevisions } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
+import type { RichText } from "../../contracts/ui.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { ClientHost } from "../client-host.js";
 import { fromMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
+import { projectUi } from "../ui/projection.js";
+import { parseComponent } from "../ui/text.js";
+import { windowStateFor } from "../window/state.js";
 import { buildRegistryKnowledge, type RegistryLike } from "./knowledge.js";
 import { MapCache } from "./map-cache.js";
 import { createView } from "./view.js";
@@ -68,6 +72,17 @@ function makeRefIssuer(namespace: string) {
 		counters.set(prefix, next);
 		return `${prefix}:${namespace}:${next}`;
 	};
+}
+
+/**
+ * mineflayer 消息对象上的结构化组件（真服探针：`jsonMsg.json` 保留 click_event/extra）。
+ * 取不到就返回 null：富文本是增强，不是正文的替代品。
+ */
+function richOfComponent(raw: unknown, prefix: string): RichText | null {
+	if (raw == null || typeof raw !== "object") return null;
+	const json = (raw as { json?: unknown }).json;
+	if (json == null) return null;
+	return parseComponent(json, prefix);
 }
 
 function nowIso(): string {
@@ -107,6 +122,10 @@ export class FactsSource implements ClientFactsPort {
 	private changedScheduled = false;
 	private attachedBot: MineflayerBot | null = null;
 	private windowFact: Fact<WindowSnapshot> | null = null;
+	/** 最近一次界面投影的身份：关闭事件需要报告"关掉的是哪个界面"。 */
+	private lastUiRef: string | null = null;
+	private lastUiKind: "none" | "container" | "dialog" | "book" | null = null;
+	private lastUiPhase: "play" | "config" | "local" = "play";
 	/**
 	 * Addon 发布的连接级事实（key = `<addonId>/<key>`）。随连接清空，
 	 * 不为每个包建独立存储或游标体系。
@@ -434,10 +453,35 @@ export class FactsSource implements ClientFactsPort {
 		}
 	}
 
-	/** I1 选定证据：chat / damage / death / connection 事件。 */
-	private captureEvent(schema: "client.event@1", payload: JsonValue, unknowns: string[]): void {
-		if (this.attachedBot == null) return;
-		this.capture(schema, payload, unknowns);
+	/**
+	 * 界面开启/关闭的有界事件：只报告"界面变了"与当前身份的摘要，
+	 * 详细结构仍由 ui@1 按需读取（不在事件里塞整份菜单）。
+	 * closed 用上一次的投影身份，因为关闭后当前状态已经是 none。
+	 */
+	private captureUiEvent(state: "opened" | "closed"): void {
+		const bot = this.attachedBot;
+		if (bot == null) return;
+		const uiState = windowStateFor(protocolFor(bot));
+		const projected = projectUi({
+			screen: uiState.screen(),
+			dialog: uiState.dialog(),
+			dialogData: uiState.dialogData(),
+		});
+		const screenRef = state === "closed" ? (this.lastUiRef ?? "none") : (projected.screenRef ?? "none");
+		const uiKind = state === "closed" ? (this.lastUiKind ?? "none") : projected.kind;
+		const title = state === "closed" ? null : (projected.title?.text ?? null);
+		// 关闭后 dialog() 已是 null：阶段取关闭前那一次的身份，否则 config 阶段的对话框会被报成 play。
+		const phase = state === "closed" ? this.lastUiPhase : (uiState.dialog()?.phase ?? "play");
+		this.lastUiRef = projected.screenRef;
+		this.lastUiKind = projected.kind;
+		this.lastUiPhase = uiState.dialog()?.phase ?? "play";
+		this.captureEvent("client.event@1", { kind: "ui", state, screenRef, uiKind, title, phase }, []);
+	}
+
+	/** I1 选定证据：chat / damage / death / ui / connection 事件。返回记录以便登记富文本动作。 */
+	private captureEvent(schema: "client.event@1", payload: JsonValue, unknowns: string[]): CapturedClientFact | null {
+		if (this.attachedBot == null) return null;
+		return this.capture(schema, payload, unknowns);
 	}
 
 	private capture(
@@ -533,6 +577,27 @@ export class FactsSource implements ClientFactsPort {
 				this.commit("maps");
 			}),
 		);
+		// 连接级界面/HUD：ui 与 hud 分开失效——计分板每秒刷新的插件不该把菜单观察者全部唤醒。
+		// 界面开启/关闭额外发一条有界事件，让 Agent 知道"菜单出现了"，细节仍按需读 ui@1。
+		this.detachFns.push(
+			windowStateFor(protocolFor(bot)).subscribe((notice) => {
+				if (notice.kind === "hud") {
+					this.commit("hud");
+					return;
+				}
+				if (notice.kind === "screen") {
+					this.commit("ui");
+					if (notice.action === "opened") this.captureUiEvent("opened");
+					else if (notice.action === "closed") this.captureUiEvent("closed");
+					return;
+				}
+				if (notice.kind === "dialog") {
+					this.commit("ui");
+					if (notice.action === "opened") this.captureUiEvent("opened");
+					else if (notice.action === "closed") this.captureUiEvent("closed");
+				}
+			}),
+		);
 		// 自身受伤：只认本客户端玩家的实体，不把附近实体受伤记成自己的。
 		const onHurt = (entity: { id?: number } | null, source: { id?: number } | null) => {
 			// 只认本客户端玩家：实体缺失或不是自己不记（不把附近伤害记成自身事件）。
@@ -600,9 +665,20 @@ export class FactsSource implements ClientFactsPort {
 			recipient: string | null,
 			self: boolean | null,
 			unknowns: string[],
+			rawMessage: unknown = null,
 		): void => {
+			// 富文本只取 mineflayer 消息对象上的结构化组件（真服探针确认 `.json` 保留 click_event）；
+			// 取不到就如实 null——纯文本仍是完整正文，不因为缺组件丢消息。
+			const rich = richOfComponent(rawMessage, this.nextRef("chat"));
 			// 聊天不改变任何当前事实（events@1 走历史库 record_version 失效），不推进版本。
-			this.captureEvent("client.event@1", { kind: "chat", channel, text, sender, recipient, self }, unknowns);
+			const record = this.captureEvent(
+				"client.event@1",
+				plain({ kind: "chat", channel, text, sender, recipient, self, rich }),
+				unknowns,
+			);
+			// 登记文本动作：activate_text 只执行这里登记过的 ref，模型不能自己拼动作。
+			if (record != null && rich != null && rich.actions.length > 0)
+				windowStateFor(protocolFor(bot)).registerTextActions(record.ref, rich.actions);
 		};
 		// 运行时发射为 (sender, text, translate, raw)；raw 是 messagestr 同一个原始消息对象。
 		const onPatternChat =
@@ -613,7 +689,7 @@ export class FactsSource implements ClientFactsPort {
 				const name = typeof sender === "string" ? sender : null;
 				// 我方消息回声由 chat 动作核验，不重复捕获（chat 证据归属动作回执）。
 				if (name == null || name === bot.username) return;
-				captureChat(channel, String(text), actorOf(name), channel === "private" ? bot.username : null, false, []);
+				captureChat(channel, String(text), actorOf(name), channel === "private" ? bot.username : null, false, [], raw);
 			};
 		const onWhisper = onPatternChat("private");
 		bot.on("whisper", onWhisper as never);
@@ -640,6 +716,7 @@ export class FactsSource implements ClientFactsPort {
 				null,
 				null,
 				channel === "unknown" ? ["chat channel not recognized in this protocol path"] : [],
+				raw,
 			);
 		};
 		bot.on("messagestr", onMessageStr as never);

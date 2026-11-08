@@ -1,4 +1,10 @@
-/** Window Operation: authoritative server snapshots, guarded synchronous dispatch, exact listener retirement. */
+/**
+ * Window Operation：物品事务与受控同步派发。
+ *
+ * 内容真值不在本类：槽位/光标/标题/布局都由 `driver/window/state.ts` 的连接级唯一状态提供，
+ * 这里只保留**这次操作**的所有权（CAS、busy/uncertain、Effect 记录、监听器退役）。
+ * 因此同一次打开同时被物品事务、ui@1 投影与 HUD 观察读取时，三处看到的必须是同一份数据。
+ */
 import type {
 	BlockTarget,
 	EntityRef,
@@ -14,11 +20,13 @@ import { jsonEqual, matchesItem } from "../../contracts/items.js";
 import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { EffectRecorder, fail, nowIso } from "../execution.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
-import { type DriverProtocol, type NativeWindow, type ProtocolNotice, protocolFor } from "../mineflayer/protocol.js";
-import { windowLayout } from "./layout.js";
+import { type DriverProtocol, type NativeWindow, protocolFor } from "../mineflayer/protocol.js";
+import type { WindowLayout } from "./layout.js";
+import { type ConnectionUiNotice, ConnectionWindowState, windowStateFor } from "./state.js";
 
 const RESPONSE_MS = 5000;
 type ClickInput = Parameters<WindowSession["click"]>[0];
+
 export interface WindowSessionDeps {
 	bot: MineflayerBot;
 	signal: AbortSignal;
@@ -40,14 +48,21 @@ export interface WindowSessionDeps {
 	publishWindow?(value: ClientWindowObservation | null): void;
 }
 
-function failure(code: string, message: string) {
-	return fail({ code, source: "capability", message, dispatch: "not_sent", recoverable: false });
+/** 一次操作视角下的窗口内容；由共享连接状态（或玩家库存快照）即时读出，不落第二份缓存。 */
+interface SessionView {
+	type: string;
+	revision: number;
+	layout: WindowLayout;
+	properties: Record<string, JsonValue>;
+	slots: (JsonValue | null)[];
+	cursor: JsonValue | null;
+	observedAt: string;
+	fullSequence: number;
+	serverStateId: number | null;
 }
 
-function layout(window: NativeWindow): WindowSnapshot["layout"] {
-	const result = windowLayout(String(window.type), window.slots.length, window.inventoryStart, window.inventoryEnd);
-	if ("reason" in result) throw failure("UNSUPPORTED_WINDOW", result.reason);
-	return result.layout;
+function failure(code: string, message: string) {
+	return fail({ code, source: "capability", message, dispatch: "not_sent", recoverable: false });
 }
 
 function matches(value: JsonValue | null, expected: StackExpectation): boolean {
@@ -104,69 +119,105 @@ function expectedClick(
 
 export class WindowSessionImpl implements WindowSession {
 	private readonly wire: DriverProtocol;
-	private native: NativeWindow | null = null;
-	private value: WindowSnapshot | null = null;
-	private observedAt = nowIso();
+	/** 连接级唯一窗口状态；本类只读它，绝不复制槽位。 */
+	private readonly state: ConnectionWindowState;
+	private readonly detach: (() => void)[] = [];
+	/**
+	 * 本操作**认领的那个** native 窗口对象。
+	 * 网络 windowId 会被服务端复用：同 id 的新窗口必须让旧句柄失效，
+	 * 所以身份比对用对象引用，而不是 `screen.native`（共享状态永远指向最新对象）。
+	 */
+	private opened: NativeWindow | null = null;
 	private openSent = false;
 	private retired = false;
 	private busy = false;
 	private uncertain = false;
-	private fullSequence = 0;
-	/** 最近一次权威 full 包的服务端状态代次；用于把回包归因到具体那次 click。 */
-	private lastStateId: number | null = null;
+	/** 是否真的拿到过服务端窗口（决定 open 失败后屏障是否成立）。 */
+	private adopted = false;
+	/** 上次对外发布窗口证据时的内容修订，避免同一内容重复发布。 */
+	private publishedRevision = -1;
 	private readonly wake = new Set<() => void>();
-	private readonly earlyFull = new Map<number, Extract<ProtocolNotice, { kind: "full" }>>();
-	private readonly detach: (() => void)[] = [];
 	/** 本窗口收到的商人报价；换窗/关闭即作废，不跨窗口复用。 */
 	private offerList: MerchantOfferValue[] | null = null;
+	/** 玩家自带窗口（window 0）没有 ConnectionWindowState 屏幕，响应归因用本地计数。 */
+	private playerFullSequence = 0;
+	private playerStateId: number | null = null;
+	private playerObservedAt = nowIso();
 
 	constructor(private readonly deps: WindowSessionDeps) {
 		this.wire = protocolFor(deps.bot);
 		this.wire.assertSupported();
+		this.state = windowStateFor(this.wire);
 		if (deps.player) {
-			const initial = this.wire.playerSnapshot();
-			if (initial === null) throw failure("WRONG_STATE", "authoritative player inventory has not arrived");
-			this.native = deps.bot.inventory;
-			this.value = { ...initial, window: `window:${deps.operation}` };
+			if (this.wire.playerSnapshot() === null)
+				throw failure("WRONG_STATE", "authoritative player inventory has not arrived");
+			this.opened = deps.bot.inventory;
+			// 玩家窗口不是服务器打开的界面，不进 ConnectionWindowState；这里只需要响应计数。
+			this.detach.push(
+				this.wire.subscribe((notice) => {
+					if (this.retired) return;
+					if (notice.kind === "full" && notice.windowId === 0) {
+						this.playerFullSequence++;
+						if (notice.stateId !== null) this.playerStateId = notice.stateId;
+						this.playerObservedAt = nowIso();
+						this.notify();
+					} else if (notice.kind === "slot" || notice.kind === "cursor" || notice.kind === "player_slot") {
+						this.playerObservedAt = nowIso();
+						this.notify();
+					}
+				}),
+			);
+		} else {
+			this.detach.push(this.state.subscribe(this.onScreen));
+			// 商人报价是窗口私有的交易载荷，不属于界面状态；只保留这一条窄订阅。
+			this.detach.push(
+				this.wire.subscribe((notice) => {
+					if (notice.kind === "trades") this.onTrades(notice);
+				}),
+			);
 		}
-		this.detach.push(
-			this.wire.subscribe((notice) => {
-				switch (notice.kind) {
-					case "window_open":
-						this.onOpen(notice.window);
-						break;
-					case "window_close":
-						this.onClose(notice.window);
-						break;
-					case "end":
-						this.onEnd();
-						break;
-					case "replacement":
-						this.onReplacement();
-						break;
-					case "full":
-						this.onFull(notice);
-						break;
-					case "slot":
-						this.onSlot(notice);
-						break;
-					case "cursor":
-						this.onCursor(notice);
-						break;
-					case "player_slot":
-						this.onPlayerInventory(notice);
-						break;
-					case "property":
-						this.onProperty(notice);
-						break;
-					case "trades":
-						this.onTrades(notice);
-						break;
-				}
-			}),
-		);
 		deps.signal.addEventListener("abort", this.onAbort, { once: true });
 		this.detach.push(() => deps.signal.removeEventListener("abort", this.onAbort));
+	}
+
+	/** 当前服务端窗口身份；玩家窗口恒为 bot.inventory。 */
+	private nativeWindow(): NativeWindow | null {
+		return this.deps.player ? this.deps.bot.inventory : this.opened;
+	}
+
+	/**
+	 * 本操作可见的窗口内容。
+	 * 未同步/无已知布局时返回 null：物品操作需要可验证的区域，未知布局只能由 ui@1 只读查看。
+	 */
+	private view(): SessionView | null {
+		if (this.deps.player) {
+			const snapshot = this.wire.playerSnapshot();
+			if (snapshot == null) return null;
+			return {
+				type: snapshot.type,
+				revision: snapshot.revision,
+				layout: snapshot.layout,
+				properties: snapshot.properties,
+				slots: snapshot.slots.map((entry) => entry.item),
+				cursor: snapshot.cursor,
+				observedAt: this.playerObservedAt,
+				fullSequence: this.playerFullSequence,
+				serverStateId: this.playerStateId,
+			};
+		}
+		const screen = this.state.screen();
+		if (screen == null || !screen.synchronized || screen.layout == null) return null;
+		return {
+			type: screen.type ?? `window-type:${screen.windowType ?? "unknown"}`,
+			revision: screen.contentRevision,
+			layout: screen.layout,
+			properties: screen.properties,
+			slots: screen.slots,
+			cursor: screen.cursor,
+			observedAt: screen.observedAt,
+			fullSequence: screen.fullSequence,
+			serverStateId: screen.serverStateId,
+		};
 	}
 
 	private live(): boolean {
@@ -181,10 +232,14 @@ export class WindowSessionImpl implements WindowSession {
 				return false;
 			}
 		}
-		if (
-			this.native != null &&
-			(this.deps.player ? this.deps.bot.currentWindow !== null : this.deps.bot.currentWindow !== this.native)
-		) {
+		const native = this.nativeWindow();
+		if (native != null) {
+			if (this.deps.player ? this.deps.bot.currentWindow !== null : this.deps.bot.currentWindow !== native) {
+				this.retire(false);
+				return false;
+			}
+		} else if (!this.deps.player && this.deps.bot.currentWindow !== null) {
+			// 服务端窗口已经换人：旧操作不能再读写新窗口。
 			this.retire(false);
 			return false;
 		}
@@ -196,121 +251,72 @@ export class WindowSessionImpl implements WindowSession {
 		if (!this.live()) throw failure("REFERENCE_STALE", "window Operation is retired or replaced");
 	}
 
-	private readonly onOpen = (window: NativeWindow): void => {
-		if (this.deps.player || !this.live()) return;
-		if (this.native !== null) {
-			if (window !== this.native) this.retire(false);
+	private readonly onScreen = (notice: ConnectionUiNotice): void => {
+		if (notice.kind !== "screen") return;
+		if (notice.action === "closed") {
+			this.retire(false);
 			return;
 		}
-		this.native = window;
-		this.offerList = null;
-		const early = this.earlyFull.get(window.id);
-		this.earlyFull.clear();
-		if (early !== undefined) this.onFull(early);
+		const screen = notice.screen;
+		if (screen == null) return;
+		if (screen.native != null) {
+			this.adopted = true;
+			// 只认领一次：后续同 id 的新对象由 live() 判为替换。
+			if (this.opened == null) this.opened = screen.native;
+		}
+		// 布局无法验证：物品事务没有可信区域，打开阶段立即失败，不等到 5 秒超时。
+		// 但必须等到原生窗口就位再判：普通箱子的 window_items 会先于 mineflayer 的 windowOpen
+		// 到达，那一刻 synchronized 已是 true 而 native 还是 null，那是中间态，不是结论（真服实测）。
+		if (
+			screen.synchronized &&
+			screen.native != null &&
+			screen.layout == null &&
+			this.openSent &&
+			this.openError === null
+		) {
+			this.openError = failure(
+				"UNSUPPORTED_WINDOW",
+				`window ${screen.type ?? String(screen.windowType)} exposes ${screen.slotCount} slots without a verified slot layout`,
+			);
+			this.retire(true);
+			return;
+		}
+		if (screen.contentRevision !== this.publishedRevision) {
+			this.publishedRevision = screen.contentRevision;
+			const view = this.view();
+			if (view != null && this.deps.target) {
+				this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: this.snapshotOf(view) }));
+			}
+		}
 		this.notify();
 	};
-	private readonly onReplacement = (): void => {
-		if (this.native != null) this.live();
-	};
-	private readonly onClose = (window: NativeWindow | null): void => {
-		if (window === this.native) this.retire(false);
-	};
-	private readonly onEnd = (): void => this.retire(false);
-	private readonly onAbort = (): void => this.retire(true);
 
-	private readonly onFull = (packet: Extract<ProtocolNotice, { kind: "full" }>): void => {
-		if (!this.live()) return;
-		const native = this.native;
-		if (native === null) {
-			this.earlyFull.set(packet.windowId, packet);
-			return;
-		}
-		if (packet.windowId !== native.id) return;
-		try {
-			const next: WindowSnapshot = {
-				window: `window:${this.deps.operation}`,
-				type: String(native.type),
-				revision: this.value?.revision ?? 0,
-				layout: this.deps.player ? (this.value as WindowSnapshot).layout : layout(native),
-				properties: this.value?.properties ?? {},
-				slots: packet.items.map((item, slot) => ({ slot, item })),
-				cursor: packet.cursor,
-			};
-			if (next.slots.length !== next.layout.slotCount) return;
-			this.fullSequence++;
-			if (packet.stateId !== null) this.lastStateId = packet.stateId;
-			this.update(next);
-		} catch (error) {
-			this.openError = error;
-			this.retire(true);
-		}
-	};
-
-	private readonly onSlot = (packet: Extract<ProtocolNotice, { kind: "slot" }>): void => {
-		if (!this.live() || this.value === null || this.native === null) return;
-		if (packet.windowId === -1 && packet.slot === -1) {
-			this.update({ ...this.value, cursor: packet.item });
-			return;
-		}
-		if (packet.windowId !== this.native.id || packet.slot < 0 || packet.slot >= this.value.layout.slotCount) return;
-		this.update({
-			...this.value,
-			slots: this.value.slots.map((entry) =>
-				entry.slot === packet.slot ? { slot: entry.slot, item: packet.item } : entry,
-			),
-		});
-	};
-	private readonly onCursor = (packet: Extract<ProtocolNotice, { kind: "cursor" }>): void => {
-		if (!this.live() || this.value === null || this.native === null) return;
-		this.update({ ...this.value, cursor: packet.item });
-	};
-	private readonly onPlayerInventory = (packet: Extract<ProtocolNotice, { kind: "player_slot" }>): void => {
-		if (!this.live() || this.value === null || this.native === null) return;
-		const slot = this.deps.player
-			? packet.slot
-			: packet.slot >= 9 && packet.slot <= 44
-				? this.native.inventoryStart + packet.slot - 9
-				: -1;
-		if (slot < 0) return;
-		this.update({
-			...this.value,
-			slots: this.value.slots.map((entry) => (entry.slot === slot ? { slot, item: packet.item } : entry)),
-		});
-	};
-	private readonly onProperty = (packet: { windowId: number; property: number; value: number }): void => {
-		if (!this.live() || this.value === null || this.native?.id !== packet.windowId) return;
-		this.update({ ...this.value, properties: { ...this.value.properties, [packet.property]: packet.value } });
-	};
 	/** trade_list 只属于它报的那个窗口；先到后到都按 id 对齐，不跨窗口保留。 */
-	private readonly onTrades = (packet: Extract<ProtocolNotice, { kind: "trades" }>): void => {
-		if (this.retired || this.native?.id !== packet.windowId) return;
+	private onTrades = (
+		packet: Extract<import("../mineflayer/protocol.js").ProtocolNotice, { kind: "trades" }>,
+	): void => {
+		if (this.retired) return;
+		const screen = this.state.screen();
+		const windowId = this.deps.player ? 0 : (screen?.windowId ?? null);
+		if (windowId === null || packet.windowId !== windowId) return;
 		this.offerList = packet.offers.map((offer) => ({ ...offer }));
 		this.notify();
 	};
 
-	private update(next: WindowSnapshot): void {
-		const previous = this.value;
-		if (previous != null && jsonEqual(previous, next)) {
-			this.notify();
-			return;
-		}
-		// revision 是点击的 CAS 前置条件，只约束内容（槽位与光标）。炉子进度每秒变化多次，
-		// 若也推进 revision，燃烧期间每次点击都会在派发前撞 CONFLICT。
-		const contentChanged =
-			previous == null ||
-			previous.type !== next.type ||
-			!jsonEqual(previous.layout, next.layout) ||
-			!jsonEqual(previous.slots, next.slots) ||
-			!jsonEqual(previous.cursor, next.cursor);
-		this.value =
-			previous == null ? next : { ...next, revision: contentChanged ? previous.revision + 1 : previous.revision };
-		this.observedAt = nowIso();
-		// 证据只记内容变化：进度包不构成新的窗口观察事实。
-		if (contentChanged && this.deps.target) {
-			this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: this.value }));
-		}
-		this.notify();
+	private readonly onAbort = (): void => this.retire(true);
+
+	private snapshotOf(view: SessionView): WindowSnapshot {
+		return {
+			window: `window:${this.deps.operation}`,
+			type: view.type,
+			revision: view.revision,
+			layout: view.layout,
+			properties: { ...view.properties },
+			slots: view.slots.map((item, slot) => ({ slot, item })),
+			cursor: view.cursor,
+		};
 	}
+
 	private notify(): void {
 		for (const callback of [...this.wake]) callback();
 	}
@@ -341,13 +347,18 @@ export class WindowSessionImpl implements WindowSession {
 		const operation = this.deps.operation;
 		const effect = this.deps.mintEff();
 		let sent = false;
+		// 身份以 screenRef 为准：激活前就存在的旧屏幕不能被当成本次打开。
+		const before = this.state.screen()?.screenRef ?? null;
 		try {
 			this.check();
 			this.openSent = true;
 			activate();
 			sent = true;
 			this.deps.recorder.record(effect, operation, "body.openContainer@1", "dispatch", "sent", "unknown");
-			const ready = await this.waitFor(() => this.value !== null);
+			const ready = await this.waitFor(() => {
+				const screen = this.state.screen();
+				return screen != null && screen.screenRef !== before && screen.synchronized;
+			});
 			if (!ready) {
 				throw (
 					this.openError ??
@@ -362,8 +373,10 @@ export class WindowSessionImpl implements WindowSession {
 				);
 			}
 			this.check();
+			const view = this.view();
+			if (view == null) throw this.openError ?? failure("UNSUPPORTED_WINDOW", "window has no verifiable slot layout");
 			this.deps.recorder.record(effect, operation, "body.openContainer@1", "receipt", "sent", "met", {
-				window: this.value?.window ?? null,
+				window: `window:${operation}`,
 				completionContract: "server window and complete slot/cursor contents received",
 			});
 		} catch (error) {
@@ -396,9 +409,11 @@ export class WindowSessionImpl implements WindowSession {
 				"WINDOW_UNCERTAIN",
 				"window must be closed after an unconfirmed click; do not retry the business click",
 			);
-		if (this.value === null) throw failure("WRONG_STATE", "window content has not arrived");
+		const view = this.view();
+		if (view == null) throw failure("WRONG_STATE", "window content has not arrived");
+		const value = this.snapshotOf(view);
 		const unknown: string[] = [];
-		for (const entry of [...this.value.slots, { slot: -1, item: this.value.cursor }]) {
+		for (const entry of [...value.slots, { slot: -1, item: value.cursor }]) {
 			if (
 				entry.item !== null &&
 				typeof entry.item === "object" &&
@@ -408,8 +423,8 @@ export class WindowSessionImpl implements WindowSession {
 				unknown.push(`slot ${entry.slot}: components unavailable`);
 		}
 		return {
-			value: structuredClone(this.value),
-			observedAt: this.observedAt,
+			value: structuredClone(value),
+			observedAt: view.observedAt,
 			connection: this.deps.connection,
 			incarnation: this.deps.incarnation,
 			source: "server",
@@ -427,14 +442,14 @@ export class WindowSessionImpl implements WindowSession {
 				"WINDOW_UNCERTAIN",
 				"previous click is unconfirmed; close the window before further business clicks",
 			);
-		const value = this.value;
-		const native = this.native;
-		if (value === null || native === null) throw failure("WRONG_STATE", "window is not ready");
-		if (input.expectedRevision !== value.revision) throw failure("CONFLICT", "window revision changed before dispatch");
+		const view = this.view();
+		const native = this.nativeWindow();
+		if (view == null || native === null) throw failure("WRONG_STATE", "window is not ready");
+		if (input.expectedRevision !== view.revision) throw failure("CONFLICT", "window revision changed before dispatch");
 		if (
 			!Number.isInteger(input.slot) ||
 			(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
-			input.slot >= value.layout.slotCount ||
+			input.slot >= view.layout.slotCount ||
 			input.mode !== 0 ||
 			![0, 1].includes(input.button)
 		)
@@ -450,13 +465,13 @@ export class WindowSessionImpl implements WindowSession {
 			);
 		}
 		if (
-			!matches(value.cursor, input.expectedCursor) ||
+			!matches(view.cursor, input.expectedCursor) ||
 			input.expectedSlots.some(
 				(entry) =>
 					!Number.isInteger(entry.slot) ||
 					entry.slot < 0 ||
-					entry.slot >= value.layout.slotCount ||
-					!matches(value.slots[entry.slot].item, entry.stack),
+					entry.slot >= view.layout.slotCount ||
+					!matches(view.slots[entry.slot] ?? null, entry.stack),
 			)
 		)
 			throw failure("CONFLICT", "window revision or stack expectation changed before dispatch");
@@ -475,19 +490,19 @@ export class WindowSessionImpl implements WindowSession {
 							cursor:
 								input.button === 0
 									? null
-									: withCount(stack(value.cursor) as Stack, Number(stack(value.cursor)?.count) - 1),
+									: withCount(stack(view.cursor) as Stack, Number(stack(view.cursor)?.count) - 1),
 						}
-					: expectedClick(value.slots[input.slot]?.item ?? null, value.cursor, input.button);
-			const before = this.fullSequence;
-			const stateAtDispatch = this.lastStateId;
-			const slotBefore = value.slots[input.slot]?.item ?? null;
-			const cursorBefore = value.cursor;
+					: expectedClick(view.slots[input.slot] ?? null, view.cursor, input.button);
+			const before = view.fullSequence;
+			const stateAtDispatch = view.serverStateId;
+			const slotBefore = view.slots[input.slot] ?? null;
+			const cursorBefore = view.cursor;
 			const startedAt = Date.now();
 			writing = true;
 			this.wire.click(native, input.slot, input.button);
 			sent = true;
 			this.deps.recorder.record(effect, operation, "body.window.click@1", "dispatch", "sent", "unknown", {
-				window: value.window,
+				window: `window:${this.deps.operation}`,
 				slot: input.slot,
 				button: input.button,
 				stateId: stateAtDispatch,
@@ -499,25 +514,27 @@ export class WindowSessionImpl implements WindowSession {
 			 * 有 stateId 时用它做因果归因，迟到的初始 full（stateId 不增）不会误结算本次点击。
 			 */
 			const responded = await this.waitFor(() => {
-				if (this.fullSequence <= before || this.value === null) return false;
+				const current = this.view();
+				if (current == null || current.fullSequence <= before) return false;
 				// 只有 stateId 明确倒退（迟到包）才排除；相等/更大都接受，避免把
 				// "服务端复用同一状态代次但内容已变"误判成无响应。
-				if (stateAtDispatch !== null && this.lastStateId !== null && this.lastStateId < stateAtDispatch) return false;
+				if (stateAtDispatch !== null && current.serverStateId !== null && current.serverStateId < stateAtDispatch)
+					return false;
 				// 真服 SHELTER 证据：工作台窗口会先回一个"仅同步"的 full（stateId 推进但内容不变），
 				// 真正的点击结果随后才到。只凭 full 到达就结算会把同步包误判成拒绝；
 				// 因此仍要求 clicked slot / cursor 发生变化，才进入结果分类。
 				return !jsonEqual(
-					{ slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor },
+					{ slot: current.slots[input.slot] ?? null, cursor: current.cursor },
 					{ slot: slotBefore, cursor: cursorBefore },
 				);
 			});
+			const current = this.view();
 			const diagnostics = (outcome: WindowClickOutcome): NonNullable<WindowClickReceipt["diagnostics"]> => {
-				const current = this.value;
-				const slotAfter = current?.slots[input.slot]?.item ?? null;
+				const slotAfter = current?.slots[input.slot] ?? null;
 				const cursorAfter = current?.cursor ?? null;
 				return {
 					stateBefore: stateAtDispatch,
-					stateAfter: this.lastStateId,
+					stateAfter: current?.serverStateId ?? null,
 					slot: input.slot,
 					button: input.button,
 					elapsedMs: Date.now() - startedAt,
@@ -531,23 +548,24 @@ export class WindowSessionImpl implements WindowSession {
 								: "server confirmed the exact clicked slot and cursor result; no recovery needed",
 				};
 			};
-			if (!responded || !this.live() || this.value === null)
-				return this.unknown(effect, operation, diagnostics("unknown"));
+			if (!responded || !this.live()) return this.unknown(effect, operation, diagnostics("unknown"));
 			this.check();
-			const actual = { slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor };
+			const settled = this.view();
+			if (settled == null) return this.unknown(effect, operation, diagnostics("unknown"));
+			const actual = { slot: settled.slots[input.slot] ?? null, cursor: settled.cursor };
 			const matched = expected !== null && jsonEqual(actual, expected);
 			if (matched) {
 				this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", "met", {
-					window: value.window,
+					window: `window:${this.deps.operation}`,
 					completionContract: "forced-stateId business click returned the exact mode-0 clicked slot and cursor result",
-					stateId: this.lastStateId,
+					stateId: settled.serverStateId,
 				});
 				return {
 					effect,
 					dispatch: "sent",
 					completion: "met",
 					evidence: [],
-					confirmed: structuredClone(this.value),
+					confirmed: this.snapshotOf(settled),
 					needsSnapshot: false,
 					outcome: "confirmed",
 					diagnostics: diagnostics("confirmed"),
@@ -558,9 +576,9 @@ export class WindowSessionImpl implements WindowSession {
 			// 所以那种情况继续等（超时后按 unknown 结算），不在这里猜。
 			this.uncertain = true;
 			this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", "unknown", {
-				window: value.window,
+				window: `window:${this.deps.operation}`,
 				completionContract: "authoritative state diverged from the predicted click result",
-				stateId: this.lastStateId,
+				stateId: settled.serverStateId,
 			});
 			return {
 				effect,
@@ -627,9 +645,10 @@ export class WindowSessionImpl implements WindowSession {
 		write: (native: NativeWindow) => void,
 	): EffectReceipt {
 		this.check();
-		const native = this.native;
-		if (native === null || this.value === null) throw failure("WRONG_STATE", "window is not ready");
-		const type = String(native.type);
+		const native = this.nativeWindow();
+		const view = this.view();
+		if (native === null || view == null) throw failure("WRONG_STATE", "window is not ready");
+		const type = view.type;
 		if (!expect.includes(type))
 			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${type}`);
 		const operation = this.deps.operation;
@@ -676,10 +695,11 @@ export class WindowSessionImpl implements WindowSession {
 
 	async offers(): Promise<Fact<MerchantOfferValue[] | null>> {
 		this.check();
-		if (this.value === null) throw failure("WRONG_STATE", "window content has not arrived");
+		const view = this.view();
+		if (view == null) throw failure("WRONG_STATE", "window content has not arrived");
 		return {
 			value: this.offerList === null ? null : structuredClone(this.offerList),
-			observedAt: this.observedAt,
+			observedAt: view.observedAt,
 			connection: this.deps.connection,
 			incarnation: this.deps.incarnation,
 			source: "server",
@@ -694,10 +714,9 @@ export class WindowSessionImpl implements WindowSession {
 		if (this.retired) return;
 		this.retired = true;
 		for (const detach of this.detach.splice(0)) detach();
-		this.earlyFull.clear();
 		this.offerList = null;
 		this.notify();
-		const native = this.native;
+		const native = this.nativeWindow();
 		if (
 			closeNative &&
 			native !== null &&
@@ -707,8 +726,8 @@ export class WindowSessionImpl implements WindowSession {
 			const effect = this.deps.mintEff();
 			try {
 				this.wire.close(native);
-				const cursor = this.value?.cursor ?? null;
-				const cursorKnown = this.value !== null && !this.uncertain && !this.busy;
+				const cursor = this.view()?.cursor ?? null;
+				const cursorKnown = this.view() !== null && !this.uncertain && !this.busy;
 				this.deps.recorder.record(
 					effect,
 					this.deps.operation,
@@ -729,14 +748,15 @@ export class WindowSessionImpl implements WindowSession {
 			}
 		}
 		if (this.deps.target) this.deps.publishWindow?.(null);
-		this.deps.onRetired(this.openSent && native === null);
+		this.deps.onRetired(this.openSent && !this.adopted);
 	}
 
 	async close(options?: { force?: boolean }): Promise<void> {
 		if (this.retired) return;
 		if (options?.force !== true) {
 			this.check();
-			if (this.value === null || this.value.cursor !== null || this.uncertain || this.busy) {
+			const view = this.view();
+			if (view === null || view.cursor !== null || this.uncertain || this.busy) {
 				throw failure(
 					"CURSOR_NOT_EMPTY",
 					"ordinary window close requires a confirmed empty cursor; forced cleanup may have unknown return/drop consequences",

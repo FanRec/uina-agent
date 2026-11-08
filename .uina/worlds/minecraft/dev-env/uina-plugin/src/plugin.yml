@@ -1,6 +1,35 @@
 name: uina-example-plugin
-version: 1.0.0
+version: 1.1.0
 main: dev.uina.example.UinaExamplePlugin
 api-version: '1.21'
-description: Uina Minecraft addon test fixture (custom channel + item + server-authoritative state)
+description: Uina Minecraft addon + server-UI test fixture (custom channel, menu, dialog, HUD)
 author: Uina
+commands:
+  uina_menu:
+    description: Open the Uina 9x3 test menu
+    usage: /uina_menu
+    permission: uina.fixture
+  uina_menu_refresh:
+    description: Reopen the test menu with new prices
+    usage: /uina_menu_refresh
+    permission: uina.fixture
+  uina_hud:
+    description: Push sidebar, boss bar, title, action bar and tab header
+    usage: /uina_hud
+    permission: uina.fixture
+  uina_chat_actions:
+    description: Send a chat line with run_command / custom / show_dialog click events
+    usage: /uina_chat_actions
+    permission: uina.fixture
+  uina_say:
+    description: Echo a system chat line (click evidence)
+    usage: /uina_say <text>
+    permission: uina.fixture
+  uina_dialog_submit:
+    description: Command used by the dialog command-template button
+    usage: /uina_dialog_submit <note>
+    permission: uina.fixture
+permissions:
+  uina.fixture:
+    description: Allows using the Uina test fixture commands
+    default: op

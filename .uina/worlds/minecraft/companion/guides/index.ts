@@ -54,6 +54,12 @@ export const GUIDES: readonly GuideEntry[] = Object.freeze([
 		tags: ["recovery", "unknown", "interrupted", "checkpoint", "playbook"],
 		file: "recovery_playbook.md",
 	},
+	{
+		name: "server_ui_playbook",
+		summary: "先读 ui@1 再按 screenRef/uiRevision/digest 操作未知插件菜单，用游戏事实验收",
+		tags: ["ui", "menu", "dialog", "hud", "plugin", "playbook"],
+		file: "server_ui_playbook.md",
+	},
 ]);
 
 export function guideSummaries(): readonly GuideEntry[] {

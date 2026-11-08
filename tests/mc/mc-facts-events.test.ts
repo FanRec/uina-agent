@@ -101,6 +101,8 @@ describe("聊天分类", () => {
 				sender: { name: "steve", uuid: null, entity: null },
 				recipient: "uina",
 				self: false,
+				// 替身消息对象没有结构化组件（没有 .json）：富文本如实 null，正文不受影响。
+				rich: null,
 			},
 		]);
 	});

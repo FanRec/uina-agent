@@ -35,9 +35,12 @@ import type {
 	ClientWorldValue,
 	SectionTarget,
 } from "../../contracts/client-facts.js";
+import type { HudSnapshot, UiSnapshot } from "../../contracts/ui.js";
 import type { Fact, FactSource, JsonValue, Vec3 } from "../../contracts/values.js";
 import { fromMineflayerVec3, type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
+import { projectHud, projectUi } from "../ui/projection.js";
+import { windowStateFor } from "../window/state.js";
 import { MAP_CELLS, MAP_SIZE, MapCache } from "./map-cache.js";
 import { effectiveAttribute, trackVitals } from "./vitals.js";
 
@@ -72,6 +75,8 @@ export function createView(ctx: FactViewContext): ClientFactView {
 			ctx.window == null
 				? absent<WindowSnapshot>("no authoritative open window snapshot")
 				: (JSON.parse(JSON.stringify(ctx.window)) as Fact<WindowSnapshot>),
+		ui: () => uiFact(ctx),
+		hud: () => hudFact(ctx),
 		addonFact: (addonId, key) => {
 			const fact = ctx.addonFacts?.get(`${addonId}/${key}`);
 			return fact == null ? null : (JSON.parse(JSON.stringify(fact)) as Fact<JsonValue>);
@@ -273,6 +278,39 @@ function inventoryChangesFact(
 	return snapshot.slots
 		.filter((entry) => (marks[entry.slot] ?? 0) > since)
 		.map((entry) => ({ slot: entry.slot, item: entry.item as import("../../contracts/body.js").ItemValue | null }));
+}
+
+// ---- ui / hud（连接级界面观察，不依赖 Body） ----
+
+/**
+ * 当前服务器界面的投影：窗口菜单、Dialog 或"确实没有界面"。
+ * 数据来自连接级唯一窗口状态，因此服务器用 /menu、NPC 或聊天链接打开的菜单
+ * 在没有 WindowSession 的情况下同样可读——这正是"自主探索未知菜单"的前提。
+ */
+function uiFact(ctx: FactViewContext): Fact<UiSnapshot> {
+	const state = windowStateFor(protocolFor(ctx.bot));
+	const value = projectUi({
+		screen: state.screen(),
+		dialog: state.dialog(),
+		dialogData: state.dialogData(),
+	});
+	return {
+		value,
+		...factBase([...value.unknown]),
+		connection: ctx.stamp.connection ?? undefined,
+		incarnation: ctx.stamp.incarnation ?? undefined,
+	} as Fact<UiSnapshot>;
+}
+
+/** HUD：从未收到任何 HUD 包时 null + unknown（不是"没有计分板"）。 */
+function hudFact(ctx: FactViewContext): Fact<HudSnapshot | null> {
+	const value = projectHud(windowStateFor(protocolFor(ctx.bot)).hud());
+	return {
+		value,
+		...(value == null ? factBase(["no HUD elements observed on this connection yet"]) : factBase([])),
+		connection: ctx.stamp.connection ?? undefined,
+		incarnation: ctx.stamp.incarnation ?? undefined,
+	} as Fact<HudSnapshot | null>;
 }
 
 // ---- block ----

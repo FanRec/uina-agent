@@ -67,8 +67,8 @@ test("describe without arguments lists every capability ref in one response", as
 		acts: string[];
 		families: { kind: string; count: number }[];
 	};
-	// 51 个 ref 一次给全：模型的 selector 只能靠确切名字，分页会让它盲搜。
-	expect(overview.reads.length + overview.acts.length).toBe(51);
-	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 51 }]));
+	// 54 个 ref 一次给全：模型的 selector 只能靠确切名字，分页会让它盲搜。
+	expect(overview.reads.length + overview.acts.length).toBe(54);
+	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 54 }]));
 	expect(JSON.stringify(overview).length).toBeLessThanOrEqual(1600);
 });

@@ -6,10 +6,17 @@ import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import { fail } from "../execution.js";
 import { fixedLayout } from "../window/layout.js";
+import { windowStateFor } from "../window/state.js";
 import { type MineflayerBot, toMineflayerVec3 } from "./adapter.js";
 
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
+const prismarineNbt = mf("prismarine-nbt") as {
+	proto: {
+		sizeOf(value: unknown, type: string): number;
+		write(value: unknown, buffer: Buffer, offset: number, type: string): void;
+	};
+};
 export type NativeWindow = NonNullable<MineflayerBot["currentWindow"]>;
 export type ProtocolNotice =
 	| {
@@ -53,6 +60,43 @@ export type ProtocolNotice =
 			y: number | undefined;
 			data: Uint8Array | undefined;
 	  }
+	/**
+	 * 原始 open_window：窗口身份从这一包开始（不是延迟的 windowOpen）。
+	 * title 是文本组件（NBT 已解成纯 JSON）；inventoryType 是协议窗口类型 id。
+	 */
+	| {
+			kind: "open_window";
+			windowId: number;
+			windowType: number;
+			title: JsonValue | null;
+			horse: boolean;
+			slotCount: number | null;
+	  }
+	/** 游戏/配置阶段 Dialog：内联 NBT（data）或注册表引用（registryId）。 */
+	| { kind: "dialog"; phase: "play" | "config"; data: JsonValue | null; registryId: number | null }
+	| { kind: "dialog_clear"; phase: "play" | "config" }
+	/** 配置阶段行为准则（原文 + 接受动作）。 */
+	| { kind: "code_of_conduct"; contents: string }
+	/** 配置阶段注册表数据（dialog 注册表条目用于解析 registryId 引用）。 */
+	| { kind: "registry_data"; id: string; entries: { key: string; value: JsonValue | null }[] }
+	| { kind: "objective"; name: string; action: number; display: JsonValue | null }
+	| { kind: "score"; entry: string; objective: string; value: number; display: JsonValue | null }
+	| { kind: "score_reset"; entry: string; objective: string | null }
+	| { kind: "score_display"; position: number; objective: string }
+	| {
+			kind: "boss_bar";
+			id: string;
+			action: number;
+			title: JsonValue | null;
+			health: number | null;
+			color: number | null;
+			overlay: number | null;
+			darkenSky: boolean | null;
+			createFog: boolean | null;
+	  }
+	| { kind: "title_text"; target: "title" | "subtitle" | "action_bar"; text: JsonValue | null }
+	| { kind: "titles_clear"; reset: boolean }
+	| { kind: "tab_header"; header: JsonValue | null; footer: JsonValue | null }
 	/** 自定义通道（1.21.11 custom_payload）：连接级协议扩展的唯一入站面。 */
 	| { kind: "custom_payload"; channel: string; data: Uint8Array }
 	| { kind: "end" };
@@ -91,8 +135,8 @@ interface RawPackets {
 	set_player_inventory: { slotId: number; contents: unknown };
 	craft_progress_bar: { windowId: number; property: number; value: number };
 	trade_list: { windowId: number; trades?: RawTrade[] };
-	open_window: unknown;
-	open_horse_window: unknown;
+	open_window: { windowId: number; inventoryType: number; windowTitle?: unknown };
+	open_horse_window: { windowId: number; nbSlots: number };
 	block_change: { location: Vec3; type: number };
 	multi_block_change: { chunkCoordinates: Vec3; records: number[] };
 	open_sign_entity: { location: Vec3; isFrontText: boolean };
@@ -116,6 +160,29 @@ interface RawPackets {
 	world_particles: { x: number; y: number; z: number; amount: number; particle: { type?: unknown } };
 	/** 1.21.11 自定义通道：channel 是 ResourceLocation，data 是剩余字节。 */
 	custom_payload: { channel: string; data: Buffer };
+	/** 1.21.11 界面/HUD 观察面（字段形状来自真服探针，见 dev/ui-live）。 */
+	scoreboard_objective: { name: string; action: number; displayText?: unknown };
+	scoreboard_score: { itemName: string; scoreName: string; value: number; display_name?: unknown };
+	reset_score: { entity_name: string; objective_name?: string };
+	scoreboard_display_objective: { position: number; name: string };
+	boss_bar: {
+		entityUUID: string;
+		action: number;
+		title?: unknown;
+		health?: number;
+		color?: number;
+		dividers?: number;
+		flags?: number;
+	};
+	set_title_text: { text: unknown };
+	set_title_subtitle: { text: unknown };
+	clear_titles: { reset: boolean };
+	action_bar: { text: unknown };
+	playerlist_header: { header: unknown; footer: unknown };
+	show_dialog: { dialog: unknown };
+	clear_dialog: Record<string, never>;
+	code_of_conduct: { contents: string };
+	registry_data: { id: string; entries: { key: string; value?: unknown }[] };
 }
 /** registry 只暴露到这里的字段；不引第二份物品表。 */
 interface ItemRegistry {
@@ -134,7 +201,19 @@ export interface DriverProtocol {
 	 * 未同步回 null（不猜）。光标移动只推 revision，不算槽位变更。
 	 */
 	playerSlotMarks(): number[] | null;
+	/** 唯一的 mode-0 窗口点击编码（物品 CAS 与 UI 按钮共用；只发一次，不自动补发）。 */
 	click(window: NativeWindow, slot: number, button: number): void;
+	/**
+	 * 1.21.11 serverbound custom_click_action：Dialog 自定义按钮与聊天 custom 动作的
+	 * 唯一出站编码。payload 是 NBT 纯值（会按协议 typed-NBT 写入）；无 payload 时不带字段。
+	 */
+	customClickAction(id: string, payload: JsonValue | null, floatKeys?: readonly string[]): void;
+	/** 以玩家身份发送命令（不带前导斜杠）；只承诺进入发送边界。 */
+	chatCommand(command: string): void;
+	/** 配置阶段行为准则接受（serverbound accept_code_of_conduct）。 */
+	acceptCodeOfConduct(): void;
+	/** 当前协议阶段；配置阶段交互与游戏阶段动作据此分流。 */
+	protocolState(): "login" | "configuration" | "play" | "unknown";
 	/** 工作站专用提交（批 15）：只写包，不预测槽位、不判定生效。 */
 	selectEnchant(window: NativeWindow, offer: number): void;
 	renameItem(name: string): void;
@@ -204,6 +283,122 @@ function nbtLabel(value: unknown): string | null {
 	if (rec.text != null && typeof rec.text === "object") return nbtLabel(rec.text);
 	if (rec.value !== undefined) return nbtLabel(rec.value);
 	return null;
+}
+
+/**
+ * prismarine-nbt 的 typed 表示（{type,value}）→ 纯 JSON。
+ * 只保留文本/结构需要的标量、列表与 compound；数组类型（byte/int/long array）不参与
+ * 显示投影，如实丢弃而不是编造字符串。布尔在 NBT 里是 byte，文本解析按 0/1 处理。
+ */
+function nbtPlain(raw: unknown): JsonValue | null {
+	if (raw == null) return null;
+	if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") return raw;
+	if (Array.isArray(raw)) {
+		const items: JsonValue[] = [];
+		for (const entry of raw) {
+			const value = nbtPlain(entry);
+			if (value !== null) items.push(value);
+		}
+		return items;
+	}
+	if (typeof raw !== "object") return null;
+	const rec = raw as { type?: unknown; value?: unknown };
+	if (typeof rec.type === "string") {
+		if (rec.type === "list") {
+			const list = rec.value as { value?: unknown[] } | undefined;
+			return Array.isArray(list?.value) ? (nbtPlain(list.value) as JsonValue) : null;
+		}
+		if (rec.type === "compound") {
+			const value = rec.value;
+			if (value == null || typeof value !== "object") return null;
+			const out: Record<string, JsonValue> = {};
+			for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+				const plainEntry = nbtPlain(entry);
+				if (plainEntry !== null) out[key] = plainEntry;
+			}
+			return out;
+		}
+		if (rec.type === "byteArray" || rec.type === "intArray" || rec.type === "longArray") return null;
+		if (rec.type === "end") return null;
+		return nbtPlain(rec.value);
+	}
+	const out: Record<string, JsonValue> = {};
+	for (const [key, entry] of Object.entries(raw as Record<string, unknown>)) {
+		const plainEntry = nbtPlain(entry);
+		if (plainEntry !== null) out[key] = plainEntry;
+	}
+	return out;
+}
+
+/**
+ * 1.21.11 的 custom_click_action 线上形态：
+ *   Identifier + VarInt 长度 + （TAG_End(0x00) 表示无载荷，否则就是一个完整的匿名 NBT 标签）
+ * 服务端类 ServerboundCustomClickActionPacket 的 codec 是
+ * `optionalTagCodec(...).apply(lengthPrefixed(65536))`，长度前缀包住整个可选标签。
+ * minecraft-data 3.117.0 把该字段记成 ["option","anonymousNbt"]：既少了外层长度前缀，
+ * 又把"缺失"记成 bool=false。按定义直写会被服务端判 DecoderException 直接踢人（真服实测）。
+ * 所以这里自己拼包体：借 protodef 拿到 [包 id][id 字符串] 的头，再接自己编码的载荷块。
+ */
+const TAG_TYPES: ReadonlySet<string> = new Set([
+	"end",
+	"byte",
+	"short",
+	"int",
+	"long",
+	"float",
+	"double",
+	"byteArray",
+	"string",
+	"list",
+	"compound",
+	"intArray",
+	"longArray",
+]);
+
+function encodeAnonymousNbt(value: JsonValue, floatKeys?: ReadonlySet<string>): Buffer {
+	// 组件里的 payload 可能已经是 prismarine-nbt 的 typed 标签（例如 custom 动作带回原始 tag）：
+	// 那种情况直接照抄，不能再包一层 compound。
+	const rec =
+		value != null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+	const typed =
+		rec != null && typeof rec.type === "string" && TAG_TYPES.has(rec.type) && "value" in rec
+			? rec
+			: nbtTyped(value, floatKeys);
+	const size = prismarineNbt.proto.sizeOf(typed, "anonymousNbt");
+	const buffer = Buffer.alloc(size);
+	prismarineNbt.proto.write(typed, buffer, 0, "anonymousNbt");
+	return buffer;
+}
+
+/** VarInt（LEB128）编码，只用于包体内部的长度前缀。 */
+function varint(value: number): Buffer {
+	const bytes: number[] = [];
+	let rest = value;
+	do {
+		const byte = rest & 0x7f;
+		rest >>>= 7;
+		bytes.push(rest === 0 ? byte : byte | 0x80);
+	} while (rest !== 0);
+	return Buffer.from(bytes);
+}
+
+/** 纯 JSON → prismarine-nbt typed 表示（anonymousNbt 写入需要）。 */
+function nbtTyped(value: JsonValue, floatKeys?: ReadonlySet<string>, key?: string): Record<string, unknown> {
+	if (typeof value === "string") return { type: "string", value };
+	if (typeof value === "boolean") return { type: "byte", value: value ? 1 : 0 };
+	if (typeof value === "number") {
+		if (key != null && floatKeys?.has(key)) return { type: "float", value };
+		return Number.isInteger(value) ? { type: "int", value } : { type: "double", value };
+	}
+	if (Array.isArray(value)) {
+		const items = value.map((entry) => nbtTyped(entry));
+		const type = items[0]?.type ?? "end";
+		return { type: "list", value: { type, value: items } };
+	}
+	const fields: Record<string, unknown> = {};
+	for (const [entryKey, entry] of Object.entries(value as Record<string, JsonValue>))
+		fields[entryKey] = nbtTyped(entry, floatKeys, entryKey);
+	return { type: "compound", name: "", value: fields };
 }
 
 /** 自定义通道语法（ResourceLocation）与 1.21.11 plugin message 上限。 */
@@ -359,12 +554,29 @@ class Protocol12111 implements DriverProtocol {
 			const offers = (packet.trades ?? []).map((trade, index) => this.offer(trade, index));
 			this.emit({ kind: "trades", windowId: packet.windowId, offers });
 		});
-		raw("open_window", () => {
+		raw("open_window", (packet: { windowId: number; inventoryType: number; windowTitle?: unknown }) => {
 			this.lastClosedWindow = null;
+			// 窗口身份从这里开始：先发原始元数据（含标题），再由上层 window_open 补 native 身份。
+			this.emit({
+				kind: "open_window",
+				windowId: packet.windowId,
+				windowType: packet.inventoryType,
+				title: nbtPlain(packet.windowTitle),
+				horse: false,
+				slotCount: null,
+			});
 			this.emit({ kind: "replacement" });
 		});
-		raw("open_horse_window", () => {
+		raw("open_horse_window", (packet: { windowId: number; nbSlots: number }) => {
 			this.lastClosedWindow = null;
+			this.emit({
+				kind: "open_window",
+				windowId: packet.windowId,
+				windowType: -1,
+				title: null,
+				horse: true,
+				slotCount: packet.nbSlots,
+			});
 			this.emit({ kind: "replacement" });
 		});
 		raw("block_change", (p) => this.block(p.location, p.type));
@@ -406,6 +618,70 @@ class Protocol12111 implements DriverProtocol {
 				x: p.x,
 				y: p.y,
 				data: p.data,
+			});
+		});
+		// ---- 界面/HUD 观察面（1.21.11 真服探针：字段形状见 tmp/ui-wire-probe*.mts） ----
+		raw("scoreboard_objective", (p) =>
+			this.emit({ kind: "objective", name: p.name, action: p.action, display: nbtPlain(p.displayText) }),
+		);
+		raw("scoreboard_score", (p) =>
+			this.emit({
+				kind: "score",
+				entry: p.itemName,
+				objective: p.scoreName,
+				value: p.value,
+				display: nbtPlain(p.display_name),
+			}),
+		);
+		raw("reset_score", (p) =>
+			this.emit({ kind: "score_reset", entry: p.entity_name, objective: p.objective_name ?? null }),
+		);
+		raw("scoreboard_display_objective", (p) =>
+			this.emit({ kind: "score_display", position: p.position, objective: p.name }),
+		);
+		raw("boss_bar", (p) =>
+			this.emit({
+				kind: "boss_bar",
+				id: p.entityUUID,
+				action: p.action,
+				title: nbtPlain(p.title),
+				health: typeof p.health === "number" ? p.health : null,
+				color: typeof p.color === "number" ? p.color : null,
+				overlay: typeof p.dividers === "number" ? p.dividers : null,
+				darkenSky: typeof p.flags === "number" ? (p.flags & 1) !== 0 : null,
+				createFog: typeof p.flags === "number" ? (p.flags & 2) !== 0 : null,
+			}),
+		);
+		raw("set_title_text", (p) => this.emit({ kind: "title_text", target: "title", text: nbtPlain(p.text) }));
+		raw("set_title_subtitle", (p) => this.emit({ kind: "title_text", target: "subtitle", text: nbtPlain(p.text) }));
+		raw("action_bar", (p) => this.emit({ kind: "title_text", target: "action_bar", text: nbtPlain(p.text) }));
+		raw("clear_titles", (p) => this.emit({ kind: "titles_clear", reset: p.reset === true }));
+		raw("playerlist_header", (p) =>
+			this.emit({ kind: "tab_header", header: nbtPlain(p.header), footer: nbtPlain(p.footer) }),
+		);
+		// Dialog：play 用 registryEntryHolder（{data}|{dialog}），config 直接是 NBT。
+		raw("show_dialog", (p) => {
+			const phase = this.protocolState() === "configuration" ? "config" : "play";
+			const holder = p.dialog as { data?: unknown; dialog?: number } | undefined;
+			const inline = phase === "config" ? p.dialog : holder?.data;
+			this.emit({
+				kind: "dialog",
+				phase,
+				data: nbtPlain(inline),
+				registryId: typeof holder?.dialog === "number" ? holder.dialog : null,
+			});
+		});
+		raw("clear_dialog", () => {
+			const phase = this.protocolState() === "configuration" ? "config" : "play";
+			this.emit({ kind: "dialog_clear", phase });
+		});
+		raw("code_of_conduct", (p) => this.emit({ kind: "code_of_conduct", contents: String(p.contents ?? "") }));
+		raw("registry_data", (p) => {
+			if (typeof p.id !== "string") return;
+			this.emit({
+				kind: "registry_data",
+				id: p.id,
+				entries: (p.entries ?? []).map((entry) => ({ key: entry.key, value: nbtPlain(entry.value) })),
 			});
 		});
 		// ---- 批 18 观察面：拴绳/乘客/鱼漂/咬钩 ----
@@ -620,6 +896,69 @@ class Protocol12111 implements DriverProtocol {
 		this.check();
 		this.bot.closeWindow(window);
 	}
+	protocolState(): "login" | "configuration" | "play" | "unknown" {
+		const state = (this.bot._client as { state?: string }).state;
+		if (state === "login" || state === "configuration" || state === "play") return state;
+		return "unknown";
+	}
+	/**
+	 * custom_click_action：Identifier + lengthPrefixed(optional anonymous NBT)。
+	 * 编码细节与"为什么不能直接用 protodef 定义"见 encodeAnonymousNbt 上方的说明。
+	 */
+	customClickAction(id: string, payload: JsonValue | null, floatKeys?: readonly string[]): void {
+		this.check();
+		if (!CHANNEL_PATTERN.test(id))
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `custom click action id ${JSON.stringify(id)} is not a ResourceLocation (namespace:path)`,
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: true,
+			});
+		const client = this.bot._client as unknown as {
+			serializer: { createPacketBuffer(packet: unknown): Buffer };
+			writeRaw(buffer: Buffer): void;
+		};
+		// protodef 用同一个包名编出 [包 id][id 字符串][option 标记]，末字节就是可选标记；
+		// 去掉它，换成"长度前缀 + 可选标记 + 载荷"的块，其余头部原样复用。
+		const probe = client.serializer.createPacketBuffer({ name: "custom_click_action", params: { id } });
+		if (probe.length === 0 || probe[probe.length - 1] !== 0x00)
+			throw fail({
+				code: "INTERNAL",
+				source: "environment",
+				message: "custom_click_action packet layout is not the expected [id][optional flag] shape",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: false,
+			});
+		// 可选载荷没有独立的"存在"标志字节：整个 Optional 就是一个标签，
+		// 用 TAG_End(0x00) 表示缺失（真服实测：多写一个 0x01 会被读成 Byte 标签的值）。
+		const body =
+			payload == null
+				? Buffer.from([0x00])
+				: encodeAnonymousNbt(payload, floatKeys == null ? undefined : new Set(floatKeys));
+		client.writeRaw(Buffer.concat([probe.subarray(0, probe.length - 1), varint(body.length), body]));
+	}
+	/** 命令走 chat_command（不带前导斜杠）；只承诺进入发送边界。 */
+	chatCommand(command: string): void {
+		this.check();
+		const text = command.startsWith("/") ? command.slice(1) : command;
+		if (text.length === 0)
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "command must not be empty",
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: true,
+			});
+		this.write("chat_command", { command: text });
+	}
+	acceptCodeOfConduct(): void {
+		this.check();
+		this.write("accept_code_of_conduct", {});
+	}
 	/** enchant_item 的 enchantment 是 0..2 的档位下标（服务端 clickMenuButton）。 */
 	selectEnchant(window: NativeWindow, offer: number): void {
 		this.write("enchant_item", { windowId: window.id, enchantment: offer - 1 });
@@ -806,8 +1145,12 @@ const protocols = new WeakMap<MineflayerBot, DriverProtocol>();
 export function protocolFor(bot: MineflayerBot): DriverProtocol {
 	let protocol = protocols.get(bot);
 	if (!protocol) {
-		protocol = new Protocol12111(bot);
-		protocols.set(bot, protocol);
+		const created = new Protocol12111(bot);
+		protocols.set(bot, created);
+		// 连接级界面状态必须从连接建立就开始观察：菜单可能由 /menu、NPC 或聊天链接打开，
+		// 等到 uiAct/ui() 才建档就会丢掉 open_window 与 HUD 的初始包。
+		windowStateFor(created);
+		protocol = created;
 	}
 	return protocol;
 }

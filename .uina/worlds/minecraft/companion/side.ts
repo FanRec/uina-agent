@@ -199,6 +199,8 @@ export async function openExecutionSide(
 		self: currentReader("self@1"),
 		inventory: currentReader("inventory@1"),
 		world: currentReader("world@1"),
+		ui: currentReader("ui@1"),
+		hud: currentReader("hud@1"),
 	};
 	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
 	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与

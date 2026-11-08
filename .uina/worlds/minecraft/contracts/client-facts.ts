@@ -6,6 +6,7 @@
  */
 
 import type { BlockStateValue, BlockTarget, EntityRef, ItemValue, SignValue, WindowSnapshot } from "./body.js";
+import type { HudSnapshot, RichText, UiSnapshot } from "./ui.js";
 
 /** 真实打开目标与服务端窗口快照；由 Driver 捕获，沿现有证据队列保存。 */
 export interface ClientWindowObservation {
@@ -29,6 +30,10 @@ export type FactCategory =
 	| "players"
 	| "maps"
 	| "window"
+	/** 服务器界面（窗口菜单/Dialog）的当前观察：与 window 分开失效，互不唤醒。 */
+	| "ui"
+	/** HUD（计分板/BossBar/Title/ActionBar/Tab）：高频刷新不推进 ui 版本。 */
+	| "hud"
 	/** Addon 发布的连接级模组事实：共同一个类别，不为每个包生成游标体系。 */
 	| "addon";
 
@@ -51,6 +56,8 @@ export function emptyFactRevisions(): FactRevisions {
 		players: 0,
 		maps: 0,
 		window: 0,
+		ui: 0,
+		hud: 0,
 		addon: 0,
 	};
 }
@@ -200,6 +207,11 @@ export type ClientEventPayload =
 			sender: EventActor | null;
 			recipient: string | null;
 			self: boolean | null;
+			/**
+			 * 结构化组件（1.21.11 NBT 组件）：保留颜色/样式与可点击动作。
+			 * 旧路径（纯文本）为 null；text 始终是可读正文，不因富文本缺失而丢消息。
+			 */
+			rich: RichText | null;
 	  }
 	| {
 			kind: "damage";
@@ -209,6 +221,18 @@ export type ClientEventPayload =
 			attacker: EventActor | null;
 	  }
 	| { kind: "death"; message: string | null; place: Place | null }
+	| {
+			/**
+			 * 界面开启/关闭的有界事件（不是每个槽位刷新）：用于把"菜单出现了"告诉 Agent，
+			 * 详细内容仍由 ui@1 按需读取。title 只是显示文本，不推断业务含义。
+			 */
+			kind: "ui";
+			state: "opened" | "closed";
+			screenRef: string;
+			uiKind: "container" | "dialog" | "book" | "none";
+			title: string | null;
+			phase: "play" | "config" | "local";
+	  }
 	| {
 			kind: "connection";
 			state: "connected" | "disconnected";
@@ -309,6 +333,13 @@ export interface ClientFactView {
 	 */
 	inventoryChanges(since: number): { slot: number; item: import("./body.js").ItemValue | null }[] | null;
 	window(): Fact<WindowSnapshot | null>;
+	/**
+	 * 当前服务器界面（窗口菜单/Dialog）的连接级投影：不依赖任何 WindowSession，
+	 * 服务器主动打开的窗口在 Body 之外同样可读。kind="none" 是明确没有界面。
+	 */
+	ui(): Fact<UiSnapshot>;
+	/** 当前 HUD 观察（计分板/BossBar/Title/ActionBar/Tab）；从未收到时为 null + unknown。 */
+	hud(): Fact<HudSnapshot | null>;
 	/**
 	 * Addon 发布的连接级事实（`<addonId>` + `key`）；未发布时 null（调用方如实报 unknown，
 	 * 不编造默认状态）。值只读纯 JSON，随断线清空。
