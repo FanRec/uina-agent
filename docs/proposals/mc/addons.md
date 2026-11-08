@@ -99,7 +99,6 @@ Companion 真正加载的包。两者都不推断"应该能用"。
 ```bash
 pnpm mc:addon -- list
 pnpm mc:addon -- install .uina/worlds/minecraft/examples/addons/example-mod
-pnpm mc:addon -- install .uina/worlds/minecraft/packages/spectatorplus
 pnpm mc:addon -- status --profile <64-hex>
 pnpm mc:addon -- enable example-mod --profile <64-hex> --config '{"verifyTimeoutMs":4000}'
 pnpm mc:addon -- disable example-mod --profile <64-hex>
@@ -192,15 +191,11 @@ pnpm mc:addon -- remove example-mod
 
 ## 11. 包源码布局、示例与真服夹具
 
-仓库内两类包，区别是**定位**而不是格式（同一套 Manifest / SDK，安装方式完全相同）：
-
-- `packages/<id>/`：随仓库发布的正式包，按真实集成维护，改动需过测试与验收；
-- `examples/addons/<id>/`：教学示例，可随时重写，不承诺兼容。
-
-`packages/spectatorplus`（正式包）：只用既有 `chat@1` 发 `/spectate <target>`，再读 `world@1`
-的 `gameMode`；没有插件时如实 `EFFECT_UNCONFIRMED`（dispatch `sent`），不假装成功。
-HUD/GUI/附身界面属于真实 Java 客户端 Mod，Bot 侧不覆盖。**SpectatorPlus 服务端插件是外部
-依赖，不由本仓库分发**；`serverRequirement` 只是声明，装没装由运维确认。
+仓库目前只发布**示例包**：`examples/addons/<id>/`，教学用途，可随时重写、不承诺兼容。
+若将来有按真实集成维护的正式包，放在 `packages/<id>/`（同一套 Manifest / SDK，安装方式相同）；
+**当前 `packages/` 为空**——此前的 `spectatorplus` 包已删除，原因见 §13 与
+[known-gaps.md](known-gaps.md)：它按 `/spectate` 设计，而 `/spectate` 属于另一个同名
+Spigot 插件，不是被观察场景需要的东西。
 
 `examples/addons/example-mod`（纯 ESM，无依赖）：
 
@@ -231,16 +226,19 @@ npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-protocol.test.ts tes
 pnpm dev:mc:addons
 ```
 
-`dev/addons-live.ts` 覆盖 9 步：安装≠启用、未启用不暴露、连接期间冻结、重连装配生效、
-初始事实未知、纵向写入闭环、重复写入、SpectatorPlus 诚实失败、连接期间 disable 不卸载。
+`dev/addons-live.ts` 覆盖 8 步：安装≠启用、未启用不暴露、连接期间冻结、重连装配生效、
+初始事实未知、纵向写入闭环、重复写入、连接期间 disable 不卸载。
 
 ## 13. 限制与未完成项
 
 - **未做**：Addon 热重载/热替换（设计上不支持，重连才生效）；运行时卸载已加载包；
 - **未做**：`prepare` 的"提供预构造 client"分支没有真服示例（类型与失败路径已实现）；
 - **未做**：`serverRequirement` 的服务端探测（只做声明；`Compatible` 需要具体能力自己验证）；
-- **未覆盖**：真实 SpectatorPlus 插件未安装——只验证了 `/spectate` 命令路径与无插件时的诚实失败；
-  HUD/GUI/附身界面属真实 Java 客户端 Mod 职责；
+- **已否决**：不做 SpectatorPlus 集成。这里有两个同名项目：Nahu 的 Spigot 插件提供 `/spectate`；
+  yzxoi 的 `SpectatorPlus`（1.21.11 分支）是 **Fabric 客户端 mod + Paper 插件**，只做观战数据同步
+  （手持物/生命/快捷栏/饥饿/经验/打开的容器界面），**没有 `/spectate` 命令**。Bot 作为**被观察者**
+  不需要任何 Uina 侧代码——服务端读它的背包再推给装了客户端 mod 的观众；Bot 作为**观察者**既没有
+  GUI 可看，也没有客户端 mod 可装。原 `spectatorplus` 包按错误前提实现，已删除（含真服 T7 步骤）。
 - **未覆盖**：非 1.21.11 协议（`registerChannels` 与 custom_payload 编解码按 1.21.11 窄口）；
 - **已知**：Addon 事实不持久化，跨连接不继承（这是设计选择：模组状态属于连接）；
 - **已知**：`minecraft:register` 是 1.13+ 传统机制；若服务端实现不再支持，需要按版本适配。

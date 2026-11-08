@@ -26,8 +26,6 @@ import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import type { HostDeliveryPort } from "../../../../src/core/types.js";
 
 const PORT = 25565;
-/** 随仓库发布的正式包；示例包另在 examples/addons 下。 */
-const PACKAGES = fileURLToPath(new URL("../packages", import.meta.url));
 const EXAMPLES = fileURLToPath(new URL("../examples/addons", import.meta.url));
 
 function assert(value: unknown, message: string): asserts value {
@@ -142,9 +140,8 @@ async function main(): Promise<void> {
 
 		await step("T0：安装包 ≠ 启用包——离线状态只报 installed，能力不在目录里", async () => {
 			await installAddon(root, join(EXAMPLES, "example-mod"));
-			await installAddon(root, join(PACKAGES, "spectatorplus"));
 			const inventory = await addonStatus(root);
-			assert(inventory.addons.length === 2, JSON.stringify(inventory.addons));
+			assert(inventory.addons.length === 1, JSON.stringify(inventory.addons));
 			assert(
 				inventory.addons.every((addon) => addon.state === "installed" && addon.contributed.refs.length === 0),
 				JSON.stringify(inventory.addons),
@@ -184,12 +181,11 @@ async function main(): Promise<void> {
 		});
 
 		let profileId = "";
-		await step("T2：Profile 启用两个包——连接期间不热替换（仍 NOT_FOUND）", async () => {
+		await step("T2：Profile 启用包——连接期间不热替换（仍 NOT_FOUND）", async () => {
 			const profiles = (await readdir(join(root, "sessions"))).filter((entry) => /^[a-f0-9]{64}$/.test(entry));
 			assert(profiles.length === 1, `expected one profile: ${JSON.stringify(profiles)}`);
 			profileId = profiles[0]!;
 			await enableAddon({ root, profileId, id: "example-mod", config: { verifyTimeoutMs: 4000 } });
-			await enableAddon({ root, profileId, id: "spectatorplus", config: { verifyTimeoutMs: 2500 } });
 			const frozen = await describe({ kind: "addon", name: "example-mod" });
 			assert(
 				frozen.status === "failed" && (frozen.details as { code?: string }).code === "NOT_FOUND",
@@ -221,7 +217,7 @@ async function main(): Promise<void> {
 			const addons = reconnected.active!.addons;
 			assert(addons.digest.length === 32, JSON.stringify(addons));
 			assert(
-				JSON.stringify(addons.ids) === JSON.stringify(["example-mod@1.0.0", "spectatorplus@1.0.0"]),
+				JSON.stringify(addons.ids) === JSON.stringify(["example-mod@1.0.0"]),
 				JSON.stringify(addons),
 			);
 
@@ -314,26 +310,7 @@ async function main(): Promise<void> {
 			assert(value.value.counter >= 3, JSON.stringify(value));
 		});
 
-		await step("T7：SpectatorPlus——模式可读；无插件时 /spectate 如实 EFFECT_UNCONFIRMED", async () => {
-			const mode = await observe({ selector: "spectatorplus.mode@1", input: {} });
-			assert(mode.status === "succeeded", JSON.stringify(mode.details).slice(0, 300));
-			const modeValue = mode.details as { value: { gameMode: string } };
-			assert(modeValue.value.gameMode === "survival", JSON.stringify(modeValue));
-
-			const accepted = await run({ selector: "spectatorplus.spectate@1", input: { target: "UinaAddon" } });
-			assert(accepted.status === "succeeded", JSON.stringify(accepted.details).slice(0, 300));
-			const snapshot = await finish(accepted);
-			assert(snapshot.outcome === "failed", `spectate must not claim success: ${JSON.stringify(snapshot)}`);
-			const listed = await calls(snapshot.run);
-			const summary = listed.find((call) => call.ref === "spectatorplus.spectate@1");
-			assert(summary != null, JSON.stringify(listed.map((call) => call.ref)));
-			const spectate = await readCall(summary.record);
-			assert(spectate.execution === "threw", JSON.stringify(spectate).slice(0, 400));
-			assert(spectate.error?.code === "EFFECT_UNCONFIRMED", JSON.stringify(spectate.error));
-			assert(spectate.error?.dispatch === "sent", JSON.stringify(spectate.error));
-		});
-
-		await step("T8：连接期间 disable 不卸载已装配能力；重连后包与能力一起消失", async () => {
+		await step("T7：连接期间 disable 不卸载已装配能力；重连后包与能力一起消失", async () => {
 			await disableAddon({ root, profileId, id: "example-mod" });
 			const stillLoaded = await describe({ kind: "addon", name: "example-mod" });
 			assert(stillLoaded.status === "succeeded", JSON.stringify(stillLoaded.details).slice(0, 200));
@@ -342,7 +319,7 @@ async function main(): Promise<void> {
 			const reconnected = (await session({ op: "connect", target: { server: "default" } })).details as SessionStatus;
 			assert(reconnected.state === "connected", JSON.stringify(reconnected).slice(0, 300));
 			assert(
-				JSON.stringify(reconnected.active!.addons.ids) === JSON.stringify(["spectatorplus@1.0.0"]),
+				JSON.stringify(reconnected.active!.addons.ids) === JSON.stringify([]),
 				JSON.stringify(reconnected.active!.addons),
 			);
 			const gone = await describe({ kind: "addon", name: "example-mod" });
@@ -357,7 +334,7 @@ async function main(): Promise<void> {
 			);
 		});
 
-		console.log(`[mc-addons] PASS ${passed}/9`);
+		console.log(`[mc-addons] PASS ${passed}/8`);
 	} finally {
 		await Promise.resolve(world.onStop!(ctx)).catch(() => {});
 		await rm(legacyPath, { force: true });
