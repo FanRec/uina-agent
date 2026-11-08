@@ -112,6 +112,15 @@
   - 场景自洽：prepare 重铺 9 层（GY-8..GY，20,367 格在 /fill 上限内），S5b 沟槽相应挖穿 11 格（深到不能"跳下去再爬上来"），S3 在派发前核验目标格下方是实心方块。
 - **验收**：`dev:mc:upstream-nav` **7/7 连续三轮全绿**（S3 2008/2015/2009ms）；S5b 的诚实失败从 6647ms 降到 2008ms（不再烧搜索预算）；`dev:mc:climb` 6/6、`dev:mc:terrain-nav` 6/6 回归不变；T0 `mc-pathfinder-water-drop`（策略常量 + 真实 Movements：137 格落水不生成候选、3 格浅水照常）。
 
+### G31 · 下行阶梯走廊的第一段走位失败（2026-11-09 登记，**基线同样失败**）
+
+- **现象**：`dev:mc:spatial` 的两条 tunnel 步（"digs a staircased corridor down through stone and walks it" 与 "descends a second 1:1 staircase from an elevated box"）失败——前者 `UNREACHABLE: could not advance: stuck at 9517.32,199.00, want 9517,198,9500 (dug=8)`，后者"bot did not reach the corridor end"（服务端 y=198）。
+- **证据（基线对拍）**：把 `.uina/worlds/minecraft` 回退到 `mc-refactor-baseline`（= 设计基线 `0ad82798` 内容）后跑同一场景，**同样两步失败、同一坐标、同样 dug=8**；恢复本分支后重跑结果一致。所以这不是本轮目标对账改动的回归。场景其余 6 步（region 跨区块、未加载不冒充空气、excavate 清盒、容器先收后挖、verify/dig 四态）两次都过。
+- **已排除**：prepare 每轮都重铺 y=199 平台面并清空 200..220，所以"上一轮走廊残留"不是这一格的解释；`planCorridor` 的双向净空不变量有 T0（`mc-spatial-planner`）兜着。
+- **当前假设（未验证）**：`digCell` 在客户端读到 air 时返回 `open`（既不计 `dug` 也不挖），若客户端方块缓存与服务端不一致，就会出现"计划认为已开、实际仍是石头"——本轮的 G28 首轮失败里也见过镜像形态（服务端是石头、客户端读到 air，导致 S3 目标悬空）。两处都指向同一个待查点：**客户端方块缓存在 `/fill` 大批量变更后的新鲜度**。
+- **影响**：下行阶梯走廊（`tunnel@1` 的常见形态）在真实地形上可能第一段就走不动，而错误如实停在"走不过去"，不假装成功。
+- **修法方向**：先用探针对拍"客户端 `blockAt` 与服务端 `/data get block` 在同一格上的读数"，确认是缓存滞后还是 `open` 判定本身；再决定是读前复核（服务端权威）还是修缓存失效路径。不先改超时或重试。
+
 ### G29 · 苦力怕残余爆炸擦伤与近身拍占空比（批29 登记；批33 主体关闭，击杀路径残余）
 
 - **现象**：`dev:mc:combat` B04（批29 新增）：近身拍对苦力怕的结局是"接触→引燃→转身冲刺拉开→残余爆炸擦伤"——批29 干净场地 13.4–20 血（探针实测最好 19.2），从未无伤击杀（kills 为空，苦力怕总是自己炸掉）。
