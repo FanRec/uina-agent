@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { callFailure, type JsonValue, type ObservationCursor } from "../contracts/values.js";
 import type { WorldChange, WorldWatch } from "../contracts/world.js";
 
-/** 键序无关的规范化 JSON（watch 流身份与 G6 digest 去重共用）。 */
+/** 键序无关的规范化 JSON，用作派生标识的输入（目前是 watch 流身份）。 */
 export function canonical(value: JsonValue): string {
 	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
 	if (value !== null && typeof value === "object")

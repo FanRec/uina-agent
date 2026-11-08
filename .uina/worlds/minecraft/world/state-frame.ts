@@ -43,7 +43,7 @@ function section(
 	try {
 		const fact = reader.read(view, {}) as { value: unknown };
 		return fact.value == null ? null : (fact.value as Record<string, unknown>);
-	} catch (error) {
+	} catch {
 		failed.push(label);
 		return null;
 	}
@@ -152,7 +152,8 @@ export function sampleStateFrame(options: StateFrameOptions): StateFrame {
 					: `Minecraft 状态不可用：${message}`,
 			sampledAt,
 			connected: false,
-			unknown: [message],
+			// 未连接不是"某一段读不到"：原因已写进正文，段落列表保持空，避免两种含义混用一个字段。
+			unknown: [],
 		};
 	}
 	return { text, sampledAt, connected: true, unknown: failed };

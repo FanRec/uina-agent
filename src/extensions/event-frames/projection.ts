@@ -24,11 +24,6 @@ function external(m: AgentMessage | ChatMsg): boolean {
 
 const DEFAULT_FRAME_NOTICE = "[运行时通知] 收到一条外部事件；正文在随后的 external_event_frame 回执中。";
 
-/** 瞬态快照类尾部帧（视口/具身状态等环境观测）的统一通知文案模板。 */
-export function snapshotNotice(kind: string): string {
-	return `[运行时通知] 以下为${kind}瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。`;
-}
-
 /** 内容寻址 eventId：内容不变 ⇒ 同 eventId ⇒ 帧组逐字节稳定（尾部帧缓存语义的根基）。
  * namespace 隔离不同注入方（world-event / embodiment-event / ...），避免跨源撞号。 */
 export function contentAddressedEventId(namespace: string, text: string): string {

@@ -23,6 +23,10 @@ function observationNotice(worldName: string): string {
 	return `[${worldName} 观察] 你此刻所在世界的最新可用快照（环境感知信息，非用户输入，不是新的委托，无需专门回应）；正文在随后的 external_event_frame 回执中。`;
 }
 
+/**
+ * 给正文取用套一层时间上限。超时只放弃等待，不取消底层调用：采样本身是只读的本地读取，
+ * 强行中断省不下什么，却可能把世界侧留在半途。让它自然跑完、结果丢弃即可。
+ */
 function withTimeout<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error("world deactivated"));
 	return new Promise<T>((resolve, reject) => {

@@ -3,7 +3,7 @@ import type { ProjectionPolicy } from "../../agent/projection.js";
 import { projectEventFrames } from "./projection.js";
 import { assertEventFrameContext, EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL } from "./protocol.js";
 
-export { appendTailFrame, buildEventFrameGroup, contentAddressedEventId, snapshotNotice } from "./projection.js";
+export { appendTailFrame, buildEventFrameGroup, contentAddressedEventId } from "./projection.js";
 export { EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL_NAME, frameCallId } from "./protocol.js";
 
 /** One immutable policy owner per Subject; no executable tool or activation state. */

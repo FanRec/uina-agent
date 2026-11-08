@@ -9,8 +9,8 @@ import {
 	type BootstrapHello,
 	type CompanionInit,
 	type ConnectionWaitResult,
-	type ExecutorCloseResult,
 	type ExecutionSideStatus,
+	type ExecutorCloseResult,
 } from "../contracts/executor.js";
 import type {
 	Acceptance,
