@@ -114,3 +114,44 @@ test("世界停用后不再注入，后续请求回到无帧状态", async () =>
 	expect(JSON.stringify(requests[0]!.messages)).toContain("世界仍在运行");
 	expect(JSON.stringify(requests[1]!.messages)).not.toContain("世界仍在运行");
 });
+
+// 取不到快照是小事，挂住回合不是：世界侧抛错时这一轮就不注入，handler 自己也不许抛。
+// 超时走同一个 catch（withTimeout 只把 reject 提前），所以这条也钉住了超时的处理。
+test("世界读取抛错时本轮不注入，handler 不抛错", async () => {
+	const host = new ExtensionHost();
+	let handler: ((projection: { messages: readonly ChatMsg[] }) => Promise<unknown>) | undefined;
+	const definition: WorldDef = {
+		name: "probe",
+		description: "request context probe",
+		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
+		requestContext: async () => {
+			throw new Error("world snapshot crashed");
+		},
+	};
+	const pi = {
+		subject: undefined,
+		cwd: process.cwd(),
+		isBusy: () => false,
+		registerTool: () => () => {},
+		on: () => () => {},
+		onHook: (hook: string, registered: unknown, options?: { tail?: boolean }) => {
+			if (hook === "turn.transformContext" && !handler)
+				handler = registered as (projection: { messages: readonly ChatMsg[] }) => Promise<unknown>;
+			return host.onHook(hook as never, registered as never, { ...(options?.tail ? { tail: true } : {}) });
+		},
+	};
+	const activation = new WorldActivation(definition, {
+		pi: pi as never,
+		runtime: { definition, enabled: true },
+		worldName: "probe",
+		notifyExposed: () => {},
+	});
+	await activation.start();
+	try {
+		expect(handler).toBeDefined();
+		// 直接调 handler：抛不抛、返回什么是这一层自己的责任，不能指望调用方兜住。
+		await expect(handler!({ messages: [] })).resolves.toBeUndefined();
+	} finally {
+		await activation.stop();
+	}
+});

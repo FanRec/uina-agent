@@ -124,6 +124,8 @@ describe("state frame", () => {
 		expect(frame.text).toContain("Minecraft 未连接");
 		expect(frame.text).toContain("不要按旧坐标");
 		expect(frame.sampledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		// 未连接不是"某段缺失"：原因在正文，段落列表留空，别让一个字段担两种含义。
+		expect(frame.unknown).toEqual([]);
 	});
 
 	test("非连接原因采样失败如实带出原因，不冒充未连接", () => {

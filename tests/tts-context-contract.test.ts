@@ -14,7 +14,6 @@ import {
 	appendTailFrame,
 	buildEventFrameGroup,
 	contentAddressedEventId,
-	snapshotNotice,
 } from "../src/extensions/event-frames/index.js";
 import { assertEventFrameContext } from "../src/extensions/event-frames/protocol.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
@@ -38,12 +37,16 @@ describe("Voice projection and model-facing contracts", () => {
 	it("measures the real wire projection against the previous HEAD observation format", () => {
 		const summary = "上一段台词尚未确认是否播完；不要当作用户已经听见。";
 		const oldText = `[语音输出状态] ${summary}`;
+		// 上一版观测格式的实际通知原文，写死作基线：它不该随生产文案改动而漂移，
+		// 否则「比旧格式更省」这个比较会失去意义。
+		const legacyNotice =
+			"[运行时通知] 以下为语音输出状态瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。";
 		const previous = appendTailFrame<ChatMsg>(
 			request.messages,
 			buildEventFrameGroup({
 				eventId: contentAddressedEventId("voice:perception", oldText),
 				text: oldText,
-				notice: snapshotNotice("语音输出状态"),
+				notice: legacyNotice,
 				source: { kind: "runtime", type: "voice-perception", origin: "internal" },
 			}),
 		)!.messages;

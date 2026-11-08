@@ -400,6 +400,49 @@ describe("Subject", () => {
 		expect(scenario.calls).toHaveLength(3);
 	});
 
+	// 合批的边界是世界身份，不是"都是运行时来源"。两个世界各自的事互不解释：
+	// 把 QQ 的消息读进 Minecraft 的因果里，模型会找一条不存在的联系。
+	test("跨世界的运行时 follow-up 不合批", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{
+				id: "mc-first",
+				order: 1,
+				mode: "followUp",
+				text: "挖矿完成",
+				source: { kind: "runtime", type: "minecraft_completion", ref: "minecraft", origin: "internal" },
+			},
+			{
+				id: "qq-next",
+				order: 2,
+				mode: "followUp",
+				text: "有人发来一条消息",
+				source: { kind: "runtime", type: "qq_message", ref: "qq", origin: "external" },
+			},
+			{
+				id: "mc-later",
+				order: 3,
+				mode: "followUp",
+				text: "建塔失败：缺木头",
+				source: { kind: "runtime", type: "minecraft_completion", ref: "minecraft", origin: "internal" },
+			},
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		expect(scenario.calls).toHaveLength(3);
+		const contains = (index: number, needle: string): boolean =>
+			JSON.stringify(scenario.calls[index]!.messages).includes(needle);
+		expect(contains(0, "挖矿完成")).toBe(true);
+		expect(contains(0, "有人发来一条消息")).toBe(false);
+		expect(contains(1, "有人发来一条消息")).toBe(true);
+		expect(contains(1, "建塔失败")).toBe(false);
+	});
+
 	test("同一世界的 steer 插队先处理，但不吞掉排队中的 follow-up", async () => {
 		const scenario = new Scenario();
 		scenario.fallback(() => [
