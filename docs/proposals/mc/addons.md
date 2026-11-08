@@ -170,6 +170,36 @@ pnpm mc:addon -- remove example-mod
 `isCurrent()` 按连接代次判定；`dispose()` 解除全部订阅与 attach 登记的释放函数；
 单个 addon 监听器抛错被隔离（记录后继续），不打断底层订阅链上的其它订阅者。
 
+### 8.5 本地界面展示（`localScreen`）
+
+Core 只表达一个 Minecraft 通用事实：**Uina 自己的个人背包窗口事务开始了/结束了**。
+
+```ts
+interface LocalScreenActivity {
+  kind: "player_inventory";
+  phase: "open" | "close";
+  session: Ref;        // 同一次 withInventoryScope 的稳定引用
+  connection: Ref;
+  incarnation: Ref;
+}
+```
+
+`ProtocolExtension.localScreen(event)` 是**纯同步编码器**：返回 `{ channel, data }` 或 `null`，
+不持有连接对象、没有发送能力、不能返回 Promise。实际写入只由 Driver 完成。
+
+- **身份**：ClientHost 先校验 `state === "ready"` 且 connection/incarnation 与事件一致，
+  否则整条事件丢弃——旧事务的 close 绝不会写到新连接。
+- **顺序**：同步编码、同步写入，与随后的原版窗口包保持确定顺序；不排队、不 `await`。
+- **隔离**：单个包编码或发送失败只记诊断（`[mc-addon:<id>] localScreen(...)`），
+  不影响同一次事件里的其它包，也不改变物品事务的真实结果。
+- **语义**：`emitLocalScreen` 返回 `true` 只代表至少一个 Payload 已提交给协议层；
+  没有服务端 ACK 时不能宣称观察者真的看到了界面。
+
+边界只在 `withInventoryScope` 一处（`equip` / `toss` / `withInventory` 即 2×2 合成）：
+一次事务最多一对 open/close，`close` 只在同一次事务的 `open` 真的提交过时才发。
+`inventory@1` 读取、正常捡拾、快捷栏切换、`openContainer` 的原版容器窗口都不经过它——
+后者由服务端自行镜像，Uina 再发一遍只会和上游互相覆盖。
+
 ## 9. 包内知识
 
 `composeKnowledge(base, sets)` 的优先级固定：
@@ -191,11 +221,18 @@ pnpm mc:addon -- remove example-mod
 
 ## 11. 包源码布局、示例与真服夹具
 
-仓库目前只发布**示例包**：`examples/addons/<id>/`，教学用途，可随时重写、不承诺兼容。
-若将来有按真实集成维护的正式包，放在 `packages/<id>/`（同一套 Manifest / SDK，安装方式相同）；
-**当前 `packages/` 为空**——此前的 `spectatorplus` 包已删除，原因见 §13 与
-[known-gaps.md](known-gaps.md)：它按 `/spectate` 设计，而 `/spectate` 属于另一个同名
-Spigot 插件，不是被观察场景需要的东西。
+仓库内两类包，区别是**定位**而不是格式（同一套 Manifest / SDK，安装方式完全相同）：
+
+- `packages/<id>/`：随仓库发布的正式包，按真实集成维护，改动需过测试与验收；
+- `examples/addons/<id>/`：教学示例，可随时重写，不承诺兼容。
+
+`packages/spectatorplus`（正式包，Fabric 服务端专用）：只实现 `client.localScreen`，
+把个人背包的 open/close 编码成 `spectatorplus:opened_inventory_sync` 的 1 字节布尔
+（`01` / `00`）。不贡献动作、查询、知识或事实，也不订阅任何包。
+
+服务端是 **Fabric + SpectatorPlus 服务端 Mod**，由服主自行安装；本仓库不安装、不分发、
+不探测。**不支持 Paper**：那里的 SpectatorPlus 是插件实现，同一通道读 0 字节、只当作
+"打开"，Uina 发 `00` 会被它再当成一次打开。要支持 Paper 必须改服务端插件，属于上游范围。
 
 `examples/addons/example-mod`（纯 ESM，无依赖）：
 
@@ -217,8 +254,16 @@ classpath 编译并安装到 `server/plugins/`；首次发放 `example:uina_toke
 确定性回归：
 
 ```bash
-npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-protocol.test.ts tests/mc/mc-protocol.test.ts
+npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-protocol.test.ts \
+  tests/mc/mc-local-screen.test.ts tests/mc/mc-client-screen.test.ts tests/mc/mc-protocol.test.ts
 ```
+
+`mc-local-screen` 覆盖个人背包边界（equip/toss/2×2 各一对、失败与取消只收尾一次、
+并发被拒时不产生事件、没有包接收时不补发 close、展示口抛出不改变物品结果）；
+`mc-client-screen` 覆盖 ClientHost 的身份校验、通道声明顺序与单包失败隔离。
+
+**观察者画面验收没有自动化**：需要真服 + 真实 Fabric 客户端 + SpectatorPlus 客户端 Mod，
+按 §11 的包配置人工确认。单测只证明"事件成对、字节正确"，不能替代肉眼/录屏。
 
 真服（先启动 dev-env Paper，含 `uina-example-plugin`）：
 
@@ -234,11 +279,17 @@ pnpm dev:mc:addons
 - **未做**：Addon 热重载/热替换（设计上不支持，重连才生效）；运行时卸载已加载包；
 - **未做**：`prepare` 的"提供预构造 client"分支没有真服示例（类型与失败路径已实现）；
 - **未做**：`serverRequirement` 的服务端探测（只做声明；`Compatible` 需要具体能力自己验证）；
-- **已否决**：不做 SpectatorPlus 集成。这里有两个同名项目：Nahu 的 Spigot 插件提供 `/spectate`；
-  yzxoi 的 `SpectatorPlus`（1.21.11 分支）是 **Fabric 客户端 mod + Paper 插件**，只做观战数据同步
-  （手持物/生命/快捷栏/饥饿/经验/打开的容器界面），**没有 `/spectate` 命令**。Bot 作为**被观察者**
-  不需要任何 Uina 侧代码——服务端读它的背包再推给装了客户端 mod 的观众；Bot 作为**观察者**既没有
-  GUI 可看，也没有客户端 mod 可装。原 `spectatorplus` 包按错误前提实现，已删除（含真服 T7 步骤）。
+- **已否决**：`/spectate` 方向的 SpectatorPlus 集成。这里有两个同名项目：Nahu 的 Spigot 插件提供
+  `/spectate`；yzxoi 的 `SpectatorPlus`（1.21.11 分支）是 **Fabric 客户端 mod + Paper 插件**，只做
+  观战数据同步（手持物/生命/快捷栏/饥饿/经验/打开的容器界面），**没有 `/spectate` 命令**。
+  Bot 作为**观察者**既没有 GUI 可看，也没有客户端 mod 可装，这条方向不做。
+- **已落地**：`packages/spectatorplus` 只做**被观察方向**的界面桥——个人背包是客户端视图，
+  服务端不知道它开没开，上游留了 `opened_inventory_sync` 通道但 Fabric 端按 1 字节布尔解析，
+  所以 Uina 只需要在窗口事务起止各发一个字节。见 §8.5 与 §11。
+- **未覆盖**：Paper 端不支持。同一通道在 Paper 插件里读 0 字节、只当"打开"，没有关闭分支；
+  支持它必须改服务端插件（上游范围），本仓库不改、也不发对端会误解的字节。
+- **未验证**：真实 Fabric 观察者客户端的画面验收。自动化只覆盖到"事件成对 + 字节正确"，
+  "观察者真的看到了界面"必须在真服 + 真客户端上肉眼确认，不能用单测代替。
 - **未覆盖**：非 1.21.11 协议（`registerChannels` 与 custom_payload 编解码按 1.21.11 窄口）；
 - **已知**：Addon 事实不持久化，跨连接不继承（这是设计选择：模组状态属于连接）；
 - **已知**：`minecraft:register` 是 1.13+ 传统机制；若服务端实现不再支持，需要按版本适配。

@@ -1,5 +1,31 @@
 # 设计变更记录
 
+## 2026-11-08 · 批45 SpectatorPlus 个人背包界面桥（被观察方向）
+
+- **只补一个通用接缝**：Core 新增 `LocalScreenActivity`（`kind/phase/session/connection/incarnation`）与
+  `ProtocolExtension.localScreen`——纯同步编码器，返回 `{channel,data}` 或 `null`，不持有连接、没有发送能力。
+  Core 里没有任何 `spectatorplus:` 字符串；删掉 Addon 不会留下分支。
+- **派发在 ClientHost**：`emitLocalScreen()` 先校验 `ready` + connection/incarnation 与事件一致，再逐个包
+  同步编码、同步写入（`protocolFor(bot).customPayload`，沿用既有的通道校验/长度上限/`minecraft:register`）。
+  单包编码或发送失败只记诊断；返回 true 只代表字节已提交，没有服务端 ACK。
+- **边界只在 `withInventoryScope`**：`equip` / `toss` / `withInventory`（2×2 合成）各产生一对 open/close，
+  close 只在同一次事务的 open 真提交过时发，且仍在 `window.close` 之后的 finally 里。
+  `inventory@1` 读取、捡拾、快捷栏切换、`openContainer` 的原版容器窗口都不经过它——后者由服务端自行镜像。
+- **正式包 `packages/spectatorplus`**：只做协议转换，无动作/查询/知识/事实、不订阅任何包。把个人背包的
+  open/close 编码成 `spectatorplus:opened_inventory_sync` 的 1 字节布尔（`01`/`00`）。
+- **只支持 Fabric 服务端**：上游 Fabric 端 `ScreenSyncHandler` 收 `true` 走 `syncScreenOpened`、收 `false`
+  走 `syncScreenClosed`，所以零服务端改动。**Paper 端不支持**：同一通道在 Paper 插件里读 0 字节、只当作
+  "打开"，发 `00` 会被它再当成一次打开；要支持必须改服务端插件，属上游范围，本仓库不改。
+- **纠正上一轮的归因**：`/spectate` 方向仍然否决（那是另一个同名 Spigot 插件，yzxoi 的 SpectatorPlus
+  没有该命令）；但"被观察者不需要 Uina 侧代码"只对**服务端窗口**成立——个人背包是客户端视图，
+  服务端不知道它开关，这正是本批补的那一个字节。
+- 验收：新增 `mc-local-screen.test.ts`（9 项：三入口各一对、超时/取消只收尾一次、并发被拒不产生事件、
+  没有包接收不补发 close、展示口抛出不改变物品结果、无展示口时照常完成）与 `mc-client-screen.test.ts`
+  （10 项：通道声明先于 Payload、连接/化身不匹配丢弃、未 ready 不派发、单包抛错/坏形状/坏通道隔离）；
+  `mc-addons.test.ts` 增加正式包编码与 `localScreen` 坏形状用例（37 → 39）。
+- 明确没做：真实 Fabric 观察者客户端的画面验收（无可用客户端，未宣称通过）；Paper 支持；
+  最短展示时长（未观察到闪屏就不加）。
+
 ## 2026-11-08 · 批44 通用服务器交互：菜单 / Dialog / 聊天动作 / HUD
 
 - **一套界面真值，挂在连接上**：新增 `driver/window/state.ts` 的 `ConnectionWindowState`，由 `windowStateFor(protocolFor(bot))` 在**连接建立时**创建（不是懒建——懒建会丢掉连接早期的 `open_window`/Dialog/HUD 包）。三量分离：`serverStateId`（服务端同步代次，只用于归因 full 回执）、`contentRevision`（槽位/光标内容）、`uiRevision`（界面可见语义）；`screenRef` 是"本次打开"的身份，**不是**网络 windowId，插件重开同一类型的菜单会拿到新身份、旧观察随之失效。WindowSession 不再自持 `value`/`earlyFull`/`lastStateId` 镜像，改为从共享状态即时读；它只认领一次原生窗口对象（同 id 新对象必须让旧句柄失效）。
@@ -27,7 +53,7 @@
 - **真服钉出的协议事实**：Paper 1.21.11 **只向已声明通道投递** clientbound `custom_payload`。此前客户端只发不收，服务端收到 press 却不回包，动作如实 `EFFECT_UNCONFIRMED`。修复：`onCustomPayload` 与 `protocol.send` 都先走 `registerChannels`（`minecraft:register`，NUL 分隔，每连接每通道一次），attach 早于 login 时排队到 login 补发。这条不注册就收不到，不是可选项。
 - **ref 命名空间**：按规格只要求 `<namespace>.<name>@<version>`，不把前缀绑死成 addon id（`example.machine@1` 合法）；跨包/与内置重名由 Catalog 唯一性校验显式拒绝。包状态新增 `contributed.refs`，目录不再靠 id 前缀猜能力归属（否则 `example-mod` + `example.*` 会漏列）。
 - **目录与 IPC**：新增固定方法 `directory.snapshot`（launch/connection/descriptors/addons/selection 纯 JSON）；`session.status.active.addons = {digest, ids}`；活动会话拿不到快照即 `EXECUTOR_UNAVAILABLE`，不回退旧目录。
-- **示例包**：`examples/addons/example-mod`（自定义通道 → 服务端计数 → addon fact → current 查询 → BodyScope 动作回读确认；`example:uina_token` 由 Paper 插件真实发放）。`dev-env/uina-plugin` 用服务器 libraries 编译，不引 Gradle/Maven。仓库目前不发布正式包：`spectatorplus` 曾按 `/spectate` 实现并一度提升为正式包，后确认前提错误（`/spectate` 属另一个同名 Spigot 插件；yzxoi 的 SpectatorPlus 是观战同步 mod，没有该命令），包与真服步骤均已删除，理由见 [known-gaps.md](known-gaps.md)。
+- **示例包**：`examples/addons/example-mod`（自定义通道 → 服务端计数 → addon fact → current 查询 → BodyScope 动作回读确认；`example:uina_token` 由 Paper 插件真实发放）。`dev-env/uina-plugin` 用服务器 libraries 编译，不引 Gradle/Maven。本批不发布正式包：`spectatorplus` 曾按 `/spectate` 实现并一度提升为正式包，后确认前提错误（`/spectate` 属另一个同名 Spigot 插件；yzxoi 的 SpectatorPlus 是观战同步 mod，没有该命令），包与真服步骤均已删除，理由见 [known-gaps.md](known-gaps.md)。正式包在批45 以"个人背包界面桥"的形式重新落地。
 - **运维**：`addons/manage.ts` + `pnpm mc:addon`（list/inspect/install/enable/disable/remove/status）；安装拒绝覆盖同 id，卸载拒绝仍被 Profile 启用的包。
 - 验收：新增 `mc-addons.test.ts`（37）与 `mc-addon-protocol.test.ts`（14）全绿；`mc-protocol.test.ts` 增通道注册与注册失败重试用例；真服 `pnpm dev:mc:addons` 8/8（安装≠启用、冻结、重连生效、初始事实未知、纵向写入、重复写入、连接期 disable 不卸载）；`npx tsc --noEmit` 全绿；tests/mc 109 文件 861 passed / 13 skipped（唯一失败为既有 `node_api.h` 环境项；注意 `vitest run tests/mc` 的路径过滤会连带匹配 `tests/mcp-*`，统计口径以排除后的结果为准）。
 - 明确没做：Addon 热重载、`prepare` 预构造 client 的真服示例、`serverRequirement` 服务端探测、多协议版本；SpectatorPlus 集成已否决（见 [known-gaps.md](known-gaps.md) 的 Addon 段）。

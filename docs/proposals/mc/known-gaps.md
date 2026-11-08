@@ -227,13 +227,22 @@
   `version` 覆盖的拒绝路径，没有用自定义 `minecraft-protocol` client 跑过真服。
 - **`serverRequirement` 只是声明**：不做服务端探测；`Compatible` 必须由具体能力在调用时证明
   （例如 `example.press@1` 以服务端计数前进为准）。目录里的 `note` 已明确这一点。
-- **SpectatorPlus 集成已否决（2026-11-08）**：两个同名项目容易混淆——Nahu 的 Spigot 插件提供
+- **SpectatorPlus 集成（2026-11-08）**：两个同名项目容易混淆——Nahu 的 Spigot 插件提供
   `/spectate`；yzxoi 的 `SpectatorPlus`（1.21.11 分支，<https://github.com/yzxoi/SpectatorPlus>）
-  是 **Fabric 客户端 mod + Paper 插件**，只做观战数据同步，**没有 `/spectate` 命令**。
-  结论：Bot 作为**被观察者**不需要 Uina 侧代码（服务端读它的背包/界面后推给装了客户端 mod 的观众，
-  唯一例外是"被观察者按 E 打开背包"需要被观察者也装客户端 mod，bot 不可能满足）；Bot 作为
-  **观察者**没有 GUI 可渲染，也没有客户端 mod 可装，做了没有意义。原 `spectatorplus` 包按错误前提
-  实现（发 `/spectate`），已从仓库删除，真服脚本同步移除该步（9 步 → 8 步）。
+  是 **Fabric 客户端 mod + 服务端 Mod/插件**，只做观战数据同步，**没有 `/spectate` 命令**。
+  按 `/spectate` 实现的原包已删除（真服脚本同步移除该步，9 步 → 8 步）。
+- **`packages/spectatorplus` 只做被观察方向的界面桥**：箱子/工作台等**服务端窗口**由
+  SpectatorPlus 自己镜像，Uina 不重发；只有**个人背包**（window 0，纯客户端视图）服务端不知道
+  开关，才需要 Uina 在窗口事务起止各发一个字节（`spectatorplus:opened_inventory_sync`，
+  `01`/`00`）。这依赖 `withInventoryScope` 的真实边界，不靠物品数量变化推断。
+- **Paper 端不支持**：同一通道在 Paper 插件里读 0 字节、只当作"打开"，没有关闭分支；
+  Uina 发 `00` 会被它再当成一次打开。要支持必须改服务端插件（上游范围），本仓库不改。
+- **观察者画面未做真实验收**：没有可用的真实 Fabric 观察者客户端，自动化只覆盖到
+  "事件成对 + 字节正确 + 身份不串台"，**"观察者真的看到界面"没有证据**。
+- **个人背包镜像依赖观察者装客户端 Mod**：上游 `SyncedPlayerInventory.requiresClientMod()` 为 true，
+  没装 Mod 的观察者看不到这个界面（这是上游行为，不是本包引入的限制）。
+- **没有服务端 ACK**：`emitLocalScreen` 返回 true 只代表字节已写入连接，不代表对方已渲染；
+  极短的背包事务可能来不及渲染就被关闭，未加人为最短展示时长。
 - **协议窄口 1.21.11**：`custom_payload` 编解码与 `minecraft:register` 注册按该版本实现；
   其它版本会 `UNSUPPORTED_PROTOCOL`，没有多版本适配。
 - **Addon 事实不持久化**：连接绑定，断线清空、重连不继承；跨会话的模组状态必须由服务端重新发布。
