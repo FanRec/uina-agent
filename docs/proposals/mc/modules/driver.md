@@ -582,6 +582,29 @@ Driver 不寻路；由高层 use 先安排站位，Driver 从当前姿态定位�
 
 服务器执行命令可以造成传送、重生、维度/库存/方块变化。它们按实际入包更新 World 与现有身份/控制失效规则处理，不把指令返回当作这些效果的完成证据；也不为推断任意插件命令的身体需求新增仲裁器。
 
+### 7.8 连接级界面状态（菜单 / Dialog / HUD）
+
+服务器交互不是"打开某个方块容器"的特例：`/menu`、NPC 右键、聊天链接和配置阶段都能把界面推到客户端。因此界面状态挂在**连接**上，不在 WindowSession 里：
+
+- `ConnectionWindowState` 是唯一真值，由 `windowStateFor(protocolFor(bot))` 在**连接建立时**就创建（不是懒建）。懒建会丢掉连接早期的 `open_window`、Dialog 与 HUD 包，这是本轮真服实测出来的。
+- 三量分离：`serverStateId`（服务端同步代次，只用于归因 full 回执）、`contentRevision`（槽位/光标内容）、`uiRevision`（界面可见语义）。`screenRef` 是"本次打开"的身份，**不是**网络 windowId——插件重开同一类型的菜单会拿到新 screenRef，旧观察随之失效。
+- `open_window` 不一定先到：mineflayer 的处理器先注册会同步发 `windowOpen`。所以两条路径都要能建档，同 windowId 只补标题/类型，不重建身份。
+- 普通箱子的 `window_items` 会**先于**原生窗口对象到达：那一刻 `synchronized=true` 而 `layout=null` 是中间态，不是"布局不支持"的结论。WindowSession 必须等原生窗口就位再判，否则每个箱子都会被误判成 UNSUPPORTED_WINDOW（真服回归抓到的）。
+- 客户端一次只显示一个界面：开容器屏会清掉当前 Dialog，开本地 Dialog 会清掉容器屏。两个同时留在状态里会让 `ui@1` 报告一个看不见的界面。
+
+协议事实（Paper 1.21.11 实测，不能靠猜）：
+
+| 事实 | 后果 |
+|---|---|
+| 1.21.11 文本组件是 NBT，字段 `click_event`/`hover_event`；物品的 `custom_name`/`lore` 是 prismarine-nbt 的 typed 形态 `{type,value}` | `parseComponent` 必须先解 typed 标签，否则名字/Lore 全是空串（`parseComponent` 顶部 `unwrapTag`） |
+| `custom_click_action` 的 codec 是 `Identifier + lengthPrefixed(optionalTag)`，缺失用 `TAG_End(0x00)` | minecraft-data 记成 `["option","anonymousNbt"]`，按定义直写会被服务端判 DecoderException **直接踢人**；Driver 自己拼包体 |
+| `chat_command` 不带前导斜杠 | `chatCommand` 统一剥掉 `/`，空命令派发前失败 |
+| Dialog 关闭、书面翻页没有 serverbound 包 | `ui.act` 如实报 `UNSUPPORTED_WINDOW`，不假装发过包 |
+| Dialog 的 static 按钮**不是** `minecraft:static`：它是内联的 ClickEvent，字段是 `type`（`{type:"minecraft:run_command",command:"/x"}`） | 按 `{type:"minecraft:static",action:{...}}` 解析会让按钮动作整个变成 `none`（真服曾悄悄丢掉 Close 的动作，`dev:mc:ui` 现在直接断言它必须是 `run_command`） |
+| Dialog 的 `body` 是 `Either<List<DialogBody>, DialogBody>`：只有一个 body 时线上是裸 compound | 只按数组解析会丢掉整段正文；`parseDialog` 两种形态都接受 |
+
+HUD（计分板/BossBar/标题/动作栏/Tab）同属连接级观察，走独立的事实类别 `hud`：高频刷新不会唤醒 `ui` 的观察者，也不推进 `uiRevision`。
+
 ---
 
 ## 8. 高频反馈

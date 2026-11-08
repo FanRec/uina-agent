@@ -241,6 +241,19 @@
   收到上行 payload 但不回包；若未来服务端移除该机制，需要按版本替换注册方式。
 - **未做**：包签名/来源校验、依赖自动安装（依赖交给 npm/pnpm）、运行时资源配额（CPU/内存隔离）。
 
+## 服务器交互（2026-11-08）：已知缺口
+
+本轮把菜单 / Dialog / 聊天动作 / HUD 接到同一条连接级观察面上，真服场景 `pnpm dev:mc:ui` 已跑通（详见 [changelog](changelog.md) 同名条目）。下面这些是**明确没做**的部分，不要当成"顺手就能加"：
+
+- **Dialog 只能被取代，不能被关闭**：1.21.11 没有 serverbound 的关对话框包，`ui.act {kind:"close"}` 对 Dialog 报 `UNSUPPORTED_WINDOW`。要离开对话框只能点它自己的按钮，或让容器/另一个界面取代它。同理 `book_page` 与 `open_url`/`copy_to_clipboard`/`change_page` 都没有服务端编码。
+- **`submit_dialog` 的输入校验只看类型不看语义**：`number_range` 只要求是数字，不校验 min/max/step；`text` 不校验 maxLength。越界值会原样送给服务端，由服务器自己决定接受还是忽略——客户端不替服务器做业务校验。
+- **Dialog 注册表（`registry_data` 的 `dialog` 注册表）没有真服证据**：代码支持按 `registryId` 解析配置阶段下发的 Dialog 条目，但本地 Paper 1.21.11 没有在配置阶段真的下发过这张表。当前能实证的是**内联 Dialog**（聊天 `show_dialog` 的 inline NBT）。`registryEntryHolder` 形态的按钮也走同一段未实证代码。
+- **HUD 只是显示观察**：`hud@1` 报告"服务器把这些显示出来了"，不证明背后的业务事实（分数、余额、任务进度）。计分板的 1.20.3+ 显示名、BossBar 的颜色/叠加层都按协议原样透传，不做语义解释。
+- **菜单按钮的"业务成功"永远不在 `ui.act` 里**：`outcome` 只有界面转移语义。要证明"买到了"，得另读 `inventory@1` / `events@1` / 方块事实——真服场景就是这么交叉核对的（聊天回执的 N 与侧边栏的 N 必须一致）。
+- **未知布局的窗口只读**：`layout.status !== "known"` 时 `ui@1` 仍可读（区域标 `unknown`），但 `ui.act` 不会按未验证区域点击。这是有意的：猜区域等于把"看起来像按钮"当成"按钮"。
+- **`custom_click_action` 的编码是绕过 minecraft-data 的**：数据包定义少了外层 VarInt 长度前缀，Driver 自己拼包体（`encodeAnonymousNbt`）。如果上游修正了定义，这段需要复查，否则会多写一层前缀。
+- **没有 NPC 实体交互的专用能力**：NPC 对话目前只能通过"右键实体 → 服务器推界面 → `ui@1` 读 + `ui.act` 点"这条通用路径走，没有 `npc.talk@1` 之类的高层动作。本地插件夹具里也没有 NPC（没有 Citizens 依赖）。
+
 ## 附：不要照抄的部分
 
 对照 Cortico 后确认**不采用**：常驻 policy 层（G18 已裁决）、作弊传送脱困、把观测渲染成散文塞进 World。理由：分别违反"不堆隐藏配置"、"正常生存验收不靠传送"、"World 只给事实不给台词"。台词属表达侧。

@@ -579,6 +579,49 @@ interface RegistryKnowledge {
 
 生产动作的领域数量见 [能力合同](modules/capabilities.md)：`craft@1` 的 `crafted/produced`、`smelt@1` 的 `produced` 累计本次服务端确认入包量，失败与取消保留确认量和剩余请求，不能从整次库存净差重建。熔炼 `consumed` 指确认投入炉子的材料，`loaded` 指累计装入量；`wait:false` 只装一批可供足燃料的原料，容量不足的余量用 `remaining` 表达。自有身体在世界等待前释放，取货重新申请；祖先委托继续保留祖先身体。
 
+<a id="server-ui"></a>
+
+### 4.3 服务器界面：观察长于操作，操作只做一次
+
+第三方服务器把菜单、NPC 对话、聊天链接和 HUD 都塞进同一条连接。Uina 对它们的立场是：**观察是连接级的，写操作是单次派发**。物品搬运（§4 的窗口 CAS 事务）与菜单按钮不是同一件事，判据也不同。
+
+```typescript
+type RichActionKind = "run_command" | "suggest_command" | "show_dialog" | "custom"
+  | "open_url" | "copy_to_clipboard" | "change_page" | "unknown";
+interface RichTextAction { ref: Ref; kind: RichActionKind; value: string | null; payload: JsonValue | null }
+interface RichText { text: string; translate: string | null; style: RichTextStyle; actions: RichTextAction[]; children: RichText[] }
+interface UiSlotValue { index: number; region: "top" | "player" | "unknown"; item: ItemValue | null; display: ItemDisplay | null; buttonDigest: string | null }
+interface UiSnapshot {
+  kind: "none" | "container" | "dialog" | "book";
+  screenRef: Ref | null;      // 本次打开的身份，不等于网络 windowId
+  uiRevision: number;         // 标题/槽位/光标/Dialog 内容变化才推进
+  title: RichText | null; coverage: "complete" | "partial"; unknown: string[];
+  container?: { windowType: string; windowId: number; layout: UiLayoutView; slots: UiSlotValue[]; cursor: ItemValue | null; properties: Record<string, number> };
+  dialog?: { phase: "play" | "config" | "local"; type: string; title: RichText | null; body: RichText[]; inputs: UiInput[]; buttons: UiButton[]; dismissible: boolean | null };
+}
+type UiActInput =
+  | {kind: "click_slot"; screenRef: Ref; uiRevision: number; slot: number; button: "left" | "right"; buttonDigest: string}
+  | {kind: "submit_dialog"; screenRef: Ref; uiRevision: number; buttonRef: Ref; values?: Record<string, JsonValue>}
+  | {kind: "activate_text"; eventRef: Ref; actionRef: Ref}
+  | {kind: "close"; screenRef: Ref; uiRevision: number}
+  | {kind: "book_page"; screenRef: Ref; uiRevision: number; page: number};
+type UiActOutcome = "screen_opened" | "screen_closed" | "updated" | "sent" | "unknown" | "unsupported";
+```
+
+`ui@1` 与 `hud@1` 是**当前观察**（`facts: ["ui"]` / `["hud"]`，可 watch），不占 Body、不需要窗口会话：服务器用 `/menu`、NPC 或聊天链接打开的界面同样可读。连接未同步时 `ui@1` 直接失败（UNKNOWN），不把"还没同步"读成"没有界面"。
+
+`ui.act@1` 每次只做三件事：校验前态（`screenRef` + `uiRevision` + `buttonDigest` 三者一起失配即 `UI_STALE`，在派发前失败）→ 派发一次真实协议包 → 报告界面是否转移。**outcome 从不等于业务成功**：`screen_opened`/`screen_closed`/`updated` 只说明界面换了或内容变了，`sent` 明确表示"没观察到可归因的变化"（聊天命令类按钮的正常结果）。买没买到、传送没传送、领取没领取，必须另有事实证据。
+
+三条边界是本轮真服钉出来的，不能靠猜：
+
+- **Dialog 的关闭是纯客户端行为**。1.21.11 没有 serverbound 的关对话框包，服务端也无从得知，所以 `{kind:"close"}` 对对话框返回 `UNSUPPORTED_WINDOW`，而不是假装发了一个包。要离开对话框只能用它自己的按钮或让别的界面取代它。
+- **书面翻页没有 serverbound 编码**（`book_page` → `UNSUPPORTED_WINDOW`）；`open_url`/`copy_to_clipboard`/`change_page` 同属客户端本地动作，`activate_text` 只执行 `run_command`/`custom`/`show_dialog`，其余如实拒绝。
+- **文本动作只能执行"已经观察到的"**。`activate_text` 按 `eventRef`+`actionRef` 查连接级的文本动作登记表（有界 FIFO 128），模型不能自己拼一个动作让 Uina 去执行。旧观察被淘汰后重放会得到 `UI_STALE`。
+
+`custom_click_action` 的线上形态与 minecraft-data 3.117.0 的记录不一致：服务端 codec 是 `Identifier + lengthPrefixed(optionalTag)`，缺失用 `TAG_End(0x00)` 表示；按数据定义直写会被 Paper 判 `DecoderException` 并**直接踢人**。Driver 自己拼包体（`driver/mineflayer/protocol.ts` 的 `encodeAnonymousNbt`），并由真服场景 `pnpm dev:mc:ui` 的双侧证据锁定。
+
+未知布局（`layout.status !== "known"`）的窗口仍然可读——区域标 `unknown`、只读可见；按未验证区域点击会被拒绝，不猜。`ui@1` 只列非空槽：菜单按钮本来就是图标物品，空槽对"读懂结构"没有信息量。
+
 <a id="world"></a>
 
 ## 5. World 所有者：读取、变化订阅与领域记录

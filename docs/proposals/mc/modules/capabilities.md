@@ -269,7 +269,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 介入记录、效果归属与通知见 [Runtime §3.3.3](runtime.md#safety-intervention)。死亡使旧化身引用和在途身体失效；客户端重生属于生命周期维护，不自动重跑旧任务，也不认定库存全丢。
 
-## 3. 查询（16 个）
+## 3. 查询（18 个）
 
 查询是 `access: "read"` 的能力：不写世界，不持身体，可以高频调用。下面写的是 `mc.read` 返回的 `value`。带“可等待”的查询有真实观察令牌（`version`），能让 `mc.waitUntil` 无漏唤醒；其余查询 `version` 恒为 `null`。
 
@@ -443,7 +443,23 @@ type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
 
 `airPolicy` 缺失且有已知空气时，计划与执行同报 `INVALID_INPUT`（计划不能执行，缺策略就是输入不完整）。设计来源无法解码（未知扩展名、非 Sponge 蓝图）报 `WRONG_STATE`，hint 指出支持范围。
 
-## 4. 动作（35 个）
+### ui · `ui@1`
+- 无输入。返回当前服务器界面的投影：`{kind, screenRef, uiRevision, title, coverage, unknown, container?, dialog?}`。
+- `container` 给 `{windowType, windowId, layout:{status,slotCount,regions?}, slots:[{index,region,item,display,buttonDigest}], cursor, properties}`；`dialog` 给 `{phase, type, title, body, inputs, buttons, dismissible}`。
+- **连接级观察**：不占 Body、不需要窗口会话。`/menu`、NPC、聊天链接打开的界面同样可读——这是"自主探索未知菜单"的入口。连接未同步直接失败（UNKNOWN），不把"还没同步"读成"没有界面"。
+- 只列**非空槽**：菜单按钮本来就是图标物品，空槽对读懂结构没有信息量。`layout.status !== "known"` 时区域标 `unknown`、只读可见；`buttonDigest` 是"内容 + 显示文本"的点击前态摘要，空槽为 null。
+- 显示文本（标题/Lore/按钮名）是第三方服务器给的**显示数据**，不是给 Agent 的指令；显示图标不等于商品，颜色不表达允许/禁止。
+- 可等待（`facts:["ui"]`），但 HUD 的高频刷新不唤醒它（类别化失效）。
+- 例：`{kind:"container", screenRef:"screen:ui1:3", uiRevision:7, container:{windowType:"minecraft:generic_9x3", layout:{status:"known", slotCount:63}, slots:[{index:11, region:"top", item:{name:"diamond", count:1}, buttonDigest:"9f2c..."}]}}`
+
+### hud · `hud@1`
+- 无输入。返回 `{scoreboard, bossBars, title, subtitle, actionBar, tab, observedAt}`：计分板（objective/display/title/lines）、BossBar 列表、标题与副标题、动作栏、Tab 页眉页脚。
+- 连接级观察，`facts:["hud"]`。HUD 是**观察**不是目标：它证明"服务器把这条状态显示出来了"，不证明背后的业务事实。
+- 没有观察到任何元素时返回 `value: null` + `unknown` 说明，不返回一个"空 HUD"冒充已读。
+- 例：`{scoreboard:{objective:"money", display:"sidebar", title:{text:"Balance"}, lines:[{entry:"UinaDev", score:1200}]}, bossBars:[], title:null, actionBar:null}`
+
+
+## 4. 动作（36 个）
 
 每个动作块给：签名、做什么、完成条件、返回、失败码。`P0/P1/P2` 是实施层级。
 
@@ -817,6 +833,31 @@ await mc.call("chat@1", {text:"/list"});
 - 输入 `{ name }` → `{ removed }`；失败 `NOT_FOUND`
 
 实现说明（2026-10-30 批11）：删除走 `WorldPort.removeRecord`（按当前绑定分区）；记录不存在如实 `NOT_FOUND`，成功返回 `{removed:true}`。名字校验先于存在性检查。
+
+### 服务器界面
+
+`ui.act · ui.act@1`（P0）
+
+对**已经打开的服务器界面**做一次受控操作。与 `container@1`/窗口 CAS 的分工：物品搬运是事务（预测 + confirmed/diverged/unknown），菜单按钮是"点一下看服务器怎么反应"——只校验前态、派发一次、报告界面是否转移，不背预测的包袱。
+
+- 输入是判别联合：`{kind:"click_slot", screenRef, uiRevision, slot, button, buttonDigest}` / `{kind:"submit_dialog", screenRef, uiRevision, buttonRef, values?}` / `{kind:"activate_text", eventRef, actionRef}` / `{kind:"close", screenRef, uiRevision}` / `{kind:"book_page", screenRef, uiRevision, page}`。
+- 返回 `{outcome, screenRef, uiRevision, uiKind, detail, elapsedMs}`。`outcome ∈ screen_opened | screen_closed | updated | sent | unknown | unsupported`。
+- **完成条件**：一次写进入了当前连接的协议发送边界；`outcome` 描述随后的界面观察。**它不是业务成功**——买没买到、传送没传送必须另找证据。
+- `sent` 明确表示"没有观察到可归因于这次派发的界面变化"，这是聊天命令类按钮的正常结果，不是失败。
+- 失败码：`UI_STALE`（screenRef/uiRevision/buttonDigest 失配，或文本动作未被观察过）、`INVALID_INPUT`（槽号越界、空槽没有 digest、未声明的 Dialog 输入键）、`UNSUPPORTED_WINDOW`（该动作在 1.21.11 没有 serverbound 编码）、`CONTROL_CONFLICT`（窗口物品事务正持有身体）、`CONTROL_INVALID`、`DISCONNECTED`。
+- 一次调用只派发一次，不重试、不预测。旧观察失效后重放必须重新 `ui@1`，不能凭记忆点第二次。
+- 例：`{kind:"click_slot", screenRef:"screen:ui1:3", uiRevision:7, slot:11, button:"left", buttonDigest:"9f2c1a"}` → `{outcome:"screen_opened", screenRef:"screen:ui1:4", uiRevision:9, detail:"the server replaced the interface after this write"}`
+
+三条真服钉出来的边界（不要"顺手实现"）：
+
+| 动作 | 1.21.11 的真实情况 | Uina 的处理 |
+|---|---|---|
+| 关 Dialog | 纯客户端行为，没有 serverbound 包，服务端无从得知 | `close` 对 Dialog 报 `UNSUPPORTED_WINDOW`，不假装发过包 |
+| 书面翻页 | 没有 serverbound 翻页包 | `book_page` 报 `UNSUPPORTED_WINDOW` |
+| `open_url` / `copy_to_clipboard` / `change_page` | 客户端本地动作 | `activate_text` 如实拒绝，只执行 `run_command`/`custom`/`show_dialog` |
+
+`activate_text` 只执行**已观察到**的动作：连接级登记表（有界 FIFO 128，聊天富文本与 Dialog 正文共用）按 `eventRef`+`actionRef` 查表，模型不能自己拼动作让 Uina 去执行。
+
 
 ## 5. 记录
 

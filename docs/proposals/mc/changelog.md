@@ -1,5 +1,24 @@
 # 设计变更记录
 
+## 2026-11-08 · 批44 通用服务器交互：菜单 / Dialog / 聊天动作 / HUD
+
+- **一套界面真值，挂在连接上**：新增 `driver/window/state.ts` 的 `ConnectionWindowState`，由 `windowStateFor(protocolFor(bot))` 在**连接建立时**创建（不是懒建——懒建会丢掉连接早期的 `open_window`/Dialog/HUD 包）。三量分离：`serverStateId`（服务端同步代次，只用于归因 full 回执）、`contentRevision`（槽位/光标内容）、`uiRevision`（界面可见语义）；`screenRef` 是"本次打开"的身份，**不是**网络 windowId，插件重开同一类型的菜单会拿到新身份、旧观察随之失效。WindowSession 不再自持 `value`/`earlyFull`/`lastStateId` 镜像，改为从共享状态即时读；它只认领一次原生窗口对象（同 id 新对象必须让旧句柄失效）。
+- **观察长于操作，操作只做一次**：新增 `ui@1`/`hud@1`（连接级、不占 Body、可 watch）与 `ui.act@1`（`click_slot`/`submit_dialog`/`activate_text`/`close`/`book_page`）。点击前态是 `screenRef`+`uiRevision`+`buttonDigest` 三元校验，失配在**派发前**报 `UI_STALE`。outcome 只有界面转移语义（`screen_opened`/`screen_closed`/`updated`/`sent`/`unknown`/`unsupported`），**从不等于业务成功**；物品搬运仍归 WindowSession 的 CAS 事务，两套判据分开。
+- **文本动作只能执行已观察到的**：连接级登记表（有界 FIFO 128，聊天富文本与 Dialog 正文共用）按 `eventRef`+`actionRef` 查表，模型不能自己拼动作。`run_command`/`custom`/`show_dialog` 有真实编码，`open_url`/`copy_to_clipboard`/`change_page`/`book_page` 如实 `UNSUPPORTED_WINDOW`。
+- **真服钉出来的五个协议事实**（都不是猜的，见 [driver.md §7.8](modules/driver.md)）：
+  1. **物品组件的 `custom_name`/`lore` 是 prismarine-nbt typed 形态** `{type:"compound", value:{...}}`。`parseComponent` 不解这层标签时，菜单按钮的名字和 Lore 全是空串——`ui@1` 看起来"读到了"，实际什么都没读到。修法：`parseComponent` 顶部加 `unwrapTag`，同时保留旧 JSON 字符串与 § 文本两条路径。
+  2. **`custom_click_action` 的 codec 是 `Identifier + lengthPrefixed(optionalTag)`，缺失用 `TAG_End(0x00)`**。minecraft-data 3.117.0 记成 `["option","anonymousNbt"]`（既少长度前缀、又把缺失记成 bool=false），按定义直写会被 Paper 判 `DecoderException` 并**直接踢人**。Driver 自己拼包体（`encodeAnonymousNbt` + `varint`），载荷里的原始 tag 原样透传（真服日志 `tag="from-chat"` 对上）。
+  3. **普通箱子的 `window_items` 先于原生窗口对象到达**：那一刻 `synchronized=true` 而 `layout=null` 是中间态，不是"布局不支持"的结论。WindowSession 原来在这里直接锁死 `UNSUPPORTED_WINDOW`，导致每个普通箱子都打不开——真服回归抓到的，修法是等原生窗口就位再判。
+  4. **Dialog 关闭与书面翻页没有 serverbound 包**：`close` 对 Dialog 报 `UNSUPPORTED_WINDOW`，不假装发过包。
+  5. **Dialog 的 static 按钮不是 `minecraft:static`**：1.21.11 把 ClickEvent 直接内联在 `action` 上（`{type:"minecraft:run_command",command:"..."}`）。原先按 `{type:"minecraft:static",action:{...}}` 解析，结果真服里 Close 按钮的动作整个变成 `none`——投影看起来"有三个按钮"，但第三个没有可执行内容，`ui.act` 点它只会报 `no resolvable action`。审查阶段用一次性探针 dump 出真实 NBT 后修掉，`dev:mc:ui` 现在直接断言 Close 必须是 `run_command`。同时发现 `body` 是 `Either<List<DialogBody>, DialogBody>`：单个 body 时线上是裸 compound，只按数组解析会丢掉整段正文。
+- **一次只显示一个界面**：开容器屏清掉当前 Dialog，开本地 Dialog 清掉容器屏。两个同时留在状态里会让 `ui@1` 报告一个看不见的界面。
+- **HUD 走独立事实类别**：`hud`（计分板/BossBar/标题/副标题/动作栏/Tab）高频刷新不唤醒 `ui` 的观察者，也不推进 `uiRevision`。状态帧追加"当前界面 + HUD"两行，模型不必先读查询就知道有没有菜单、身份是什么。
+- **教学面**：新增 `companion/guides/server_ui_playbook.md`（先读 `ui@1`、三元校验、四种动作语义、outcome 表、未知布局只读、连续操作、HUD 是观察不是目标），目录 6 → 7 份 Guide。
+- **真服夹具重写**：`dev-env/uina-plugin` 扩成菜单（`/uina_menu`，按钮 + 变价刷新 + 只发聊天的按钮 + 关闭）、`/uina_hud`、`/uina_chat_actions`（三种 click_event）、内联 Dialog（命令模板 / custom / static 三按钮），`MenuHolder` 保证普通箱子不受影响。每次按钮点击在服务端日志留一行，作为服务端侧证据。
+- 验收：新增 `pnpm dev:mc:ui` 真服端到端（**不硬编码槽位号**，按钮按显示名从 `ui@1` 里找出来，再用它自己的三元前态去点）：菜单读取 → 购买（`screen_opened`、标价从 Lore 解析后递增、扣款按标价核对、钻石 +1、聊天回执与侧边栏交叉核对、服务端日志 `menu click slot=11`）→ 陈旧前态 `UI_STALE` → 只发聊天按钮 `sent` → 关闭 `screen_closed` → 聊天三种动作全部解析并执行（服务端日志 `issued server command: /uina_say clicked-run`、`custom click action: uina:probe tag="from-chat"`）→ 未登记动作 `UI_STALE` → Dialog 投影（1 输入 3 按钮）→ 命令模板提交（服务端日志 `issued server command: /uina_dialog_submit hello-uina`）→ 未声明输入 `INVALID_INPUT` → Dialog 关闭 `UNSUPPORTED_WINDOW` → HUD 五类元素 → **普通容器回归**（`container@1` 读到 5 颗钻石，`transfer@1` 取走 2）。新增 `mc-ui-projection.test.ts`（16 项，夹具用真服 dump 的原样形态）；`npx tsc --noEmit` 全绿；`tests/mc`（排除 `tests/mcp-*` 与 `tests/mc-native-host*`）110 文件 876 passed / 13 skipped（唯一失败仍是既有 `node_api.h` 环境项）。
+- **审查修复**：Dialog static 动作与单 body 编码按真服 dump 修正（见事实 5）；`replaceScreen` 的 `uiRevision` 改为跨界面取 `Math.max`（被取代的 Dialog 修订更高时不能从 0 重新开始，否则旧观察会"看起来更新"）；`registerTextActions` 同一 `eventRef` 重复登记不再重复占队位（否则 FIFO 淘汰会先删掉刚登记的那条）；`regionOf` 只认布局里真正列出的槽号（布局外的槽不再冒充"上方业务区"）；`ui` 事件里关闭时的 `phase` 取关闭前身份（否则 config 阶段对话框会被报成 `play`），`uiKind` 契约补上 `book` 以与 `UiSnapshot` 一致。
+- 明确没做：配置阶段 `registry_data` 的 dialog 注册表没有真服证据（只实证了内联 Dialog）；`submit_dialog` 的输入只校验类型不校验 min/max/maxLength；NPC 没有专用高层动作；HUD 只做显示观察不做语义解释。见 [known-gaps.md](known-gaps.md) 服务器交互段。
+
 ## 2026-11-08 · 批43 Addon：非原版环境的独立可安装能力
 
 - **装配唯一入口**：删除 `builtinCatalog` 固定目录与 `openExecutionSide({callables})` 旁路；Runtime、World、describe 与 Addon 贡献现在消费同一次 `CapabilityCatalog.create/bind`。测试/开发注入改走 `callableModule`（仍进同一次 Catalog），不再有第二套注册表。
