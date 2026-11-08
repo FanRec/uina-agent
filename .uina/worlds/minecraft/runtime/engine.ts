@@ -14,7 +14,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
 import type { ControlOwner, PlayerPort } from "../contracts/body.js";
-import type { BodyCallScope, CallContext, NativeCallable } from "../contracts/capabilities.js";
+import type {
+	BodyCallScope,
+	CallContext,
+	NativeCallable,
+	ProtocolWriteBinding,
+	ProtocolWritePort,
+} from "../contracts/capabilities.js";
 import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
 import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
 import type {
@@ -55,6 +61,7 @@ import { callRowOf, canonicalJson, projectSummary, runRowOf, segmentRowOf, sha25
 import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
 import { RuntimeSafety, type SafetyCause } from "./safety.js";
 import { scopedBody } from "./scoped-body.js";
+import { createScopedProtocolWrite } from "./scoped-protocol.js";
 import type {
 	BodyLease,
 	CallFrame,
@@ -159,10 +166,10 @@ export interface EngineOptions {
 	requireRetirement?: (notice: ControlRetirement) => void;
 	environment?: { serverVersion: string; protocol: number };
 	/**
-	 * 受控协议写入（addon 自定义 Payload）。只在 BodyScope 内注入 CallContext：
-	 * 未持有身体资格的调用拿不到这个端口，从结构上禁止未授权写入。
+	 * 受控协议写入派发器（addon 自定义 Payload）。只在 BodyScope 内注入 CallContext，
+	 * 且每个 Scope 拿到的是绑定本次 Call/Lease/连接身份的独立端口，不是共享对象。
 	 */
-	protocol?: import("../contracts/capabilities.js").ProtocolWritePort;
+	protocol?: import("../contracts/capabilities.js").ProtocolWriteDispatcher;
 }
 
 // ---- 引擎 ----
@@ -1738,10 +1745,35 @@ export class RuntimeEngine {
 			verify: async (effect: Ref, verifier: Ref, input: JsonValue): Promise<EffectReceipt> =>
 				this.verifyEffect(effect, verifier, input),
 			...(lease != null ? { player: lease.session } : {}),
-			// 写端口只在 body scope 内出现；普通 call 与只读查询都没有这个字段。
-			...(lease != null && this.opts.protocol != null ? { protocol: this.opts.protocol } : {}),
+			// 写端口只在 body scope 内出现，且每次建立上下文都新建一份：
+			// 绑定本 Call / 本 Lease / 建立时的连接身份，保存旧引用无法再发。
+			...(lease != null && this.opts.protocol != null ? { protocol: this.scopedProtocol(callState, lease) } : {}),
 		} as CallContext & Partial<BodyCallScope>;
 		return ctx;
+	}
+
+	/**
+	 * §6.1：每个持 Lease 的调用上下文一份专属写端口。绑定值在此定稿，之后每次
+	 * send 由 createScopedProtocolWrite 逐次跑 assertLease 与身份一致性检查。
+	 */
+	private scopedProtocol(callState: CallState, lease: BodyLease): ProtocolWritePort {
+		const dispatcher = this.opts.protocol;
+		if (dispatcher == null) throw new Error("scoped protocol write requires a dispatcher");
+		const identity = dispatcher.identity();
+		const binding: ProtocolWriteBinding = {
+			run: callState.run,
+			segment: callState.segment,
+			call: callState.call,
+			body: lease.session.body,
+			owner: { kind: "run", run: callState.run, segment: callState.segment, callId: callState.call },
+			connection: identity?.connection ?? null,
+			incarnation: identity?.incarnation ?? null,
+		};
+		return createScopedProtocolWrite({
+			dispatcher,
+			binding,
+			guard: () => this.assertLease(callState, lease),
+		});
 	}
 
 	/**

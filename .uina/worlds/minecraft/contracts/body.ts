@@ -377,6 +377,8 @@ export interface BodyOps {
 }
 
 export interface BodySession extends BodyOps {
+	/** 本次身体资格（Lease）的身份 ref；协议写端口据此绑定，不复用其它 Lease 的写入。 */
+	readonly body: Ref;
 	/** Trusted Runtime scope; all resumed writes recheck this qualification. */
 	runScoped<T>(scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }, work: () => Promise<T>): Promise<T>;
 	close(): Promise<void>;

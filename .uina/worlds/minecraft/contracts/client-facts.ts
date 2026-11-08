@@ -342,7 +342,8 @@ export interface ClientFactView {
 	hud(): Fact<HudSnapshot | null>;
 	/**
 	 * Addon 发布的连接级事实（`<addonId>` + `key`）；未发布时 null（调用方如实报 unknown，
-	 * 不编造默认状态）。值只读纯 JSON，随断线清空。
+	 * 不编造默认状态）。值只读纯 JSON；按采集身份与作用域验证：跨连接不可见，
+	 * incarnation 域换代不可见，随断线全部清空。
 	 */
 	addonFact(addonId: string, key: string): Fact<JsonValue> | null;
 }

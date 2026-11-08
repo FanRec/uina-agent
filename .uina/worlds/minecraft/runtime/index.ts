@@ -70,8 +70,8 @@ export interface MinecraftRuntimeOptions {
 	program?: import("../contracts/program.js").ProgramPort;
 	queryRefs?: string[];
 	environment?: { serverVersion: string; protocol: number };
-	/** 受控协议写入端口（只在 BodyScope 内注入能力调用上下文）。 */
-	protocol?: import("../contracts/capabilities.js").ProtocolWritePort;
+	/** 受控协议写入派发器；Runtime 每次 withBody 据此创建绑定该 Scope 的 scoped port。 */
+	protocol?: import("../contracts/capabilities.js").ProtocolWriteDispatcher;
 }
 
 export interface MinecraftRuntimeStart {

@@ -29,6 +29,7 @@ import type {
 } from "../../contracts/client-facts.js";
 import { emptyFactRevisions } from "../../contracts/client-facts.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
+import type { AddonFactEntry, AddonFactPublication } from "../../contracts/protocol.js";
 import type { RichText } from "../../contracts/ui.js";
 import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
@@ -127,10 +128,11 @@ export class FactsSource implements ClientFactsPort {
 	private lastUiKind: "none" | "container" | "dialog" | "book" | null = null;
 	private lastUiPhase: "play" | "config" | "local" = "play";
 	/**
-	 * Addon 发布的连接级事实（key = `<addonId>/<key>`）。随连接清空，
-	 * 不为每个包建独立存储或游标体系。
+	 * Addon 发布的连接级事实（key = `<addonId>/<key>`）。值里同时留档采集事件
+	 * 来源身份与作用域：换代只清 incarnation 域，断线/换服清全部。
+	 * 不为每个包建独立事实引擎或游标体系。
 	 */
-	private readonly addonFacts = new Map<string, Fact<JsonValue>>();
+	private readonly addonFacts = new Map<string, AddonFactEntry>();
 	/** 本连接是否已收到至少一条玩家名单公告；换连接清零，名单未到不冒充空服。 */
 	private rosterSeen = false;
 	/** 本连接收到的地图增量包缓存；换连接（resetSource）清空当前覆盖（§11.8）。 */
@@ -194,6 +196,11 @@ export class FactsSource implements ClientFactsPort {
 			}
 			if (notice.kind === "incarnation_changed") {
 				this.resetSource("incarnation_changed");
+				this.expireIncarnationFacts();
+				return;
+			}
+			if (notice.kind === "incarnation_invalidated") {
+				this.expireIncarnationFacts();
 				return;
 			}
 		});
@@ -339,11 +346,15 @@ export class FactsSource implements ClientFactsPort {
 
 	/**
 	 * Addon 的连接级事实发布口（contracts/protocol.ts ConnectionFactSink）。
-	 * 只接受纯 JSON；没有活客户端时丢弃（不缓存给下一次连接）。`source: "server"`
-	 * 表示值来自服务端 Payload，addon 只负责解码；addon 伪造的语义由它自己承担。
+	 * 身份取**采集事件来源**（publication.origin），不是提交时读当前身份。迟到发布
+	 * 按采集身份与当前身份逐项比对后拒绝，旧异步结果不会被误标成新连接/新化身。
+	 * source 由原始证据确定：解码服务端包是 server，addon 自行推算/置未知是 derived。
 	 */
-	publishAddonFact(addonId: string, key: string, value: JsonValue, unknown: string[] = []): void {
-		if (this.host.bot == null) return;
+	publishAddonFact(addonId: string, key: string, value: JsonValue, publication: AddonFactPublication): void {
+		const current = this.host.identity;
+		if (this.host.bot == null || current == null) return;
+		if (publication.origin.connection !== current.connection || publication.origin.incarnation !== current.incarnation)
+			return;
 		let payload: JsonValue;
 		try {
 			payload = JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -351,18 +362,36 @@ export class FactsSource implements ClientFactsPort {
 			// 非纯值（函数/循环引用）不是事实：显式拒绝，不写入半成品。
 			throw new Error(`addon fact ${addonId}/${key} is not a plain JSON value`);
 		}
+		const unknown = publication.unknown ?? [];
+		// 发布本身是一条真实采集证据：走现有 capture 发一个 ev: ref，
+		// 事实的 evidence 指向它，查询回读时才有可引用的观察证据（confirm 用得上）。
+		const record = this.capture("addon.fact@1", { addonId, key, value: payload }, unknown);
 		const fact: Fact<JsonValue> = {
+			...record.fact,
+			// 事实值仍是 addon 自己发布的值；capture 的 payload 只是证据记录的外壳。
 			value: payload,
-			observedAt: nowIso(),
-			connection: this.host.identity?.connection ?? this.stamp.connection ?? undefined,
-			incarnation: this.host.identity?.incarnation ?? this.stamp.incarnation ?? undefined,
-			source: "server",
-			coverage: unknown.length > 0 ? "partial" : "complete",
-			unknown: [...unknown],
-			evidence: [],
+			connection: publication.origin.connection,
+			incarnation: publication.origin.incarnation,
+			source: publication.source,
+			evidence: [record.ref],
 		};
-		this.addonFacts.set(`${addonId}/${key}`, fact);
+		this.addonFacts.set(`${addonId}/${key}`, {
+			fact,
+			scope: publication.scope,
+			origin: { ...publication.origin },
+		});
 		this.commit("addon");
+	}
+
+	/** 换代/身体失效只清 incarnation 域；服务器范围事实保留到本连接断开。 */
+	private expireIncarnationFacts(): void {
+		let removed = false;
+		for (const [key, entry] of this.addonFacts) {
+			if (entry.scope !== "incarnation") continue;
+			this.addonFacts.delete(key);
+			removed = true;
+		}
+		if (removed) this.commit("addon");
 	}
 
 	/** 每条材料按自己的流计算持久水线，旧流迟到 ACK 不授权新流。 */

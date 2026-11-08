@@ -12,7 +12,8 @@ import {
 	type ExecutionSideStatus,
 	type ExecutorCloseResult,
 } from "../contracts/executor.js";
-import type { AddonSelection, DirectorySnapshot } from "../contracts/addons.js";
+import type { AssemblyPlan, DirectorySnapshot } from "../contracts/addons.js";
+import { emptyAssemblyPlan } from "../addons/plan.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -133,7 +134,7 @@ export class MinecraftExecutor {
 		private readonly ownership: WindowsOwnership,
 		private readonly policy: ExecutorPolicy,
 		private readonly signal?: AbortSignal,
-		private readonly addons: AddonSelection = { digest: "none", entries: [] },
+		private readonly addons: AssemblyPlan = emptyAssemblyPlan(),
 	) {
 		this.abortListener = () => {
 			this.closing = true;
@@ -151,7 +152,7 @@ export class MinecraftExecutor {
 		sharedDataDir: string;
 		config: unknown;
 		/** 本次会话冻结的 Addon 装配计划（Parent 已校验 Manifest 与路径）。 */
-		addons?: AddonSelection;
+		addons?: AssemblyPlan;
 		signal?: AbortSignal;
 		policy?: Partial<ExecutorPolicy>;
 	}): Promise<MinecraftExecutor> {
@@ -171,7 +172,7 @@ export class MinecraftExecutor {
 			ownership,
 			{ ...DEFAULT_POLICY, ...options.policy },
 			options.signal,
-			options.addons ?? { digest: "none", entries: [] },
+			options.addons ?? emptyAssemblyPlan(),
 		);
 		try {
 			if (!existsSync(join(sessionDataDir, "executor.db")) && existsSync(join(sessionDataDir, "runtime.db")))

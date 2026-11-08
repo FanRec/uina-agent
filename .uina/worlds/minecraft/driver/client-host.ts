@@ -22,9 +22,11 @@ import {
 	fromMineflayerVec3,
 	type MineflayerBot,
 } from "./mineflayer/adapter.js";
+import { createPendingClient, type PendingClient } from "./mineflayer/pending-client.js";
 import { protocolFor } from "./mineflayer/protocol.js";
-import { createConnectionPort, type DisposableConnectionPort } from "./protocol-extension.js";
 import { fixToolTierMaterials } from "./mineflayer/upstream-fixes.js";
+import { createProtocolAssembly, type ProtocolAssembly } from "./protocol-bootstrap.js";
+import { createConnectionPort, type DisposableConnectionPort } from "./protocol-extension.js";
 
 export type ConnectionState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 
@@ -44,8 +46,9 @@ export type ClientHostListener =
 	| { kind: "incarnation_invalidated"; identity: ClientIdentity }
 	| { kind: "disconnected"; facts: DisconnectFacts };
 
-/** 连接级扩展：同一条连接的两个时机（见 contracts/protocol.ts）。 */
+/** 连接级扩展：同一条连接的三个阶段（见 contracts/protocol.ts）。 */
 export interface ClientHostHooks {
+	/** 已按依赖拓扑顺序排好的贡献；install 在放行连接前统一装配。 */
 	extensions?: readonly ProtocolExtension[];
 	facts?: ConnectionFactSink;
 }
@@ -113,52 +116,67 @@ export class ClientHost {
 	 * 建立新连接。已有活跃连接时明确失败（重建须先 close，§4.4）。
 	 * resolve 于 ready 或永久失败；不自动重试。
 	 *
-	 * hooks 是连接级协议扩展的唯一接入点：
-	 * prepare 在建客户端之前运行（可覆盖版本或提供预先构造的 client）；
-	 * attach 在建客户端之后立即运行（登录/配置阶段的包也能收到），
-	 * 所有订阅随本代连接结束解除。
+	 * 装配顺序是连接合同，不能靠时序侥幸：
+	 * Driver 创建唯一未连接 Client → createBot 注入同一个 Client →
+	 * 按拓扑顺序 install 全部协议贡献（claim 冲突即时失败）→ 冻结装配 →
+	 * 注册只读订阅与生命周期监听 → 最后才放行真实网络连接。
+	 * 任一步失败都释放 Client、协议处理器与编码器，不留半连接。
 	 */
 	async connect(opts: ClientOptions, hooks: ClientHostHooks = {}): Promise<void> {
 		if (this._state === "connecting" || this._state === "syncing" || this._state === "ready") {
 			throw new Error(`client host already ${this._state}; close first`);
 		}
 		const generation = ++this._attachGeneration;
-		// 上一代（含 prepare 失败的半成品）不得留下可派发的编码器。
+		// 上一代（含装配失败的半成品）不得留下可派发的编码器。
 		this._screenExtensions = [];
 		this._disconnect = null;
 		this._lastDimension = null;
 		this._pendingRebirth = false;
-		this._connection = this.nextRef("conn");
+		const connection = this.nextRef("conn");
+		this._connection = connection;
 		this._incarnation = this.nextRef("inc");
 		this.setState("connecting");
 
 		const extensions = hooks.extensions ?? [];
-		const prepared = this.prepare(extensions, opts);
-		const bot = connectMinecraftClient({
-			...opts,
-			...(prepared.version == null ? {} : { version: prepared.version }),
-			...(prepared.client == null ? {} : { client: prepared.client }),
-		});
-		this._bot = bot;
-		const protocol = protocolFor(bot);
-		trackVitals(bot);
-		const ports: DisposableConnectionPort[] = [];
-		const detachExtensions = () => {
-			for (const port of ports.splice(0)) port.dispose();
-			this._screenExtensions = [];
-		};
-		this.detachExtensions = detachExtensions;
+		let pending: PendingClient;
 		try {
-			this.attachExtensions(extensions, bot, protocol, hooks, generation, ports);
+			pending = createPendingClient(opts);
 		} catch (error) {
-			detachExtensions();
-			this.detachExtensions = null;
-			this._bot = null;
 			this.setState("faulted");
 			throw error;
 		}
 
-		await new Promise<void>((resolve) => {
+		const ports: DisposableConnectionPort[] = [];
+		let assembly: ProtocolAssembly | null = null;
+		const detachExtensions = () => {
+			assembly?.dispose();
+			assembly = null;
+			for (const port of ports.splice(0)) port.dispose();
+			this._screenExtensions = [];
+		};
+		this.detachExtensions = detachExtensions;
+
+		let signalReady: () => void = () => {};
+		const ready = new Promise<void>((resolve) => {
+			signalReady = resolve;
+		});
+
+		try {
+			const bot = connectMinecraftClient({ ...opts, client: pending.client });
+			this._bot = bot;
+			const protocol = protocolFor(bot);
+			trackVitals(bot);
+			assembly = createProtocolAssembly({
+				client: pending.client,
+				protocol,
+				minecraftVersion: opts.version,
+				connection,
+				isCurrent: () => generation === this._attachGeneration,
+			});
+			assembly.installAll(extensions);
+			assembly.finish();
+			this.attachExtensions(extensions, bot, protocol, hooks, generation, ports);
+
 			const onSpawn = () => {
 				if (generation !== this._attachGeneration) return;
 				const dim = bot.game.dimension ?? null;
@@ -172,7 +190,7 @@ export class ClientHost {
 					this.emit({ kind: "incarnation_changed", identity: this.identity! });
 				}
 				this.setState("ready");
-				resolve();
+				signalReady();
 			};
 			const onDeath = () => {
 				if (generation !== this._attachGeneration) return;
@@ -194,7 +212,7 @@ export class ClientHost {
 				this._bot = null;
 				this.setState("disconnected");
 				this.emit({ kind: "disconnected", facts: this._disconnect ?? { reason: null } });
-				resolve();
+				signalReady();
 			};
 			const onKicked = (reason: string) => {
 				this._disconnect = { reason };
@@ -203,13 +221,16 @@ export class ClientHost {
 				if (generation !== this._attachGeneration) return;
 				// 连接建立前的协议错误是永久失败；ready 后的错误多数可由断线事件收口。
 				this._disconnect = { reason: err.message };
-				if (this._state !== "ready") {
-					cleanup();
-					this._bot = null;
-					this.setState("faulted");
-					this.emit({ kind: "disconnected", facts: this._disconnect });
-					resolve();
-				}
+				if (this._state === "ready") return;
+				// 先封本代：abort 触发的 end/error 不得再走一遍收口，也不能把 faulted 翻成 disconnected。
+				this._attachGeneration += 1;
+				cleanup();
+				// 真实 Client 必须先结束再丢引用，否则这个半连接再也关不掉（§6.3）。
+				pending.abort();
+				this._bot = null;
+				this.setState("faulted");
+				this.emit({ kind: "disconnected", facts: this._disconnect });
+				signalReady();
 			};
 			const cleanup = () => {
 				bot.removeListener("login", onLogin);
@@ -229,7 +250,21 @@ export class ClientHost {
 			bot.once("end", onEnd);
 			bot.on("kicked", onKicked);
 			bot.on("error", onError);
-		});
+
+			// 全部协议贡献已挂载、冲突已排除：这是唯一放行网络连接的位置。
+			pending.resume();
+		} catch (error) {
+			// 先撤监听再 abort：abort 触发的 end/error 不能把 faulted 改写成 disconnected。
+			this.detachConnection?.();
+			this.detachConnection = null;
+			detachExtensions();
+			this.detachExtensions = null;
+			pending.abort();
+			this._bot = null;
+			this.setState("faulted");
+			throw error;
+		}
+		await ready;
 	}
 
 	/** 主动断开：幂等；断开后旧身份永久失效。 */
@@ -315,43 +350,7 @@ export class ClientHost {
 		return fromMineflayerVec3(this._bot?.entity?.position);
 	}
 
-	/**
-	 * 连接前协议准备：版本覆盖与预先构造的 client 都只允许一个来源。
-	 * 冲突不按加载顺序取胜——两个包同时提供 client 就是无法解释的装配。
-	 */
-	private prepare(
-		extensions: readonly ProtocolExtension[],
-		opts: ClientOptions,
-	): { version?: string; client?: unknown } {
-		const prepared: { version?: string; client?: unknown } = {};
-		let clientOwner: string | null = null;
-		for (const extension of extensions) {
-			if (extension.prepare == null) continue;
-			const result =
-				extension.prepare({
-					minecraftVersion: opts.version ?? "unknown",
-					host: opts.host,
-					port: opts.port,
-					username: opts.username,
-				}) ?? {};
-			if (result.version != null) {
-				if (prepared.version != null && prepared.version !== result.version)
-					throw new Error(
-						`addons disagree on protocol version: ${prepared.version} vs ${result.version} (${extension.id})`,
-					);
-				prepared.version = result.version;
-			}
-			if (result.client != null) {
-				if (clientOwner != null)
-					throw new Error(`two addons supplied a protocol client: ${clientOwner} and ${extension.id}`);
-				clientOwner = extension.id;
-				prepared.client = result.client;
-			}
-		}
-		return prepared;
-	}
-
-	/** 建客户端之后立即挂接：登录/配置阶段的包也能收到，所有订阅随本代连接解除。 */
+	/** 放行连接之前挂接只读订阅：登录/配置阶段的包也能收到，所有订阅随本代连接解除。 */
 	private attachExtensions(
 		extensions: readonly ProtocolExtension[],
 		bot: MineflayerBot,

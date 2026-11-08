@@ -1,16 +1,17 @@
 /**
  * Companion 侧 Addon 装配：唯一 import 第三方代码的地方。
  *
- * 唯一定义来源：docs/proposals/mc/addons.md §3、§4。约束：
- * - 只加载 Parent 预检过的计划（id/version/路径/配置都是纯值）；
+ * 约束：
+ * - 只加载 Parent 预检过的冻结计划（拓扑顺序，依赖在前）；
  * - 模块自报的 id/api 必须与 Manifest 一致，否则拒绝装配；
  * - 贡献只转成 CapabilityModule / ProtocolExtension / KnowledgeSet，不新建执行层；
- * - 任一条失败即抛错（装配前失败），不做"部分可用"的静默降级。
+ * - 每个 create() 成功后**立刻**登记 close；后续任一步失败都逆序释放已创建的包，
+ *   保留原始装配错误并附带清理异常，绝不留下未释放的 Addon。
  */
 
 import { pathToFileURL } from "node:url";
 import type { MinecraftCapabilityModule } from "../capabilities/catalog.js";
-import type { AddonSelection, AddonStatus } from "../contracts/addons.js";
+import type { AddonStatus, AssemblyPlan } from "../contracts/addons.js";
 import type { ProtocolExtension } from "../contracts/protocol.js";
 import { callFailure } from "../contracts/values.js";
 import { addonCapabilityModule } from "./contribute.js";
@@ -69,7 +70,7 @@ function isContribution(value: unknown): value is AddonContribution {
 	}
 	if (candidate.client !== undefined) {
 		if (candidate.client == null || typeof candidate.client !== "object") return false;
-		if (candidate.client.prepare !== undefined && typeof candidate.client.prepare !== "function") return false;
+		if (candidate.client.install !== undefined && typeof candidate.client.install !== "function") return false;
 		if (candidate.client.attach !== undefined && typeof candidate.client.attach !== "function") return false;
 		if (candidate.client.localScreen !== undefined && typeof candidate.client.localScreen !== "function") return false;
 	}
@@ -99,9 +100,9 @@ function assertKnowledgeItems(addonId: string, items: readonly AddonKnowledgeIte
 	}
 }
 
-/** 加载一次冻结的计划；返回的 close() 逆序释放 addon 自有资源。 */
+/** 加载一次冻结的计划；返回的 close() 与失败回滚共用同一个逆序释放链，且幂等。 */
 export async function loadAddons(
-	selection: AddonSelection | undefined,
+	plan: AssemblyPlan | undefined,
 	options: { minecraftVersion: string; logger?: AddonLogger },
 ): Promise<LoadedAddons> {
 	const modules: MinecraftCapabilityModule[] = [];
@@ -109,87 +110,8 @@ export async function loadAddons(
 	const knowledge: AddonKnowledgeSet[] = [];
 	const statuses: AddonStatus[] = [];
 	const closers: (() => void | Promise<void>)[] = [];
-	if (selection == null || selection.entries.length === 0) {
-		return { modules, extensions, knowledge, statuses, close: async () => {} };
-	}
-	for (const entry of selection.entries) {
-		const logger = options.logger ?? scopedLogger(entry.id);
-		let contribution: AddonContribution;
-		try {
-			const imported = (await import(pathToFileURL(entry.entry).href)) as { default?: unknown } & Record<
-				string,
-				unknown
-			>;
-			const definition = imported.default ?? imported;
-			if (!isDefinition(definition, entry.id))
-				throw loadFailure(
-					"ADDON_ENTRY_INVALID",
-					`${entry.id}: entry module must export { api: 1, id: ${JSON.stringify(entry.id)}, create() }`,
-				);
-			const created = await definition.create({
-				config: entry.config,
-				minecraftVersion: options.minecraftVersion,
-				logger,
-			});
-			if (!isContribution(created))
-				throw loadFailure("ADDON_CONTRIBUTION_INVALID", `${entry.id}: create() must return a contribution object`);
-			contribution = created;
-		} catch (error) {
-			const code = (error as { code?: string }).code ?? "ADDON_LOAD_FAILED";
-			throw loadFailure(code, `${entry.id}@${entry.version} failed to load: ${String(error)}`);
-		}
-		const items = contribution.knowledge?.items ?? [];
-		assertKnowledgeItems(entry.id, items);
-		let module: MinecraftCapabilityModule;
-		try {
-			module = addonCapabilityModule(entry.id, contribution);
-		} catch (error) {
-			const code = (error as { code?: string }).code;
-			// 我们自己的 CallFailure 原样抛出；第三方坏形状（TypeError 等）统一归为贡献非法。
-			if (typeof code === "string") throw error;
-			throw loadFailure(
-				"ADDON_CONTRIBUTION_INVALID",
-				`${entry.id}@${entry.version} contribution rejected: ${String(error)}`,
-			);
-		}
-		modules.push(module);
-		if (contribution.client != null) {
-			const client = contribution.client;
-			extensions.push({
-				id: entry.id,
-				...(client.prepare == null ? {} : { prepare: (ctx) => client.prepare?.(ctx) }),
-				...(client.attach == null ? {} : { attach: (ctx) => client.attach?.(ctx) }),
-				// 纯转换钩子：只转发，不建独立 runtime，也不给它写权限。
-				...(client.localScreen == null ? {} : { localScreen: (event) => client.localScreen?.(event) ?? null }),
-			});
-		}
-		if (items.length > 0) knowledge.push({ addonId: entry.id, items });
-		if (contribution.close != null) closers.push(() => contribution.close?.());
-		const definitions = module.definitions;
-		const status: AddonStatus = {
-			id: entry.id,
-			version: entry.version,
-			api: ADDON_API_VERSION,
-			state: "loaded",
-			minecraft: [...entry.minecraft],
-			serverRequirement: entry.serverRequirement,
-			dir: entry.root,
-			contributed: {
-				actions: definitions.filter((definition) => definition.kind === "action").length,
-				queries: definitions.filter((definition) => definition.kind === "query").length,
-				knowledgeItems: items.length,
-				// ref 的命名空间不必等于 addon id，目录投影只能读这份确切清单。
-				refs: definitions.map((definition) => definition.descriptor.ref),
-			},
-		};
-		statuses.push(status);
-		logger.info(`loaded ${entry.version}`, {
-			actions: status.contributed.actions,
-			queries: status.contributed.queries,
-		});
-	}
 	let closing: Promise<void> | null = null;
-	const close = (): Promise<void> =>
+	const releaseAll = (): Promise<void> =>
 		(closing ??= (async () => {
 			const errors: unknown[] = [];
 			// 逆序释放，且不就地反转原数组（close 可能被启动失败路径再次调用）。
@@ -202,11 +124,109 @@ export async function loadAddons(
 			}
 			if (errors.length > 0) throw new AggregateError(errors, "addon close failed");
 		})());
-	return {
-		modules,
-		extensions,
-		knowledge,
-		statuses,
-		close,
-	};
+
+	if (plan == null || plan.ordered.length === 0) return { modules, extensions, knowledge, statuses, close: releaseAll };
+
+	try {
+		for (const entry of plan.ordered) {
+			const logger = options.logger ?? scopedLogger(entry.id);
+			let contribution: AddonContribution;
+			try {
+				const imported = (await import(pathToFileURL(entry.entry).href)) as { default?: unknown } & Record<
+					string,
+					unknown
+				>;
+				const definition = imported.default ?? imported;
+				if (!isDefinition(definition, entry.id))
+					throw loadFailure(
+						"ADDON_ENTRY_INVALID",
+						`${entry.id}: entry module must export { api: 1, id: ${JSON.stringify(entry.id)}, create() }`,
+					);
+				const created = await definition.create({
+					config: entry.config,
+					minecraftVersion: options.minecraftVersion,
+					logger,
+				});
+				// create() 一旦返回就取得资源所有权；形状校验之前也要能释放。
+				closers.push(() => {
+					const candidate = created as { close?: () => void | Promise<void> };
+					return typeof candidate.close === "function" ? candidate.close() : undefined;
+				});
+				if (!isContribution(created))
+					throw loadFailure("ADDON_CONTRIBUTION_INVALID", `${entry.id}: create() must return a contribution object`);
+				contribution = created;
+			} catch (error) {
+				const code = (error as { code?: string }).code ?? "ADDON_LOAD_FAILED";
+				throw loadFailure(code, `${entry.id}@${entry.version} failed to load: ${String(error)}`);
+			}
+			const items = contribution.knowledge?.items ?? [];
+			assertKnowledgeItems(entry.id, items);
+			let module: MinecraftCapabilityModule;
+			try {
+				module = addonCapabilityModule(entry.id, contribution);
+			} catch (error) {
+				const code = (error as { code?: string }).code;
+				// 我们自己的 CallFailure 原样抛出；第三方坏形状（TypeError 等）统一归为贡献非法。
+				if (typeof code === "string") throw error;
+				throw loadFailure(
+					"ADDON_CONTRIBUTION_INVALID",
+					`${entry.id}@${entry.version} contribution rejected: ${String(error)}`,
+				);
+			}
+			modules.push(module);
+			if (contribution.client != null) {
+				const client = contribution.client;
+				extensions.push({
+					id: entry.id,
+					// install 只是转发注册调用；Client 由 Driver 唯一创建，扩展拿不到它。
+					...(client.install == null ? {} : { install: (boot) => client.install?.(boot) }),
+					...(client.attach == null ? {} : { attach: (ctx) => client.attach?.(ctx) }),
+					// 纯转换钩子：只转发，不建独立 runtime，也不给它写权限。
+					...(client.localScreen == null ? {} : { localScreen: (event) => client.localScreen?.(event) ?? null }),
+				});
+			}
+			if (items.length > 0) knowledge.push({ addonId: entry.id, items });
+			const definitions = module.definitions;
+			const status: AddonStatus = {
+				id: entry.id,
+				version: entry.version,
+				api: ADDON_API_VERSION,
+				state: "loaded",
+				artifactDigest: entry.artifactDigest,
+				evidence: {
+					planned: true,
+					loaded: true,
+					// install 只证明"已装配、待协商"；loaded 不等于服端协商通过。
+					protocol: contribution.client?.install != null ? "pending" : "not_required",
+					dataReady: false,
+				},
+				minecraft: [...entry.minecraft],
+				serverRequirement: entry.serverRequirement,
+				dir: entry.root,
+				contributed: {
+					actions: definitions.filter((definition) => definition.kind === "action").length,
+					queries: definitions.filter((definition) => definition.kind === "query").length,
+					knowledgeItems: items.length,
+					// ref 的命名空间不必等于 addon id，目录投影只能读这份确切清单。
+					refs: definitions.map((definition) => definition.descriptor.ref),
+				},
+			};
+			statuses.push(status);
+			logger.info(`loaded ${entry.version}`, {
+				artifactDigest: entry.artifactDigest,
+				actions: status.contributed.actions,
+				queries: status.contributed.queries,
+			});
+		}
+	} catch (error) {
+		// 主错误原样抛出；清理异常挂在同一错误上供诊断，不覆盖失败原因。
+		try {
+			await releaseAll();
+		} catch (cleanup) {
+			const errors = cleanup instanceof AggregateError ? [...cleanup.errors] : [cleanup];
+			Object.assign(error as object, { cleanupErrors: errors });
+		}
+		throw error;
+	}
+	return { modules, extensions, knowledge, statuses, close: releaseAll };
 }

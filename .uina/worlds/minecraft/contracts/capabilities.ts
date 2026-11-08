@@ -5,7 +5,7 @@
  * 查询只使用 QueryDescriptor 与 World 查询定义。组合根校验所有确切 ref 唯一。
  */
 
-import type { BodyOps } from "./body.js";
+import type { BodyOps, ControlOwner } from "./body.js";
 import type { EffectReceipt, ExactRef, Fact, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
 import type { WorldPort, WorldReadPort } from "./world.js";
 
@@ -160,21 +160,73 @@ export interface ReadCallContext extends ReadCallScope {
 	readonly world: WorldReadPort;
 }
 
+/** 自定义 Payload 派发事实在现有 Effect Ledger 中的合同名（不是能力描述符）。 */
+export const PROTOCOL_WRITE_CONTRACT: ExactRef = "addon.protocol@1";
+
 /**
  * 受控协议写入：只在 Runtime 已授权的 BodyScope 内注入 CallContext。
- * addon 的自定义 Payload（改变服务器世界）必须经此发出；attach 阶段的只读端口
- * 不提供写能力，裸 bot/socket 不对普通贡献开放。
+ * 每次 withBody 都新建一个绑定该 Call/Lease/Connection/Incarnation 的端口；
+ * 保存旧引用、Body 退出、换代后的 send 一律以 not_sent 失败。attach 阶段的
+ * 只读端口不提供写能力，裸 bot/socket 不对普通贡献开放。
  */
 export interface ProtocolWritePort {
-	/** 发送一个自定义通道 Payload（1.21.11 serverbound custom_payload）。 */
-	send(channel: string, data: string | Uint8Array): void;
+	/**
+	 * 发送一个自定义通道 Payload（1.21.11 serverbound custom_payload）。
+	 * 返回本次派发的 effect ref：派发本身只证明已提交网络，默认结果仍是 unknown。
+	 */
+	send(channel: string, data: string | Uint8Array): Ref;
+	/**
+	 * 用真实观察证据把本次派发结算为 met。只能确认本端口自己发出的 effect，
+	 * 且必须带证据 ref；没有服务端 ACK 或观察证据就不要调用，结果保持 unknown。
+	 */
+	confirm(effect: Ref, evidence: readonly Ref[]): void;
+}
+
+/** Driver 当前连接身份；断线或未就绪时为 null。 */
+export interface ProtocolWriteIdentity {
+	readonly connection: Ref;
+	readonly incarnation: Ref;
+}
+
+/**
+ * 一次 BodyScope 的写入绑定：建立 scoped port 时定稿，之后不再补读"当前连接"。
+ * connection/incarnation 为 null 表示建立时没有可用身份，任何 send 都必须失败。
+ */
+export interface ProtocolWriteBinding {
+	readonly run: Ref;
+	readonly segment: Ref;
+	readonly call: Ref;
+	readonly body: Ref;
+	readonly owner: ControlOwner;
+	readonly connection: Ref | null;
+	readonly incarnation: Ref | null;
+}
+
+/**
+ * 组合根注入的可信派发器：Runtime 不接触 bot/socket。scoped port 已在每次
+ * send 前完成 assertLease / Call 活性 / 身份一致性检查，这里只做真实写入，
+ * 并在现有 Effect Ledger 中留下一条 dispatch=sent、completion=unknown 的事实。
+ * 网络提交成功不等于服务端动作成功，没有 ACK/观察证据就不能写成 met。
+ */
+/** 一次派发的身份：确认时必须沿用同一个 operation（首条事实固定 operation）。 */
+export interface ProtocolDispatch {
+	readonly effect: Ref;
+	readonly operation: Ref;
+}
+
+export interface ProtocolWriteDispatcher {
+	identity(): ProtocolWriteIdentity | null;
+	/** 写入并记录一条 dispatch=sent / completion=unknown 的派发事实。 */
+	send(binding: ProtocolWriteBinding, channel: string, data: string | Uint8Array): ProtocolDispatch;
+	/** 追加一条带观察证据的 receipt 事实，把该派发结算为 met。 */
+	confirm(binding: ProtocolWriteBinding, dispatch: ProtocolDispatch, evidence: readonly Ref[]): void;
 }
 
 export interface CallContext extends ReadCallContext, CallScope {
 	readonly world: WorldPort;
 	/** 只调用 effect 原要求指定的领域核验者并追加效果判断。 */
 	verify(effect: Ref, verifier: ExactRef, input: JsonValue): Promise<EffectReceipt>;
-	/** 仅在 Runtime 授权的 BodyScope 内存在；普通调用为 undefined。 */
+	/** 仅在 Runtime 授权的 BodyScope 内存在，且每个 Scope 一份；普通调用为 undefined。 */
 	readonly protocol?: ProtocolWritePort;
 }
 

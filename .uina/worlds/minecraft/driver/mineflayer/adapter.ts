@@ -47,12 +47,16 @@ export interface ClientOptions {
 	host: string;
 	port: number;
 	username: string;
-	/** 缺省由 minecraft-data 自动识别；固定组合下显式传入。 */
-	version?: string;
 	/**
-	 * 预先构造的 minecraft-protocol client（连接级扩展 prepare 提供）。
-	 * mineflayer 的 createBot 接受 `client` 并跳过自建客户端：这是底层库不支持的
-	 * 登录/配置阶段握手的唯一真实入口，不伪造。
+	 * 必须显式给出：autoVersion 会在 createClient 期间独立发 status ping 并置
+	 * wait_connect，与"全部协议贡献挂载完才放行连接"不兼容。真实服固定组合
+	 * 由 executorConfigFromIdentity() 提供 MC_PROTOCOL_VERSION。
+	 */
+	version: string;
+	/**
+	 * Driver 自己创建的未连接 minecraft-protocol Client。
+	 * createBot 接受 `client` 并跳过自建客户端：这是登录/配置阶段协议贡献的
+	 * 唯一真实入口，Addon 拿不到它，也不能替换它。
 	 */
 	client?: unknown;
 }

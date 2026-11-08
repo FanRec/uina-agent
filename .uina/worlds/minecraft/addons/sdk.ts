@@ -3,15 +3,17 @@
  *
  * 唯一定义来源：docs/proposals/mc/addons.md §3。这里只有贡献面：
  * Addon 不拥有执行层，也不能创建 Runtime/World/Loop。动作走现有 NativeCallable，
- * 查询走现有 QueryDescriptor + QueryReader，连接级协议走 prepare/attach 两个时机，
- * 事实走 FactsSource 的连接绑定发布口，本地界面展示走纯编码钩子 localScreen。
+ * 查询走现有 QueryDescriptor + QueryReader，连接级协议走 install/attach/localScreen
+ * 三个贡献时机，事实走 FactsSource 的连接绑定发布口（按采集身份与作用域验证）。
  *
  * 运行时安全边界：
- * - `attach` 只拿到只读 ConnectionPort（订阅包、发布事实），**没有**裸 bot/socket；
+ * - `install` 在网络尚未开始时同步注册包处理器、阶段回复与通道声明；一条连接只有
+ *   一个由 Driver 创建、连接和释放的 Client，Addon 拿不到裸 Client 也不能替换它；
+ * - `attach` 只拿到只读 ConnectionPort（订阅包、发布事实）；
  * - 游戏写入必须由动作在 Runtime 授权的 BodyScope 内使用 `scope.protocol.send`，
  *   不在 attach 时预先取得身体或写权限；
- * - `prepare` 可以覆盖协议版本或提供预先构造的 minecraft-protocol client（早期握手），
- *   但实现必须真实可用，不支持时由 Driver 明确报 UNSUPPORTED_PROTOCOL。
+ * - Login / Configuration 的握手回复走 `PhaseContext`，是连接级协议动作，
+ *   不是游戏 Effect；Play 阶段改变世界的 Payload 不走这条路径。
  *
  * 失败结算契约：动作抛出 `name === "CallFailure"` 且带字符串 `code` 的错误时，
  * Runtime 按 `dispatch` / `effects` / `recoverable` 原样结算；其它抛出按
@@ -21,21 +23,29 @@
 
 import type { NativeCallable, QueryDescriptor, QueryReader } from "../contracts/capabilities.js";
 import type {
+	AddonFactOrigin,
+	AddonFactPublicationOptions,
+	AddonFactScope,
 	ClientPresentationPayload,
 	ConnectionPort,
 	LocalScreenActivity,
-	PreparedProtocol,
-	ProtocolPrepareContext,
+	PhaseContext,
+	ProtocolBootstrap,
+	ProtocolPhase,
 } from "../contracts/protocol.js";
 import type { JsonValue } from "../contracts/values.js";
 
-/** 连接级端口与准备入参由 contracts/protocol.ts 定义，SDK 只做公开再导出。 */
+/** 连接级端口与装配端口由 contracts/protocol.ts 定义，SDK 只做公开再导出。 */
 export type {
+	AddonFactOrigin,
+	AddonFactPublicationOptions,
+	AddonFactScope,
 	ClientPresentationPayload,
 	ConnectionPort,
 	LocalScreenActivity,
-	PreparedProtocol,
-	ProtocolPrepareContext,
+	PhaseContext,
+	ProtocolBootstrap,
+	ProtocolPhase,
 };
 
 /** manifest 与模块导出的 API 版本；不匹配即拒绝装配。 */
@@ -48,7 +58,11 @@ export interface AddonLogger {
 }
 
 export interface ClientContribution {
-	prepare?(ctx: ProtocolPrepareContext): PreparedProtocol | void;
+	/**
+	 * 预连接阶段同步装配协议贡献；此时 Socket 尚未连接，注册的动作全部在首包前就绪。
+	 * 冲突用 `boot.claim()` 显式声明，不按装载顺序覆盖。没有早期协议需求的包可以不提供。
+	 */
+	install?(boot: ProtocolBootstrap): void;
 	attach?(ctx: ConnectionPort): void | (() => void);
 	/**
 	 * 本地界面活动的纯编码器（可选）。只返回 Payload，不发送、不持有连接；

@@ -9,7 +9,6 @@ import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
 import { createConstruction } from "../construction/index.js";
-import type { ProtocolWritePort } from "../contracts/capabilities.js";
 import type { DirectorySnapshot } from "../contracts/addons.js";
 import type {
 	CompanionInit,
@@ -27,14 +26,14 @@ import type {
 	StopCommand,
 } from "../contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../contracts/values.js";
-import { callFailure, plain } from "../contracts/values.js";
+import { plain } from "../contracts/values.js";
 import { PlayerPortImpl } from "../driver/body/player-port.js";
 import { ClientHost } from "../driver/client-host.js";
 import { DriverControlArbiter } from "../driver/control-arbiter.js";
 import { FactsSource } from "../driver/facts/index.js";
 import { GotoDirector } from "../driver/goto.js";
 import { canBreathe, planEscape } from "../driver/mineflayer/pathfinder.js";
-import { protocolFor } from "../driver/mineflayer/protocol.js";
+import { createProtocolWriteDispatcher } from "../driver/protocol-dispatch.js";
 import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
 import { parseExecutorConfig } from "../executor/config.js";
 import { RpcError } from "../executor/ipc.js";
@@ -75,6 +74,15 @@ export async function openExecutionSide(
 			'[mc-world] config.binding is null: places/records are partitioned per launch and will NOT be readable after restart; set "binding": {"world": "...", "worldRevision": "..."} in config.json for a persistent world identity',
 		);
 	const host = new ClientHost();
+	/**
+	 * 装配事务：从第一个需要释放的对象起登记关闭动作，失败时逆序释放。
+	 * 不引入生命周期框架；主错误原样抛出，清理异常聚合挂在同一错误上。
+	 */
+	const closers: (() => void | Promise<void>)[] = [];
+	const registerClose = (release: () => void | Promise<void>): void => {
+		closers.push(release);
+	};
+	registerClose(() => host.close());
 	const arbiter = new DriverControlArbiter();
 	const counters = new Map<string, number>();
 	const mint = (prefix: string) => {
@@ -109,134 +117,130 @@ export async function openExecutionSide(
 		if (closing || retirement) throw new RpcError("EXECUTOR_UNAVAILABLE", "execution side is closing/retiring");
 		getRuntime().assertActionAllowed();
 	};
-	const sink: DriverExecutionSink = {
-		record: (fact) => {
-			if (!runtime) throw new Error("driver effect before runtime initialization");
-			return runtime.sink.record(fact);
-		},
-	};
-	const playerPort = new PlayerPortImpl({
-		host,
-		bot: () => host.bot,
-		sink,
-		sampleSelf: () => facts.sampleSelf(),
-		prepareFeedback: (sensors) => prepareFeedback(capabilities, facts)(sensors),
-		arbiter,
-		mintBody: () => mint("body"),
-		mintOp: () => mint("op"),
-		mintEff: () => mint("eff"),
-		publishWindow: (observation) => facts.publishWindow(observation),
-		assertActionAllowed,
-		requireRetirement,
-	});
-	const gotoDirector = new GotoDirector({
-		host,
-		bot: () => host.bot,
-		sink,
-		arbiter,
-		mintOp: () => mint("op"),
-		mintEff: () => mint("eff"),
-		assertActionAllowed,
-		requireRetirement,
-	});
-	const importantEvents = facts.subscribe((notice) => {
-		if (notice.kind !== "evidence") return;
-		for (const record of notice.records) {
-			const value = record.fact.value as Record<string, JsonValue>;
-			if (
-				value &&
-				(value.kind === "death" ||
-					(value.kind === "connection" && value.state === "disconnected") ||
-					(value.kind === "chat" && value.channel === "private" && value.self === false))
-			)
-				options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
-		}
-	});
-	// Addon 装配：本进程唯一 import 第三方代码的位置。失败即整个执行域装配失败
-	// （包 ID / Schema / 依赖冲突不在运行时静默降级）。
-	const addons = await loadAddons(init.addons, {
-		minecraftVersion: config.connection.version ?? "unknown",
-	});
-	const catalog = createCapabilityCatalog([...addons.modules, ...(options.modules ?? [])]);
-	// 包内静态知识按"注册表优先"组合；冲突记录在诊断里，不按加载顺序静默覆盖。
-	const knowledgeConflicts = new Set<string>();
-	const knowledge = () => {
-		const composed = composeKnowledge(facts.knowledge(), addons.knowledge);
-		for (const conflict of composed.conflicts)
-			knowledgeConflicts.add(`${conflict.addonId}:${conflict.item}:${conflict.reason}`);
-		return composed.knowledge;
-	};
-	const capabilities = catalog.bind({
-		runtime: getRuntime,
-		gotoDirector,
-		knowledge,
-		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
-	});
-	// 受控写入：只在 Runtime 授权的 BodyScope 内注入 CallContext（见 runtime/engine.ts）。
-	const protocolWrite: ProtocolWritePort = {
-		send: (channel, data) => {
-			const bot = host.bot;
-			if (!bot)
-				throw callFailure({
-					code: "DISCONNECTED",
-					source: "environment",
-					message: "custom payload requires a live client connection",
-					dispatch: "not_sent",
-					effects: [],
-					recoverable: false,
-				});
-			protocolFor(bot).customPayload(channel, data);
-		},
-	};
-	// 状态帧（批37）：只读采样 + 文本投影，复用现有查询读取器（与 observe 同口径）。
-	// 不再有定时推送：状态由宿主在每次模型请求前经 `state.snapshot` 取一份当前快照。
-	const currentReader = (ref: ExactRef) => {
-		const reader = capabilities.readers.get(ref);
-		if (reader?.kind !== "current") throw new Error(`state frame requires a current reader for ${ref}`);
-		return reader;
-	};
-	const stateReaders = {
-		self: currentReader("self@1"),
-		inventory: currentReader("inventory@1"),
-		world: currentReader("world@1"),
-		ui: currentReader("ui@1"),
-		hud: currentReader("hud@1"),
-	};
-	// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
-	// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
-	// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
-	// v3：伴生侧只读共享 library/（写入口收敛到宿主常驻 Library）；compile 仍给 describe 校验用。
-	const library = createLibrary({
-		dataRoot: init.sharedDataDir,
-		compile: (material) => program!.validate(material),
-		readSource: (origin) =>
-			readCallSource(origin, {
-				readRun: (run) => getRuntime().read(run),
-				readRecord: (ref) => getRuntime().readRecord(ref),
-				readSnapshot: (request) => program!.readSnapshot(request),
-			}),
-	});
-	// map@1 的 PNG 缓存目录：查询产出与 read_image 读取共用这一份派生（world.md §8.6）。
-	const imageDir = join(init.sessionDataDir, "exports", "images");
-	// 启动即清上一会话的派生图片（fire-and-forget）：本会话 ref 尚未产出，磁盘占用有界。
-	void pruneExportedImages(imageDir).catch(() => {});
-	let world: MinecraftWorld;
-	const construction = createConstruction({ blueprints: library, world: () => world });
-	world = new MinecraftWorld({
-		facts,
-		readers: capabilities.readers,
-		validators: capabilities.validators,
-		queries: capabilities.queries,
-		dbPath: join(init.sharedDataDir, "world-history.db"),
-		binding,
-		namespace,
-		imageDir,
-		// route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现，World 不依赖 Driver。
-		routePlanner: { plan: (query) => gotoDirector.plan(query.input as Parameters<GotoDirector["plan"]>[0]) },
-		// build.plan@1 的窄计划端口：组合根用 Construction 装配，World 不依赖 Construction。
-		buildPlanner: construction,
-	});
 	try {
+		const sink: DriverExecutionSink = {
+			record: (fact) => {
+				if (!runtime) throw new Error("driver effect before runtime initialization");
+				return runtime.sink.record(fact);
+			},
+		};
+		const playerPort = new PlayerPortImpl({
+			host,
+			bot: () => host.bot,
+			sink,
+			sampleSelf: () => facts.sampleSelf(),
+			prepareFeedback: (sensors) => prepareFeedback(capabilities, facts)(sensors),
+			arbiter,
+			mintBody: () => mint("body"),
+			mintOp: () => mint("op"),
+			mintEff: () => mint("eff"),
+			publishWindow: (observation) => facts.publishWindow(observation),
+			assertActionAllowed,
+			requireRetirement,
+		});
+		const gotoDirector = new GotoDirector({
+			host,
+			bot: () => host.bot,
+			sink,
+			arbiter,
+			mintOp: () => mint("op"),
+			mintEff: () => mint("eff"),
+			assertActionAllowed,
+			requireRetirement,
+		});
+		const importantEvents = facts.subscribe((notice) => {
+			if (notice.kind !== "evidence") return;
+			for (const record of notice.records) {
+				const value = record.fact.value as Record<string, JsonValue>;
+				if (
+					value &&
+					(value.kind === "death" ||
+						(value.kind === "connection" && value.state === "disconnected") ||
+						(value.kind === "chat" && value.channel === "private" && value.self === false))
+				)
+					options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
+			}
+		});
+		registerClose(() => importantEvents.close());
+		// Addon 装配：本进程唯一 import 第三方代码的位置。失败即整个执行域装配失败
+		// （包 ID / Schema / 依赖冲突不在运行时静默降级）。
+		const addons = await loadAddons(init.addons, {
+			minecraftVersion: config.connection.version,
+		});
+		registerClose(() => addons.close());
+		const catalog = createCapabilityCatalog([...addons.modules, ...(options.modules ?? [])]);
+		// 包内静态知识按"注册表优先"组合；冲突记录在诊断里，不按加载顺序静默覆盖。
+		const knowledgeConflicts = new Set<string>();
+		const knowledge = () => {
+			const composed = composeKnowledge(facts.knowledge(), addons.knowledge);
+			for (const conflict of composed.conflicts)
+				knowledgeConflicts.add(`${conflict.addonId}:${conflict.item}:${conflict.reason}`);
+			return composed.knowledge;
+		};
+		const capabilities = catalog.bind({
+			runtime: getRuntime,
+			gotoDirector,
+			knowledge,
+			surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
+		});
+		// 受控写入：Runtime 每次 withBody 用这个派发器创建专属 scoped port
+		// （runtime/scoped-protocol.ts）。真实网络写入与 Effect Ledger 派发事实都在这里。
+		const protocolWrite = createProtocolWriteDispatcher({
+			host,
+			sink,
+			mintOp: () => mint("op"),
+			mintEff: () => mint("eff"),
+			assertActionAllowed,
+		});
+		// 状态帧（批37）：只读采样 + 文本投影，复用现有查询读取器（与 observe 同口径）。
+		// 不再有定时推送：状态由宿主在每次模型请求前经 `state.snapshot` 取一份当前快照。
+		const currentReader = (ref: ExactRef) => {
+			const reader = capabilities.readers.get(ref);
+			if (reader?.kind !== "current") throw new Error(`state frame requires a current reader for ${ref}`);
+			return reader;
+		};
+		const stateReaders = {
+			self: currentReader("self@1"),
+			inventory: currentReader("inventory@1"),
+			world: currentReader("world@1"),
+			ui: currentReader("ui@1"),
+			hud: currentReader("hud@1"),
+		};
+		// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
+		// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
+		// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
+		// v3：伴生侧只读共享 library/（写入口收敛到宿主常驻 Library）；compile 仍给 describe 校验用。
+		const library = createLibrary({
+			dataRoot: init.sharedDataDir,
+			compile: (material) => program!.validate(material),
+			readSource: (origin) =>
+				readCallSource(origin, {
+					readRun: (run) => getRuntime().read(run),
+					readRecord: (ref) => getRuntime().readRecord(ref),
+					readSnapshot: (request) => program!.readSnapshot(request),
+				}),
+		});
+		// map@1 的 PNG 缓存目录：查询产出与 read_image 读取共用这一份派生（world.md §8.6）。
+		const imageDir = join(init.sessionDataDir, "exports", "images");
+		// 启动即清上一会话的派生图片（fire-and-forget）：本会话 ref 尚未产出，磁盘占用有界。
+		void pruneExportedImages(imageDir).catch(() => {});
+		let world: MinecraftWorld;
+		const construction = createConstruction({ blueprints: library, world: () => world });
+		world = new MinecraftWorld({
+			facts,
+			readers: capabilities.readers,
+			validators: capabilities.validators,
+			queries: capabilities.queries,
+			dbPath: join(init.sharedDataDir, "world-history.db"),
+			binding,
+			namespace,
+			imageDir,
+			// route.plan@1 的窄计划端口：组合根用 Driver 受控寻路实现，World 不依赖 Driver。
+			routePlanner: { plan: (query) => gotoDirector.plan(query.input as Parameters<GotoDirector["plan"]>[0]) },
+			// build.plan@1 的窄计划端口：组合根用 Construction 装配，World 不依赖 Construction。
+			buildPlanner: construction,
+		});
+		registerClose(() => world.close());
 		program = await createProgram({
 			dataRoot: init.sessionDataDir,
 			loadProgram: (name) => library.loadProgram(name),
@@ -246,6 +250,7 @@ export async function openExecutionSide(
 			},
 			onWorkerFault: (calls, reason) => runtime?.sealProgramCalls(calls, reason),
 		});
+		registerClose(() => program!.close());
 		const opened = await MinecraftRuntime.open({
 			evidence: world,
 			onSafetyChanged: (record, cause) => {
@@ -284,6 +289,7 @@ export async function openExecutionSide(
 			requireRetirement,
 		});
 		runtime = opened.runtime;
+		registerClose(() => runtime!.close());
 		const detachControl = host.on((notice) => {
 			if (
 				notice.kind === "incarnation_invalidated" ||
@@ -301,6 +307,7 @@ export async function openExecutionSide(
 						}),
 					);
 		});
+		registerClose(() => detachControl());
 		const survival = startSurvival({
 			facts,
 			world,
@@ -316,6 +323,7 @@ export async function openExecutionSide(
 				options.onChanged?.();
 			},
 		});
+		registerClose(() => survival.close());
 		const start = opened.start;
 		let attached = false;
 		const attach = async (): Promise<OwnerState> => {
@@ -337,7 +345,16 @@ export async function openExecutionSide(
 			.connect(config.connection, { extensions: addons.extensions, facts })
 			.then(() => {
 				if (closing) return;
-				if (host.state === "ready" && host.bot?.username !== config.connection.username) {
+				// connect 在 ready 或永久失败时都会 resolve；没到 ready 必须留下可诊断的 fault，
+				// 否则状态面只有一句 disconnected/faulted，看不出是登录失败还是握手失败。
+				if (host.state !== "ready") {
+					pushFault({
+						code: "CONNECTION_FAILED",
+						message: host.disconnectFacts?.reason ?? `connection ended in state ${host.state} before ready`,
+					});
+					return;
+				}
+				if (host.bot?.username !== config.connection.username) {
 					pushFault({
 						code: "IDENTITY_MISMATCH",
 						message: "server login name differs from configured offline username",
@@ -586,14 +603,17 @@ export async function openExecutionSide(
 			close,
 		};
 	} catch (error) {
-		importantEvents.close();
-		await Promise.allSettled([
-			host.close(),
-			world.close(),
-			...(runtime ? [runtime.close()] : []),
-			...(program ? [program.close()] : []),
-			addons.close(),
-		]);
+		// 逆序释放已取得的全部资源；主错误原样抛出，清理异常不覆盖它。
+		const cleanupErrors: unknown[] = [];
+		for (const release of [...closers].reverse()) {
+			try {
+				await release();
+			} catch (releaseError) {
+				cleanupErrors.push(releaseError);
+			}
+		}
+		if (cleanupErrors.length > 0 && error != null && (typeof error === "object" || typeof error === "function"))
+			Object.assign(error, { cleanupErrors });
 		throw error;
 	}
 }

@@ -57,6 +57,8 @@
     "build": "node scripts/clean-dist.mjs && node scripts/build-mc-native.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web",
     "build:web": "tsc -p tsconfig.web.json && node scripts/copy-web-static.mjs",
     "test": "vitest run",
+    "test:ci": "vitest run --exclude tests/mc/mc-executor-platform.test.ts",
+    "test:platform": "vitest run tests/mc/mc-executor-platform.test.ts",
     "typecheck": "biome format . && pnpm check:boundaries && tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
     "format": "biome format --write .",
     "format:check": "biome format .",
@@ -85,9 +87,11 @@
     "ajv": "^8.20.0",
     "cli-highlight": "^2.1.11",
     "jiti": "^2.7.0",
+    "minecraft-protocol": "1.68.0",
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
     "quickjs-emscripten": "0.32.0",
+    "semver": "7.8.5",
     "ws": "^8.21.3"
   }
 }

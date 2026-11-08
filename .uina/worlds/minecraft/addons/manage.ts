@@ -1,21 +1,30 @@
 /**
- * Addon 运维入口（list / inspect / install / enable / disable / remove / status）。
+ * Addon 运维入口（list / inspect / install / enable / disable / remove / status / migrate / gc）。
  *
- * 唯一定义来源：docs/proposals/mc/addons.md §2.4。这是**运维 API**，不是 Agent 的
- * 普通 mc.call：Agent 不能通过 connect 参数提供任意 JS 路径执行代码。
- * 不开发第二套包管理器：安装=复制已校验的包目录，依赖交给 npm/pnpm。
+ * 这是**运维 API**，不是 Agent 的普通 mc.call：Agent 不能通过 connect 参数提供任意 JS 路径执行代码。
+ * 不开发第二套包管理器：安装 = 把已校验的包目录提交为不可变 artifact，依赖交给 npm/pnpm。
+ * 所有配置写入都是同进程串行 + 同目录临时文件 + rename；失败不会留下半写入状态。
  */
 
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AddonStatus } from "../contracts/addons.js";
 import type { JsonValue } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
-import { type AddonScanProblem, type InstalledAddon, readInstalledAddon, scanInstalledAddons } from "./manifest.js";
 import { installedAddonStatuses, readAddonSelectionFile, resolveAddonPlan, writeAddonSelectionFile } from "./plan.js";
+import {
+	type AddonScanProblem,
+	collectUnreferencedArtifacts,
+	installAddonArtifact,
+	type InstalledArtifact,
+	migrateLegacyLayout,
+	removeAddonArtifact,
+	scanInstalledArtifacts,
+	withFileLock,
+} from "./store.js";
 
 export interface AddonInventoryEntry {
-	addon: InstalledAddon;
+	addon: InstalledArtifact;
 	/** 启用了该包的 Profile id（未启用 = 空数组）。 */
 	enabledIn: string[];
 }
@@ -32,24 +41,34 @@ function manageFailure(code: string, message: string, hint?: string): Error {
 	});
 }
 
-function addonsRoot(root: string): string {
-	return join(root, "addons");
+function profileDir(root: string, profileId: string): string {
+	return join(root, "sessions", profileId);
 }
 
-/** 所有 Profile 的启用集合：`profileId -> enabled ids`。 */
+function selectionPath(root: string, profileId: string): string {
+	return join(profileDir(root, profileId), "addons.json");
+}
+
+function assertProfileId(value: string): void {
+	if (!/^[a-f0-9]{64}$/.test(value))
+		throw manageFailure("INVALID_INPUT", "profile id must be a 64-hex digest (see `list` output)");
+}
+
+/** 所有 Profile 的启用集合。坏配置文件不能被当成"未启用"，否则卸载会误删在用的包。 */
 async function enabledByProfile(root: string): Promise<Map<string, string[]>> {
 	const result = new Map<string, string[]>();
 	const sessions = join(root, "sessions");
 	let entries: string[];
 	try {
 		entries = await readdir(sessions);
-	} catch {
-		return result;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return result;
+		throw error;
 	}
 	for (const entry of entries) {
 		if (!/^[a-f0-9]{64}$/.test(entry)) continue;
-		const selection = await readAddonSelectionFile(join(sessions, entry)).catch(() => null);
-		if (selection) result.set(entry, Object.keys(selection.enabled).sort());
+		const selection = await readAddonSelectionFile(join(sessions, entry));
+		result.set(entry, Object.keys(selection.enabled).sort());
 	}
 	return result;
 }
@@ -57,7 +76,7 @@ async function enabledByProfile(root: string): Promise<Map<string, string[]>> {
 export async function listInstalledAddons(
 	root: string,
 ): Promise<{ addons: AddonInventoryEntry[]; problems: AddonScanProblem[] }> {
-	const installed = await scanInstalledAddons(addonsRoot(root));
+	const installed = await scanInstalledArtifacts(root);
 	const enabled = await enabledByProfile(root);
 	const addons = installed.addons.map((addon) => ({
 		addon,
@@ -73,38 +92,16 @@ export async function inspectAddon(root: string, id: string): Promise<AddonInven
 		const known = listed.addons.map((entry) => entry.addon.id).sort();
 		throw manageFailure(
 			"ADDON_NOT_INSTALLED",
-			`addon ${id} is not installed under ${addonsRoot(root)}`,
+			`addon ${id} is not installed under ${join(root, "addons")}`,
 			known.length > 0 ? `installed: ${known.join(", ")}` : "no addons are installed",
 		);
 	}
 	return found;
 }
 
-/**
- * 安装=把一个已校验的包目录复制到 `<root>/addons/<id>`。
- * 已存在同 id 包时拒绝覆盖（活动会话可能正在用旧版本）：先 remove 再 install。
- */
-export async function installAddon(root: string, sourceDir: string): Promise<InstalledAddon> {
-	const source = await stat(sourceDir).catch(() => null);
-	if (!source?.isDirectory()) throw manageFailure("ADDON_SOURCE_INVALID", `${sourceDir} is not a directory`);
-	const addon = await readInstalledAddon(sourceDir);
-	const target = join(addonsRoot(root), addon.id);
-	const existing = await stat(target).catch(() => null);
-	if (existing)
-		throw manageFailure(
-			"ADDON_ALREADY_INSTALLED",
-			`addon ${addon.id} already exists at ${target}`,
-			"remove it first; a running session keeps using the version it loaded",
-		);
-	await mkdir(addonsRoot(root), { recursive: true });
-	const gitDir = join(sourceDir, ".git");
-	await cp(sourceDir, target, {
-		recursive: true,
-		// 只剪掉包根下的 .git 目录；用精确比较，否则 `source/.gitignore` 会被子串匹配误删。
-		filter: (path) => path !== gitDir,
-	});
-	const installed = await readInstalledAddon(target);
-	return installed;
+/** 安装只提交一份新 artifact 并替换映射；当前会话继续用已加载的旧字节。 */
+export async function installAddon(root: string, sourceDir: string): Promise<InstalledArtifact> {
+	return await installAddonArtifact(root, sourceDir);
 }
 
 export async function enableAddon(options: {
@@ -113,25 +110,27 @@ export async function enableAddon(options: {
 	id: string;
 	config?: JsonValue;
 }): Promise<void> {
-	if (!/^[a-f0-9]{64}$/.test(options.profileId))
-		throw manageFailure("INVALID_INPUT", "profile id must be a 64-hex digest (see `list` output)");
+	assertProfileId(options.profileId);
 	await inspectAddon(options.root, options.id);
-	const profileDir = join(options.root, "sessions", options.profileId);
-	await mkdir(profileDir, { recursive: true });
-	const selection = await readAddonSelectionFile(profileDir);
-	selection.enabled[options.id] = options.config ?? {};
-	await writeAddonSelectionFile(profileDir, selection);
+	const dir = profileDir(options.root, options.profileId);
+	await mkdir(dir, { recursive: true });
+	await withFileLock(selectionPath(options.root, options.profileId), async () => {
+		const selection = await readAddonSelectionFile(dir);
+		selection.enabled[options.id] = options.config ?? {};
+		await writeAddonSelectionFile(dir, selection);
+	});
 }
 
 export async function disableAddon(options: { root: string; profileId: string; id: string }): Promise<void> {
-	if (!/^[a-f0-9]{64}$/.test(options.profileId))
-		throw manageFailure("INVALID_INPUT", "profile id must be a 64-hex digest");
-	const profileDir = join(options.root, "sessions", options.profileId);
-	const selection = await readAddonSelectionFile(profileDir);
-	if (!(options.id in selection.enabled))
-		throw manageFailure("ADDON_NOT_ENABLED", `addon ${options.id} is not enabled on profile ${options.profileId}`);
-	delete selection.enabled[options.id];
-	await writeAddonSelectionFile(profileDir, selection);
+	assertProfileId(options.profileId);
+	const dir = profileDir(options.root, options.profileId);
+	await withFileLock(selectionPath(options.root, options.profileId), async () => {
+		const selection = await readAddonSelectionFile(dir);
+		if (!(options.id in selection.enabled))
+			throw manageFailure("ADDON_NOT_ENABLED", `addon ${options.id} is not enabled on profile ${options.profileId}`);
+		delete selection.enabled[options.id];
+		await writeAddonSelectionFile(dir, selection);
+	});
 }
 
 /** 卸载：任何 Profile 仍启用时拒绝（先 disable），避免"删了包但配置还引用"的半状态。 */
@@ -143,7 +142,7 @@ export async function removeAddon(root: string, id: string): Promise<void> {
 			`addon ${id} is enabled on profile(s): ${entry.enabledIn.join(", ")}`,
 			"disable it on those profiles first",
 		);
-	await rm(join(addonsRoot(root), id), { recursive: true, force: false });
+	await removeAddonArtifact(root, id);
 }
 
 /** 状态：已安装包 + 可选 Profile 的装配预检（不 import 代码）。 */
@@ -153,20 +152,34 @@ export async function addonStatus(
 ): Promise<{
 	addons: AddonStatus[];
 	problems: AddonScanProblem[];
-	selection: { digest: string; ids: string[] } | null;
+	selection: { digest: string; roots: string[]; ids: string[] } | null;
 }> {
-	const installed = await scanInstalledAddons(addonsRoot(root));
+	const installed = await scanInstalledArtifacts(root);
 	const statuses = await installedAddonStatuses(root);
 	if (profileId === undefined) return { addons: statuses, problems: installed.problems, selection: null };
-	if (!/^[a-f0-9]{64}$/.test(profileId)) throw manageFailure("INVALID_INPUT", "profile id must be a 64-hex digest");
+	assertProfileId(profileId);
 	const plan = await resolveAddonPlan({
 		minecraftRoot: root,
-		profileDir: join(root, "sessions", profileId),
+		profileDir: profileDir(root, profileId),
 		minecraftVersion: process.env.UINA_MC_VERSION ?? "1.21.11",
 	});
 	return {
 		addons: statuses,
 		problems: installed.problems,
-		selection: { digest: plan.digest, ids: plan.entries.map((entry) => `${entry.id}@${entry.version}`) },
+		selection: {
+			digest: plan.digest,
+			roots: [...plan.roots],
+			ids: plan.ordered.map((entry) => `${entry.id}@${entry.version}`),
+		},
 	};
+}
+
+/** 一次性旧布局迁移：必须在所有会话关闭后执行。 */
+export async function migrateAddonLayout(root: string): Promise<string[]> {
+	return await migrateLegacyLayout(root);
+}
+
+/** 离线回收无引用的 artifact；同样必须在所有会话关闭后执行。 */
+export async function collectAddonArtifacts(root: string): Promise<string[]> {
+	return await collectUnreferencedArtifacts(root);
 }

@@ -53,11 +53,30 @@ function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 读本包发布的连接级事实；未发布时 null（不猜机器状态）。 */
+/**
+ * 读本包发布的连接级事实；未发布时 null（不猜机器状态）。
+ * 一并带回观察证据 ref——确认派发时要用它，不能拿"我看到过"当证据。
+ */
 async function readMachine(world) {
 	const observation = await world.read({ ref: MACHINE_REF, input: {} });
 	const value = observation && observation.value;
-	return value != null && typeof value.counter === "number" ? value : null;
+	if (value == null || typeof value.counter !== "number") return null;
+	const evidence = observation && Array.isArray(observation.evidence) ? observation.evidence : [];
+	return { value, evidence };
+}
+
+/**
+ * 在期限内等一个已知基线。没有基线就没有"计数器前进了 times"可判，
+ * 不能拿第一次回读当成功。
+ */
+async function waitForMachine(world, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const known = await readMachine(world);
+		if (known != null) return known;
+		if (Date.now() >= deadline) return null;
+		await sleep(120);
+	}
 }
 
 export const api = 1;
@@ -84,14 +103,26 @@ export function create(ctx) {
 							item: typeof message.item === "string" ? message.item : null,
 							serverTime: typeof message.serverTime === "string" ? message.serverTime : null,
 						},
-						counter == null ? ["server did not report a numeric counter"] : [],
+						{
+							// 服务器回送的权威状态，本连接内换代后仍有效。
+							scope: "connection",
+							source: "server",
+							unknown: counter == null ? ["server did not report a numeric counter"] : [],
+						},
 					);
 				});
 				// 重生/换维度后旧状态不再可信：显式清成未知，等下一次回读。
+				// 这不是服务端观测，按原始证据标 derived。
 				port.onEvent("spawn", () => {
-					port.publishFact("machine", { counter: null, item: null, serverTime: null }, [
-						"no machine state received on this incarnation yet",
-					]);
+					port.publishFact(
+						"machine",
+						{ counter: null, item: null, serverTime: null },
+						{
+							scope: "connection",
+							source: "derived",
+							unknown: ["no machine state received on this incarnation yet"],
+						},
+					);
 				});
 				logger.info("attached", { connection: port.connection, version: port.version });
 			},
@@ -188,7 +219,11 @@ export function create(ctx) {
 					},
 					errors: [
 						{ code: "BODY_REQUIRED", meaning: "protocol write is only available inside an authorized body scope" },
-						{ code: "EFFECT_UNCONFIRMED", meaning: "the payload was sent but the server state did not advance" },
+						{
+							code: "EFFECT_UNCONFIRMED",
+							meaning:
+								"no verifiable baseline was observed, or the payload was sent but the server counter did not advance",
+						},
 						{ code: "DISCONNECTED", meaning: "the client connection is gone" },
 					],
 					requires: ["connection", "body"],
@@ -198,23 +233,41 @@ export function create(ctx) {
 				invoke: async (callCtx, input) => {
 					const requested = input && typeof input.times === "number" ? input.times : 1;
 					const times = Math.max(1, Math.min(10, Math.trunc(requested)));
-					const before = await readMachine(callCtx.world);
 					return await callCtx.withBody(async (scope) => {
 						if (scope.protocol == null)
 							throw failure("BODY_REQUIRED", "protocol write requires an authorized body scope", "not_sent");
-						scope.protocol.send(CHANNEL, JSON.stringify({ op: "press", times }));
+						// 没有基线就没有"计数器前进了 times"可判。先看已发布事实，未知就向服务端
+						// 要一次状态；仍然拿不到就如实失败，不拿第一次回读冒充成功。
+						let before = await readMachine(scope.world);
+						if (before == null) {
+							const stateEffect = scope.protocol.send(CHANNEL, JSON.stringify({ op: "state" }));
+							before = await waitForMachine(scope.world, verifyTimeoutMs);
+							if (before == null)
+								throw failure(
+									"EFFECT_UNCONFIRMED",
+									`no server counter baseline within ${verifyTimeoutMs}ms after a state request`,
+									"sent",
+								);
+							// 状态请求本身也有服务端回读作证据，可以结算成 met。
+							scope.protocol.confirm(stateEffect, before.evidence);
+						}
+						const pressEffect = scope.protocol.send(CHANNEL, JSON.stringify({ op: "press", times }));
 						const deadline = Date.now() + verifyTimeoutMs;
-						let last = before == null ? null : before.counter;
+						let last = before.value.counter;
 						while (Date.now() < deadline) {
 							await sleep(120);
 							const now = await readMachine(scope.world);
 							if (now == null) continue;
-							last = now.counter;
-							if (before == null || now.counter >= before.counter + times) return { counter: now.counter, verified: true };
+							last = now.value.counter;
+							if (now.value.counter >= before.value.counter + times) {
+								// 服务端回的 counter 前进就是这次派发的业务 ACK：用它把效果结算成 met。
+								scope.protocol.confirm(pressEffect, now.evidence);
+								return { counter: now.value.counter, verified: true };
+							}
 						}
 						throw failure(
 							"EFFECT_UNCONFIRMED",
-							`press payload was sent but the server counter did not advance within ${verifyTimeoutMs}ms (last known ${last})`,
+							`press payload was sent but the server counter did not advance by ${times} within ${verifyTimeoutMs}ms (last known ${last})`,
 							"sent",
 						);
 					});

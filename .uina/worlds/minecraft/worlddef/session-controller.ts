@@ -9,7 +9,7 @@ import { BODY_ENDPOINT_EXPOSED_PREFIX } from "../../../../src/extensions/world-f
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { resolveAddonPlan } from "../addons/plan.js";
-import type { AddonSelection } from "../contracts/addons.js";
+import type { AssemblyPlan } from "../contracts/addons.js";
 import type { ExecutorCloseResult } from "../contracts/executor.js";
 import { MinecraftFacade } from "../executor/facade.js";
 import { MinecraftExecutor, type ExecutorPolicy } from "../executor/index.js";
@@ -67,7 +67,7 @@ interface ActiveSession {
 	worldAssociation: WorldAssociation;
 	executor: MinecraftExecutor;
 	facade: MinecraftFacade;
-	addons: AddonSelection;
+	addons: AssemblyPlan;
 	actualUsername: string | null;
 	actualUuid: string | null;
 	detachBody: () => void;
@@ -173,7 +173,7 @@ export class SessionController {
 							ownerGates: [...(side?.owner?.gates ?? [])],
 							addons: {
 								digest: this.active.addons.digest,
-								ids: this.active.addons.entries.map((entry) => `${entry.id}@${entry.version}`),
+								ids: this.active.addons.ordered.map((entry) => `${entry.id}@${entry.version}`),
 							},
 							history:
 								historyState === "ready" || historyState === "read_only"

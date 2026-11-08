@@ -1,11 +1,12 @@
 /** Executor/Companion wire values. Owner and execution facts stay with Runtime. */
-import type { AddonSelection, AddonStatus } from "./addons.js";
+import type { AddonStatus, AssemblyPlan } from "./addons.js";
 import type { ControlRetirement, Origin, OwnerState } from "./runtime.js";
 import type { JsonValue, Ref } from "./values.js";
 import type { WorldAvailabilityValue } from "./world.js";
 
 export interface ExecutorConfig {
-	connection: { host: string; port: number; username: string; authMode: "offline"; version?: string };
+	/** version 必须显式给出：延迟连接不允许 autoVersion 的独立 status ping。 */
+	connection: { host: string; port: number; username: string; authMode: "offline"; version: string };
 	binding: { world: Ref; worldRevision: Ref } | null;
 }
 
@@ -18,8 +19,8 @@ export interface CompanionInit {
 	/** world-history.db 与 library/ 的共享根（跨 Profile 只读复用）。 */
 	sharedDataDir: string;
 	config: ExecutorConfig;
-	/** 本次连接冻结的 Addon 装配计划；缺省 = 未启用任何包。 */
-	addons?: AddonSelection;
+	/** 本次连接冻结的 Addon 装配计划（依赖闭包已解析）；缺省 = 未启用任何包。 */
+	addons?: AssemblyPlan;
 	unclean: boolean;
 	oldControlRetired: boolean;
 	ownerLifetimeMs: number;

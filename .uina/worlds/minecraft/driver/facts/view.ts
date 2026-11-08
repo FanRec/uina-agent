@@ -35,6 +35,7 @@ import type {
 	ClientWorldValue,
 	SectionTarget,
 } from "../../contracts/client-facts.js";
+import type { AddonFactEntry } from "../../contracts/protocol.js";
 import type { HudSnapshot, UiSnapshot } from "../../contracts/ui.js";
 import type { Fact, FactSource, JsonValue, Vec3 } from "../../contracts/values.js";
 import { fromMineflayerVec3, type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
@@ -53,8 +54,8 @@ export interface FactViewContext {
 	rosterSeen: boolean;
 	/** 本连接的地图增量包缓存（ FactsSource 持有；投影只读）。 */
 	maps: MapCache;
-	/** Addon 发布的连接级事实（key = `<addonId>/<key>`；只读纯值）。 */
-	addonFacts?: ReadonlyMap<string, Fact<JsonValue>>;
+	/** Addon 发布的连接级事实（key = `<addonId>/<key>`；含作用域与采集身份）。 */
+	addonFacts?: ReadonlyMap<string, AddonFactEntry>;
 }
 
 /** 一次采样的只读视图；每个方法都是一次独立读取，不共享中间状态。 */
@@ -78,8 +79,12 @@ export function createView(ctx: FactViewContext): ClientFactView {
 		ui: () => uiFact(ctx),
 		hud: () => hudFact(ctx),
 		addonFact: (addonId, key) => {
-			const fact = ctx.addonFacts?.get(`${addonId}/${key}`);
-			return fact == null ? null : (JSON.parse(JSON.stringify(fact)) as Fact<JsonValue>);
+			const entry = ctx.addonFacts?.get(`${addonId}/${key}`);
+			if (entry == null) return null;
+			// 视图读取同样按作用域验证：跨连接一律不可见；身体相关事实换代后不可见。
+			if (entry.origin.connection !== ctx.stamp.connection) return null;
+			if (entry.scope === "incarnation" && entry.origin.incarnation !== ctx.stamp.incarnation) return null;
+			return JSON.parse(JSON.stringify(entry.fact)) as Fact<JsonValue>;
 		},
 	};
 }

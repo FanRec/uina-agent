@@ -27,6 +27,9 @@ importers:
       jiti:
         specifier: ^2.7.0
         version: 2.7.0
+      minecraft-protocol:
+        specifier: 1.68.0
+        version: 1.68.0
       mineflayer:
         specifier: 4.39.0
         version: 4.39.0(patch_hash=a8bec16509fa317212dad59ba0af1ccfae7a17aa3f07502af5f9ad8b4b98bdf3)
@@ -36,6 +39,9 @@ importers:
       quickjs-emscripten:
         specifier: 0.32.0
         version: 0.32.0
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
       ws:
         specifier: ^8.21.3
         version: 8.21.3

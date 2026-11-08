@@ -33,22 +33,37 @@ const serverRequirement = {
 	},
 	required: ["kind", "id", "requiredFor"],
 };
-const addonPlanEntry = object({
+const resolvedAddon = object({
 	id: ref,
 	version: ref,
 	api: { const: 1 },
+	artifactDigest: ref,
 	root: ref,
 	entry: ref,
 	config: any,
+	configDigest: ref,
+	dependencies: { type: "array", items: ref },
+	requestedBy: { type: "array", items: ref },
 	minecraft: { type: "array", items: { type: "string" } },
 	serverRequirement: { oneOf: [{ type: "null" }, serverRequirement] },
 });
-const addonSelection = object({ digest: ref, entries: { type: "array", items: addonPlanEntry } });
+const assemblyPlan = object({
+	roots: { type: "array", items: ref },
+	ordered: { type: "array", items: resolvedAddon },
+	digest: ref,
+});
 const addonStatus = shaped({
 	id: ref,
 	version: ref,
 	api: { const: 1 },
 	state: { enum: ["installed", "loaded"] },
+	artifactDigest: ref,
+	evidence: shaped({
+		planned: { type: "boolean" },
+		loaded: { type: "boolean" },
+		protocol: { enum: ["unknown", "not_required", "pending", "negotiated", "failed"] },
+		dataReady: { type: "boolean" },
+	}),
 	minecraft: { type: "array", items: { type: "string" } },
 	serverRequirement: { oneOf: [{ type: "null" }, serverRequirement] },
 	dir: ref,
@@ -113,7 +128,7 @@ const definitions = {
 			sessionDataDir: ref,
 			sharedDataDir: ref,
 			config: { type: "object" },
-			addons: addonSelection,
+			addons: assemblyPlan,
 			unclean: { type: "boolean" },
 			oldControlRetired: { type: "boolean" },
 			ownerLifetimeMs: { type: "number", exclusiveMinimum: 0 },

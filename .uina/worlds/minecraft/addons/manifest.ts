@@ -1,15 +1,16 @@
 /**
  * Addon 包 Manifest：只读 `package.json` 的 `uinaMinecraft` 段。
  *
- * 唯一定义来源：docs/proposals/mc/addons.md §2。Manifest 只存**静态声明**：
- * 安装、启用、加载是三个独立事实，声明本身不能证明服务端已安装对应插件/Mod。
- * 校验只读文件，不执行第三方代码。
+ * Manifest 只存**静态声明**：安装、启用、加载、握手是四个独立事实，
+ * 声明本身不能证明服务端已安装对应插件/Mod。校验只读文件、不执行第三方代码。
+ * `requiresAddons` 的值是 SemVer 范围，不是精确版本串。
  */
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AddonServerRequirement } from "../contracts/addons.js";
 import { callFailure } from "../contracts/values.js";
+import { isValidRange, isValidVersion } from "./semver-range.js";
 import { ADDON_API_VERSION } from "./sdk.js";
 
 export const ADDON_MANIFEST_KEY = "uinaMinecraft";
@@ -24,7 +25,10 @@ export interface AddonManifest {
 	packageName: string;
 	/** 声明兼容的 Minecraft 版本；空数组 = 未声明（不据此拒绝）。 */
 	minecraft: readonly string[];
+	/** 依赖 id -> SemVer 范围；装配时递归求闭包。 */
 	requiresAddons: Readonly<Record<string, string>>;
+	/** 作为自动纳入的前置时，是否要求 Profile 显式给出配置。 */
+	configRequired: boolean;
 	serverRequirement: AddonServerRequirement | null;
 	/** package.json main（包内相对路径，已规范化）。 */
 	entry: string;
@@ -40,13 +44,7 @@ export interface InstalledAddon {
 	manifest: AddonManifest;
 }
 
-export interface AddonScanProblem {
-	dir: string;
-	error: string;
-}
-
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 function manifestFailure(code: string, message: string): Error {
 	return callFailure({
@@ -97,7 +95,7 @@ export function parseAddonManifest(raw: unknown, source: string): AddonManifest 
 	if (!ID_PATTERN.test(id))
 		throw manifestFailure("ADDON_MANIFEST_INVALID", `${source}: invalid addon id ${JSON.stringify(id)}`);
 	const version = typeof pkg.version === "string" ? pkg.version : "";
-	if (!VERSION_PATTERN.test(version))
+	if (!isValidVersion(version))
 		throw manifestFailure("ADDON_MANIFEST_INVALID", `${source}: invalid package version ${JSON.stringify(version)}`);
 	const minecraft = declared.minecraft;
 	if (minecraft !== undefined && (!Array.isArray(minecraft) || minecraft.some((v) => typeof v !== "string")))
@@ -105,10 +103,16 @@ export function parseAddonManifest(raw: unknown, source: string): AddonManifest 
 	const requiresRaw = objectOf(declared.requiresAddons) ?? {};
 	const requiresAddons: Record<string, string> = {};
 	for (const [key, value] of Object.entries(requiresRaw)) {
-		if (!ID_PATTERN.test(key) || typeof value !== "string")
-			throw manifestFailure("ADDON_MANIFEST_INVALID", `${source}: invalid requiresAddons entry ${key}`);
+		if (!ID_PATTERN.test(key) || typeof value !== "string" || !isValidRange(value))
+			throw manifestFailure(
+				"ADDON_MANIFEST_INVALID",
+				`${source}: requiresAddons.${key} must be a valid SemVer range, got ${JSON.stringify(value)}`,
+			);
 		requiresAddons[key] = value;
 	}
+	const configRequired = declared.configRequired ?? false;
+	if (typeof configRequired !== "boolean")
+		throw manifestFailure("ADDON_MANIFEST_INVALID", `${source}: configRequired must be a boolean`);
 	let serverRequirement: AddonServerRequirement | null = null;
 	const requirement = objectOf(declared.serverRequirement);
 	if (requirement) {
@@ -137,6 +141,7 @@ export function parseAddonManifest(raw: unknown, source: string): AddonManifest 
 		packageName: typeof pkg.name === "string" ? pkg.name : id,
 		minecraft: Array.isArray(minecraft) ? (minecraft as string[]) : [],
 		requiresAddons,
+		configRequired,
 		serverRequirement,
 		entry: main,
 	};
@@ -157,42 +162,4 @@ export async function readInstalledAddon(dir: string): Promise<InstalledAddon> {
 	if (!info?.isFile())
 		throw manifestFailure("ADDON_ENTRY_MISSING", `${manifest.id}: entry ${manifest.entry} is not a file under ${dir}`);
 	return { id: manifest.id, version: manifest.version, dir, entry, manifest };
-}
-
-/**
- * 扫描安装根。坏包不阻止其它包（返回 problems），但启用列表引用坏包时
- * 由 plan 解析显式失败——不静默跳过用户明确启用的包。
- */
-export async function scanInstalledAddons(root: string): Promise<{
-	addons: InstalledAddon[];
-	problems: AddonScanProblem[];
-}> {
-	let entries: string[];
-	try {
-		entries = await readdir(root);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { addons: [], problems: [] };
-		throw error;
-	}
-	const addons: InstalledAddon[] = [];
-	const problems: AddonScanProblem[] = [];
-	const seen = new Map<string, string>();
-	for (const name of entries.sort()) {
-		const dir = join(root, name);
-		const info = await stat(dir).catch(() => null);
-		if (!info?.isDirectory()) continue;
-		try {
-			const addon = await readInstalledAddon(dir);
-			const previous = seen.get(addon.id);
-			if (previous) {
-				problems.push({ dir, error: `duplicate addon id ${addon.id} (also installed at ${previous})` });
-				continue;
-			}
-			seen.set(addon.id, dir);
-			addons.push(addon);
-		} catch (error) {
-			problems.push({ dir, error: error instanceof Error ? error.message : String(error) });
-		}
-	}
-	return { addons, problems };
 }

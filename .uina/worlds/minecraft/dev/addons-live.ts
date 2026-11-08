@@ -16,7 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addonStatus, disableAddon, enableAddon, installAddon } from "../addons/manage.js";
-import { readAddonSelectionFile, selectionDigest, writeAddonSelectionFile } from "../addons/plan.js";
+import { assemblyDigest, readAddonSelectionFile, writeAddonSelectionFile } from "../addons/plan.js";
+import { withFileLock } from "../addons/store.js";
 import type { CallRecord } from "../contracts/runtime.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
 import type { SessionStatus } from "../worlddef/session-controller.js";
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
 			const connected = (await session({ op: "connect", target: { server: "default" } })).details as SessionStatus;
 			assert(connected.state === "connected", JSON.stringify(connected).slice(0, 300));
 			const active = connected.active!;
-			assert(active.addons.digest === selectionDigest([]), `empty digest expected: ${JSON.stringify(active.addons)}`);
+			assert(active.addons.digest === assemblyDigest([]), `empty digest expected: ${JSON.stringify(active.addons)}`);
 			assert(active.addons.ids.length === 0, JSON.stringify(active.addons));
 
 			const missing = await describe({ kind: "addon", name: "example-mod" });
@@ -194,9 +195,14 @@ async function main(): Promise<void> {
 			assert(st.active!.addons.ids.length === 0, JSON.stringify(st.active!.addons));
 
 			// 坏计划必须在建立执行域之前失败：启用未安装的包 → connect 失败且不留下半开会话。
-			const selection = await readAddonSelectionFile(join(root, "sessions", profileId));
-			await writeAddonSelectionFile(join(root, "sessions", profileId), {
-				enabled: { ...selection.enabled, ghost: {} },
+			// 选择文件的读-改-写与运维命令共用同一把锁，避免并发丢更新。
+			const profileDir = join(root, "sessions", profileId);
+			// 锁键与运维命令一致（同一个 addons.json），否则两边并发时并不互斥。
+			const selectionFile = join(profileDir, "addons.json");
+			const selection = await withFileLock(selectionFile, async () => {
+				const current = await readAddonSelectionFile(profileDir);
+				await writeAddonSelectionFile(profileDir, { enabled: { ...current.enabled, ghost: {} } });
+				return current;
 			});
 			await session({ op: "disconnect" });
 			const failed = await session({ op: "connect", target: { server: "default" } });
@@ -206,7 +212,7 @@ async function main(): Promise<void> {
 			);
 			const afterFailure = await status();
 			assert(afterFailure.state === "disconnected" && afterFailure.active === null, JSON.stringify(afterFailure));
-			await writeAddonSelectionFile(join(root, "sessions", profileId), { enabled: selection.enabled });
+			await withFileLock(selectionFile, () => writeAddonSelectionFile(profileDir, { enabled: selection.enabled }));
 		});
 
 		await step("T3：重连后装配生效——status/describe 报 loaded 与确切 ref", async () => {

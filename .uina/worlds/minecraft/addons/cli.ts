@@ -1,7 +1,7 @@
 /**
  * Addon 运维 CLI（pnpm mc:addon -- <command>）。
  *
- * 唯一定义来源：docs/proposals/mc/addons.md §2.4。数据根解析顺序：
+ * 唯一定义来源：docs/proposals/mc/addons.md §5。数据根解析顺序：
  * `--root <dir>` > `UINA_MC_DATA_DIR` > `<cwd>/.uina/world-data/minecraft`（存在时）。
  * 不在运行时里硬编码数据根：World 永远用宿主提供的 worldDataDir。
  */
@@ -11,11 +11,13 @@ import { join, resolve } from "node:path";
 import type { JsonValue } from "../contracts/values.js";
 import {
 	addonStatus,
+	collectAddonArtifacts,
 	disableAddon,
 	enableAddon,
 	inspectAddon,
 	installAddon,
 	listInstalledAddons,
+	migrateAddonLayout,
 	removeAddon,
 } from "./manage.js";
 
@@ -63,6 +65,7 @@ try {
 				addons: listed.addons.map((entry) => ({
 					id: entry.addon.id,
 					version: entry.addon.version,
+					artifactDigest: entry.addon.artifactDigest,
 					dir: entry.addon.dir,
 					enabledIn: entry.enabledIn,
 					serverRequirement: entry.addon.manifest.serverRequirement,
@@ -82,7 +85,13 @@ try {
 			if (!source) throw new Error("usage: install <package directory>");
 			const installed = await installAddon(root, resolve(source));
 			print({
-				installed: { id: installed.id, version: installed.version, dir: installed.dir, entry: installed.entry },
+				installed: {
+					id: installed.id,
+					version: installed.version,
+					artifactDigest: installed.artifactDigest,
+					dir: installed.dir,
+					entry: installed.entry,
+				},
 			});
 			break;
 		}
@@ -111,6 +120,16 @@ try {
 			print(await addonStatus(root, flag(rest, "profile")));
 			break;
 		}
+		case "migrate": {
+			// 一次性把旧的 <root>/addons/<id> 布局搬进 artifact store；会话必须已全部关闭。
+			print({ migrated: await migrateAddonLayout(root) });
+			break;
+		}
+		case "gc": {
+			// 离线回收无映射引用的 artifact；会话必须已全部关闭。
+			print({ collected: await collectAddonArtifacts(root) });
+			break;
+		}
 		default:
 			console.error(
 				[
@@ -122,6 +141,8 @@ try {
 					"  disable <id> --profile <profileId>",
 					"  remove <id>",
 					"  status [--profile <profileId>]",
+					"  migrate   (one-time legacy layout conversion; close all sessions first)",
+					"  gc        (offline artifact collection; close all sessions first)",
 				].join("\n"),
 			);
 			process.exitCode = 2;
