@@ -25,6 +25,7 @@ function createHarness(maxItems = 16) {
 		signal: new AbortController().signal,
 		emitEvent: async (item) => {
 			events.push(item);
+			return { accepted: true };
 		},
 		onHostEvent: (listener) => {
 			listeners.push(listener);

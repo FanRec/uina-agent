@@ -3,7 +3,11 @@ import type { CompletionView, DeliveryState } from "../../.uina/worlds/minecraft
 import { DeliveryPump, formatCompletion } from "../../.uina/worlds/minecraft/executor/delivery.js";
 import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import type { HostDeliveryState } from "../../src/core/types.js";
-import type { ServiceCompanionContext, WorldEvent } from "../../src/extensions/world-framework/types.js";
+import type {
+	EventSubmission,
+	ServiceCompanionContext,
+	WorldEvent,
+} from "../../src/extensions/world-framework/types.js";
 
 test("a lost Runtime ACK reply cannot retain an already committed input slot", async () => {
 	const pending = new Set(["first", "next"]),
@@ -24,6 +28,7 @@ test("a lost Runtime ACK reply cannot retain an already committed input slot", a
 				kind: "committed",
 				receipt: { ...event.receipt!, namespace: "n", session: "s", record: "canonical", channel: "input" },
 			});
+			return { accepted: true };
 		},
 	};
 	const executor = {
@@ -92,6 +97,7 @@ test("an old input committed during retire cannot occupy the background input sl
 		},
 		emitEvent: async (e) => {
 			emitted.push(e.receipt!.key);
+			return { accepted: true };
 		},
 	};
 	const executor = {
@@ -206,6 +212,7 @@ test("one unavailable report does not block other headers; unavailable content r
 					channel: "input",
 				},
 			});
+			return { accepted: true };
 		},
 	};
 	const executor = {
@@ -277,6 +284,7 @@ test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest �
 		},
 		emitEvent: async (event) => {
 			events.push(event);
+			return { accepted: true };
 		},
 	};
 	const executor = {
@@ -331,6 +339,7 @@ test("需要立即重新决策的事件走 urgent；其余事实排队等下一�
 		},
 		emitEvent: async (event) => {
 			events.push(event);
+			return { accepted: true };
 		},
 	};
 	const executor = {
@@ -367,12 +376,23 @@ test("需要立即重新决策的事件走 urgent；其余事实排队等下一�
 	}
 });
 
-test("minecraft_event 投递失败补发一次；补发成功不留诊断错误", async () => {
-	const events: string[] = [];
+/** 手工控制提交结果的时机：先让 reconcile 跑完，再把"没交出去"落在诊断上。 */
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+/** 让一条事实事件进投递泵：只关心"交了几次、留下什么诊断"。 */
+function eventPump(emit: (event: WorldEvent) => Promise<EventSubmission>) {
 	const listeners = new Set<
 		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
 	>();
-	let failed = false;
+	let calls = 0;
 	const ctx: ServiceCompanionContext = {
 		signal: new AbortController().signal,
 		delivery: {
@@ -383,11 +403,8 @@ test("minecraft_event 投递失败补发一次；补发成功不留诊断错误"
 			retire: async () => ({ kind: "retired" }),
 		},
 		emitEvent: async (event) => {
-			events.push(event.text!);
-			if (!failed) {
-				failed = true;
-				throw new Error("transient submit rejection");
-			}
+			calls++;
+			return emit(event);
 		},
 	};
 	const executor = {
@@ -400,13 +417,32 @@ test("minecraft_event 投递失败补发一次；补发成功不留诊断错误"
 		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
 		rpc: async () => ({ items: [] }),
 	} as unknown as MinecraftExecutor;
-	const pump = new DeliveryPump(executor, ctx, 60_000); // 测试期内不跑 reconcile，诊断错误不被清空
+	return {
+		pump: new DeliveryPump(executor, ctx, 60_000),
+		calls: () => calls,
+		/** 推一条死亡事实（urgent，不必等回合即可交付）。 */
+		fire: () => {
+			for (const listener of listeners)
+				listener([{ ref: "ev:t:1", observedAt: "t", payload: { kind: "death" } } as never]);
+		},
+	};
+}
+
+test("minecraft_event 投递失败补发一次；补发成功不留诊断错误", async () => {
+	const seen: string[] = [];
+	let failed = false;
+	// 60s 轮询：测试期内不跑 reconcile，诊断错误不会被成功轮次清空。
+	const { pump, fire, calls } = eventPump(async (event) => {
+		seen.push(event.text!);
+		if (failed) return { accepted: true };
+		failed = true;
+		return { accepted: false, reason: "transient submit rejection", retryable: true };
+	});
 	try {
 		pump.start();
-		for (const listener of listeners)
-			listener([{ ref: "ev:t:1", observedAt: "t", payload: { kind: "death" } } as never]);
-		await until(() => events.length === 2);
-		expect(events[0]).toBe(events[1]); // 幂等 id：同一条事件补发
+		fire();
+		await until(() => calls() === 2);
+		expect(seen[0]).toBe(seen[1]); // 幂等 id：同一条事件补发
 		expect(pump.diagnostics().error).toBeNull();
 	} finally {
 		await pump.close();
@@ -414,43 +450,62 @@ test("minecraft_event 投递失败补发一次；补发成功不留诊断错误"
 });
 
 test("补发仍失败只存诊断，不无限重试", async () => {
-	const events: string[] = [];
-	const listeners = new Set<
-		(events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void
-	>();
-	const ctx: ServiceCompanionContext = {
-		signal: new AbortController().signal,
-		delivery: {
-			namespace: "n",
-			session: "s",
-			durability: "durable",
-			inspect: async () => ({ kind: "absent" }),
-			retire: async () => ({ kind: "retired" }),
-		},
-		emitEvent: async (event) => {
-			events.push(event.text!);
-			throw new Error("queue keeps rejecting");
-		},
-	};
-	const executor = {
-		subscribe: (
-			listener: (events: import("../../.uina/worlds/minecraft/contracts/executor.js").GameNotice[]) => void,
-		) => {
-			listeners.add(listener);
-			return () => listeners.delete(listener);
-		},
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
-		rpc: async () => ({ items: [] }),
-	} as unknown as MinecraftExecutor;
-	const pump = new DeliveryPump(executor, ctx, 60_000);
+	const { pump, fire, calls } = eventPump(async () => ({
+		accepted: false,
+		reason: "queue keeps rejecting",
+		retryable: true,
+	}));
 	try {
 		pump.start();
-		for (const listener of listeners)
-			listener([{ ref: "ev:t:1", observedAt: "t", payload: { kind: "death" } } as never]);
-		await until(() => events.length === 2);
+		fire();
+		await until(() => calls() === 2);
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		expect(events.length).toBe(2);
-		expect(pump.diagnostics().error).toMatchObject({ code: "EVENT_DELIVERY_FAILED" });
+		expect(calls()).toBe(2);
+		expect(pump.diagnostics().error).toMatchObject({
+			code: "EVENT_DELIVERY_FAILED",
+			message: "queue keeps rejecting",
+		});
+	} finally {
+		await pump.close();
+	}
+});
+
+test("世界说这条不必再交：retryable=false 不补发", async () => {
+	const gate = deferred<EventSubmission>();
+	const { pump, fire, calls } = eventPump(() => gate.promise);
+	try {
+		pump.start();
+		fire();
+		await until(() => calls() === 1);
+		// 先让 start() 那次 0ms reconcile 跑完，它成功时会清空诊断，别让它抢在断言前面。
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		gate.resolve({ accepted: false, reason: "世界已停用", retryable: false });
+		await until(() => pump.diagnostics().error !== null);
+		expect(pump.diagnostics().error).toMatchObject({ code: "EVENT_DELIVERY_FAILED", message: "世界已停用" });
+		// 超过一个补发窗口：retryable=false 的条目不该再交一次。
+		await new Promise((resolve) => setTimeout(resolve, 1300));
+		expect(calls()).toBe(1);
+	} finally {
+		await pump.close();
+	}
+});
+
+test("事件形状非法是世界的 bug：报错不补发", async () => {
+	const gate = deferred<EventSubmission>();
+	const { pump, fire, calls } = eventPump(() => gate.promise);
+	try {
+		pump.start();
+		fire();
+		await until(() => calls() === 1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		gate.reject(new Error("World 事件必须提供 text 或 render"));
+		await until(() => pump.diagnostics().error !== null);
+		expect(pump.diagnostics().error).toMatchObject({
+			code: "EVENT_DELIVERY_FAILED",
+			message: "World 事件必须提供 text 或 render",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 1300));
+		expect(calls()).toBe(1);
 	} finally {
 		await pump.close();
 	}

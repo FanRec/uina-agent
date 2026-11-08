@@ -82,6 +82,7 @@ function makeContext(): { ctx: ServiceCompanionContext; worldEvents: WorldEvent[
 		emitEvent: async (event) => {
 			// 延迟渲染（§5.3）：投递为占位 + render 闭包；测试在 emitEvent 内求值，近似出队
 			worldEvents.push({ ...event, text: (await event.render?.()) ?? event.text });
+			return { accepted: true };
 		},
 		isBusy: () => false,
 		worldDataDir: dataDir,

@@ -15,8 +15,9 @@ async function startWorld(events: WorldEvent[], signal = new AbortController().s
 		signal,
 		worldDataDir,
 		emitEvent: async (event) => {
-			if (signal.aborted) return;
+			if (signal.aborted) return { accepted: false, reason: "世界已停用", retryable: false };
 			events.push(event);
+			return { accepted: true };
 		},
 	});
 	return { world, worldDataDir };
@@ -215,6 +216,7 @@ describe("rhythm world actions", () => {
 			worldDataDir,
 			emitEvent: async (event) => {
 				events.push(event);
+				return { accepted: true };
 			},
 		});
 		expect(await runAction(world, "status")).toMatchObject({

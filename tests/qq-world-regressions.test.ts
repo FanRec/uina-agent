@@ -433,7 +433,11 @@ it("F06 新会话第一次重启不得封存未读", async () => {
 			return () => {};
 		},
 	};
-	const context = { signal: new AbortController().signal, worldDataDir: dir, emitEvent: async () => {} };
+	const context = {
+		signal: new AbortController().signal,
+		worldDataDir: dir,
+		emitEvent: async () => ({ accepted: true as const }),
+	};
 	const world = createQqWorld({ config, transport });
 	const actionContext = { signal: context.signal, operationIdentity: "world:qq/inbox" as const };
 	try {

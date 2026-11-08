@@ -76,7 +76,7 @@ async function fixture(grants = ["observation", "messaging", "interaction"]) {
 	const context: ServiceCompanionContext = {
 		signal: new AbortController().signal,
 		submitInput: async () => {},
-		emitEvent: async () => {},
+		emitEvent: async () => ({ accepted: true }),
 		worldDataDir: root,
 	};
 	await world.onStart?.(context);

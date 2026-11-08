@@ -178,6 +178,36 @@ describe("World Framework: Lifecycle & Registry", () => {
 		await unregister();
 	});
 
+	it("emitEvent 回答的是「事件还归不归我」：停用与拒收都不算交付", async () => {
+		const mock = createMockExtensionAPI();
+		let emitEvent: NonNullable<ServiceCompanionContext["emitEvent"]> | undefined;
+		let refuse: string | null = null;
+		(mock.pi as any).submitInput = vi.fn(async () => {
+			if (refuse) throw new Error(refuse);
+		});
+		const unregister = await defineWorld(mock.pi, {
+			name: "submission-world",
+			description: "submission test",
+			onStart: (ctx) => {
+				emitEvent = ctx.emitEvent;
+			},
+			actions: {},
+		});
+		const event = {
+			id: "ev-1",
+			type: "changed",
+			channel: "world" as const,
+			origin: "external" as const,
+			text: "世界变了",
+		};
+		expect(await emitEvent!(event)).toEqual({ accepted: true });
+		refuse = "宿主正在关闭";
+		expect(await emitEvent!(event)).toEqual({ accepted: false, reason: "宿主正在关闭", retryable: true });
+		await unregister();
+		// 停用后事件仍在世界手里：宿主不该以为已经交出去了。
+		expect(await emitEvent!(event)).toEqual({ accepted: false, reason: "世界已停用", retryable: false });
+	});
+
 	it("disable：先取消并等待动作，再执行 onStop", async () => {
 		const mock = createMockExtensionAPI();
 		const registry = new WorldRegistry(mock.pi);
