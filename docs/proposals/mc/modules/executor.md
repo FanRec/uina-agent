@@ -20,7 +20,7 @@
 
 **批20 起**：`run` 支持按调用短窗覆盖 `{"wait": ms}`（≥0；缺省仍 3000ms，`wait:0` 只受理不等，完成走完成通知；更久的显式等待用 `runs.wait {run,timeoutMs}`）。
 
-**批37 起**：世界状态不再推送。`state.snapshot` 是窄的只读 RPC，一次采样给三段的有界文本（见 [world §9.5](world.md)），由 `WorldDef.requestContext` 在每次模型请求前调用、宿主附在投影尾部；空闲世界零输入。事件只承载"发生了什么"：`minecraft_event` 按种类分流——死亡、断线、玩家私聊、本地安全响应没脱险（`blocked`/`timeout`）走 `urgent`（steer，当前执行前提已失效或有人在等回应），其余走 `queued`（等下一次决策一起处理）。已脱险的安全干预带 `interruptedRun` 上报，取消/失效不上报。同一世界的后续输入（外部事件与自身完成）在宿主侧合成一次决策。
+**批37 起**：世界状态不再推送。`state.snapshot` 是窄的只读 RPC，一次采样给三段的有界文本（见 [world §9.5](world.md)），由 `WorldDef.requestContext` 在每次模型请求前调用、宿主附在投影尾部；空闲世界零输入。事件只承载"发生了什么"：`minecraft_event` 按种类分流——死亡、断线、玩家私聊、本地安全响应没脱险（`blocked`/`timeout`）走 `urgent`（steer，当前执行前提已失效或有人在等回应），其余走 `queued`（等下一次决策一起处理）。已脱险的安全干预带 `interruptedRun` 上报。**批39 起**终止态的上报判据改看起因而非终态值：世界自己关门（`cancelled`）不上报，连接身份变了导致的失效不上报（`connection`/`death` 事实已经说了同一件事），其余一律上报——包括没有连接事实承担的失效（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录），它们意味着"危险触发过、脱险没跑成"，没有任何别的事实替它说。同一世界的后续输入（外部事件与自身完成）在宿主侧合成一次决策。
 
 ```json
 {"action":"runs","params":{"op":"request","request":"q17"}}

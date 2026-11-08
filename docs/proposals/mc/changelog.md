@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-11-08 · 批39 安全干预的起因由调用点声明
+
+- **修掉一处"用终态值代替起因"的判断**：批37 起 `ended` 为 `cancelled|invalidated` 一律不上报，理由是"前者是宿主关门、后者由连接/死亡事实承担"。后半句只对一种失效成立。`invalidated` 还有三个来源——body 抢占失败、会话关闭出错、崩溃恢复留下的未结算记录——它们意味着"危险触发过、脱险没跑成"，而且没有任何别的事实替它说。模型因此对这三类静默，只会看到行动被莫名其妙打断。
+- **起因成为显式参数**：`cancel(reason, cause)` 由调用点声明（目前唯一取值 `"connection"`，`invalidateControl()` 是唯一声明者），`changed(record, cause)` 带出。起因只在内存里活一次干预的生命周期、不进库：它只回答"这条终态是不是已经有人替我说过了"，记录本身的 `ended`/`outcome` 已经说清发生了什么。
+- **判定抽成纯函数**：`companion/safety-route.ts` 的 `safetyNeedsAttention(ended, cause)` 是"要不要单独说一句"的唯一所有者；`side.ts` 先用 `record.ended == null` 把判别联合收窄（未结算的干预还没有"发生了什么"），再问判定，不再自己写条件。
+- 验收：`mc-safety-route` 4 项（世界关门不说、连接失效不说、无人承担的失效必须说、跑完的一律说）；`mc-safety-runtime` 新增链路用例（`invalidateControl` → `["invalidated","connection"]`；无外因的失效 → `["invalidated", null]`）。两条反向验证：判定改回"invalidated 一律不说" → 判定用例红 2 项；`invalidateControl` 去掉起因 → 链路用例红。tsc / boundaries / biome format 干净，safety 相关 36 项全绿。
+- 明确没做：事件投递改"入队确认"、连接身份进合批判据、Completion 投递优先级——按方案仍在后续批次。
+
 ## 2026-11-08 · 批38 回合输入有界领取 + 观察帧每回合必到
 
 - **合批从"扫描规则"变成"队列的一次领取"**：`InputQueues.batchForTurn(policy)` 拥有三条边界（steer 先走且单独成批、非运行时来源不合批、运行时来源只在同一世界内合并）与两层预算（条数 8、字符总量 6000）。`drainQueuesIntoRun` 从 12 行扫描缩到 3 行，`isRuntimeFollowUp` 从 `loop.ts` 搬进 `queue.ts`。剩余条目留在队列，靠回合成功后的既有续跑继续消费——没有新调度机制。

@@ -129,6 +129,8 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批37（2026-11-08）把 G6 的关闭方式整个换掉：状态不再推送。digest 链路（定时采样、10s 节流、内容哈希去重、`minecraft_digest` 事件类型、忙时只保最新一份）全删，改为 `world/state-frame.ts` 采样 + `state.snapshot` 只读 RPC，由 `WorldDef.requestContext` 经 `turn.transformContext`（`tail` 相位）在每次模型请求前注入一份当前快照，宿主侧 250ms 超时即本轮不注入。理由是推送本身选错了方向——旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义，而每次现读一次既能保证新鲜又不在空闲时产生任何 Subject 输入。同批事件按种类分流（死亡/断线/私聊/本地没脱险 → steer，其余排队）、已脱险的安全干预带 `interruptedRun` 上报而取消/失效不上报、同一世界的后续输入在宿主侧合成一次决策、失败终态保留调用侧报告的进度。真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧都是身体当前所在格）；接缝由 world-request-context、qq-world-framework-seams、smoke 覆盖；tests/mc 903 项（901 通过，`mcp-extension-loading` 2 项为既有基线红）。
 
+批39（2026-11-08）修正批37 的一处判据：安全干预的终态要不要告诉模型，不能看终态值，要看起因。同一句 `ended: invalidated` 有两个来源——连接身份变了（`connection`/`death` 事实已经在说同一件事），或者没有任何别的事实承担的失败（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录）。`RuntimeSafety.cancel(reason, cause)` 由调用点声明起因、`changed(record, cause)` 带出，`companion/safety-route.ts` 的 `safetyNeedsAttention(ended, cause)` 是唯一判定（世界自己关门与连接变了导致的失效不说，其余都说）。起因只在内存里活一次干预的生命周期，不进库——记录本身的 ended/outcome 已经说清发生了什么。
+
 ## QQ World
 
 
