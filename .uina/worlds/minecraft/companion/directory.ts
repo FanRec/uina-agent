@@ -3,12 +3,13 @@ import type { CapabilityCatalog } from "../capabilities/catalog.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { RpcError } from "../executor/ipc.js";
+import { findGuide, guideSummaries, readGuide } from "./guides/index.js";
 
 export interface DescribeParams {
 	query?: string;
 	cursor?: string;
 	selector?: string;
-	kind?: "capability" | LibraryKind;
+	kind?: "capability" | "guide" | LibraryKind;
 	name?: string;
 }
 export async function describeDirectory(catalog: CapabilityCatalog, library: LibraryPort, params: DescribeParams) {
@@ -26,6 +27,20 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 			const d = descriptors.find((d) => d.ref === exact);
 			if (!d) throw new RpcError("NOT_FOUND", `capability ${exact} not found`);
 			return native(d);
+		}
+		if (kind === "guide") {
+			const guide = findGuide(exact);
+			if (!guide) throw new RpcError("NOT_FOUND", `guide ${exact} not found; describe {} lists families`);
+			// 官方只读资料：正文直接随 describe 返回，不落到 Library、不要求连接。
+			const content = await readGuide(exact);
+			return {
+				kind: "guide",
+				callable: false,
+				name: guide.name,
+				summary: guide.summary,
+				tags: [...guide.tags],
+				content,
+			};
 		}
 		const d = await library.get(kind, exact);
 		if (!d) throw new RpcError("NOT_FOUND", `${kind} ${exact} not found`);
@@ -76,6 +91,7 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 		return {
 			families: [
 				{ kind: "capability", count: descriptors.length },
+				{ kind: "guide", count: guideSummaries().length },
 				...(["program", "blueprint", "experience"] as const).map((kind) => ({
 					kind,
 					count: entries.filter((e) => e.kind === kind).length,
@@ -94,6 +110,14 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 			summary: d.summary,
 			tags: d.tags ?? [],
 			access: d.access,
+			availability: "unknown" as const,
+		})),
+		...guideSummaries().map((guide) => ({
+			kind: "guide" as const,
+			callable: false,
+			name: guide.name,
+			summary: guide.summary,
+			tags: [...guide.tags],
 			availability: "unknown" as const,
 		})),
 		...entries.map((e) => ({

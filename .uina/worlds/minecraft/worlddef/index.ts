@@ -30,6 +30,8 @@ export function createMinecraftWorld(
 	let validator: ProgramValidator | null = null;
 	let closing: Promise<void> | null = null;
 	let detachAbort: (() => void) | null = null;
+	/** onStart 预载的静态环境正文；getter 是同步纯读，不在这里做 IO。 */
+	let environmentText: string | null = null;
 
 	const close = (): Promise<void> =>
 		(closing ??= (async () => {
@@ -43,6 +45,7 @@ export function createMinecraftWorld(
 			await validator?.close().catch(() => {});
 			validator = null;
 			library = null;
+			environmentText = null;
 			detachAbort?.();
 			detachAbort = null;
 			if (errors.length) throw new AggregateError(errors, "Minecraft activation close failed");
@@ -144,6 +147,12 @@ export function createMinecraftWorld(
 			const frame = await session.executor.rpc<{ text: string }>("state.snapshot", {});
 			return frame.text;
 		},
+		/**
+		 * 静态环境认知：只在有活动 Minecraft 会话的回合注入，避免污染纯聊天。
+		 * 正文在 onStart 预载；这里同步返回，不读世界事实、不产生副作用。
+		 * 坐标/库存等会变的事实仍只由 requestContext 的瞬态状态帧提供。
+		 */
+		environmentGuide: () => (controller?.session ? environmentText : null),
 		actions: Object.fromEntries(
 			Object.entries(actionSchemas).map(([name, parameters]) => [
 				name,
@@ -179,6 +188,8 @@ export function createMinecraftWorld(
 				throw new Error("Minecraft requires worldDataDir, emitEvent, onHostEvent, expose and durable Host delivery");
 			closing = null;
 			if (ctx.signal.aborted) throw new Error("Minecraft activation already cancelled");
+			// 静态资源与包一起发布（copy-assets.mjs）；缺文件必须显式失败，不能静默少一段教学。
+			environmentText = await readFile(new URL("./ENV_PROMPT.md", import.meta.url), "utf8");
 			// 常驻层：静态 Catalog describe、共享 Library 与 SessionController；不读取固定连接、不打开 Bot。
 			validator = createProgramValidator();
 			library = createLibrary({

@@ -24,6 +24,7 @@
  */
 
 import type { BodySession, ControlOwner } from "../contracts/body.js";
+import type { ControlRetirementCause } from "../contracts/runtime.js";
 import type { CallFailure, Ref } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
 import { toCallFailure } from "./failure.js";
@@ -62,13 +63,18 @@ type Request = RequestBase &
 		| { kind: "navigation"; resolve(grant: { release(): void }): void }
 	);
 
-function interrupted(message: string): CallFailure {
+/**
+ * 授予前拒绝：此时尚未拿到 Body，not_sent 是可证明的。cause 只描述真实发起点，
+ * 不把"在途旧写"混进来——那属于 engine.retirementFailure 的职责。
+ */
+function interrupted(message: string, cause: ControlRetirementCause = "unknown"): CallFailure {
 	return callFailure({
 		code: "INTERRUPTED",
 		source: "environment",
-		message,
+		message: `${message} [${cause}]`,
 		dispatch: "not_sent",
 		effects: [],
+		hint: `body was never granted (${cause}); re-observe before requesting a new qualification`,
 		recoverable: false,
 	});
 }
@@ -151,7 +157,7 @@ export class BodyLeaseQueue {
 			if (!sameRun(item.owner, run)) continue;
 			this.drop(item);
 			item.state = "settled";
-			item.reject(interrupted("run stopped while waiting for the body"));
+			item.reject(interrupted("run stopped while waiting for the body", "user_stop"));
 		}
 		// 在途项不清槽：acquire 仍会解析，届时 isOwnerLive() 已为 false → close + 拒绝。
 		// 立即清槽会让下一个申请在新主人未证明屏障前就被授予（§3.3.2）。
@@ -180,7 +186,7 @@ export class BodyLeaseQueue {
 	private async grant(item: Request): Promise<void> {
 		if (item.kind === "navigation") {
 			if (item.signal.aborted || !this.opts.isOwnerLive(item.owner)) {
-				this.settle(item, interrupted("navigation request expired before grant"));
+				this.settle(item, interrupted("navigation request expired before grant", "control_fault"));
 				return;
 			}
 			item.state = "held";
@@ -197,7 +203,7 @@ export class BodyLeaseQueue {
 		// 授予前复验：排队/在途期间发生的中断或停止不得进入 work
 		if (item.signal.aborted || !this.opts.isOwnerLive(item.owner)) {
 			await closeQuietly(session);
-			this.settle(item, interrupted("body request expired before grant"));
+			this.settle(item, interrupted("body request expired before grant", "control_fault"));
 			return;
 		}
 		item.state = "held";

@@ -21,6 +21,8 @@ import type {
 	Acceptance,
 	ContinueRequest,
 	ControlRetirement,
+	ControlRetirementCause,
+	ControlRetirementNotice,
 	EffectVerification,
 	EffectVerifier,
 	Origin,
@@ -80,20 +82,15 @@ function nowIso(): string {
 	return new Date().toISOString();
 }
 
-async function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+/**
+ * 只负责"上层不能再等旧 work"。失败内容由调用方在 abort 发生的那一刻从
+ * Effect 账本计算：Promise.race 提前结束不等于原动作已退场，更不能据此写死
+ * not_sent / effects:[]。退场屏障仍由 BodySession.close() 独立负责。
+ */
+async function interruptible<T>(work: Promise<T>, signal: AbortSignal, retired: () => CallFailure): Promise<T> {
 	let abort!: () => void;
 	const interrupted = new Promise<never>((_resolve, reject) => {
-		abort = () =>
-			reject(
-				callFailure({
-					code: "INTERRUPTED",
-					message: "body scope retired",
-					source: "environment",
-					dispatch: "not_sent",
-					effects: [],
-					recoverable: true,
-				}),
-			);
+		abort = () => reject(retired());
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
 	});
@@ -103,6 +100,17 @@ async function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<
 		signal.removeEventListener("abort", abort);
 	}
 }
+
+const RETIREMENT_HINT: Record<ControlRetirementCause, string> = {
+	safety:
+		"safety intervention retired the old body; re-read world facts and acquire a new qualification before continuing",
+	user_stop: "the user stopped this run; do not resume automatically",
+	run_preempted: "another run took the body; re-observe before continuing",
+	disconnect: "connection or world generation changed; re-read facts in a new session",
+	control_fault: "old control isolation could not be proved; wait for the close barrier and re-observe",
+	world_disabled: "the world is shutting down; remaining work is not confirmed",
+	unknown: "old writes may still be in flight; wait for the close barrier and re-observe before any new write",
+};
 
 function isJsonValue(value: unknown): value is JsonValue {
 	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
@@ -187,7 +195,7 @@ export class RuntimeEngine {
 	private isolationFailed = false;
 	private chatGate: Promise<void> = Promise.resolve();
 	readonly safety: RuntimeSafety;
-	private activeBody: { run: Ref; interrupt(): Promise<void> } | null = null;
+	private activeBody: { run: Ref; interrupt(notice?: ControlRetirementNotice): Promise<void> } | null = null;
 
 	constructor(opts: EngineOptions) {
 		this.opts = opts;
@@ -209,7 +217,9 @@ export class RuntimeEngine {
 			interrupt: async () => {
 				if (this.activeBody) {
 					const active = this.activeBody;
-					await active.interrupt();
+					const notice = this.notice("safety", "runtime:safety", active.run);
+					this.retire(active.run, notice);
+					await active.interrupt(notice);
 					return active.run;
 				}
 				const id = this.bodyLeaseQueue.blockingCall();
@@ -1189,6 +1199,8 @@ export class RuntimeEngine {
 			};
 		}
 		const wasDecision = state.phase === "awaiting_decision";
+		// 用户 Stop 是明确的撤销发起点：先写一次不可变起因，再关门。
+		this.retire(state.run, this.notice("user_stop", "host:stop", state.run));
 		// 内存关门：封闭准入、删除 Body 队列申请、撤销控制
 		state.stopped = true;
 		state.phase = "stopping";
@@ -1292,8 +1304,12 @@ export class RuntimeEngine {
 		// 起因是连接身份变了：这条失效会由 connection/death 事件同时告诉模型，
 		// 所以宿主侧可以据此省略重复提醒。其余失效路径没有这个承担者，必须自己上报。
 		this.safety.cancel("invalidated", "connection");
-		if (this.activeBody) await this.activeBody.interrupt();
-		else {
+		if (this.activeBody) {
+			const active = this.activeBody;
+			const notice = this.notice("disconnect", "host:invalidateControl", active.run);
+			this.retire(active.run, notice);
+			await active.interrupt(notice);
+		} else {
 			const id = this.bodyLeaseQueue.blockingCall();
 			const call = id ? this.findLiveCall(id) : null;
 			call?.abort.abort();
@@ -1551,6 +1567,23 @@ export class RuntimeEngine {
 		} catch (err) {
 			decision = getDecisionRequest(err);
 			if (!decision) threw = toCallFailure(err);
+			// 非 interruptible 路径（例如 stop 让 scopedBody 先抛）也要带上真实撤销起因，
+			// 不能让"谁拿走了身体"在 Call 记录里退化成一句 body scope retired。
+			if (threw != null && (threw.code === "INTERRUPTED" || threw.code === "CANCELLED") && state.retiredBy != null) {
+				const notice = state.retiredBy;
+				threw = callFailure({
+					code: threw.code,
+					source: threw.source,
+					message: `body scope retired by ${notice.cause} (${notice.initiator})`,
+					hint: RETIREMENT_HINT[notice.cause],
+					dispatch: threw.dispatch,
+					effects: [...threw.effects],
+					// 不改写业务 progress 快照：那是能力/程序自己的领域进度，
+					// 控制层起因只放在 message/hint 与内存态 retiredBy 里。
+					progress: threw.progress,
+					recoverable: notice.cause === "safety",
+				});
+			}
 		}
 		// §4.3 关闭：封闭准入 → 取消/等待子 Call → 保存原因
 		callState.closed = true;
@@ -1828,10 +1861,15 @@ export class RuntimeEngine {
 			abort: new AbortController(),
 		};
 		let closing: Promise<void> | undefined;
-		const close = (): Promise<void> =>
+		const close = (explicit?: ControlRetirementNotice): Promise<void> =>
 			(closing ??= (async () => {
 				owned.closed = true;
-				owned.abort.abort();
+				// 真实发起点优先；否则读 stop()/safety 写下的那一次起因；都没有才 unknown。
+				const retirement =
+					explicit ??
+					state.retiredBy ??
+					(this.safety.inspect().active ? this.notice("safety", "runtime:safety", state.run) : undefined);
+				owned.abort.abort(retirement);
 				// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
 				try {
 					await grant.session.close();
@@ -1854,7 +1892,7 @@ export class RuntimeEngine {
 				state.revision++;
 				this.queue.enqueue(this.runMutation(state));
 			})());
-		const active = { run: state.run, interrupt: close };
+		const active = { run: state.run, interrupt: (notice?: ControlRetirementNotice) => close(notice) };
 		this.activeBody = active;
 		try {
 			return await this.runBodyWork(callState, state, owned, work);
@@ -1879,11 +1917,71 @@ export class RuntimeEngine {
 		});
 		callState.resources.add(body.close);
 		try {
-			return await interruptible(work({ ...ctx, signal, player: body.player }), lease.abort.signal);
+			const reason = (): ControlRetirementNotice | null => {
+				const value = lease.abort.signal.reason;
+				return value != null && typeof value === "object" && "cause" in value && "initiator" in value
+					? (value as ControlRetirementNotice)
+					: null;
+			};
+			return await interruptible(work({ ...ctx, signal, player: body.player }), lease.abort.signal, () =>
+				this.retirementFailure(callState, state, reason()),
+			);
 		} finally {
 			await body.close();
 			callState.resources.delete(body.close);
 		}
+	}
+
+	/** 在真实撤销发起点写一次不可变起因；不从错误字符串反推。 */
+	private notice(
+		cause: ControlRetirementCause,
+		initiator: string,
+		run?: Ref,
+		detail?: string,
+	): ControlRetirementNotice {
+		return Object.freeze({
+			cause,
+			initiator,
+			at: nowIso(),
+			...(run !== undefined ? { run } : {}),
+			...(detail !== undefined ? { detail } : {}),
+		});
+	}
+	private retire(run: Ref, notice: ControlRetirementNotice): void {
+		const state = this.runs.get(run);
+		if (state && state.retiredBy == null) state.retiredBy = notice;
+	}
+
+	/**
+	 * body 资格被撤销时的失败内容，从 Effect 账本现算：race 提前结束只意味着
+	 * 上层不能再等旧 work，不证明它没有派发。只有"已记录且明确 not_sent"才算没派发；
+	 * 这里保守取 unknown / sent，并把已有 effect refs 全部保留。
+	 */
+	private retirementFailure(
+		callState: CallState,
+		state: RunState,
+		explicit: ControlRetirementNotice | null,
+	): CallFailure {
+		const notice = explicit ?? state.retiredBy ?? this.notice("unknown", "runtime:interrupt", state.run);
+		const refs: Ref[] = [];
+		const collect = (call: CallState): void => {
+			refs.push(...this.queue.effectsForCall(call.call));
+			for (const child of call.children) collect(child);
+		};
+		collect(callState);
+		const receipts = refs.map((ref) => this.queue.effectRecord(ref)).filter((entry) => entry != null);
+		const dispatched = receipts.some((entry) => entry!.latest.dispatch !== "not_sent");
+		return callFailure({
+			code: "INTERRUPTED",
+			message: `body scope retired by ${notice.cause} (${notice.initiator})`,
+			source: "environment",
+			dispatch: dispatched ? "sent" : "unknown",
+			effects: refs,
+			progress: { cause: notice.cause, retiredAt: notice.at, ...(notice.run ? { run: notice.run } : {}) },
+			hint: RETIREMENT_HINT[notice.cause],
+			// 只有 safety 允许后续在新资格 + 重新观察下继续；user_stop 绝不自动续跑。
+			recoverable: notice.cause === "safety",
+		});
 	}
 
 	private scopeError(code: string, message: string): CallFailure {

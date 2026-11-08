@@ -43,7 +43,9 @@ async function main(mc, input) {
 	};
 	try {
 		step('goto_start', input.start);
-		await mc.call('goto@1', { at: input.start, tolerance: 2, digThrough: true, maxTimeMs: 60000 });
+		// 本探针专测坑内 1by1 tower（放置 + 跳）链路：施工能力必须显式授权，
+		// 不能依赖 goto@1 现已关闭的默认垫块行为。
+		await mc.call('goto@1', { at: input.start, tolerance: 2, digThrough: true, placeToReach: true, maxTimeMs: 60000 });
 		step('goto_done');
 		return { ok: true, ms: Date.now() - t0 };
 	} catch (error) {

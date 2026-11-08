@@ -4,6 +4,7 @@ import type {
 	EntityRef,
 	MerchantOfferValue,
 	StackExpectation,
+	WindowClickOutcome,
 	WindowClickReceipt,
 	WindowSession,
 	WindowSnapshot,
@@ -111,6 +112,8 @@ export class WindowSessionImpl implements WindowSession {
 	private busy = false;
 	private uncertain = false;
 	private fullSequence = 0;
+	/** 最近一次权威 full 包的服务端状态代次；用于把回包归因到具体那次 click。 */
+	private lastStateId: number | null = null;
 	private readonly wake = new Set<() => void>();
 	private readonly earlyFull = new Map<number, Extract<ProtocolNotice, { kind: "full" }>>();
 	private readonly detach: (() => void)[] = [];
@@ -235,6 +238,7 @@ export class WindowSessionImpl implements WindowSession {
 			};
 			if (next.slots.length !== next.layout.slotCount) return;
 			this.fullSequence++;
+			if (packet.stateId !== null) this.lastStateId = packet.stateId;
 			this.update(next);
 		} catch (error) {
 			this.openError = error;
@@ -475,6 +479,10 @@ export class WindowSessionImpl implements WindowSession {
 						}
 					: expectedClick(value.slots[input.slot]?.item ?? null, value.cursor, input.button);
 			const before = this.fullSequence;
+			const stateAtDispatch = this.lastStateId;
+			const slotBefore = value.slots[input.slot]?.item ?? null;
+			const cursorBefore = value.cursor;
+			const startedAt = Date.now();
 			writing = true;
 			this.wire.click(native, input.slot, input.button);
 			sent = true;
@@ -482,34 +490,86 @@ export class WindowSessionImpl implements WindowSession {
 				window: value.window,
 				slot: input.slot,
 				button: input.button,
+				stateId: stateAtDispatch,
 			});
-			// A delayed initial full must not settle a dispatched click while its real response is pending.
-			// Unchanged-only packets cannot prove rejection and therefore time out as unknown.
-			const confirmed = await this.waitFor(
-				() =>
-					this.fullSequence > before &&
-					this.value !== null &&
-					!jsonEqual(
-						{ slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor },
-						{ slot: value.slots[input.slot]?.item ?? null, cursor: value.cursor },
-					),
-			);
-			if (!confirmed || !this.live() || this.value === null) return this.unknown(effect, operation);
+			/**
+			 * 真服探针（Paper 1.21.11）：强制 stateId 的 click 每次都收到权威 full 回包，
+			 * 而且 window_items 带单调递增 stateId。因此"收到 full"本身就是响应，
+			 * 不再要求槽位内容必须变化——内容没变是**明确拒绝**，不是 unknown。
+			 * 有 stateId 时用它做因果归因，迟到的初始 full（stateId 不增）不会误结算本次点击。
+			 */
+			const responded = await this.waitFor(() => {
+				if (this.fullSequence <= before || this.value === null) return false;
+				// 只有 stateId 明确倒退（迟到包）才排除；相等/更大都接受，避免把
+				// "服务端复用同一状态代次但内容已变"误判成无响应。
+				if (stateAtDispatch !== null && this.lastStateId !== null && this.lastStateId < stateAtDispatch) return false;
+				// 真服 SHELTER 证据：工作台窗口会先回一个"仅同步"的 full（stateId 推进但内容不变），
+				// 真正的点击结果随后才到。只凭 full 到达就结算会把同步包误判成拒绝；
+				// 因此仍要求 clicked slot / cursor 发生变化，才进入结果分类。
+				return !jsonEqual(
+					{ slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor },
+					{ slot: slotBefore, cursor: cursorBefore },
+				);
+			});
+			const diagnostics = (outcome: WindowClickOutcome): NonNullable<WindowClickReceipt["diagnostics"]> => {
+				const current = this.value;
+				const slotAfter = current?.slots[input.slot]?.item ?? null;
+				const cursorAfter = current?.cursor ?? null;
+				return {
+					stateBefore: stateAtDispatch,
+					stateAfter: this.lastStateId,
+					slot: input.slot,
+					button: input.button,
+					elapsedMs: Date.now() - startedAt,
+					slotChanged: !jsonEqual(slotAfter, slotBefore),
+					cursorChanged: !jsonEqual(cursorAfter, cursorBefore),
+					recovery:
+						outcome === "unknown"
+							? "no authoritative full was attributable to this click; close this window, reopen a controlled session, re-read server state before any further inventory write"
+							: outcome === "rejected"
+								? "server returned an unchanged authoritative state; recompute remaining work from the new snapshot, do not resend the original click"
+								: "server state diverged from the predicted result; cursor may be held, close and reopen before computing remaining work",
+				};
+			};
+			if (!responded || !this.live() || this.value === null)
+				return this.unknown(effect, operation, diagnostics("unknown"));
 			this.check();
 			const actual = { slot: this.value.slots[input.slot]?.item ?? null, cursor: this.value.cursor };
-			if (expected === null || !jsonEqual(actual, expected)) return this.unknown(effect, operation);
-			const completion = "met";
-			this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", completion, {
+			const matched = expected !== null && jsonEqual(actual, expected);
+			if (matched) {
+				this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", "met", {
+					window: value.window,
+					completionContract: "forced-stateId business click returned the exact mode-0 clicked slot and cursor result",
+					stateId: this.lastStateId,
+				});
+				return {
+					effect,
+					dispatch: "sent",
+					completion: "met",
+					evidence: [],
+					confirmed: structuredClone(this.value),
+					needsSnapshot: false,
+					outcome: "confirmed",
+					diagnostics: diagnostics("confirmed"),
+				};
+			}
+			// 状态确实变了，但与客户端预测不符：不做成功推断，也不抹掉已派发事实。
+			// 注意：内容完全没变的 full 不能证明拒绝——真服上它可能只是同步包，
+			// 所以那种情况继续等（超时后按 unknown 结算），不在这里猜。
+			this.uncertain = true;
+			this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", "unknown", {
 				window: value.window,
-				completionContract: "forced-stateId business click returned the exact mode-0 clicked slot and cursor result",
+				completionContract: "authoritative state diverged from the predicted click result",
+				stateId: this.lastStateId,
 			});
 			return {
 				effect,
 				dispatch: "sent",
-				completion,
+				completion: "unknown",
 				evidence: [],
-				confirmed: structuredClone(this.value),
-				needsSnapshot: false,
+				needsSnapshot: true,
+				outcome: "diverged",
+				diagnostics: diagnostics("diverged"),
 			};
 		} catch (error) {
 			if (sent) return this.unknown(effect, operation);
@@ -539,12 +599,20 @@ export class WindowSessionImpl implements WindowSession {
 		}
 	}
 
-	private unknown(effect: Ref, operation: Ref): WindowClickReceipt {
+	private unknown(effect: Ref, operation: Ref, diagnostics?: WindowClickReceipt["diagnostics"]): WindowClickReceipt {
 		this.uncertain = true;
 		this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", "sent", "unknown", {
 			completionContract: "click dispatched but authoritative synchronization did not complete; no automatic retry",
 		});
-		return { effect, dispatch: "sent", completion: "unknown", evidence: [], needsSnapshot: true };
+		return {
+			effect,
+			dispatch: "sent",
+			completion: "unknown",
+			evidence: [],
+			needsSnapshot: true,
+			outcome: "unknown",
+			...(diagnostics ? { diagnostics } : {}),
+		};
 	}
 
 	/**

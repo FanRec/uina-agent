@@ -47,7 +47,10 @@ const descriptor: CallableDescriptor = {
 			at: POS_SCHEMA,
 			tolerance: { type: "integer", minimum: 1, maximum: 8, description: "GoalNear radius in blocks (default 2)" },
 			digThrough: { type: "boolean", description: "allow digging through obstacles (default false)" },
-			placeToReach: { type: "boolean", description: "allow placing blocks to reach (default true)" },
+			placeToReach: {
+				type: "boolean",
+				description: "allow placing blocks to reach (default false; ordinary navigation must not modify terrain)",
+			},
 			sprint: { type: "boolean", description: "allow sprinting (default true)" },
 			maxTimeMs: { type: "number", minimum: 1000, maximum: 600000, description: "wall-clock budget (default 120000)" },
 		},
@@ -301,7 +304,8 @@ export const navigationModule: MinecraftCapabilityModule = {
 								tolerance: raw.tolerance ?? 2,
 								sprint: raw.sprint ?? true,
 								digThrough: raw.digThrough ?? false,
-								placeToReach: raw.placeToReach ?? true,
+								// 普通导航不改世界；攀爬/搭桥类任务由调用方显式授权施工。
+								placeToReach: raw.placeToReach ?? false,
 								timeoutMs: raw.maxTimeMs ?? 120000,
 							},
 							ctx.signal,

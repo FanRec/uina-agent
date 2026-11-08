@@ -43,7 +43,13 @@ async function main(mc, input) {
 }
 `;
 
-/** 1:1 下坡走廊到矿石囊，采铁，自己走回地面。 */
+/**
+ * 1:1 下坡走廊到矿石囊，采铁，自己走回地面。
+ *
+ * 任务级闭环：受理/子调用成功都不等于原目标达成。返程与背包都在**最新事实**上
+ * 终验；任何一项不满足都交还主脑（NEEDS_DECISION），绝不打印 returned 后正常结束。
+ * 已知的局部方案（surface + 二次 goto）只允许在返程失败时尝试，且失败不伪装成功。
+ */
 export const MINE_PROGRAM = String.raw`
 async function main(mc, input) {
   const t0 = Date.now();
@@ -51,6 +57,22 @@ async function main(mc, input) {
     console.log('STEP ' + name + (detail === undefined ? '' : ' ' + JSON.stringify(detail)));
     mc.progress({ step: name });
   };
+  const readSelf = async () => (await mc.read('self@1')).value;
+  const readCounts = async () => {
+    const fact = await mc.read('inventory@1');
+    return fact.value && fact.value.counts ? fact.value.counts : null;
+  };
+  const homeCheck = (self, start, dimension) => {
+    const here = self && self.place ? self.place.position : null;
+    if (!self || !here || dimension == null) return false;
+    return self.place.dimension === dimension && self.onGround === true &&
+      Math.hypot(here.x - start.x, here.z - start.z) <= 3 &&
+      here.y >= start.y - 0.5 && here.y <= start.y + 1.0;
+  };
+
+  const startSelf = await readSelf();
+  const startDimension = startSelf && startSelf.place ? startSelf.place.dimension : null;
+  step('start', { position: startSelf && startSelf.place ? startSelf.place.position : null, dimension: startDimension });
 
   step('tunnel_down', input.vein);
   const dug = await mc.call('tunnel@1', { to: input.vein, maxTimeMs: input.digMs });
@@ -66,9 +88,12 @@ async function main(mc, input) {
   let walkError = null;
   try {
     step('return_goto', input.start);
-    // tolerance 1：GoalNear 半径 2 会把"井口内一格、低一格"判为到达（G30 缺陷 c 的
-    // 早停形态）——回起点必须站上出发平台，tolerance 1 + goto 的 nodeGap 复核兜底。
-    await mc.call('goto@1', { at: input.start, tolerance: 1, digThrough: true, maxTimeMs: input.returnMs });
+    // 回程爬自己挖出的井道：施工能力在此显式授权（goto@1 默认已不垫块）。
+    // tolerance 1 + nodeGap 复核防止"井口内一格、低一格"被 GoalNear 误判到达。
+    await mc.call('goto@1', {
+      at: input.start, tolerance: 1, digThrough: true, placeToReach: true,
+      maxTimeMs: input.returnMs
+    });
   } catch (error) {
     gotoError = String((error && error.code) || '') + ' ' + String((error && error.message) || error);
     step('goto_failed', gotoError);
@@ -90,12 +115,40 @@ async function main(mc, input) {
       step('walk_failed', walkError);
     }
   }
+
+  // 领域终验：只读最新事实，不采信 goto 的文字、也不采信自己的 returnMode。
+  let self = await readSelf();
+  let counts = await readCounts();
+  let atHome = homeCheck(self, input.start, startDimension);
+  let iron = counts ? (counts.raw_iron || 0) : 0;
+  if (!atHome || iron < input.ore) {
+    await mc.sleep(500);
+    self = await readSelf();
+    counts = await readCounts();
+    atHome = homeCheck(self, input.start, startDimension);
+    iron = counts ? (counts.raw_iron || 0) : 0;
+  }
+  step('verified', {
+    atHome: atHome, iron: iron, need: input.ore, returnMode: returnMode,
+    position: self && self.place ? self.place.position : null
+  });
+  if (!atHome || counts === null || iron < input.ore) {
+    mc.decide('返程或目标核验未通过，不能宣布任务完成', {
+      phase: 'verify_failed', goal: { ore: input.ore, start: input.start },
+      atHome: atHome, observedIron: iron, returnMode: returnMode,
+      observedPosition: self && self.place ? self.place.position : null,
+      observedDimension: self && self.place ? self.place.dimension : null,
+      errors: { goto: gotoError, surface: surfaceError, walk: walkError }
+    });
+  }
   step('returned', returnMode);
   return {
     ms: Date.now() - t0,
     dug: dug,
     ore: ore,
     returnMode: returnMode,
+    atHome: true,
+    observedIron: iron,
     gotoError: gotoError,
     surfaceError: surfaceError,
     walkError: walkError,

@@ -56,7 +56,8 @@ export interface QueryDescriptor {
 }
 
 export interface SearchSummary {
-	kind: "capability" | "program" | "blueprint" | "experience";
+	/** guide 是随版本发布的只读官方教学资料：可检索、可读正文，永不 callable。 */
+	kind: "capability" | "guide" | "program" | "blueprint" | "experience";
 	callable: boolean;
 	name: string;
 	ref?: string;
@@ -91,6 +92,14 @@ export type DiscoveryEntry =
 			summary: string | null;
 			tags: string[];
 			path: string;
+	  }
+	| {
+			kind: "guide";
+			callable: false;
+			name: string;
+			summary: string;
+			tags: string[];
+			content: string;
 	  };
 
 export interface CallableDirectory {

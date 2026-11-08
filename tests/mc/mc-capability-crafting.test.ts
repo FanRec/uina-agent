@@ -158,10 +158,17 @@ describe("craft@1", () => {
 		const value = (await harness.callable("craft@1").invoke(harness.ctx, {
 			item: "iron_pickaxe",
 			count: 1,
-		})) as { crafted: number; consumed: Record<string, number>; at: { position: { x: number; y: number; z: number } } };
+		})) as {
+			crafted: number;
+			consumed: Record<string, number>;
+			at: { position: { x: number; y: number; z: number } };
+			station: { source: string; block: string; placed: boolean };
+		};
 		expect(value.crafted).toBe(1);
 		expect(value.consumed).toEqual({ iron_ingot: 3, stick: 2 });
 		expect(value.at.position).toEqual({ x: 11, y: 64, z: 10 });
+		// C13：工作台来源是可见副作用，不是隐式的"凭空 at"。
+		expect(value.station).toEqual({ source: "nearby", block: "crafting_table", placed: false });
 		expect(harness.calls).toContain("openContainer");
 		expect(window?.closed).toBe(1);
 	});

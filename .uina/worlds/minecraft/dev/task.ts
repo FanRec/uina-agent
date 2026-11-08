@@ -114,10 +114,24 @@ function runProgram(
 		}
 		const run = acceptance.snapshot.run;
 		const reply = await h.runtime.wait(run, { timeoutMs: budgetMs });
-		if (reply.kind !== "result" || reply.snapshot.phase !== "finished") {
+		if (
+			reply.kind !== "result" ||
+			(reply.snapshot.phase !== "finished" && reply.snapshot.phase !== "awaiting_decision")
+		) {
 			// 验收脚本放弃这个步骤时显式停自己的 Run：否则 tunnel/build 会在断言期继续改世界。
 			await h.runtime.stop({ requestId: `stop:${requestId}`, target: { run } });
 			return { ok: false, code: "TIMEOUT", message: reply.kind, run };
+		}
+		if (reply.snapshot.phase === "awaiting_decision") {
+			// Program 用 mc.decide 交还主脑 = 原目标未达成。验收脚本不是主脑，
+			// 不能把"待决策"当成成功，也不能冒充超时。
+			await h.runtime.stop({ requestId: `stop:${requestId}`, target: { run } });
+			return {
+				ok: false,
+				code: "NEEDS_DECISION",
+				message: "program handed the open goal back for a decision; original goal is not met",
+				run,
+			};
 		}
 		if (reply.snapshot.outcome !== "succeeded") {
 			let detail = reply.snapshot.error?.message ?? "";

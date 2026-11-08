@@ -191,15 +191,21 @@ async function craftBatch(
 	}
 }
 
-/** 3×3 需要工作台：附近有就用，没有就用背包里的放一个；都没有就是缺工具。 */
-async function resolveTable(ctx: CallContext): Promise<Vec3> {
+type StationSource = "nearby" | "placed";
+
+/**
+ * 3×3 需要工作台：附近有就用，没有就用背包里的放一个；都没有就是缺工具。
+ * 返回来源与位置——自动放置是真实世界副作用，必须让上层看见，不能只给一个坐标。
+ */
+async function resolveTable(ctx: CallContext): Promise<{ at: Vec3; source: StationSource }> {
 	const nearby = await findStation(ctx, "crafting_table", 8);
 	if (nearby != null) {
 		await approachBlock(ctx, nearby, "craft");
-		return nearby;
+		return { at: nearby, source: "nearby" };
 	}
 	const inventory = await readInventory(ctx.world);
-	if ((inventory.counts.crafting_table ?? 0) > 0) return await placeStation(ctx, "crafting_table");
+	if ((inventory.counts.crafting_table ?? 0) > 0)
+		return { at: await placeStation(ctx, "crafting_table"), source: "placed" };
 	fail("MISSING_TOOL", "a 3x3 recipe needs a crafting table", {
 		hint: "craft a crafting_table from 4 planks on the hand grid first, or place one near you",
 	});
@@ -209,7 +215,11 @@ async function withCraftWindow(
 	ctx: CallContext,
 	station: "hand" | "crafting_table",
 	work: (window: WindowSession) => Promise<void>,
-): Promise<{ position: Vec3; dimension: string } | null> {
+): Promise<{
+	position: Vec3;
+	dimension: string;
+	station: { source: StationSource; block: "crafting_table"; placed: boolean };
+} | null> {
 	if (station === "hand") {
 		await ctx.withBody(async (scope: BodyCallScope) => {
 			interrupted(ctx, "craft");
@@ -217,9 +227,9 @@ async function withCraftWindow(
 		});
 		return null;
 	}
-	const position = await resolveTable(ctx);
+	const table = await resolveTable(ctx);
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-	const target: BlockTarget = { block: position, place: { ...self.place, position } };
+	const target: BlockTarget = { block: table.at, place: { ...self.place, position: table.at } };
 	await ctx.withBody(async (scope: BodyCallScope) => {
 		interrupted(ctx, "craft");
 		const window = await scope.player.openContainer(target);
@@ -229,7 +239,11 @@ async function withCraftWindow(
 			await window.close({ force: true });
 		}
 	});
-	return { position, dimension: self.place.dimension };
+	return {
+		position: table.at,
+		dimension: self.place.dimension,
+		station: { source: table.source, block: "crafting_table", placed: table.source === "placed" },
+	};
 }
 
 const craftDescriptor: CallableDescriptor = {
@@ -330,7 +344,7 @@ export const craftModule: MinecraftCapabilityModule = {
 						consumed: { ...consumed },
 						remaining: Math.max(0, wanted - (produced[name] ?? 0)),
 					});
-					let at: { position: Vec3; dimension: string } | null;
+					let at: Awaited<ReturnType<typeof withCraftWindow>>;
 					try {
 						at = await withCraftWindow(ctx, gridStation, async (window) => {
 							state = moveState((await window.snapshot()).value);
@@ -368,10 +382,13 @@ export const craftModule: MinecraftCapabilityModule = {
 						throw error;
 					}
 					const gained = produced[name] ?? 0;
+					// 自动放工作台是真实副作用：进度与结果都要说明来源与位置，
+					// 否则上层只看到"凭空多了一个 at"，无法判断背包里的工作台去哪了。
+					if (at != null) await ctx.progress(plain({ ...progress(), station: at.station }) as never);
 					if (gained < wanted) {
 						fail("TARGET_NOT_MET", `crafted ${gained} of ${name}, expected ${wanted}`, {
 							dispatch: "sent",
-							progress: plain(progress()) as never,
+							progress: plain({ ...progress(), ...(at == null ? {} : { station: at.station }) }) as never,
 						});
 					}
 					return plain({
@@ -379,7 +396,9 @@ export const craftModule: MinecraftCapabilityModule = {
 						produced,
 						consumed,
 						remaining: 0,
-						...(at == null ? {} : { at: plain({ position: at.position, dimension: at.dimension }) }),
+						...(at == null
+							? {}
+							: { at: plain({ position: at.position, dimension: at.dimension }), station: at.station }),
 					}) as JsonValue;
 				},
 		},

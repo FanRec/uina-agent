@@ -12,7 +12,14 @@ const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
 export type NativeWindow = NonNullable<MineflayerBot["currentWindow"]>;
 export type ProtocolNotice =
-	| { kind: "full"; windowId: number; items: (JsonValue | null)[]; cursor: JsonValue | null }
+	| {
+			kind: "full";
+			windowId: number;
+			items: (JsonValue | null)[];
+			cursor: JsonValue | null;
+			/** 服务端状态代次（1.17.1+）；用于把 full 回执归因到某次 click，缺失时保持 null。 */
+			stateId: number | null;
+	  }
 	| { kind: "slot"; windowId: number; slot: number; item: JsonValue | null }
 	| { kind: "cursor"; item: JsonValue | null }
 	| { kind: "player_slot"; slot: number; item: JsonValue | null }
@@ -59,6 +66,8 @@ interface NativeItem {
 }
 interface ItemCodec {
 	fromNotch(value: unknown): NativeItem | null;
+	/** 与 mineflayer 上游同一个 Item 构造器：window_click 的 cursorItem 必须是客户端真实 cursor。 */
+	toNotch(item: NativeItem): unknown;
 }
 /** 商人报价的线上形态：付款项给 itemId/count，产物是 Slot（count=0 表示空）。 */
 interface RawTradeCost {
@@ -75,7 +84,8 @@ interface RawTrade {
 	xp?: number;
 }
 interface RawPackets {
-	window_items: { windowId: number; items: unknown[]; carriedItem?: unknown };
+	// 真服探针（dev/window-probe.ts，Paper 1.21.11）：window_items 带单调递增 stateId。
+	window_items: { windowId: number; items: unknown[]; carriedItem?: unknown; stateId?: number };
 	set_slot: { windowId: number; slot: number; item: unknown };
 	set_cursor_item: { contents: unknown };
 	set_player_inventory: { slotId: number; contents: unknown };
@@ -258,7 +268,13 @@ class Protocol12111 implements DriverProtocol {
 					this.playerSynchronized = true;
 				}
 			}
-			this.emit({ kind: "full", windowId: packet.windowId, items, cursor });
+			this.emit({
+				kind: "full",
+				windowId: packet.windowId,
+				items,
+				cursor,
+				stateId: typeof packet.stateId === "number" ? packet.stateId : null,
+			});
 		});
 		raw("set_slot", (packet) => {
 			const item = this.decode(packet.item);
@@ -545,6 +561,9 @@ class Protocol12111 implements DriverProtocol {
 	click(window: NativeWindow, slot: number, button: number): void {
 		this.check();
 		this.playerSynchronized = false;
+		// 真服 SHELTER 二分：发送 window.selectedItem 反而让工作台点击被拒
+		// （selectedItem 不是 Uina 的权威 cursor）。保持 baseline 的 null，
+		// cursor 一致性由上层"CURSOR_NOT_EMPTY / 先清空再写"约束保证。
 		this.write("window_click", {
 			windowId: window.id,
 			stateId: -1,

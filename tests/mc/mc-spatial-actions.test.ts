@@ -195,6 +195,35 @@ describe("excavate@1", () => {
 		expect(error.progress?.remaining).toHaveLength(47);
 	});
 
+	test("C11 an interrupted budget keeps never-visited cells in remainingCount (no double count)", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		// 4×4×4 = 64 格，全部实心；与 self(10,64,10) 不重叠。
+		solidBox(state, { x: 20, y: 62, z: 20 }, { x: 23, y: 65, z: 23 });
+		const controller = new AbortController();
+		let digs = 0;
+		const h = makeHarness(state, {
+			onDig: (target) => {
+				state.blocks.set(key(target.block), { name: "air", properties: {} });
+				digs += 1;
+				if (digs === 5) controller.abort();
+			},
+		});
+		const error = (await invoke(
+			h,
+			"excavate@1",
+			{ region: { from: { x: 20, y: 62, z: 20 }, to: { x: 23, y: 65, z: 23 } } },
+			{ ...h.ctx, signal: controller.signal },
+		).catch((err: unknown) => err)) as {
+			code?: string;
+			progress?: { dug: number; remainingCount: number; reasons: Record<string, number> };
+		};
+		expect(error.code).toBe("INTERRUPTED");
+		expect(error.progress?.dug).toBe(5);
+		// 旧实现只统计"尝试失败"格 → 这里会是 0；守恒后必须是 64 - 5 = 59。
+		expect(error.progress?.remainingCount).toBe(59);
+		expect(error.progress?.reasons).toMatchObject({ not_attempted: 59 });
+	});
+
 	test("regions above the voxel limit are rejected before any dig", async () => {
 		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
 		pit(state);

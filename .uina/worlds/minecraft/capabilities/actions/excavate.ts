@@ -130,7 +130,20 @@ interface ExcavateProgress {
 	drops: Record<string, number>;
 }
 
-/** progress 快照（plain() 过 JsonValue 边界；remaining 只给条数或全量按需）。 */
+/** 未完成明细的有界样本：失败/未访问格可能成千，不能整表塞进错误文本。 */
+const REMAINING_SAMPLE_LIMIT = 64;
+
+function reasonCounts(remaining: { at: Vec3; reason: string }[]): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const entry of remaining) counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+	return counts;
+}
+
+/**
+ * progress 快照：`remainingCount` 是**计划内未确认完成**的总数（含从未轮到的格），
+ * `remaining` 只是有界样本，`reasons` 是按原因汇总。三者守恒口径一致：
+ * plannedActionable = dug + kept/skipped + remainingCount。
+ */
 function progressSnapshot(
 	progress: ExcavateProgress,
 	remaining: { at: Vec3; reason: string }[],
@@ -139,16 +152,10 @@ function progressSnapshot(
 	return {
 		dug: progress.dug,
 		drops: progress.drops,
-		...(fullRemaining ? { remaining } : { remaining: remaining.length }),
+		remainingCount: remaining.length,
+		reasons: reasonCounts(remaining),
+		...(fullRemaining ? { remaining: remaining.slice(0, REMAINING_SAMPLE_LIMIT) } : {}),
 	};
-}
-
-function interrupted(progress: ExcavateProgress, remaining: { at: Vec3; reason: string }[]): never {
-	fail("INTERRUPTED", "excavate was interrupted by run stop or safety", {
-		dispatch: "sent",
-		progress: progressSnapshot(progress, remaining, false),
-		recoverable: true,
-	});
 }
 
 export const excavateModule: MinecraftCapabilityModule = {
@@ -188,30 +195,54 @@ export const excavateModule: MinecraftCapabilityModule = {
 					const progress: ExcavateProgress = { dug: 0, drops: {} };
 					const kept: { at: Vec3; name: string }[] = [];
 					const remaining: { at: Vec3; reason: string }[] = [];
+					// 计划全集只构造一次：收尾/中断时用它补"从未轮到"的格，
+					// 否则 remaining 只含尝试失败格，进度会把未访问量当成完成。
+					const planned = layers.flat();
+					const atKey = (at: Vec3): string => `${at.x},${at.y},${at.z}`;
+					const processed = new Set<string>();
+					const unvisited = (): { at: Vec3; reason: string }[] =>
+						planned.filter((at) => !processed.has(atKey(at))).map((at) => ({ at, reason: "not_attempted" }));
+					const outstanding = (): { at: Vec3; reason: string }[] => [...remaining, ...unvisited()];
+					const interrupt = (): never =>
+						fail("INTERRUPTED", "excavate was interrupted by run stop or safety", {
+							dispatch: "sent",
+							progress: progressSnapshot(progress, outstanding(), false),
+							recoverable: true,
+						});
 
 					const observeDrop = async (before: InventorySnapshot): Promise<void> => {
-						const polled = await pollUntil(
-							async () => await readInventory(ctx.world),
-							(inv) => Object.keys(positiveDelta(before, inv)).length > 0,
-							{ timeoutMs: DROP_WINDOW_MS, intervalMs: DROP_INTERVAL_MS, signal: ctx.signal },
-						);
-						const after = polled.ok && polled.last != null ? polled.last : await readInventory(ctx.world);
-						for (const [name, delta] of Object.entries(positiveDelta(before, after))) {
-							progress.drops[name] = (progress.drops[name] ?? 0) + delta;
+						try {
+							const polled = await pollUntil(
+								async () => await readInventory(ctx.world),
+								(inv) => Object.keys(positiveDelta(before, inv)).length > 0,
+								{ timeoutMs: DROP_WINDOW_MS, intervalMs: DROP_INTERVAL_MS, signal: ctx.signal },
+							);
+							const after = polled.ok && polled.last != null ? polled.last : await readInventory(ctx.world);
+							for (const [name, delta] of Object.entries(positiveDelta(before, after))) {
+								progress.drops[name] = (progress.drops[name] ?? 0) + delta;
+							}
+						} catch (error) {
+							// 观察窗被停止打断时也要带守恒进度：不能丢掉"已挖多少、还剩多少"。
+							if (ctx.signal.aborted) interrupt();
+							throw error;
 						}
 					};
 
 					for (const layer of layers) {
 						const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 						for (const cell of orderNear(layer, here.place.position)) {
-							if (ctx.signal.aborted) interrupted(progress, remaining);
+							if (ctx.signal.aborted) interrupt();
 							if (Date.now() >= deadline) {
-								fail("TIMEOUT", `excavate budget exhausted with ${remaining.length} uncleared cell(s)`, {
+								const outstandingNow = outstanding();
+								fail("TIMEOUT", `excavate budget exhausted with ${outstandingNow.length} uncleared cell(s)`, {
 									dispatch: "sent",
-									progress: progressSnapshot(progress, remaining, false),
+									progress: progressSnapshot(progress, outstandingNow, false),
 									recoverable: true,
 								});
 							}
+							// 只要轮到过这一格就记账，无论结果是 dug/open/kept/失败；
+							// 收尾时"未记账"才等于"从未访问"。
+							processed.add(atKey(cell));
 							const block = await readBlockAt(ctx.world, cell);
 							if (block == null) {
 								remaining.push({ at: cell, reason: "not_loaded" });
@@ -240,7 +271,7 @@ export const excavateModule: MinecraftCapabilityModule = {
 								inReach = await stepTo(ctx, scope, vantage, { maxMs: 4000 });
 							});
 							if (!inReach) {
-								if (ctx.signal.aborted) interrupted(progress, remaining);
+								if (ctx.signal.aborted) interrupt();
 								try {
 									await walkLeg(deps, ctx, owner, vantage, {
 										tolerance: 1,
@@ -248,7 +279,7 @@ export const excavateModule: MinecraftCapabilityModule = {
 										digThrough: true,
 									});
 								} catch (error) {
-									if (ctx.signal.aborted) interrupted(progress, remaining);
+									if (ctx.signal.aborted) interrupt();
 									const code = (error as { code?: string }).code;
 									if (code === "UNREACHABLE" || code === "TIMEOUT") {
 										// 走不到位不等于挖不到（如箱子正下方的格子：vantage 是箱子本身）。
@@ -300,11 +331,12 @@ export const excavateModule: MinecraftCapabilityModule = {
 							});
 						}
 					}
-					if (remaining.length > 0) {
-						// 收尾复核：行走腿（digThrough 兜底）可能顺带挖开了记入 remaining 的格子，
-						// 以世界读数为准再核一遍——空气即计入 dug，其余保留 remaining。
+					// 收尾复核：remaining + 从未轮到的格都要按世界读数再核一遍——
+					// 行走腿（digThrough 兜底）可能顺带挖开；空气即计入 dug，其余如实保留。
+					const outstandingNow = outstanding();
+					if (outstandingNow.length > 0) {
 						const still: { at: Vec3; reason: string }[] = [];
-						for (const entry of remaining) {
+						for (const entry of outstandingNow) {
 							const after = await readBlockAt(ctx.world, entry.at);
 							if (after != null && after.name === "air") progress.dug += 1;
 							else still.push(entry);

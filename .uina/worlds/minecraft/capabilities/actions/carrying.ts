@@ -90,10 +90,47 @@ function blockSources(sources: ItemSource[]): { block: string; harvest: HarvestR
 	return blocks;
 }
 
-/** 目标格被跳过的失败：换个格子还能继续，别把整次采集判死。 */
+/** 纯移动腿（pickup 的 goto）：走不到只是路线问题，换一个掉落物继续。 */
 function isSkippable(err: unknown): boolean {
 	const code = (err as CallFailure | undefined)?.code;
 	return code === "NOT_FOUND" || code === "UNREACHABLE" || code === "TIMEOUT";
+}
+
+type CandidateKind = "permanent" | "transient" | "unknown";
+
+interface CandidateAttempt {
+	at: Vec3;
+	kind: CandidateKind;
+	reason: string;
+	/** 失败发生时的观察依据；世界换代后瞬时排除才有据可查。 */
+	basis: { worldRevision: string | null; observedAt: string };
+}
+
+/**
+ * 接近目标的失败（goto）：移动超时只是预算问题，不修改世界，
+ * 可以换候选继续；不能把"走不过去"当成"已挖了但不知道结果"。
+ */
+export function approachKind(err: unknown): CandidateKind | null {
+	const code = (err as CallFailure | undefined)?.code;
+	if (code === "NOT_FOUND") return "permanent";
+	if (code === "UNREACHABLE" || code === "TIMEOUT") return "transient";
+	return null;
+}
+
+/**
+ * 挖源方块的失败（mine）：TIMEOUT 必须先看 dispatch/effects。
+ * 已经派发或已有 effect 时结果未知——换候选会把"可能已挖掉"当成没发生。
+ */
+export function mineKind(err: unknown): CandidateKind | null {
+	const failure = err as CallFailure | undefined;
+	const code = failure?.code;
+	if (code === "NOT_FOUND") return "permanent";
+	if (code === "UNREACHABLE") return "transient";
+	if (code === "TIMEOUT") {
+		const dispatched = failure?.dispatch === "sent" || (failure?.effects?.length ?? 0) > 0;
+		return dispatched ? "unknown" : "transient";
+	}
+	return null;
 }
 
 /** 子调用失败 → 保留局部诊断字段，数量以本次组合动作的累计进度为准。 */
@@ -302,16 +339,21 @@ interface CollectInput {
 	tool?: string | ItemSelector;
 }
 
-/** 采集前沿：按来源方块逐个搜，合并去重，滤掉已经试过的格子。 */
+/**
+ * 采集前沿：按来源方块逐个搜，合并去重，滤掉已经试过的格子。
+ * 永久排除（源方块已不在）与瞬时排除（路线暂不可达）分开：
+ * 瞬时项在真正拿到资源后释放，允许环境变化后重新评估；永久项不无限重试。
+ */
 async function gatherFrontier(
 	ctx: CallContext,
 	blockNames: string[],
 	radius: number,
-	tried: Map<string, Vec3>,
+	tried: Map<string, CandidateAttempt>,
 ): Promise<Vec3[]> {
 	const exclude = [...tried.values()]
+		.filter((attempt) => attempt.kind === "permanent" || attempt.kind === "transient")
 		.slice(-EXCLUDE_LIMIT)
-		.map((position) => ({ x: position.x, y: position.y, z: position.z }));
+		.map((attempt) => ({ x: attempt.at.x, y: attempt.at.y, z: attempt.at.z }));
 	const frontier: Vec3[] = [];
 	const seen = new Set<string>();
 	for (const name of blockNames) {
@@ -601,9 +643,10 @@ export const carryingModule: MinecraftCapabilityModule = {
 					let acquired = 0;
 					const collected: Record<string, number> = {};
 					const toolsUsed = new Set<string>();
-					const tried = new Map<string, Vec3>();
+					const tried = new Map<string, CandidateAttempt>();
 					let frontier: Vec3[] = [];
 					let attempts = 0;
+					let skipped = 0;
 					/** 最近一次被跳过的原因：放弃时要说清楚是哪一步在挡路，而不是只说"试过了"。 */
 					const lastSkip: { current: { code: string; message: string } | null } = { current: null };
 					const maxAttempts = Math.max(8, count * 4);
@@ -611,11 +654,22 @@ export const carryingModule: MinecraftCapabilityModule = {
 						const failure = err as CallFailure;
 						lastSkip.current = { code: failure.code ?? "UNKNOWN", message: failure.message ?? "" };
 					};
+					const recordAttempt = (at: Vec3, kind: CandidateKind, err: unknown, worldRevision: string | null): void => {
+						const failure = err as CallFailure;
+						tried.set(posKey(at), {
+							at,
+							kind,
+							reason: `${failure?.code ?? "UNKNOWN"}: ${failure?.message ?? String(err)}`,
+							basis: { worldRevision, observedAt: new Date().toISOString() },
+						});
+					};
 					const progressOf = (): Progress => ({
 						mined,
 						acquired,
 						collected: { ...collected },
 						remaining: Math.max(0, count - acquired),
+						attempted: attempts,
+						skipped,
 						toolsUsed: [...toolsUsed],
 					});
 
@@ -641,6 +695,24 @@ export const carryingModule: MinecraftCapabilityModule = {
 							});
 						}
 						if (frontier.length === 0) {
+							// 候选耗尽但"已挖数 > 已入包数"：掉落物可能还在地上。
+							// 先做一次有界清扫再判定资源耗尽，别把未入包的挖除数当成没有资源。
+							if (mined > acquired) {
+								try {
+									await ctx.call("pickup@1", { item, radius: 8, maxTimeMs: 8000 });
+								} catch {
+									// 清扫失败不掩盖事实：下面的库存读数会如实反映拿到多少。
+								}
+								const swept = await readInventory(ctx.world);
+								const sweptGain = positiveDelta(baseline, swept)[item] ?? 0;
+								if (sweptGain > 0) {
+									acquired += sweptGain;
+									collected[item] = (collected[item] ?? 0) + sweptGain;
+									baseline = swept;
+									await ctx.progress(progressOf());
+								}
+								if (acquired >= count) break;
+							}
 							frontier = await gatherFrontier(
 								ctx,
 								harvestable.map((source) => source.block),
@@ -682,7 +754,6 @@ export const carryingModule: MinecraftCapabilityModule = {
 							);
 						}
 						attempts++;
-						tried.set(key, target);
 						if (blockReach(self, target) > COLLECT_APPROACH) {
 							try {
 								await ctx.call("goto@1", {
@@ -692,8 +763,11 @@ export const carryingModule: MinecraftCapabilityModule = {
 									maxTimeMs: Math.max(1000, Math.min(COLLECT_APPROACH_TIMEOUT_MS, deadline - Date.now())),
 								});
 							} catch (err) {
-								if (isSkippable(err)) {
+								const kind = approachKind(err);
+								if (kind != null) {
 									skipOf(err);
+									recordAttempt(target, kind, err, self.place.worldRevision);
+									skipped += 1;
 									continue;
 								}
 								throw withProgress(err, progressOf());
@@ -707,8 +781,14 @@ export const carryingModule: MinecraftCapabilityModule = {
 								...(raw.tool != null ? { tool: raw.tool } : {}),
 							})) as { broken?: boolean; tool?: string };
 						} catch (err) {
-							if (isSkippable(err)) {
+							const kind = mineKind(err);
+							// 已派发但结果未知：换候选会把"可能已挖掉"当成没发生。
+							// 保留 Effect 与进度，交给上层重新观察或决策。
+							if (kind === "unknown") throw withProgress(err, progressOf());
+							if (kind != null) {
 								skipOf(err);
+								recordAttempt(target, kind, err, self.place.worldRevision);
+								skipped += 1;
 								continue;
 							}
 							throw withProgress(err, progressOf());
@@ -729,6 +809,10 @@ export const carryingModule: MinecraftCapabilityModule = {
 						if (gained > 0) {
 							acquired += gained;
 							collected[item] = (collected[item] ?? 0) + gained;
+							// 世界已经变化（源方块消失/路线可能改变）：释放瞬时排除，
+							// 让此前不可达的候选在下一次前沿重建时重新评估。
+							for (const [positionKey, attempt] of tried) if (attempt.kind === "transient") tried.delete(positionKey);
+							frontier = [];
 						}
 						baseline = after;
 						await ctx.progress(progressOf());

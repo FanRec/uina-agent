@@ -9,7 +9,7 @@
 import type { BodySession } from "../contracts/body.js";
 import type { CallableDescriptor, NativeCallable } from "../contracts/capabilities.js";
 import type { ProgramDiagnostic, ProgramSegmentScope, ResolvedProgram } from "../contracts/program.js";
-import type { RunRequest, RunWaitReply } from "../contracts/runtime.js";
+import type { ControlRetirementNotice, RunRequest, RunWaitReply } from "../contracts/runtime.js";
 import type { CallFailureData, JsonValue, Outcome, Progress, Ref } from "../contracts/values.js";
 
 export type ResolvedInvocation = {
@@ -116,6 +116,8 @@ export interface RunState {
 	record: Ref;
 	progress: Progress;
 	stopped: boolean;
+	/** 第一次真实撤销的不可变起因；只写一次，供 Call/Run 的失败与追踪引用。 */
+	retiredBy?: ControlRetirementNotice | null;
 	abort: AbortController;
 	awaitingBody: number;
 	waiters: Set<RunWaiter>;

@@ -109,6 +109,7 @@ export class WorldActivation {
 		try {
 			await this.definition.onStart?.(this.context);
 			this.registerRequestContext();
+			this.registerEnvironmentGuide();
 			const rawTool = createWorldTool(this.definition, {
 				getRuntime: () => this.host.runtime,
 			});
@@ -163,6 +164,39 @@ export class WorldActivation {
 				},
 				{ tail: true },
 			),
+		);
+	}
+
+	/**
+	 * 静态环境指引：世界提供短正文，框架在回合边界把它追加到本轮 systemPrompt。
+	 *
+	 * 与 requestContext 分工：那是每请求的瞬态观察帧（会变的事实），这是每回合一次的
+	 * 环境认知（不变的原则）。getter 由世界决定此刻是否适用；这里只做同步纯读，
+	 * 不读世界事实、不写 Session、不落历史。
+	 *
+	 * turn.prepare 的合并规则是"后写覆盖先写"，且 host 会把上一份 systemPrompt 作为
+	 * 本 handler 的入参；因此这里**只追加**，多个启用世界（以及 MCP 等扩展）可以依次
+	 * 组合，不会互相擦掉。停用由 track 绑定的 scope 自动摘除 handler。
+	 */
+	private registerEnvironmentGuide(): void {
+		const provide = this.definition.environmentGuide;
+		if (!provide) return;
+		const { pi } = this.host;
+		const name = this.definition.name;
+		this.track(
+			pi.onHook("turn.prepare", ({ systemPrompt }) => {
+				if (!this.scope.active) return;
+				let guide: string | null;
+				try {
+					guide = provide();
+				} catch {
+					// 静态 getter 抛错不能把整个回合准备链打断；本轮不注入即可。
+					return;
+				}
+				const text = guide?.trim();
+				if (!text) return;
+				return { systemPrompt: `${systemPrompt}\n\n[world:${name}:environment]\n${text}` };
+			}),
 		);
 	}
 

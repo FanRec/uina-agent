@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { approachKind, mineKind } from "../../.uina/worlds/minecraft/capabilities/actions/carrying.js";
 import { type EntityFixture, failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /**
@@ -408,5 +409,31 @@ describe("drop@1", () => {
 		expect(err.code).toBe("TARGET_NOT_MET");
 		expect(err.dispatch).toBe("sent");
 		expect(err.progress).toMatchObject({ removed: { dirt: 1 }, dropped: {}, remaining: 0 });
+	});
+});
+
+/**
+ * C10：候选失败分类是 collect 的安全边界。
+ * 移动超时（goto）不修改世界，可以换候选；挖源方块超时若已派发/已有 effect，
+ * 结果未知，必须停止该副作用链，不能跳到别的候选假装没发生。
+ */
+describe("collect candidate failure classification (C10)", () => {
+	test("a dispatched mine TIMEOUT is unknown, never skippable", () => {
+		expect(mineKind({ code: "TIMEOUT", dispatch: "sent", effects: [] })).toBe("unknown");
+		expect(mineKind({ code: "TIMEOUT", dispatch: "unknown", effects: ["eff:1"] })).toBe("unknown");
+		// 未派发的超时只是预算问题，可换候选。
+		expect(mineKind({ code: "TIMEOUT", dispatch: "not_sent", effects: [] })).toBe("transient");
+		expect(mineKind({ code: "UNREACHABLE", dispatch: "not_sent", effects: [] })).toBe("transient");
+		expect(mineKind({ code: "NOT_FOUND", dispatch: "not_sent", effects: [] })).toBe("permanent");
+		// 未知错误不吞：交给上层。
+		expect(mineKind({ code: "INTERNAL", dispatch: "not_sent", effects: [] })).toBeNull();
+	});
+
+	test("approach failures are route-only and never world side effects", () => {
+		// goto 即使报了 sent，也只是移动；换候选不会漏掉已发生的世界修改。
+		expect(approachKind({ code: "TIMEOUT", dispatch: "sent", effects: ["eff:goto"] })).toBe("transient");
+		expect(approachKind({ code: "UNREACHABLE" })).toBe("transient");
+		expect(approachKind({ code: "NOT_FOUND" })).toBe("permanent");
+		expect(approachKind({ code: "CONTROL_CONFLICT" })).toBeNull();
 	});
 });

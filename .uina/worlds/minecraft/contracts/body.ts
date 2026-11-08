@@ -173,10 +173,31 @@ export interface StackExpectation {
 	count: number;
 }
 
+/**
+ * 真服探针（Paper 1.21.11）证实：强制 stateId 的 click 每次都会收到权威 full 回包。
+ * 因此回执必须区分"服务端确认 / 明确拒绝 / 状态分歧 / 无因果关联"，而不是把后两类
+ * 一律压成模糊 unknown。已有字段语义不变，新增字段是可选的有界诊断。
+ */
+export type WindowClickOutcome = "confirmed" | "rejected" | "diverged" | "unknown";
+
 export interface WindowClickReceipt extends EffectReceipt {
 	/** Authoritative response snapshot; only the clicked slot/cursor transition is attributed to this click. */
 	confirmed?: WindowSnapshot;
 	needsSnapshot: boolean;
+	/** 内部判定分类；未提供的旧构造方按 unknown 处理。 */
+	outcome?: WindowClickOutcome;
+	/** 可诊断证据：不含整张窗口，只读与本次 click 因果相关的有界事实。 */
+	diagnostics?: {
+		stateBefore: number | null;
+		stateAfter: number | null;
+		slot: number;
+		button: number;
+		elapsedMs: number;
+		cursorChanged: boolean;
+		slotChanged: boolean;
+		/** 待恢复条件，供上层决定是重开窗口还是交还主脑。 */
+		recovery: string;
+	};
 }
 
 /**

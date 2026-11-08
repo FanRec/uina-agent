@@ -338,6 +338,31 @@ export interface OwnerGateReceipt {
 	control: "stopping" | "stopped" | "unknown";
 	error?: string;
 }
+/**
+ * 控制资格被撤销的真实起因。只由发起方在 revoke/stop/抢占处写一次，
+ * 不从错误字符串反推；未识别来源保持 unknown。
+ * 与 SafetyCause 不同：那个只回答"这次安全终止要不要再提醒一次"（狭义 connection），
+ * 这个回答"谁在什么时候为了什么拿走了身体"，是审计事实。
+ */
+export type ControlRetirementCause =
+	| "safety"
+	| "user_stop"
+	| "run_preempted"
+	| "disconnect"
+	| "control_fault"
+	| "world_disabled"
+	| "unknown";
+
+export interface ControlRetirementNotice {
+	readonly cause: ControlRetirementCause;
+	/** 发起者标识（safety / host:stop / host:invalidateControl / runtime:shutdown ...）。 */
+	readonly initiator: string;
+	readonly at: string;
+	readonly run?: Ref;
+	readonly call?: Ref;
+	readonly detail?: string;
+}
+
 /** 可信本地升级口；launch 由组合根绑定，不由调用者提供。 */
 export interface ControlRetirement {
 	source: "runtime" | "driver" | "program";

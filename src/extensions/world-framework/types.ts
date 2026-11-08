@@ -179,6 +179,20 @@ export interface WorldDef {
 	requestContext?: () => Promise<string | null>;
 
 	/**
+	 * 静态环境指引（可选）：世界活动且其环境认知适用时返回一段短正文，否则 null。
+	 *
+	 * 与 requestContext 的分工：那是**每次模型请求**的瞬态观察帧（坐标、库存等会变的
+	 * 事实）；这是**每个回合**一次、不随事实变化的环境认知与实践原则。框架在
+	 * turn.prepare 把非空正文追加到本轮 systemPrompt 末尾，多个启用世界各自追加、
+	 * 互不覆盖；不写 Session canonical history，不注入为用户消息。
+	 *
+	 * 实现必须是同步、纯读、无副作用的 getter：不得读取世界事实、消费事件、启动 Run
+	 * 或做磁盘 IO（正文由世界在 onStart 预载到内存）。返回 null 表示本回合不适用，
+	 * 例如此刻没有该世界的活动会话。
+	 */
+	environmentGuide?: () => string | null;
+
+	/**
 	 * 工具执行模式声明（可选，默认 parallel）。
 	 * 有内部串行状态的世界（如 QQ 的单写方操作日志）声明 sequential，
 	 * 由 Broker 保证同一工具的调用不并发执行。

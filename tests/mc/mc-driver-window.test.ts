@@ -53,13 +53,16 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 	let carried: any = null;
 	let respond = true;
 	let accept = true;
-	const full = (windowId = 1) =>
+	const emitFull = (stateId: number, windowId = 1) =>
 		client.emit("window_items", {
 			windowId,
-			stateId: state++,
+			stateId,
 			items: contents.map((item) => Item.toNotch(item)),
 			carriedItem: Item.toNotch(carried),
 		});
+	const full = (windowId = 1) => emitFull(state++, windowId);
+	/** 模拟"迟到的初始 full"：stateId 不推进，不能归因到之后发出的 click。 */
+	const fullWithState = (stateId: number, windowId = 1) => emitFull(stateId, windowId);
 	client.on("window_items", (packet) => {
 		const window = bot.currentWindow;
 		if (window?.id !== packet.windowId) return;
@@ -112,6 +115,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 		facts,
 		contents,
 		full,
+		fullWithState,
 		setRespond: (value: boolean) => {
 			respond = value;
 		},
@@ -431,14 +435,32 @@ describe("Driver window lifetime and server confirmation", () => {
 		await h.session.close();
 	});
 
-	test("an unchanged full packet cannot prove rejection versus a delayed initial packet", async () => {
+	test("an unchanged full cannot prove rejection: it stays unknown and is never retried", async () => {
 		vi.useFakeTimers();
 		const h = harness();
 		const window = await h.session.openContainer(target);
+		// 服务端不执行业务点击，但仍回权威 full。真服 SHELTER 证据表明：
+		// 工作台窗口会先回一个"仅同步"的 full（内容不变），所以不能据此判拒绝。
 		h.setAccept(false);
 		const pending = window.click(await input(window));
 		await vi.advanceTimersByTimeAsync(6000);
-		expect(await pending).toMatchObject({ dispatch: "sent", completion: "unknown", needsSnapshot: true });
+		const receipt = await pending;
+		expect(receipt).toMatchObject({ dispatch: "sent", completion: "unknown", outcome: "unknown" });
+		expect(receipt.diagnostics).toMatchObject({ slot: 0, button: 0, slotChanged: false, cursorChanged: false });
+		expect(receipt.diagnostics?.recovery).toContain("no authoritative full");
+		await h.session.close();
+	});
+
+	test("a delayed initial full with an older stateId cannot settle a dispatched click", async () => {
+		vi.useFakeTimers();
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		h.setRespond(false);
+		const pending = window.click(await input(window));
+		// 迟到初始包：即使内容已经变化，stateId 倒退也不能归因到本次 click。
+		h.fullWithState(0);
+		await vi.advanceTimersByTimeAsync(6000);
+		expect(await pending).toMatchObject({ dispatch: "sent", completion: "unknown", outcome: "unknown" });
 		await h.session.close();
 	});
 

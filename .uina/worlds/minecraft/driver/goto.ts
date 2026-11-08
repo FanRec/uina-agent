@@ -768,7 +768,7 @@ export class GotoDirector {
 		const planned = await planPath(bot, at, tolerance, {
 			sprint: input.sprint ?? true,
 			digThrough: input.digThrough ?? false,
-			placeToReach: input.placeToReach ?? true,
+			placeToReach: input.placeToReach ?? false,
 		});
 		const distance = Math.round(Math.hypot(at.x - current.x, at.y - current.y, at.z - current.z) * 100) / 100;
 		const ok = planned.status === "success";

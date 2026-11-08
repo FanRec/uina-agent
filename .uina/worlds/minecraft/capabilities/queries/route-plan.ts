@@ -2,7 +2,8 @@
  * route.plan@1 的查询声明：只读试算，执行期限不参与计划。
  *
  * 唯一定义来源：docs/proposals/mc/modules/capabilities.md#route.plan、§2.11。
- * 字段和默认值与 goto 相同（tolerance 2、digThrough=false、placeToReach=true、sprint=true）；
+ * 字段和默认值与 goto 相同（tolerance 2、digThrough=false、placeToReach=false、sprint=true）；
+ * 计划与执行共用同一份 movement 配置，dry-run 不得因为默认值不同而比实际执行更可达。
  * maxTimeMs 只控制执行期限，不在这里。计划不可等待（version=null）；
  * 执行前按新现场复核，相同请求不保证世界未变，不引入 plan ID。
  */
@@ -17,7 +18,7 @@ const ROUTE_PLAN_INPUT: JsonSchema = {
 		at: POS_SCHEMA,
 		tolerance: { type: "integer", minimum: 1, maximum: 8, description: "GoalNear radius in blocks (default 2)" },
 		digThrough: { type: "boolean", description: "allow digging through obstacles (default false)" },
-		placeToReach: { type: "boolean", description: "allow placing blocks to reach (default true)" },
+		placeToReach: { type: "boolean", description: "allow placing blocks to reach (default false, same as goto@1)" },
 		sprint: { type: "boolean", description: "allow sprinting (default true)" },
 	},
 	required: ["at"],
