@@ -728,3 +728,82 @@ test("awaiting_decision hands out the decision, never a record pointer", () => {
 	expect(projected).not.toHaveProperty("nextCall");
 	expect(projected).not.toHaveProperty("outcome");
 });
+
+/** 一批待交付 completion 的最小 executor：pending 页 + 一份已超正文阈值的 delivery 状态。 */
+function pendingExecutor(keys: readonly string[]): MinecraftExecutor {
+	const pending = [...keys];
+	return {
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async (method: string, p: { ref?: string }) => {
+			if (method === "runtime.pendingDeliveries")
+				return { items: pending.map((completionRef) => ({ completionRef, requestId: completionRef })) };
+			if (method === "runtime.readDelivery")
+				return {
+					disposition: "pending",
+					eligible: true,
+					delivery: {
+						completionRef: p.ref,
+						requestId: p.ref,
+						run: "r",
+						segment: "s",
+						revision: 1,
+						recordBytes: 20000,
+						reportKind: "terminal",
+						snapshot: { phase: "finished", outcome: "succeeded" },
+					},
+				};
+			throw new Error(method);
+		},
+	} as unknown as MinecraftExecutor;
+}
+
+/** 只给单条入口的宿主：dev/session-live 的 stubContext 就是这个形状。 */
+function absentBatchPort(): ServiceCompanionContext["delivery"] {
+	return {
+		namespace: "n",
+		session: "s",
+		durability: "durable",
+		inspect: async () => ({ kind: "absent" }),
+		retire: async () => ({ kind: "retired" }),
+	};
+}
+
+test("宿主没有批量入口时显式报错，不静默把完成通知当成已交出", async () => {
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: absentBatchPort(),
+		emitEvent: async () => ({ accepted: true }),
+	};
+	const pump = new DeliveryPump(pendingExecutor(["only"]), ctx, 60_000);
+	try {
+		await pump.reconcile();
+		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
+		expect(pump.diagnostics().error?.message).toContain("批量投递入口");
+	} finally {
+		await pump.close();
+	}
+});
+
+test("批量回执少一条时清掉那条在途记录，不留下永远退不了的输入", async () => {
+	let calls = 0;
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: absentBatchPort(),
+		emitEvents: async (events) => {
+			calls++;
+			// 宿主少回一条：既没说接手，也没说拒收。
+			return events.slice(0, 1).map(() => ({ accepted: true }) as const);
+		},
+	};
+	const pump = new DeliveryPump(pendingExecutor(["a", "b"]), ctx, 60_000);
+	try {
+		await pump.reconcile();
+		// 只推微任务：交付结果处理完就断言，不让 wake(0) 的下一轮对账改写诊断。
+		for (let i = 0; i < 8; i++) await Promise.resolve();
+		expect(calls).toBe(1);
+		expect(pump.diagnostics().activeInputs.map((input) => input.key)).toEqual(["a"]);
+		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
+	} finally {
+		await pump.close();
+	}
+});

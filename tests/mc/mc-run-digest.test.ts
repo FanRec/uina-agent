@@ -52,3 +52,12 @@ test("空白摘要当作没有摘要，不产生只有分隔符的空行", () =>
 	expect(text?.endsWith("- run:5 · running")).toBe(true);
 	expect(text).not.toContain("running ·");
 });
+
+test("任务列表读不到时明确说未知，不留白被读成没有活跃任务", () => {
+	// null = 这次 Runtime 查询失败，和"查到 0 条"是两回事：留白会被模型读成任务都结束了。
+	const text = formatActiveRuns(null, at);
+	expect(text).toContain("未能读取");
+	expect(text).toContain("不代表没有活跃任务");
+	expect(text).toContain("runs.list");
+	expect(formatActiveRuns([], at)).toBeNull();
+});
