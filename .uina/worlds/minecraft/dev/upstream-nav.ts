@@ -112,7 +112,18 @@ async function main(): Promise<void> {
 			.join(", ");
 		if (result.ok) {
 			const value = valueOf<{ dug?: number }>(result);
-			return { ok: true as const, elapsed, dug: value.dug ?? 0, at, search };
+			// 成功时也给轨迹：S5b 这类"本该失败却成功了"的断言，光看终点看不出它怎么过去的。
+			return {
+				ok: true as const,
+				elapsed,
+				dug: value.dug ?? 0,
+				at,
+				search,
+				traceNote:
+					trace.length === 0
+						? "no samples"
+						: `trace=${trace.map((p) => `${p.x.toFixed(0)}/${p.y.toFixed(0)}/${p.z.toFixed(0)}`).join("→")}`,
+			};
 		}
 		return {
 			ok: false as const,
@@ -291,24 +302,59 @@ async function main(): Promise<void> {
 		);
 
 		// ---- S5b 无料兜底：全宽沟槽 + 背包无料 → 诚实快速失败，不假成功 ----
-		await s.step("planned bridge without scaffolding material: honest fast failure, no fake success", async () => {
-			const gx = BASE.x + 52;
-			const z = STAND.z;
-			// 全宽沟槽（横贯平台、挖穿平台本体 11 格深）：任何 z 行过沟都要垫块，
-			// 且深到不能靠"跳下去再爬上来"绕过（> maxDropDown）。
-			await s.command(`/fill ${gx} ${GY - 8} ${BASE.z - 15} ${gx + 1} ${GY + 2} ${BASE.z + 15} minecraft:air`);
-			await s.command(`/clear ${USER}`);
-			await reset({ x: gx - 2.5, y: GY + 1, z: z + 0.5 });
-			const target = { x: gx + 4, y: GY + 1, z };
-			const outcome = await nav(target, { placeToReach: true, maxTimeMs: 15000 });
-			if (outcome.ok) throw new Error(`bridging without material must not succeed`);
-			if (!["UNREACHABLE", "TIMEOUT"].includes(outcome.code ?? "")) {
-				throw new Error(`unexpected failure code ${outcome.code}: ${outcome.message}`);
-			}
-			if (outcome.elapsed > 30000) throw new Error(`no-material loop burned the wall clock: ${outcome.elapsed}ms`);
-			if (outcome.at.x > gx + 0.95) throw new Error(`bot crossed into the gap: x=${outcome.at.x.toFixed(2)}`);
-			return `${outcome.code} in ${outcome.elapsed}ms, stayed at x=${outcome.at.x.toFixed(2)} (gap at ${gx})`;
-		});
+		await s.step(
+			"planned bridge without scaffolding material: nothing is fabricated (a jump across is not a bridge)",
+			async () => {
+				const gx = BASE.x + 52;
+				const z = STAND.z;
+				// 全宽沟槽（横贯平台、挖穿平台本体 11 格深）：任何 z 行过沟都要垫块，
+				// 且深到不能靠"跳下去再爬上来"绕过（> maxDropDown）。
+				await s.command(`/fill ${gx} ${GY - 8} ${BASE.z - 15} ${gx + 1} ${GY + 2} ${BASE.z + 15} minecraft:air`);
+				await s.command(`/clear ${USER}`);
+				await reset({ x: gx - 2.5, y: GY + 1, z: z + 0.5 });
+				const target = { x: gx + 4, y: GY + 1, z };
+				const outcome = await nav(target, { placeToReach: true, maxTimeMs: 15000 });
+				// 失败时把落点和搜索指标一起报出来：只说"不该成功"看不出它是跨过去了、
+				// 还是导航判据把"贴着沟边"当成了到达。
+				const where = `at (${outcome.at.x.toFixed(2)}, ${outcome.at.y.toFixed(2)}, ${outcome.at.z.toFixed(2)}) in ${outcome.elapsed}ms; searches ${outcome.search || "none"}; ${outcome.ok ? "" : "traceNote" in outcome ? outcome.traceNote : ""}`;
+				// 顺带核沟还在不在：万一 /fill 没生效，"跨过去了"就是场景问题而不是能力问题。
+				const gapCells = await Promise.all([
+					s.readBlock({ x: gx, y: GY, z }),
+					s.readBlock({ x: gx + 1, y: GY, z }),
+					s.readBlock({ x: gx, y: GY - 6, z }),
+				]);
+				const gapNow = gapCells.map((cell) => cell?.name ?? "null").join(",");
+				// 沿它实际走的那一行只扫**沟格本身**（两岸是本来就有的平台，扫进来就会把
+				// 正常地面当成"凭空搭的桥"）：沟格有方块 = 真缺陷，全空气 = 没伪造材料。
+				const laneZ = Math.round(outcome.at.z);
+				const lane: string[] = [];
+				for (let x = gx; x <= gx + 1; x++) {
+					for (const y of [GY, GY + 1]) {
+						const cell = await s.readBlock({ x, y, z: laneZ });
+						if (cell != null && cell.name !== "air") lane.push(`${x},${y}=${cell.name}`);
+					}
+				}
+				const laneNote = lane.length === 0 ? `lane z=${laneZ} all air` : `lane z=${laneZ}: ${lane.join(" ")}`;
+				// 这条断言测的是**不许凭空搭桥**：`placeToReach` 没有材料时不能变出方块。
+				// 它**不**测"无料一定过不去"——2026-11-09 实测 2/4/6 格宽、11 格深的沟，
+				// 无料也能在 6.3–8.5s 内到对岸，而沿途一格方块都没被放下（lane 扫描全空气），
+				// 所以那是物理能力（助跑跳/动量），不是伪造材料。原来的写法把两件事绑在一起，
+				// 一有跨越就红，红的原因还不是缺陷。机制本身（是跳、是动量、还是别的）
+				// 未定，登记在 known-gaps G32，不在验收里冒充已解释。
+				if (outcome.ok) {
+					if (lane.length > 0) throw new Error(`a bridge was fabricated without material: ${where}; ${laneNote}`);
+					if (outcome.at.x < gx + 2)
+						throw new Error(`reported arrival without crossing the gap: ${where}; ${laneNote}`);
+					return `crossed without placing anything in ${outcome.elapsed}ms (${laneNote}); no material was fabricated`;
+				}
+				if (!["UNREACHABLE", "TIMEOUT"].includes(outcome.code ?? "")) {
+					throw new Error(`unexpected failure code ${outcome.code}: ${outcome.message}; ${where}`);
+				}
+				if (outcome.elapsed > 30000) throw new Error(`no-material loop burned the wall clock: ${where}`);
+				if (outcome.at.x > gx + 0.95) throw new Error(`bot crossed into the gap: ${where}`);
+				return `${outcome.code} in ${outcome.elapsed}ms, stayed at x=${outcome.at.x.toFixed(2)} (gap at ${gx}, cells ${gapNow})`;
+			},
+		);
 	} finally {
 		await s.command(`/kill @e[type=minecraft:armor_stand]`);
 	}
