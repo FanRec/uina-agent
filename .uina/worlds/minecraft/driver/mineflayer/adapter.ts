@@ -49,6 +49,12 @@ export interface ClientOptions {
 	username: string;
 	/** 缺省由 minecraft-data 自动识别；固定组合下显式传入。 */
 	version?: string;
+	/**
+	 * 预先构造的 minecraft-protocol client（连接级扩展 prepare 提供）。
+	 * mineflayer 的 createBot 接受 `client` 并跳过自建客户端：这是底层库不支持的
+	 * 登录/配置阶段握手的唯一真实入口，不伪造。
+	 */
+	client?: unknown;
 }
 
 /**
@@ -62,6 +68,7 @@ export function connectMinecraftClient(opts: ClientOptions): MineflayerBot {
 		username: opts.username,
 		version: opts.version,
 		auth: "offline",
+		...(opts.client == null ? {} : { client: opts.client as never }),
 	});
 }
 

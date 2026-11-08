@@ -10,7 +10,7 @@ const Ajv = createRequire(import.meta.url)("ajv") as new (options: {
 }) => {
 	compile(schema: object): (value: unknown) => boolean;
 };
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { GUIDES, readGuide } from "../../.uina/worlds/minecraft/companion/guides/index.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
@@ -27,7 +27,10 @@ async function library() {
 
 test("describe {kind:'guide'} 返回官方正文且永不 callable；未知名字明确失败", async () => {
 	const lib = await library();
-	const entry = (await describeDirectory(builtinCatalog, lib, { kind: "guide", name: "program_api" })) as {
+	const entry = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, {
+		kind: "guide",
+		name: "program_api",
+	})) as {
 		kind: string;
 		callable: boolean;
 		name: string;
@@ -40,14 +43,16 @@ test("describe {kind:'guide'} 返回官方正文且永不 callable；未知名�
 	expect(entry.tags).toContain("api");
 	// 正文确实来自打包资源，而不是摘要拼凑。
 	expect(entry.content).toBe(await readGuide("program_api"));
-	await expect(describeDirectory(builtinCatalog, lib, { kind: "guide", name: "no_such_guide" })).rejects.toMatchObject({
+	await expect(
+		describeDirectory(createCapabilityCatalog().allDescriptors(), lib, { kind: "guide", name: "no_such_guide" }),
+	).rejects.toMatchObject({
 		code: "NOT_FOUND",
 	});
 });
 
 test("Guide 参与检索与家族计数，但不进 reads/acts，不写 Library", async () => {
 	const lib = await library();
-	const overview = (await describeDirectory(builtinCatalog, lib, {})) as {
+	const overview = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, {})) as {
 		families: { kind: string; count: number }[];
 		reads: string[];
 		acts: string[];
@@ -56,21 +61,25 @@ test("Guide 参与检索与家族计数，但不进 reads/acts，不写 Library"
 	expect(overview.reads).not.toContain("program_api");
 	expect(overview.acts).not.toContain("program_api");
 
-	const mining = (await describeDirectory(builtinCatalog, lib, { query: "mining" })) as {
+	const mining = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, { query: "mining" })) as {
 		items: { kind: string; name: string; callable: boolean }[];
 	};
 	expect(mining.items.some((item) => item.kind === "guide" && item.name === "mining_playbook")).toBe(true);
 	expect(mining.items.filter((item) => item.kind === "guide").every((item) => item.callable === false)).toBe(true);
 
 	// exact > prefix > summary/tags：精确名字必须排第一。
-	const exact = (await describeDirectory(builtinCatalog, lib, { query: "program_api" })) as {
+	const exact = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, {
+		query: "program_api",
+	})) as {
 		items: { name: string }[];
 	};
 	expect(exact.items[0]?.name).toBe("program_api");
 
 	// 裸名缺省 kind 仍按旧的 program 规则解析，旧程序选择语义不变。
 	await lib.save({ name: "echo", summary: "reuse", source: "async function main(){return 1;}" });
-	expect(await describeDirectory(builtinCatalog, lib, { name: "echo" })).toMatchObject({ kind: "program" });
+	expect(await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, { name: "echo" })).toMatchObject({
+		kind: "program",
+	});
 	expect((await lib.list({ limit: 100 })).some((e) => e.name === "echo")).toBe(true);
 	expect((await lib.list({ limit: 100 })).some((e) => (e.kind as string) === "guide")).toBe(false);
 });

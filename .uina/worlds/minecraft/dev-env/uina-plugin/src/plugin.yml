@@ -1,0 +1,6 @@
+name: uina-example-plugin
+version: 1.0.0
+main: dev.uina.example.UinaExamplePlugin
+api-version: '1.21'
+description: Uina Minecraft addon test fixture (custom channel + item + server-authoritative state)
+author: Uina

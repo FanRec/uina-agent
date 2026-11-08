@@ -49,7 +49,7 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
 			object({ cursor: text }, []),
 			object({ query: { type: "string" }, cursor: text }, ["query"]),
 			object({ selector: text }),
-			object({ kind: { enum: ["capability", "guide", "program", "blueprint", "experience"] }, name: text }),
+			object({ kind: { enum: ["capability", "guide", "addon", "program", "blueprint", "experience"] }, name: text }),
 		],
 	},
 	run: entry({ schedule }),

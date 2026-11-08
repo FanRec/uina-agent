@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { JsonValue, Vec3 } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -301,7 +301,7 @@ function makeExplore(state: FakeState, behavior: string[]) {
 			};
 		},
 	};
-	const capabilities = builtinCatalog.bind({
+	const capabilities = createCapabilityCatalog().bind({
 		surface: () => null,
 		runtime: () =>
 			({

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 
@@ -24,7 +24,7 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 	await writeFile(join(root, "programs/bad.js"), "// uina {bad}\nasync function main(){}");
 	for (let i = 0; i < 12; i++)
 		await library.save({ name: `echo_${i}`, summary: "echo", source: "async function main(){}" });
-	const catalog = CapabilityCatalog.create([]);
+	const catalog = CapabilityCatalog.create([]).allDescriptors();
 	const first = await describeDirectory(catalog, library, { query: "echo" });
 	expect(first).toMatchObject({ next: "10" });
 	expect("items" in first && first.items.slice(0, 2)).toMatchObject([
@@ -62,7 +62,7 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 
 test("describe without arguments lists every capability ref in one response", async () => {
 	const emptyLibrary = { list: async () => [], get: async () => null } as never;
-	const overview = (await describeDirectory(builtinCatalog, emptyLibrary, {})) as {
+	const overview = (await describeDirectory(createCapabilityCatalog().allDescriptors(), emptyLibrary, {})) as {
 		reads: string[];
 		acts: string[];
 		families: { kind: string; count: number }[];

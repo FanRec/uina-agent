@@ -44,6 +44,7 @@ import { playersModule } from "./queries/players.js";
 import { regionModule } from "./queries/region.js";
 import { routePlanModule } from "./queries/route-plan.js";
 import { terrainModule } from "./queries/terrain.js";
+import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
 
 export type { BuiltCapabilities } from "./catalog.js";
 
@@ -91,4 +92,18 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 	transitModule,
 ];
 
-export const builtinCatalog: CapabilityCatalog = CapabilityCatalog.create(builtinModules);
+/**
+ * 会话装配的唯一入口：内置模块 + 本次会话的 Addon 模块一次建成目录。
+ * 目录创建即完成全部结构校验（重复 id/ref、坏 schema 显式失败）。
+ */
+export function createCapabilityCatalog(extra: readonly MinecraftCapabilityModule[] = []): CapabilityCatalog {
+	return CapabilityCatalog.create([...builtinModules, ...extra]);
+}
+
+/**
+ * 内置能力的静态 descriptor（离线 describe 用）。
+ * 只覆盖内置模块：第三方能力只能来自活动 Companion 的目录快照，
+ * 宿主不会为了离线展示去 import 未知扩展。
+ */
+export const builtinDescriptors: readonly (QueryDescriptor | CallableDescriptor)[] =
+	CapabilityCatalog.create(builtinModules).allDescriptors();

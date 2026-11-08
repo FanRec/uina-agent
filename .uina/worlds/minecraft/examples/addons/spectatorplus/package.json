@@ -1,0 +1,20 @@
+{
+	"name": "@uina-addons/spectatorplus",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.js",
+	"description": "SpectatorPlus integration addon: spectate command composition + game mode observation; no invented client protocol",
+	"uinaMinecraft": {
+		"api": 1,
+		"id": "spectatorplus",
+		"minecraft": ["1.21.11"],
+		"requiresAddons": {},
+		"serverRequirement": {
+			"kind": "plugin",
+			"id": "spectatorplus",
+			"requiredFor": "feature",
+			"note": "SpectatorPlus is a server plugin plus a real-client mod. The bot only needs the server side; HUD/GUI requires a real Java client and is out of scope here"
+		}
+	}
+}

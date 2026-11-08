@@ -174,6 +174,47 @@ test("workstation selects write their own packets and reject nothing locally", (
 	]);
 	b.emit("end", "test complete");
 });
+test("custom payload channels are declared before the first write (server only replies to declared channels)", () => {
+	const b = bot();
+	const writes: [string, unknown][] = [];
+	const client = b._client as unknown as { state?: string };
+	client.state = "connecting";
+	b._client.write = (name: string, payload: unknown) => writes.push([name, payload]);
+	const p = protocolFor(b);
+	p.registerChannels(["uina:example"]);
+	// attach 早于 login：登记排队，不在错误协议阶段写入。
+	expect(writes).toEqual([]);
+	client.state = "play";
+	b._client.emit("login");
+	expect(writes).toEqual([
+		["custom_payload", { channel: "minecraft:register", data: Buffer.from("uina:example\0", "utf8") }],
+	]);
+	writes.length = 0;
+	p.customPayload("uina:example", "{}");
+	// 已登记：只发业务负载，不重复注册；未登记通道会在发送前补注册。
+	expect(writes).toEqual([["custom_payload", { channel: "uina:example", data: Buffer.from("{}", "utf8") }]]);
+	expect(() => p.customPayload("Not A Channel", "x")).toThrowError(/ResourceLocation/);
+	b.emit("end", "test complete");
+});
+test("registration failure stays pending and is retried before the payload", () => {
+	const b = bot();
+	const writes: [string, unknown][] = [];
+	(b._client as unknown as { state?: string }).state = "play";
+	let failing = true;
+	b._client.write = (name: string, payload: unknown) => {
+		if (failing) throw new Error("socket closed");
+		writes.push([name, payload]);
+	};
+	const p = protocolFor(b);
+	expect(() => p.customPayload("uina:example", "{}")).toThrowError(/socket closed/);
+	// 上一次没写出去：通道仍留在 pending，下一次先补注册再发业务负载。
+	failing = false;
+	p.customPayload("uina:example", "{}");
+	expect(writes).toHaveLength(2);
+	expect(writes[0]?.[1]).toMatchObject({ channel: "minecraft:register" });
+	expect(writes[1]?.[1]).toMatchObject({ channel: "uina:example" });
+	b.emit("end", "test complete");
+});
 test("G7 slot marks keep per-slot last-changed revisions and retire with the connection", () => {
 	const b = bot();
 	(b as unknown as { inventory: EventEmitter }).inventory = new EventEmitter();

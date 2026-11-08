@@ -35,7 +35,7 @@ import type {
 	ClientWorldValue,
 	SectionTarget,
 } from "../../contracts/client-facts.js";
-import type { Fact, FactSource, Vec3 } from "../../contracts/values.js";
+import type { Fact, FactSource, JsonValue, Vec3 } from "../../contracts/values.js";
 import { fromMineflayerVec3, type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
 import { MAP_CELLS, MAP_SIZE, MapCache } from "./map-cache.js";
@@ -50,6 +50,8 @@ export interface FactViewContext {
 	rosterSeen: boolean;
 	/** 本连接的地图增量包缓存（ FactsSource 持有；投影只读）。 */
 	maps: MapCache;
+	/** Addon 发布的连接级事实（key = `<addonId>/<key>`；只读纯值）。 */
+	addonFacts?: ReadonlyMap<string, Fact<JsonValue>>;
 }
 
 /** 一次采样的只读视图；每个方法都是一次独立读取，不共享中间状态。 */
@@ -70,6 +72,10 @@ export function createView(ctx: FactViewContext): ClientFactView {
 			ctx.window == null
 				? absent<WindowSnapshot>("no authoritative open window snapshot")
 				: (JSON.parse(JSON.stringify(ctx.window)) as Fact<WindowSnapshot>),
+		addonFact: (addonId, key) => {
+			const fact = ctx.addonFacts?.get(`${addonId}/${key}`);
+			return fact == null ? null : (JSON.parse(JSON.stringify(fact)) as Fact<JsonValue>);
+		},
 	};
 }
 

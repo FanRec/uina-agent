@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import {
 	buildEventPage,
@@ -20,7 +20,7 @@ import {
  */
 
 const scope = eventScopeOf("bind:t", "wld:t", "wldrev:t");
-const validate = builtinCatalog
+const validate = createCapabilityCatalog()
 	.bind({
 		surface: () => null,
 		knowledge: () => null,

@@ -1,12 +1,16 @@
 /** Game-side composition root shared by bootstrap and development scenarios. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { builtinCatalog } from "../capabilities/index.js";
+import { composeKnowledge } from "../addons/knowledge.js";
+import { loadAddons } from "../addons/loader.js";
+import { createCapabilityCatalog } from "../capabilities/index.js";
+import type { MinecraftCapabilityModule } from "../capabilities/catalog.js";
 import { prepareFeedback } from "../capabilities/shared/feedback.js";
 import { buildVerifiers } from "../capabilities/shared/verify.js";
 import { startSurvival } from "../capabilities/survival.js";
 import { createConstruction } from "../construction/index.js";
-import type { NativeCallable } from "../contracts/capabilities.js";
+import type { ProtocolWritePort } from "../contracts/capabilities.js";
+import type { DirectorySnapshot } from "../contracts/addons.js";
 import type {
 	CompanionInit,
 	ConnectionWaitResult,
@@ -23,13 +27,14 @@ import type {
 	StopCommand,
 } from "../contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../contracts/values.js";
-import { plain } from "../contracts/values.js";
+import { callFailure, plain } from "../contracts/values.js";
 import { PlayerPortImpl } from "../driver/body/player-port.js";
 import { ClientHost } from "../driver/client-host.js";
 import { DriverControlArbiter } from "../driver/control-arbiter.js";
 import { FactsSource } from "../driver/facts/index.js";
 import { GotoDirector } from "../driver/goto.js";
 import { canBreathe, planEscape } from "../driver/mineflayer/pathfinder.js";
+import { protocolFor } from "../driver/mineflayer/protocol.js";
 import { createSurfaceProbe } from "../driver/mineflayer/world-scan.js";
 import { parseExecutorConfig } from "../executor/config.js";
 import { RpcError } from "../executor/ipc.js";
@@ -47,7 +52,8 @@ import { safetyNeedsAttention } from "./safety-route.js";
 export async function openExecutionSide(
 	init: CompanionInit,
 	options: {
-		callables?: NativeCallable<JsonValue, JsonValue>[];
+		/** 测试/开发注入的能力模块；与内置模块走同一次 Catalog 装配（不是第二入口）。 */
+		modules?: readonly MinecraftCapabilityModule[];
 		onRetirement?: (request: RetirementRequest) => void;
 		onChanged?: () => void;
 		onGameEvent?: (notice: import("../contracts/executor.js").GameNotice) => void;
@@ -146,13 +152,42 @@ export async function openExecutionSide(
 				options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
 		}
 	});
-	const capabilities = builtinCatalog.bind({
+	// Addon 装配：本进程唯一 import 第三方代码的位置。失败即整个执行域装配失败
+	// （包 ID / Schema / 依赖冲突不在运行时静默降级）。
+	const addons = await loadAddons(init.addons, {
+		minecraftVersion: config.connection.version ?? "unknown",
+	});
+	const catalog = createCapabilityCatalog([...addons.modules, ...(options.modules ?? [])]);
+	// 包内静态知识按"注册表优先"组合；冲突记录在诊断里，不按加载顺序静默覆盖。
+	const knowledgeConflicts = new Set<string>();
+	const knowledge = () => {
+		const composed = composeKnowledge(facts.knowledge(), addons.knowledge);
+		for (const conflict of composed.conflicts)
+			knowledgeConflicts.add(`${conflict.addonId}:${conflict.item}:${conflict.reason}`);
+		return composed.knowledge;
+	};
+	const capabilities = catalog.bind({
 		runtime: getRuntime,
 		gotoDirector,
-		knowledge: () => facts.knowledge(),
+		knowledge,
 		surface: () => (host.bot ? createSurfaceProbe(host.bot) : null),
 	});
-	capabilities.callables.push(...(options.callables ?? []));
+	// 受控写入：只在 Runtime 授权的 BodyScope 内注入 CallContext（见 runtime/engine.ts）。
+	const protocolWrite: ProtocolWritePort = {
+		send: (channel, data) => {
+			const bot = host.bot;
+			if (!bot)
+				throw callFailure({
+					code: "DISCONNECTED",
+					source: "environment",
+					message: "custom payload requires a live client connection",
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+				});
+			protocolFor(bot).customPayload(channel, data);
+		},
+	};
 	// 状态帧（批37）：只读采样 + 文本投影，复用现有查询读取器（与 observe 同口径）。
 	// 不再有定时推送：状态由宿主在每次模型请求前经 `state.snapshot` 取一份当前快照。
 	const currentReader = (ref: ExactRef) => {
@@ -239,6 +274,7 @@ export async function openExecutionSide(
 			callables: capabilities.callables,
 			queryRefs: capabilities.queries.map((q) => q.ref),
 			program,
+			protocol: protocolWrite,
 			ownerLifetimeMs: init.ownerLifetimeMs,
 			onChanged: options.onChanged,
 			unclean: init.unclean,
@@ -296,7 +332,7 @@ export async function openExecutionSide(
 		};
 		// Storage/owner recovery is complete before any client can connect.
 		const connected = host
-			.connect(config.connection)
+			.connect(config.connection, { extensions: addons.extensions, facts })
 			.then(() => {
 				if (closing) return;
 				if (host.state === "ready" && host.bot?.username !== config.connection.username) {
@@ -357,7 +393,17 @@ export async function openExecutionSide(
 			safety: getRuntime().inspectSafety(),
 			program: program!.capacity(),
 			faults: [...faults],
+			addons: addons.statuses,
+			addonConflicts: [...knowledgeConflicts],
 			retirement,
+		});
+		/** 目录快照：唯一真值来自本次装配（Runtime/World/describe 共用同一份 descriptor）。 */
+		const directorySnapshot = (): DirectorySnapshot => ({
+			launch: init.launch,
+			connection: host.state,
+			descriptors: [...catalog.allDescriptors()],
+			addons: addons.statuses,
+			selection: { digest: init.addons?.digest ?? null },
 		});
 		const close = (): Promise<void> =>
 			(closePromise ??= (async () => {
@@ -386,6 +432,7 @@ export async function openExecutionSide(
 					() => program!.close(),
 					() => host.close(),
 					() => world.close(),
+					() => addons.close(),
 				]) {
 					try {
 						await shutdown();
@@ -403,6 +450,10 @@ export async function openExecutionSide(
 			switch (method) {
 				case "status":
 					value = inspect();
+					break;
+				// 只读目录快照：活动会话的 descriptor / addon 状态 / 选择摘要，纯 JSON。
+				case "directory.snapshot":
+					value = directorySnapshot();
 					break;
 				case "shutdown":
 					await close();
@@ -520,12 +571,15 @@ export async function openExecutionSide(
 			world,
 			runtime: getRuntime(),
 			capabilities,
+			catalog,
+			addons,
 			namespace,
 			binding,
 			start,
 			connected,
 			attach,
 			inspect,
+			directorySnapshot,
 			dispatch,
 			close,
 		};
@@ -536,6 +590,7 @@ export async function openExecutionSide(
 			world.close(),
 			...(runtime ? [runtime.close()] : []),
 			...(program ? [program.close()] : []),
+			addons.close(),
 		]);
 		throw error;
 	}

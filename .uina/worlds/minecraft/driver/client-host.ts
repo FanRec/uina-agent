@@ -8,6 +8,7 @@
  * 不自动重连、不自动重启旧游戏任务（§4.4）：重建 = 新 Connection，旧资格全部失效。
  */
 
+import type { ConnectionFactSink, ProtocolExtension } from "../contracts/protocol.js";
 import type { Ref } from "../contracts/values.js";
 import { trackVitals } from "./facts/vitals.js";
 import {
@@ -17,6 +18,7 @@ import {
 	type MineflayerBot,
 } from "./mineflayer/adapter.js";
 import { protocolFor } from "./mineflayer/protocol.js";
+import { createConnectionPort, type DisposableConnectionPort } from "./protocol-extension.js";
 import { fixToolTierMaterials } from "./mineflayer/upstream-fixes.js";
 
 export type ConnectionState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
@@ -36,6 +38,12 @@ export type ClientHostListener =
 	| { kind: "incarnation_changed"; identity: ClientIdentity }
 	| { kind: "incarnation_invalidated"; identity: ClientIdentity }
 	| { kind: "disconnected"; facts: DisconnectFacts };
+
+/** 连接级扩展：同一条连接的两个时机（见 contracts/protocol.ts）。 */
+export interface ClientHostHooks {
+	extensions?: readonly ProtocolExtension[];
+	facts?: ConnectionFactSink;
+}
 
 /** ref 前缀约定：driver 拥有 conn:/inc:/body:/op:/eff:/ev: 空间，各前缀独立单调发号。 */
 function makeRefIssuer() {
@@ -60,6 +68,8 @@ export class ClientHost {
 	/** death（respawn 包）后待重生：下一次 spawn 落位时换 Incarnation。 */
 	private _pendingRebirth = false;
 	private detachConnection: (() => void) | null = null;
+	/** 本代连接的扩展订阅解除器（close 与断线共用）。 */
+	private detachExtensions: (() => void) | null = null;
 
 	get state(): ConnectionState {
 		return this._state;
@@ -88,8 +98,13 @@ export class ClientHost {
 	/**
 	 * 建立新连接。已有活跃连接时明确失败（重建须先 close，§4.4）。
 	 * resolve 于 ready 或永久失败；不自动重试。
+	 *
+	 * hooks 是连接级协议扩展的唯一接入点：
+	 * prepare 在建客户端之前运行（可覆盖版本或提供预先构造的 client）；
+	 * attach 在建客户端之后立即运行（登录/配置阶段的包也能收到），
+	 * 所有订阅随本代连接结束解除。
 	 */
-	async connect(opts: ClientOptions): Promise<void> {
+	async connect(opts: ClientOptions, hooks: ClientHostHooks = {}): Promise<void> {
 		if (this._state === "connecting" || this._state === "syncing" || this._state === "ready") {
 			throw new Error(`client host already ${this._state}; close first`);
 		}
@@ -101,10 +116,30 @@ export class ClientHost {
 		this._incarnation = this.nextRef("inc");
 		this.setState("connecting");
 
-		const bot = connectMinecraftClient(opts);
+		const extensions = hooks.extensions ?? [];
+		const prepared = this.prepare(extensions, opts);
+		const bot = connectMinecraftClient({
+			...opts,
+			...(prepared.version == null ? {} : { version: prepared.version }),
+			...(prepared.client == null ? {} : { client: prepared.client }),
+		});
 		this._bot = bot;
-		protocolFor(bot);
+		const protocol = protocolFor(bot);
 		trackVitals(bot);
+		const ports: DisposableConnectionPort[] = [];
+		const detachExtensions = () => {
+			for (const port of ports.splice(0)) port.dispose();
+		};
+		this.detachExtensions = detachExtensions;
+		try {
+			this.attachExtensions(extensions, bot, protocol, hooks, generation, ports);
+		} catch (error) {
+			detachExtensions();
+			this.detachExtensions = null;
+			this._bot = null;
+			this.setState("faulted");
+			throw error;
+		}
 
 		await new Promise<void>((resolve) => {
 			const onSpawn = () => {
@@ -166,6 +201,8 @@ export class ClientHost {
 				bot.removeListener("end", onEnd);
 				bot.removeListener("kicked", onKicked);
 				bot.removeListener("error", onError);
+				// 连接级扩展的订阅与连接同生共死：旧代回调不得进入下一代。
+				detachExtensions();
 				if (this.detachConnection === cleanup) this.detachConnection = null;
 			};
 			this.detachConnection = cleanup;
@@ -183,6 +220,8 @@ export class ClientHost {
 		const bot = this._bot;
 		this._attachGeneration += 1;
 		this.detachConnection?.();
+		this.detachExtensions?.();
+		this.detachExtensions = null;
 		if (bot == null) {
 			if (this._state !== "disconnected" && this._state !== "faulted") this.setState("disconnected");
 			return;
@@ -215,6 +254,72 @@ export class ClientHost {
 	/** 当前脚下位置快照；未就绪为 null。 */
 	get position(): { x: number; y: number; z: number } | null {
 		return fromMineflayerVec3(this._bot?.entity?.position);
+	}
+
+	/**
+	 * 连接前协议准备：版本覆盖与预先构造的 client 都只允许一个来源。
+	 * 冲突不按加载顺序取胜——两个包同时提供 client 就是无法解释的装配。
+	 */
+	private prepare(
+		extensions: readonly ProtocolExtension[],
+		opts: ClientOptions,
+	): { version?: string; client?: unknown } {
+		const prepared: { version?: string; client?: unknown } = {};
+		let clientOwner: string | null = null;
+		for (const extension of extensions) {
+			if (extension.prepare == null) continue;
+			const result =
+				extension.prepare({
+					minecraftVersion: opts.version ?? "unknown",
+					host: opts.host,
+					port: opts.port,
+					username: opts.username,
+				}) ?? {};
+			if (result.version != null) {
+				if (prepared.version != null && prepared.version !== result.version)
+					throw new Error(
+						`addons disagree on protocol version: ${prepared.version} vs ${result.version} (${extension.id})`,
+					);
+				prepared.version = result.version;
+			}
+			if (result.client != null) {
+				if (clientOwner != null)
+					throw new Error(`two addons supplied a protocol client: ${clientOwner} and ${extension.id}`);
+				clientOwner = extension.id;
+				prepared.client = result.client;
+			}
+		}
+		return prepared;
+	}
+
+	/** 建客户端之后立即挂接：登录/配置阶段的包也能收到，所有订阅随本代连接解除。 */
+	private attachExtensions(
+		extensions: readonly ProtocolExtension[],
+		bot: MineflayerBot,
+		protocol: ReturnType<typeof protocolFor>,
+		hooks: ClientHostHooks,
+		generation: number,
+		ports: DisposableConnectionPort[],
+	): void {
+		const sink: ConnectionFactSink = hooks.facts ?? {
+			publishAddonFact: () => {
+				throw new Error("connection fact sink is not bound; addon facts would be silently lost");
+			},
+		};
+		for (const extension of extensions) {
+			if (extension.attach == null) continue;
+			const port = createConnectionPort({
+				addonId: extension.id,
+				host: this,
+				bot,
+				protocol,
+				facts: sink,
+				isCurrent: () => generation === this._attachGeneration,
+			});
+			ports.push(port);
+			const disposer = extension.attach(port);
+			if (typeof disposer === "function") port.defer(disposer);
+		}
 	}
 
 	private setState(state: ConnectionState): void {

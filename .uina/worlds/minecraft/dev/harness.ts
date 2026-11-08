@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { callableModule } from "../addons/contribute.js";
 import type { BuiltCapabilities } from "../capabilities/index.js";
 import { openExecutionSide } from "../companion/side.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
@@ -97,7 +98,11 @@ export async function openHarness(
 			ownerLifetimeMs: 5000,
 			localGates: [],
 		},
-		{ callables: options.callables, onGameEvent: options.onGameEvent },
+		{
+			// 开发探针仍进同一次 Catalog 装配（不是旁路注册表）。
+			modules: options.callables?.length ? [callableModule(label, options.callables)] : undefined,
+			onGameEvent: options.onGameEvent,
+		},
 	);
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	try {

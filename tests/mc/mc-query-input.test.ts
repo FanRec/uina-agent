@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { emptyFactRevisions } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { ClientFactsPort } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
 
-const capabilities = builtinCatalog.bind({
+const capabilities = createCapabilityCatalog().bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

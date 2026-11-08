@@ -20,7 +20,17 @@ import type { ExactRef, Fact, JsonValue, Place, Ref, Vec3 } from "./values.js";
  * current 查询声明依赖后，游标 = 依赖类别修订之和——无关提交不再唤醒等待方。
  * 无法精确归类的事件源必须保守多报，不得漏报。
  */
-export type FactCategory = "self" | "inventory" | "entities" | "blocks" | "world" | "players" | "maps" | "window";
+export type FactCategory =
+	| "self"
+	| "inventory"
+	| "entities"
+	| "blocks"
+	| "world"
+	| "players"
+	| "maps"
+	| "window"
+	/** Addon 发布的连接级模组事实：共同一个类别，不为每个包生成游标体系。 */
+	| "addon";
 
 export type FactRevisions = Record<FactCategory, number>;
 
@@ -32,7 +42,17 @@ export function queryRevision(revisions: FactRevisions, dependencies: readonly F
 }
 
 export function emptyFactRevisions(): FactRevisions {
-	return { self: 0, inventory: 0, entities: 0, blocks: 0, world: 0, players: 0, maps: 0, window: 0 };
+	return {
+		self: 0,
+		inventory: 0,
+		entities: 0,
+		blocks: 0,
+		world: 0,
+		players: 0,
+		maps: 0,
+		window: 0,
+		addon: 0,
+	};
 }
 
 export interface ClientFactStamp {
@@ -289,6 +309,11 @@ export interface ClientFactView {
 	 */
 	inventoryChanges(since: number): { slot: number; item: import("./body.js").ItemValue | null }[] | null;
 	window(): Fact<WindowSnapshot | null>;
+	/**
+	 * Addon 发布的连接级事实（`<addonId>` + `key`）；未发布时 null（调用方如实报 unknown，
+	 * 不编造默认状态）。值只读纯 JSON，随断线清空。
+	 */
+	addonFact(addonId: string, key: string): Fact<JsonValue> | null;
 }
 
 /**

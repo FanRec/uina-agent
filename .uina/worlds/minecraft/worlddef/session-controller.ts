@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { BODY_ENDPOINT_EXPOSED_PREFIX } from "../../../../src/extensions/world-framework/seams.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
+import { resolveAddonPlan } from "../addons/plan.js";
+import type { AddonSelection } from "../contracts/addons.js";
 import type { ExecutorCloseResult } from "../contracts/executor.js";
 import { MinecraftFacade } from "../executor/facade.js";
 import { MinecraftExecutor, type ExecutorPolicy } from "../executor/index.js";
@@ -15,6 +17,7 @@ import { RpcError } from "../executor/ipc.js";
 import { createBodyEndpoint } from "./body-endpoint.js";
 import {
 	type ConnectTarget,
+	MC_PROTOCOL_VERSION,
 	type ProfileIdentity,
 	type WorldAssociation,
 	ensureIdentityFile,
@@ -47,6 +50,8 @@ export interface SessionStatus {
 		actionsAllowed: boolean;
 		ownerGates: string[];
 		history: "opening" | "ready" | "unavailable";
+		/** 本次会话冻结的 Addon 装配（Loaded 事实来自 Companion status）。 */
+		addons: { digest: string; ids: string[] };
 	};
 	operation: null | { kind: "connect" | "disconnect" | "close"; id: string };
 	lastError: { code: string; message: string } | null;
@@ -62,6 +67,7 @@ interface ActiveSession {
 	worldAssociation: WorldAssociation;
 	executor: MinecraftExecutor;
 	facade: MinecraftFacade;
+	addons: AddonSelection;
 	actualUsername: string | null;
 	actualUuid: string | null;
 	detachBody: () => void;
@@ -165,6 +171,10 @@ export class SessionController {
 							// 顶层可受理 = 客户端实际 ready + Executor 允许 + 无管理切换（不保证每个能力环境可用）。
 							actionsAllowed: state === "connected" && st.actionsAllowed && !this.transition,
 							ownerGates: [...(side?.owner?.gates ?? [])],
+							addons: {
+								digest: this.active.addons.digest,
+								ids: this.active.addons.entries.map((entry) => `${entry.id}@${entry.version}`),
+							},
 							history:
 								historyState === "ready" || historyState === "read_only"
 									? "ready"
@@ -335,6 +345,12 @@ export class SessionController {
 	): Promise<void> {
 		const dir = profileDir(this.options.minecraftRoot, profile);
 		await ensureIdentityFile(dir, resolved.identity);
+		// Profile Addon 选择在这里解析一次并冻结：连接期间改 addons.json 不影响本会话。
+		const addons = await resolveAddonPlan({
+			minecraftRoot: this.options.minecraftRoot,
+			profileDir: dir,
+			minecraftVersion: MC_PROTOCOL_VERSION,
+		});
 		let candidate: MinecraftExecutor | null = null;
 		try {
 			candidate = await MinecraftExecutor.open({
@@ -342,6 +358,7 @@ export class SessionController {
 				sessionDataDir: dir,
 				sharedDataDir: this.options.minecraftRoot,
 				config: executorConfigFromIdentity(resolved.identity),
+				addons,
 				// 生命周期信号收口新建中的执行域；工具等待取消不是执行域信号。
 				signal: this.options.ctx.signal,
 				policy: { ...this.options.executorPolicy, autoRecover: false },
@@ -383,6 +400,7 @@ export class SessionController {
 				worldAssociation: resolved.worldAssociation,
 				executor: candidate,
 				facade,
+				addons,
 				actualUsername: waited.username,
 				actualUuid: waited.uuid,
 				detachBody,

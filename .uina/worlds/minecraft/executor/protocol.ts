@@ -22,6 +22,43 @@ const shaped = (properties: object, required: string[] = Object.keys(properties)
 });
 const gates = { type: "array", items: { enum: ["disabled", "emergency", "owner_lost"] }, uniqueItems: true };
 const owner = object({ attachment: ref, gates, gateRevision: integer, validForMs: { type: "number", minimum: 0 } });
+// Addon 计划：只传纯值（路径/配置/声明），不传函数、Catalog 实例或裸 Bot。
+const serverRequirement = {
+	type: "object",
+	properties: {
+		kind: { enum: ["plugin", "mod", "mod-or-plugin"] },
+		id: ref,
+		requiredFor: { enum: ["feature", "connection"] },
+		note: { type: "string" },
+	},
+	required: ["kind", "id", "requiredFor"],
+};
+const addonPlanEntry = object({
+	id: ref,
+	version: ref,
+	api: { const: 1 },
+	root: ref,
+	entry: ref,
+	config: any,
+	minecraft: { type: "array", items: { type: "string" } },
+	serverRequirement: { oneOf: [{ type: "null" }, serverRequirement] },
+});
+const addonSelection = object({ digest: ref, entries: { type: "array", items: addonPlanEntry } });
+const addonStatus = shaped({
+	id: ref,
+	version: ref,
+	api: { const: 1 },
+	state: { enum: ["installed", "loaded"] },
+	minecraft: { type: "array", items: { type: "string" } },
+	serverRequirement: { oneOf: [{ type: "null" }, serverRequirement] },
+	dir: ref,
+	contributed: shaped({
+		actions: integer,
+		queries: integer,
+		knowledgeItems: integer,
+		refs: { type: "array", items: ref },
+	}),
+});
 const summary = shaped({
 	run: ref,
 	revision: integer,
@@ -37,6 +74,8 @@ const status = shaped({
 	runtime: { enum: ["ready", "unavailable"] },
 	world: { type: "object" },
 	program: { type: ["object", "null"] },
+	addons: { type: "array", items: addonStatus },
+	addonConflicts: { type: "array", items: { type: "string" } },
 	retirement: { type: ["object", "null"] },
 });
 const entry = {
@@ -74,6 +113,7 @@ const definitions = {
 			sessionDataDir: ref,
 			sharedDataDir: ref,
 			config: { type: "object" },
+			addons: addonSelection,
 			unclean: { type: "boolean" },
 			oldControlRetired: { type: "boolean" },
 			ownerLifetimeMs: { type: "number", exclusiveMinimum: 0 },
@@ -83,6 +123,18 @@ const definitions = {
 	},
 	status: { input: object({}), output: status, cancellable: true },
 	shutdown: { input: object({}), output: { type: "null" } },
+	// 只读目录快照：活动会话的 descriptor、addon 状态与选择摘要（纯 JSON，无函数/实例）。
+	"directory.snapshot": {
+		input: object({}),
+		output: shaped({
+			launch: ref,
+			connection: { enum: ["connecting", "syncing", "ready", "disconnected", "faulted"] },
+			descriptors: { type: "array", items: { type: "object" } },
+			addons: { type: "array", items: addonStatus },
+			selection: shaped({ digest: { type: ["string", "null"] } }),
+		}),
+		cancellable: true,
+	},
 	"runtime.attach": { input: object({}), output: owner },
 	"runtime.heartbeat": { input: object({ attachment: ref }), output: owner },
 	"runtime.setOwnerGate": {

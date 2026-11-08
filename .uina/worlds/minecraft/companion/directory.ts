@@ -1,5 +1,5 @@
 /** Discovery projects descriptors and live Library metadata; it owns no file index. */
-import type { CapabilityCatalog } from "../capabilities/catalog.js";
+import type { AddonStatus } from "../contracts/addons.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { RpcError } from "../executor/ipc.js";
@@ -9,11 +9,20 @@ export interface DescribeParams {
 	query?: string;
 	cursor?: string;
 	selector?: string;
-	kind?: "capability" | "guide" | LibraryKind;
+	kind?: "capability" | "guide" | "addon" | LibraryKind;
 	name?: string;
 }
-export async function describeDirectory(catalog: CapabilityCatalog, library: LibraryPort, params: DescribeParams) {
-	const descriptors = catalog.allDescriptors();
+/**
+ * 目录投影：descriptor 来自**真实装配**（活动 Companion 快照或内置模块），
+ * 这里不再持有 Catalog，也不再为第三方能力另编一份静态 Schema。
+ * `addons` 只描述包状态：包内能力仍按各自 ref 出现在 descriptors 里。
+ */
+export async function describeDirectory(
+	descriptors: readonly (QueryDescriptor | CallableDescriptor)[],
+	library: LibraryPort,
+	params: DescribeParams,
+	addons: readonly AddonStatus[] = [],
+) {
 	const native = (d: CallableDescriptor | QueryDescriptor) => ({
 		kind: "capability",
 		callable: d.access === "act",
@@ -27,6 +36,27 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 			const d = descriptors.find((d) => d.ref === exact);
 			if (!d) throw new RpcError("NOT_FOUND", `capability ${exact} not found`);
 			return native(d);
+		}
+		if (kind === "addon") {
+			const status = addons.find((addon) => addon.id === exact);
+			if (!status) throw new RpcError("NOT_FOUND", `addon ${exact} is not part of this session directory`);
+			const contributed = status.contributed;
+			return {
+				kind: "addon",
+				callable: false,
+				name: status.id,
+				summary: `${status.id}@${status.version} (${status.state})`,
+				tags: [status.state],
+				status,
+				capabilities: [...contributed.refs],
+				note:
+					status.serverRequirement == null
+						? "no server-side requirement declared"
+						: `${status.serverRequirement.kind} ${status.serverRequirement.id} is declared as required for ${status.serverRequirement.requiredFor}; declaration is not proof the server has it`,
+				...(contributed.actions + contributed.queries === 0
+					? { hint: "this addon contributes no callable capabilities" }
+					: {}),
+			};
 		}
 		if (kind === "guide") {
 			const guide = findGuide(exact);
@@ -92,6 +122,7 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 			families: [
 				{ kind: "capability", count: descriptors.length },
 				{ kind: "guide", count: guideSummaries().length },
+				{ kind: "addon", count: addons.length },
 				...(["program", "blueprint", "experience"] as const).map((kind) => ({
 					kind,
 					count: entries.filter((e) => e.kind === kind).length,
@@ -118,6 +149,14 @@ export async function describeDirectory(catalog: CapabilityCatalog, library: Lib
 			name: guide.name,
 			summary: guide.summary,
 			tags: [...guide.tags],
+			availability: "unknown" as const,
+		})),
+		...addons.map((addon) => ({
+			kind: "addon" as const,
+			callable: false,
+			name: addon.id,
+			summary: `${addon.id}@${addon.version} (${addon.state})`,
+			tags: [addon.state],
 			availability: "unknown" as const,
 		})),
 		...entries.map((e) => ({

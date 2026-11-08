@@ -42,6 +42,8 @@
     "dev:mc:map": "tsx .uina/worlds/minecraft/dev/map.ts",
     "dev:mc:review": "tsx .uina/worlds/minecraft/dev/review-live.ts",
     "dev:mc:session": "tsx .uina/worlds/minecraft/dev/session-live.ts",
+    "dev:mc:addons": "tsx .uina/worlds/minecraft/dev/addons-live.ts",
+    "mc:addon": "tsx .uina/worlds/minecraft/addons/cli.ts",
     "dev:mc:climb": "tsx .uina/worlds/minecraft/dev/climb.ts",
     "dev:mc:transit": "tsx .uina/worlds/minecraft/dev/transit.ts",
     "dev:mc:state-frame": "tsx .uina/worlds/minecraft/dev/state-frame.ts",

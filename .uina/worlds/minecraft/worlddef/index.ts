@@ -2,8 +2,10 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { builtinCatalog } from "../capabilities/index.js";
+import { installedAddonStatuses } from "../addons/plan.js";
+import { builtinDescriptors } from "../capabilities/index.js";
 import { describeDirectory } from "../companion/directory.js";
+import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
 import type { LibraryKind, ProgramOrigin } from "../contracts/library.js";
 import type { ExecutorPolicy } from "../executor/index.js";
 import { RpcError } from "../executor/ipc.js";
@@ -32,6 +34,8 @@ export function createMinecraftWorld(
 	let detachAbort: (() => void) | null = null;
 	/** onStart 预载的静态环境正文；getter 是同步纯读，不在这里做 IO。 */
 	let environmentText: string | null = null;
+	/** 本次 activation 的真实数据根（`<worldDataDir>`）；离线目录摘要只读它的 addons/。 */
+	let minecraftRoot: string | null = null;
 
 	const close = (): Promise<void> =>
 		(closing ??= (async () => {
@@ -46,6 +50,7 @@ export function createMinecraftWorld(
 			validator = null;
 			library = null;
 			environmentText = null;
+			minecraftRoot = null;
 			detachAbort?.();
 			detachAbort = null;
 			if (errors.length) throw new AggregateError(errors, "Minecraft activation close failed");
@@ -120,8 +125,33 @@ export function createMinecraftWorld(
 						throw invalidInput(`unknown session op ${String(params.op)}`);
 				}
 			}
-			case "describe":
-				return ok(await describeDirectory(builtinCatalog, library!, params as never));
+			case "describe": {
+				// 活动会话：目录来自真实 Companion 装配快照（与 Runtime/World 同一份 descriptor）。
+				// 拿不到快照就明确失败——不把过期目录或"内置全集"冒充当前可执行能力。
+				const session = controller?.session;
+				if (session) {
+					let snapshot: Awaited<ReturnType<typeof session.executor.snapshot>>;
+					try {
+						snapshot = await session.executor.snapshot();
+					} catch (error) {
+						throw new RpcError(
+							"EXECUTOR_UNAVAILABLE",
+							`directory snapshot unavailable for the active session: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+					return ok(
+						await describeDirectory(
+							snapshot.descriptors as unknown as (QueryDescriptor | CallableDescriptor)[],
+							library!,
+							params as never,
+							snapshot.addons,
+						),
+					);
+				}
+				// 离线：只给内置目录 + 安装包摘要（只读 Manifest，不执行第三方代码）。
+				const installed = minecraftRoot ? await installedAddonStatuses(minecraftRoot) : [];
+				return ok(await describeDirectory(builtinDescriptors, library!, params as never, installed));
+			}
 			case "library":
 				return await libraryAction(params);
 			default:
@@ -188,6 +218,7 @@ export function createMinecraftWorld(
 				throw new Error("Minecraft requires worldDataDir, emitEvent, onHostEvent, expose and durable Host delivery");
 			closing = null;
 			if (ctx.signal.aborted) throw new Error("Minecraft activation already cancelled");
+			minecraftRoot = ctx.worldDataDir;
 			// 静态资源与包一起发布（copy-assets.mjs）；缺文件必须显式失败，不能静默少一段教学。
 			environmentText = await readFile(new URL("./ENV_PROMPT.md", import.meta.url), "utf8");
 			// 常驻层：静态 Catalog describe、共享 Library 与 SessionController；不读取固定连接、不打开 Bot。

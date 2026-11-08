@@ -9,7 +9,7 @@
 import { describe, expect, test } from "vitest";
 import type { MinecraftCapabilityModule } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
 import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
-import { builtinCatalog, builtinModules } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinModules, createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CapabilityDeps } from "../../.uina/worlds/minecraft/capabilities/deps.js";
 import { self } from "./mc-capability-harness.js";
 
@@ -43,7 +43,7 @@ function testModule(overrides: Partial<MinecraftCapabilityModule> = {}): Minecra
 
 describe("能力目录", () => {
 	test("离线列出全部 51 项 descriptor：不触发 bind、不依赖 deps", () => {
-		const descriptors = builtinCatalog.allDescriptors();
+		const descriptors = createCapabilityCatalog().allDescriptors();
 		const refs = descriptors.map((d) => d.ref).sort();
 		expect(refs).toHaveLength(51);
 		expect(refs.filter((ref) => ref.endsWith("@1"))).toHaveLength(51);
@@ -54,7 +54,7 @@ describe("能力目录", () => {
 	});
 
 	test("bind 产出与目录同源：16 查询 / 35 动作 / refs 只含动作", () => {
-		const built = builtinCatalog.bind(noopDeps);
+		const built = createCapabilityCatalog().bind(noopDeps);
 		expect(built.queries).toHaveLength(16);
 		expect(built.callables).toHaveLength(35);
 		expect(built.refs).toHaveLength(35);
@@ -139,11 +139,11 @@ describe("能力目录", () => {
 		// 注入不得扰动内置：重建纯内置目录，ref 集与默认目录一致。
 		const pure = CapabilityCatalog.create(builtinModules);
 		expect(pure.allDescriptors().some((d) => d.ref === "test.echo@1")).toBe(false);
-		expect(pure.allDescriptors().length).toBe(builtinCatalog.allDescriptors().length);
+		expect(pure.allDescriptors().length).toBe(createCapabilityCatalog().allDescriptors().length);
 	});
 
 	test("self@1 的 reader 读同一事实视图（绑定产物与采样合同对齐）", () => {
-		const built = builtinCatalog.bind(noopDeps);
+		const built = createCapabilityCatalog().bind(noopDeps);
 		const reader = built.readers.get("self@1");
 		if (reader?.kind !== "current") throw new Error("self@1 must have a current reader");
 		const fact = reader.read(

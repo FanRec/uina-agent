@@ -70,6 +70,8 @@ export interface MinecraftRuntimeOptions {
 	program?: import("../contracts/program.js").ProgramPort;
 	queryRefs?: string[];
 	environment?: { serverVersion: string; protocol: number };
+	/** 受控协议写入端口（只在 BodyScope 内注入能力调用上下文）。 */
+	protocol?: import("../contracts/capabilities.js").ProtocolWritePort;
 }
 
 export interface MinecraftRuntimeStart {
@@ -215,6 +217,7 @@ export class MinecraftRuntime {
 			queryRefs: opts.queryRefs,
 			worldOwner: opts.worldOwner,
 			environment: opts.environment,
+			protocol: opts.protocol,
 			ownerLifetimeMs: opts.ownerLifetimeMs,
 			monotonicNow: opts.monotonicNow,
 			unclean: opts.unclean,

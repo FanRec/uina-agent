@@ -53,6 +53,8 @@ export type ProtocolNotice =
 			y: number | undefined;
 			data: Uint8Array | undefined;
 	  }
+	/** 自定义通道（1.21.11 custom_payload）：连接级协议扩展的唯一入站面。 */
+	| { kind: "custom_payload"; channel: string; data: Uint8Array }
 	| { kind: "end" };
 
 interface NativeItem {
@@ -112,6 +114,8 @@ interface RawPackets {
 	spawn_entity: { entityId: number; type: number };
 	entity_destroy: { entityIds: number[] };
 	world_particles: { x: number; y: number; z: number; amount: number; particle: { type?: unknown } };
+	/** 1.21.11 自定义通道：channel 是 ResourceLocation，data 是剩余字节。 */
+	custom_payload: { channel: string; data: Buffer };
 }
 /** registry 只暴露到这里的字段；不引第二份物品表。 */
 interface ItemRegistry {
@@ -155,6 +159,23 @@ export interface DriverProtocol {
 	linkHolder(entityId: number): number | null;
 	/** 结束睡眠（1.21.11 entity_action 0 = stop_sleeping；mineflayer bed.js 硬编码的 2 在本版本是 stop_sprinting）。 */
 	wakeUp(): void;
+	/**
+	 * 自定义通道入站（1.21.11 clientbound custom_payload）。
+	 * 只在连接存活期间回调；调用方负责连接作用域（见 driver/protocol-extension.ts）。
+	 */
+	onCustomPayload(listener: (notice: { channel: string; data: Uint8Array }) => void): () => void;
+	/**
+	 * 声明本连接可接收的插件通道（1.13+ `minecraft:register`）。
+	 * 服务端只向已声明的通道投递 clientbound custom_payload：不注册就收不到回包。
+	 * 未进入 play 阶段时排队，login 后自动补发；重复声明按连接去重。
+	 */
+	registerChannels(channels: readonly string[]): void;
+	/**
+	 * 自定义通道出站（serverbound custom_payload）。
+	 * 只是"把包交给底层写"：调用方必须已经过 Runtime 授权的 BodyScope。
+	 * channel 必须是合法 ResourceLocation，否则在发送前显式失败。
+	 */
+	customPayload(channel: string, data: string | Uint8Array): void;
 }
 
 /** player_input 的键位面（1.21.2+ 载具键位申报：shift 下马/跳跃等服务端判定键；移动由 vehicle_move 承担）。 */
@@ -185,6 +206,10 @@ function nbtLabel(value: unknown): string | null {
 	return null;
 }
 
+/** 自定义通道语法（ResourceLocation）与 1.21.11 plugin message 上限。 */
+const CHANNEL_PATTERN = /^[a-z0-9_.-]+:[a-z0-9_./-]+$/;
+const MAX_CUSTOM_PAYLOAD = 32767;
+
 /** The only implemented version. A future adapter implements this same narrow port. */
 class Protocol12111 implements DriverProtocol {
 	private readonly listeners = new Set<(notice: ProtocolNotice) => void>();
@@ -208,6 +233,10 @@ class Protocol12111 implements DriverProtocol {
 	private readonly linkHolders = new Map<number, number>();
 	/** fishing_bobber 的实体类型 id；registry 查不到 = null（本版本无鱼漂观察）。 */
 	private bobberTypeIdCache: number | null | undefined = undefined;
+	/** 已向服务端声明、可接收 clientbound custom_payload 的通道（按连接去重）。 */
+	private readonly registeredChannels = new Set<string>();
+	/** play 阶段前登记的通道：login 后一次性补发，避免在错误协议状态写入。 */
+	private readonly pendingChannels = new Set<string>();
 	get version(): string {
 		return this.bot.version;
 	}
@@ -223,6 +252,17 @@ class Protocol12111 implements DriverProtocol {
 			bot.on(event as never, callback as never);
 			this.detach.push(() => bot.removeListener(event as never, callback as never));
 		};
+		// 进入 play 阶段后再补发登记：attach 早于 login，提前写 custom_payload 会发错阶段。
+		// 登记失败不致命：动作仍会尝试发送，回读不到时如实 EFFECT_UNCONFIRMED。
+		const onLogin = () => {
+			try {
+				this.flushChannelRegistration();
+			} catch (error) {
+				console.warn(`[mc-protocol] channel registration failed after login: ${String(error)}`);
+			}
+		};
+		bot._client.on("login", onLogin);
+		this.detach.push(() => bot._client.removeListener("login", onLogin));
 		raw("window_items", (packet) => {
 			if (packet.carriedItem === undefined) return;
 			const items = packet.items.map((item: unknown) => this.decode(item));
@@ -403,6 +443,10 @@ class Protocol12111 implements DriverProtocol {
 			if (bobber?.position == null) return;
 			const d = Math.hypot(p.x - bobber.position.x, p.z - bobber.position.z);
 			if (d <= 1.23) this.emit({ kind: "bite", bobberId: this.activeBobber });
+		});
+		raw("custom_payload", (p) => {
+			if (typeof p.channel !== "string" || !Buffer.isBuffer(p.data)) return;
+			this.emit({ kind: "custom_payload", channel: p.channel, data: p.data });
 		});
 		native("windowOpen", (window: NativeWindow) => this.emit({ kind: "window_open", window }));
 		native("windowClose", (window: NativeWindow | null) => {
@@ -693,6 +737,68 @@ class Protocol12111 implements DriverProtocol {
 	}
 	wakeUp(): void {
 		this.write("entity_action", { entityId: this.bot.entity.id, actionId: 0, jumpBoost: 0 });
+	}
+	onCustomPayload(listener: (notice: { channel: string; data: Uint8Array }) => void): () => void {
+		return this.subscribe((notice) => {
+			if (notice.kind === "custom_payload") listener({ channel: notice.channel, data: notice.data });
+		});
+	}
+	registerChannels(channels: readonly string[]): void {
+		this.check();
+		for (const channel of channels) {
+			if (!CHANNEL_PATTERN.test(channel))
+				throw fail({
+					code: "INVALID_INPUT",
+					source: "input",
+					message: `custom payload channel ${JSON.stringify(channel)} is not a ResourceLocation (namespace:path)`,
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: true,
+				});
+			if (!this.registeredChannels.has(channel)) this.pendingChannels.add(channel);
+		}
+		this.flushChannelRegistration();
+	}
+	/** 服务端只向已登记的通道投递；未到 play 阶段就留到 login。 */
+	private flushChannelRegistration(): void {
+		if (this.pendingChannels.size === 0) return;
+		if ((this.bot._client as { state?: string }).state !== "play") return;
+		const channels = [...this.pendingChannels];
+		// 传统 minecraft:register 负载：NUL 分隔的通道名（末尾 NUL 与客户端实现一致）。
+		this.write("custom_payload", {
+			channel: "minecraft:register",
+			data: Buffer.from(`${channels.join("\0")}\0`, "utf8"),
+		});
+		// 只有真的写出去才记为已登记：失败时留在 pending，下一次发送/重连还能补。
+		this.pendingChannels.clear();
+		for (const channel of channels) this.registeredChannels.add(channel);
+	}
+	customPayload(channel: string, data: string | Uint8Array): void {
+		this.check();
+		// ResourceLocation 语法与 32767 字节上限由协议决定：非法输入在发送前失败，
+		// 不把"服务端静默丢弃"伪装成已生效。
+		if (!CHANNEL_PATTERN.test(channel))
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `custom payload channel ${JSON.stringify(channel)} is not a ResourceLocation (namespace:path)`,
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: true,
+			});
+		const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data);
+		if (bytes.length > MAX_CUSTOM_PAYLOAD)
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: `custom payload is ${bytes.length} bytes; limit is ${MAX_CUSTOM_PAYLOAD}`,
+				dispatch: "not_sent",
+				effects: [],
+				recoverable: true,
+			});
+		// 不注册就收不到服务端回包：发送前确保本通道已被服务端认知（同一连接内只发一次）。
+		this.registerChannels([channel]);
+		this.write("custom_payload", { channel, data: bytes });
 	}
 }
 

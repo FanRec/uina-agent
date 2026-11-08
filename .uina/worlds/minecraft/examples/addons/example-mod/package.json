@@ -1,0 +1,20 @@
+{
+	"name": "@uina-addons/example-mod",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.js",
+	"description": "Example Uina Minecraft addon: custom channel, addon fact, static mod knowledge and a body-scoped write",
+	"uinaMinecraft": {
+		"api": 1,
+		"id": "example-mod",
+		"minecraft": ["1.21.11"],
+		"requiresAddons": {},
+		"serverRequirement": {
+			"kind": "plugin",
+			"id": "uina-example-plugin",
+			"requiredFor": "feature",
+			"note": "The uina:example channel is answered by dev-env/uina-plugin; without it the press action fails unconfirmed instead of pretending success"
+		}
+	}
+}

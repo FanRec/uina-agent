@@ -158,6 +158,11 @@ export interface EngineOptions {
 	oldControlRetired?: boolean;
 	requireRetirement?: (notice: ControlRetirement) => void;
 	environment?: { serverVersion: string; protocol: number };
+	/**
+	 * 受控协议写入（addon 自定义 Payload）。只在 BodyScope 内注入 CallContext：
+	 * 未持有身体资格的调用拿不到这个端口，从结构上禁止未授权写入。
+	 */
+	protocol?: import("../contracts/capabilities.js").ProtocolWritePort;
 }
 
 // ---- 引擎 ----
@@ -1733,6 +1738,8 @@ export class RuntimeEngine {
 			verify: async (effect: Ref, verifier: Ref, input: JsonValue): Promise<EffectReceipt> =>
 				this.verifyEffect(effect, verifier, input),
 			...(lease != null ? { player: lease.session } : {}),
+			// 写端口只在 body scope 内出现；普通 call 与只读查询都没有这个字段。
+			...(lease != null && this.opts.protocol != null ? { protocol: this.opts.protocol } : {}),
 		} as CallContext & Partial<BodyCallScope>;
 		return ctx;
 	}

@@ -1,4 +1,5 @@
 /** Executor/Companion wire values. Owner and execution facts stay with Runtime. */
+import type { AddonSelection, AddonStatus } from "./addons.js";
 import type { ControlRetirement, Origin, OwnerState } from "./runtime.js";
 import type { JsonValue, Ref } from "./values.js";
 import type { WorldAvailabilityValue } from "./world.js";
@@ -17,6 +18,8 @@ export interface CompanionInit {
 	/** world-history.db 与 library/ 的共享根（跨 Profile 只读复用）。 */
 	sharedDataDir: string;
 	config: ExecutorConfig;
+	/** 本次连接冻结的 Addon 装配计划；缺省 = 未启用任何包。 */
+	addons?: AddonSelection;
 	unclean: boolean;
 	oldControlRetired: boolean;
 	ownerLifetimeMs: number;
@@ -56,6 +59,10 @@ export interface ExecutionSideStatus {
 	safety: { active: Ref | null; last: Ref | null };
 	program: import("./program.js").ProgramCapacity | null;
 	faults: { code: string; message: string }[];
+	/** 本次装配的 Addon 状态（Loaded 事实；不是服务端安装事实）。 */
+	addons: AddonStatus[];
+	/** 包内静态知识与注册表的冲突（注册表优先，冲突显式记录）。 */
+	addonConflicts: string[];
 	retirement: RetirementRequest | null;
 }
 

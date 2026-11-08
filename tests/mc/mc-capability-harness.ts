@@ -6,7 +6,7 @@
  * 记录 calls 是为了证明"没做多余的事"（例如拿身体之前就失败）。
  */
 
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type {
 	BodyOps,
 	ItemSelector,
@@ -550,7 +550,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 			throw new Error("verify is not used here");
 		},
 	} as unknown as CallContext;
-	const capabilities = builtinCatalog.bind({
+	const capabilities = createCapabilityCatalog().bind({
 		surface: hooks.surface ?? (() => null),
 		runtime: () => ({ chat: async () => fact(0) as never, navigate: async (_owner, fn) => fn() }),
 		gotoDirector: {

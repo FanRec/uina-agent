@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
@@ -23,7 +23,7 @@ test("Runtime world waiting preserves body ownership and stop closes its guest w
 			game: { dimension: "overworld" },
 		}),
 	});
-	const caps = builtinCatalog.bind({
+	const caps = createCapabilityCatalog().bind({
 		surface: () => null,
 		knowledge: () => null,
 		gotoDirector: {} as never,

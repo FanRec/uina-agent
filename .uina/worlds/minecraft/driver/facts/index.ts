@@ -107,6 +107,11 @@ export class FactsSource implements ClientFactsPort {
 	private changedScheduled = false;
 	private attachedBot: MineflayerBot | null = null;
 	private windowFact: Fact<WindowSnapshot> | null = null;
+	/**
+	 * Addon 发布的连接级事实（key = `<addonId>/<key>`）。随连接清空，
+	 * 不为每个包建独立存储或游标体系。
+	 */
+	private readonly addonFacts = new Map<string, Fact<JsonValue>>();
 	/** 本连接是否已收到至少一条玩家名单公告；换连接清零，名单未到不冒充空服。 */
 	private rosterSeen = false;
 	/** 本连接收到的地图增量包缓存；换连接（resetSource）清空当前覆盖（§11.8）。 */
@@ -160,7 +165,11 @@ export class FactsSource implements ClientFactsPort {
 						);
 					// 旧 bot 引用封印：sample 转为 DISCONNECTED，不读死连接。
 					this.detach();
+					this.addonFacts.clear();
 					this.resetSource("connection_changed");
+				} else if (notice.state === "connecting") {
+					// 新连接开始：上一代的模组事实立即失效（不等 ready）。
+					this.addonFacts.clear();
 				}
 				return;
 			}
@@ -307,6 +316,34 @@ export class FactsSource implements ClientFactsPort {
 		this.capture("client.window@1", plain(value), unknown, (record) => {
 			this.windowFact = { ...record.fact, value: snapshot, evidence: [record.ref] };
 		});
+	}
+
+	/**
+	 * Addon 的连接级事实发布口（contracts/protocol.ts ConnectionFactSink）。
+	 * 只接受纯 JSON；没有活客户端时丢弃（不缓存给下一次连接）。`source: "server"`
+	 * 表示值来自服务端 Payload，addon 只负责解码；addon 伪造的语义由它自己承担。
+	 */
+	publishAddonFact(addonId: string, key: string, value: JsonValue, unknown: string[] = []): void {
+		if (this.host.bot == null) return;
+		let payload: JsonValue;
+		try {
+			payload = JSON.parse(JSON.stringify(value)) as JsonValue;
+		} catch {
+			// 非纯值（函数/循环引用）不是事实：显式拒绝，不写入半成品。
+			throw new Error(`addon fact ${addonId}/${key} is not a plain JSON value`);
+		}
+		const fact: Fact<JsonValue> = {
+			value: payload,
+			observedAt: nowIso(),
+			connection: this.host.identity?.connection ?? this.stamp.connection ?? undefined,
+			incarnation: this.host.identity?.incarnation ?? this.stamp.incarnation ?? undefined,
+			source: "server",
+			coverage: unknown.length > 0 ? "partial" : "complete",
+			unknown: [...unknown],
+			evidence: [],
+		};
+		this.addonFacts.set(`${addonId}/${key}`, fact);
+		this.commit("addon");
 	}
 
 	/** 每条材料按自己的流计算持久水线，旧流迟到 ACK 不授权新流。 */
@@ -654,6 +691,7 @@ export class FactsSource implements ClientFactsPort {
 			window: this.windowFact,
 			rosterSeen: this.rosterSeen,
 			maps: this.maps,
+			addonFacts: this.addonFacts,
 		});
 	}
 }

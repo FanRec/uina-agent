@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { emptyFactRevisions } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type {
 	ClientFactView,
@@ -26,7 +26,7 @@ import { MinecraftWorld } from "../../.uina/worlds/minecraft/world/index.js";
  * PNG 缓存与 read_image 授权校验。facts 用手造视图；文件用真实临时目录。
  */
 
-const capabilities = builtinCatalog.bind({
+const capabilities = createCapabilityCatalog().bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

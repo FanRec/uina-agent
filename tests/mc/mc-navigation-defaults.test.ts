@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { HarnessState } from "./mc-capability-harness.js";
 import { makeHarness } from "./mc-capability-harness.js";
@@ -27,12 +27,16 @@ test("C07 goto@1 未授权时不垫块；显式 true 才允许施工", async () 
 	const authorized = await captured({ at: { x: 12, y: 64, z: 10 }, tolerance: 2, placeToReach: true });
 	expect(authorized).toMatchObject({ placeToReach: true });
 	// descriptor 的公开文案必须与实际默认一致，不能教模型一个已经不存在的默认。
-	const descriptor = builtinCatalog.allDescriptors().find((d) => d.ref === "goto@1")!;
+	const descriptor = createCapabilityCatalog()
+		.allDescriptors()
+		.find((d) => d.ref === "goto@1")!;
 	expect(JSON.stringify(descriptor.input)).toContain("default false");
 });
 
 test("C08 route.plan@1 声明与 goto 一致，且试算与执行共用同一份 movement 配置", () => {
-	const planDescriptor = builtinCatalog.allDescriptors().find((d) => d.ref === "route.plan@1")!;
+	const planDescriptor = createCapabilityCatalog()
+		.allDescriptors()
+		.find((d) => d.ref === "route.plan@1")!;
 	expect(JSON.stringify(planDescriptor.input)).toContain("default false");
 	const program = `
 import assert from 'node:assert/strict';

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { builtinCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type {
 	ClientEntitiesValue,
@@ -13,7 +13,7 @@ import type { Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/val
  * 以及 entities@1 的玩家名覆写（批16）。
  */
 
-const capabilities = builtinCatalog.bind({
+const capabilities = createCapabilityCatalog().bind({
 	surface: () => null,
 	knowledge: () => null,
 	gotoDirector: {} as never,

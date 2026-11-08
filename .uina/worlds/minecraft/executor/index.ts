@@ -12,6 +12,7 @@ import {
 	type ExecutionSideStatus,
 	type ExecutorCloseResult,
 } from "../contracts/executor.js";
+import type { AddonSelection, DirectorySnapshot } from "../contracts/addons.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -132,6 +133,7 @@ export class MinecraftExecutor {
 		private readonly ownership: WindowsOwnership,
 		private readonly policy: ExecutorPolicy,
 		private readonly signal?: AbortSignal,
+		private readonly addons: AddonSelection = { digest: "none", entries: [] },
 	) {
 		this.abortListener = () => {
 			this.closing = true;
@@ -148,6 +150,8 @@ export class MinecraftExecutor {
 		/** world-history.db 与 library/ 的共享根。 */
 		sharedDataDir: string;
 		config: unknown;
+		/** 本次会话冻结的 Addon 装配计划（Parent 已校验 Manifest 与路径）。 */
+		addons?: AddonSelection;
 		signal?: AbortSignal;
 		policy?: Partial<ExecutorPolicy>;
 	}): Promise<MinecraftExecutor> {
@@ -167,6 +171,7 @@ export class MinecraftExecutor {
 			ownership,
 			{ ...DEFAULT_POLICY, ...options.policy },
 			options.signal,
+			options.addons ?? { digest: "none", entries: [] },
 		);
 		try {
 			if (!existsSync(join(sessionDataDir, "executor.db")) && existsSync(join(sessionDataDir, "runtime.db")))
@@ -315,6 +320,7 @@ export class MinecraftExecutor {
 				sessionDataDir: this.sessionDataDir,
 				sharedDataDir: this.sharedDataDir,
 				config: this.config,
+				addons: this.addons,
 				unclean,
 				oldControlRetired: true,
 				ownerLifetimeMs: this.policy.ownerLifetimeMs,
@@ -441,6 +447,13 @@ export class MinecraftExecutor {
 		this.side = side;
 		if (side.retirement) this.onSideFault(connection, new RpcError(side.retirement.code, side.retirement.detail));
 		return this.status();
+	}
+	/**
+	 * 活动会话的只读目录快照：descriptor / addon 状态 / 选择摘要。
+	 * 连接不健康时明确失败——宿主不得把过期目录当成当前可执行能力。
+	 */
+	async snapshot(): Promise<DirectorySnapshot> {
+		return (await this.current().peer.call("directory.snapshot", {})) as unknown as DirectorySnapshot;
 	}
 	async setOwnerGate(
 		gate: "disabled" | "emergency" | "owner_lost",

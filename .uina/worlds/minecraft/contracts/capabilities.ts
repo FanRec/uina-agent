@@ -57,7 +57,7 @@ export interface QueryDescriptor {
 
 export interface SearchSummary {
 	/** guide 是随版本发布的只读官方教学资料：可检索、可读正文，永不 callable。 */
-	kind: "capability" | "guide" | "program" | "blueprint" | "experience";
+	kind: "capability" | "guide" | "program" | "blueprint" | "experience" | "addon";
 	callable: boolean;
 	name: string;
 	ref?: string;
@@ -100,6 +100,15 @@ export type DiscoveryEntry =
 			summary: string;
 			tags: string[];
 			content: string;
+	  }
+	| {
+			/** 已安装/已加载的 Addon 包：只说明装配状态，能力仍按各自 ref 描述。 */
+			kind: "addon";
+			callable: false;
+			name: string;
+			summary: string;
+			tags: string[];
+			status: import("./addons.js").AddonStatus;
 	  };
 
 export interface CallableDirectory {
@@ -151,10 +160,22 @@ export interface ReadCallContext extends ReadCallScope {
 	readonly world: WorldReadPort;
 }
 
+/**
+ * 受控协议写入：只在 Runtime 已授权的 BodyScope 内注入 CallContext。
+ * addon 的自定义 Payload（改变服务器世界）必须经此发出；attach 阶段的只读端口
+ * 不提供写能力，裸 bot/socket 不对普通贡献开放。
+ */
+export interface ProtocolWritePort {
+	/** 发送一个自定义通道 Payload（1.21.11 serverbound custom_payload）。 */
+	send(channel: string, data: string | Uint8Array): void;
+}
+
 export interface CallContext extends ReadCallContext, CallScope {
 	readonly world: WorldPort;
 	/** 只调用 effect 原要求指定的领域核验者并追加效果判断。 */
 	verify(effect: Ref, verifier: ExactRef, input: JsonValue): Promise<EffectReceipt>;
+	/** 仅在 Runtime 授权的 BodyScope 内存在；普通调用为 undefined。 */
+	readonly protocol?: ProtocolWritePort;
 }
 
 export interface BodyCallScope extends CallContext {
