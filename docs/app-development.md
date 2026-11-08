@@ -39,6 +39,7 @@ ctx.emitEvent({
 - `origin` 使用 `external` 或 `internal`，事件正文必须明确来源是数据而非系统指令。
 - `render` 可替代固定 `text`。事件排队时不生成正文，真正提交给主体前才调用；返回空值则丢弃本次事件。适合等待期间仍会变化的状态。
 - 事件 ID 语义分两种：来源事实用稳定去重 ID（如 `sourceEventKey`，同一事实重发会去重）；新生成的机会用唯一 ID（UUID）。两者不得混用。不要为每次心跳、进度、音量或普通日志启动模型回合。
+- `emitEvent` 的返回值回答"这个事件现在还归不归我"，不是"主体处理完了"：`{accepted: true}` 表示它已经离开 World（进了主脑的待处理集合，或已被宿主撤销），World 可以扔掉它；`{accepted: false, reason, retryable}` 表示它还在 World 手里，`retryable` 只说再交一次有没有意义。重提必须用同一个 `id`——宿主按 ID 去重，换 ID 就变成两件事。形状非法（缺 `text` 且缺 `render`、`channel` 不是 `world`）照旧直接抛错，那是 World 自己的 bug，不是投递状态。要确认主体读过它，看宿主的 `input_settled` 事实，别从提交结果推断。
 
 ## 查询和事件的边界
 
