@@ -16,6 +16,13 @@ const EVENT_RETRY_MS = 1000;
  * 下一次唤醒再交。取小值只为不让一次唤醒读满一页记录、把 reconcile 拖长。
  */
 const DELIVERY_BATCH = 8;
+/**
+ * 一轮对账检查的 pending 条数预算。规模变大时"每轮扫完全部历史待办"会把新完成
+ * 饿在后面：10000 条 pending 意味着 100 次分页 + 10000 次宿主 inspect。预算用满就
+ * 记住键集游标，下一轮从那里继续，扫到末尾再回到开头——每条都会被看到，但不要求
+ * 一轮看完。
+ */
+const SCAN_BUDGET = 96;
 
 type EventNotice = Parameters<NonNullable<ServiceCompanionContext["emitEvent"]>>[0];
 /** 已备好 attempt、等着和同批一起交出去的一条完成通知。 */
@@ -49,6 +56,9 @@ export class DeliveryPump {
 	private error: { code: string; message: string } | null = null;
 	private lastCheckedAt: string | null = null;
 	private pendingCount: number | null = null;
+	/** 上一轮有界扫描停在哪（rowid 键集）；扫到末尾即清空，下一轮从头开始。 */
+	private scanCursor: string | undefined;
+	private scannedThisRound = 0;
 	private failures = 0;
 	private readonly activation = `delivery:${randomUUID()}`;
 	constructor(
@@ -203,24 +213,31 @@ export class DeliveryPump {
 	/**
 	 * 对账一页 pending：宿主已提交的回 ACK，正在处理的记进诊断，剩下的收进本轮交付批次。
 	 * 每一条各自判断，谁也不替谁占位——一条卡住不该拖住同一轮里别的完成通知。
+	 *
+	 * 扫描是**有界**的：最多检查 `SCAN_BUDGET` 条，用满就保留键集游标，下一轮从那里
+	 * 继续。这样 10000 条积压也不会让新完成等 100 轮，且没有任何一条被永久跳过。
 	 */
 	private async scan(
 		port: HostDeliveryPort,
 		attempts: ReadonlyMap<string, DeliveryAttempt>,
 	): Promise<{ pending: number; unconfirmed: Error | null; ready: Deliverable[] }> {
 		const ready: Deliverable[] = [];
-		let cursor: string | undefined;
+		let cursor = this.scanCursor;
 		let pending = 0;
+		let inspected = 0;
 		let unconfirmed: Error | null = null;
 		do {
+			// 页大小按剩余预算取：单页不会超出本轮预算，于是"扫不完"时一定有 next 可续。
+			const limit = Math.max(1, Math.min(100, SCAN_BUDGET - inspected));
 			const page = await this.executor.rpc<{ items: DeliveryRef[]; next?: string }>("runtime.pendingDeliveries", {
 				...(cursor ? { cursor } : {}),
-				limit: 100,
+				limit,
 			});
 			cursor = page.next;
 			pending += page.items.length;
 			for (const ref of page.items) {
 				if (this.stopped || this.ctx.signal.aborted) return { pending, unconfirmed, ready };
+				inspected += 1;
 				if (this.heldRequests.has(ref.requestId)) continue;
 				const host = await port.inspect(ref.completionRef);
 				this.lastCheckedAt = new Date().toISOString();
@@ -276,7 +293,11 @@ export class DeliveryPump {
 					attempt: await this.prepare(ref.completionRef),
 				});
 			}
+			if (inspected >= SCAN_BUDGET) break;
 		} while (cursor);
+		// 扫到末尾（没有 next）就回到开头：下一轮从最新的待办开始，积压不会让新完成饿死。
+		this.scanCursor = cursor;
+		this.scannedThisRound = inspected;
 		return { pending, unconfirmed, ready };
 	}
 	/**
@@ -355,6 +376,7 @@ export class DeliveryPump {
 		return {
 			observedAt: new Date().toISOString(),
 			pendingCount: this.pendingCount,
+			scan: { inspected: this.scannedThisRound, budget: SCAN_BUDGET, resumable: this.scanCursor != null },
 			activeInputs: [...this.inputs].map(([key, input]) => ({
 				key,
 				channel: input.channel,

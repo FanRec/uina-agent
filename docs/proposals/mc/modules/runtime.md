@@ -205,7 +205,7 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progres
 
 一个 Runtime writer，最小表组为 metadata（storageId/schema/门）、submissions（owner/requestId、原指纹、首次解析与结果）、runs/segments、calls/effects、不可变 records、stop_intents（Run/请求键屏障与停止命令去重）、decisions、completions/delivery disposition。只有确有强 World 引用的记录才保存 evidence_holds；没有强引用不创建跨库保护工作。
 
-事务更新当前物化行并追加必要审计事实，不建设 Event Sourcing。record 是已提交不可变截面；read/list/wait 返回由其派生的有界摘要，完整 Run/Segment/Call/Effect 一律通过 readRecord 读取。readRecord 接受确切 record/completionRef；身份 Ref 先解析并固定一个已提交 record。不能临时造一个假称已持久的活视图。后续变化生成新截面。高频 progress 可以合并提交，反馈帧不默认逐帧持久。
+事务更新当前物化行并追加必要审计事实，不建设 Event Sourcing。record 是已提交不可变截面；read/list/wait 返回由其派生的有界摘要，完整 Run/Segment/Call/Effect 一律通过 readRecord 读取。progress 的摘要投影**截断明细而不整块丢弃**（`projectProgress`）：标量、`goal` 短摘要与短对象先占位，明细数组按 2048 字节预算逐条收，被截掉的部分把 `progressComplete` 置 false。旧实现超预算就把 progress 清空，恰恰在长任务最需要续做依据时把它删了。readRecord 接受确切 record/completionRef；身份 Ref 先解析并固定一个已提交 record。不能临时造一个假称已持久的活视图。后续变化生成新截面。高频 progress 可以合并提交，反馈帧不默认逐帧持久。
 
 受理、开始、停止意图、门、decision 消费与终结必须持久。Driver 事实同步进入 Runtime 非阻塞队列后批量写盘；尚未提交的真实派发尾部可在崩溃时丢失，因此恢复开放段始终标记尾部/效果可能缺失，不以“库里没有”证明没有动作。WAL/同步配置和持久性承诺以实际绑定/文件系统核验为准。
 
@@ -261,6 +261,8 @@ Effect 原派发/原回执不可改；后续可信核验追加新记录，含 ob
 Runtime 在段交还或 Run 终结事务中写不可变 CompletionReport、completionRef 与 pending disposition。decision 表示段已封口、Run 待决策；terminal 对应 finished。每段最多一份 decision，每 Run 最多一份 terminal；待决策 stop 可另生 terminal，旧 decision 不改。
 
 pendingDeliveries 只按 [public-api §7](../public-api.md) 分页返回 pending 且 eligible 的报告引用，readDelivery 读取有界固定 header 和当前 eligibility，正文由 readRecord(completionRef) 取得 inline/file。terminal 可投；decision 仅当前仍未消费、Run 未停止/终结时可投。eligibility 从已有运行事实派生，不新建任务状态机。
+
+分页游标是 **rowid 键集**而不是偏移（2026-11-09）：交付过程中 ACK 会把行从 pending 集合里移走，偏移分页会因此跳过尚未处理的项；键集分页在并发提交下只返回"还没看过的行"。Executor 侧每轮最多检查 96 条（`SCAN_BUDGET`）、最多交 8 条（`DELIVERY_BATCH`），用满预算就记住游标、下一轮继续，扫到末尾回到开头——10000 条积压不会让新完成等 100 轮，也没有任何一条被永久跳过。
 
 settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。交付只经完成通知，回执类型不变；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
 

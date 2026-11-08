@@ -807,3 +807,90 @@ test("批量回执少一条时清掉那条在途记录，不留下永远退不�
 		await pump.close();
 	}
 });
+
+test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", async () => {
+	const total = 300;
+	const pending = new Map<number, string>();
+	for (let index = 0; index < total; index++) pending.set(index + 1, `c${index}`);
+	const delivered: string[] = [];
+	const host = new Map<string, HostDeliveryState>();
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async (key) => host.get(key) ?? { kind: "absent" },
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvents: async (events) => {
+			for (const event of events) {
+				const key = event.receipt!.key;
+				delivered.push(key);
+				host.set(key, {
+					kind: "committed",
+					receipt: { ...event.receipt!, namespace: "n", session: "s", record: "canonical", channel: "input" },
+				});
+			}
+			return events.map(() => ({ accepted: true }) as const);
+		},
+	};
+	// 键集分页替身：cursor 是最后一条的 rowid，与真实实现同口径。
+	const executor = {
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async (method: string, p: { ref?: string; cursor?: string; limit?: number }) => {
+			if (method === "runtime.pendingDeliveries") {
+				const after = p.cursor == null ? 0 : Number(p.cursor);
+				const limit = p.limit ?? 10;
+				const rows = [...pending.entries()].filter(([rowid]) => rowid > after).sort((a, b) => a[0] - b[0]);
+				const page = rows.slice(0, limit);
+				return {
+					items: page.map(([, ref]) => ({ completionRef: ref, requestId: ref })),
+					...(rows.length > limit ? { next: String(page[page.length - 1]![0]) } : {}),
+				};
+			}
+			if (method === "runtime.settleDelivery") {
+				for (const [rowid, ref] of pending) if (ref === p.ref) pending.delete(rowid);
+				return null;
+			}
+			if (method === "runtime.readDelivery")
+				return {
+					disposition: "pending",
+					eligible: true,
+					delivery: {
+						completionRef: p.ref,
+						requestId: p.ref,
+						run: "r",
+						segment: "s",
+						revision: 1,
+						recordBytes: 200,
+						reportKind: "terminal",
+						snapshot: { phase: "finished", outcome: "succeeded" },
+					},
+				};
+			throw new Error(method);
+		},
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx);
+	try {
+		await pump.reconcile();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		// 一轮只看 96 条：不是"扫完全部历史待办才处理新内容"。
+		expect(pump.diagnostics().scan.inspected).toBe(96);
+		expect(pump.diagnostics().scan.resumable).toBe(true);
+		// 每轮最多交 8 条。
+		expect(delivered.length).toBe(8);
+		// 续扫：后续轮次从上一轮停下的键集位置继续，不重复检查同一条。
+		const rounds = 40;
+		for (let round = 0; round < rounds; round++) {
+			await pump.reconcile();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		// 300 条全部交付且没有重复：有界扫描不会漏项。
+		expect(delivered.length).toBe(total);
+		expect(new Set(delivered).size).toBe(total);
+		expect(pending.size).toBe(0);
+	} finally {
+		await pump.close();
+	}
+});

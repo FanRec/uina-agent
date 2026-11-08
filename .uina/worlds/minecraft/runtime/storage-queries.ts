@@ -163,6 +163,16 @@ function pageOffset(cursor?: string): number {
 		fail("CURSOR_INVALID", "invalid page cursor");
 	return Number(cursor);
 }
+/**
+ * 待交付页的游标是 rowid 键集而不是偏移：交付过程中 ACK 会把行从 pending 集合里移走，
+ * 偏移分页会因此跳过尚未处理的项。键集分页在并发提交下仍然只看"还没看过的行"。
+ */
+function pageRowid(cursor?: string): number {
+	if (cursor === undefined) return 0;
+	if (!/^(0|[1-9]\d*)$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))
+		fail("CURSOR_INVALID", "invalid delivery cursor");
+	return Number(cursor);
+}
 function page<T>(items: T[], offset: number, limit: number) {
 	return { items: items.slice(0, limit), ...(items.length > limit ? { next: String(offset + limit) } : {}) };
 }
@@ -246,29 +256,27 @@ export async function queryStorage(db: DatabaseSync, dbPath: string, q: StorageQ
 		);
 	}
 	if (q.op === "pending") {
-		const offset = pageOffset(q.cursor),
-			limit = q.limit ?? 10;
+		const limit = q.limit ?? 10;
 		if (!Number.isInteger(limit) || limit < 1 || limit > 100)
 			fail("INVALID_INPUT", "delivery page limit must be 1..100");
+		const after = pageRowid(q.cursor);
 		const rows = db
 			.prepare(
-				"SELECT c.header FROM completions c JOIN runs r ON r.run=c.run WHERE c.disposition='pending' AND (json_extract(c.header,'$.reportKind')='terminal' OR (r.phase='awaiting_decision' AND r.completion_ref=c.completion_ref)) ORDER BY c.rowid LIMIT ? OFFSET ?",
+				"SELECT c.rowid AS rid, c.header FROM completions c JOIN runs r ON r.run=c.run WHERE c.rowid > ? AND c.disposition='pending' AND (json_extract(c.header,'$.reportKind')='terminal' OR (r.phase='awaiting_decision' AND r.completion_ref=c.completion_ref)) ORDER BY c.rowid LIMIT ?",
 			)
-			.all(limit + 1, offset);
-		return page(
-			rows.map((r) => {
-				const h = JSON.parse(String(r.header)) as CompletionHeader;
-				return {
-					completionRef: h.completionRef,
-					requestId: h.requestId,
-					run: h.run,
-					segment: h.segment,
-					revision: h.revision,
-				};
-			}),
-			offset,
-			limit,
-		);
+			.all(after, limit + 1);
+		const items = rows.slice(0, limit).map((r) => {
+			const h = JSON.parse(String(r.header)) as CompletionHeader;
+			return {
+				completionRef: h.completionRef,
+				requestId: h.requestId,
+				run: h.run,
+				segment: h.segment,
+				revision: h.revision,
+			};
+		});
+		const last = rows[Math.min(limit, rows.length) - 1];
+		return { items, ...(rows.length > limit ? { next: String(last.rid) } : {}) };
 	}
 	const row = db.prepare("SELECT * FROM completions WHERE completion_ref=?").get(q.ref);
 	if (!row) fail("NOT_FOUND", `completion ${q.ref} not found`);
