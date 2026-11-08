@@ -27,6 +27,8 @@ notes/
 /tmp/
 # 编辑器（zcode）的会话计划缓存，属本地工具状态
 /.zcode/
+# AI 助手的工作区记忆与本地状态，同属工具状态，不入库
+/.workbuddy-ai/
 # .uina 根下的一次性分析脚本（如导出使用面扫描），命名沿用 tmp- 前缀
 /.uina/tmp-*.mjs
 
@@ -38,6 +40,10 @@ notes/
 
 # Minecraft 开发服务端本体（jar/存档/配置）：可整体删除复位，见 .uina/worlds/minecraft/dev-env/README.md
 /.uina/worlds/minecraft/dev-env/server/
+# 测试插件构建产物（源码 build.mjs + src/ 入库，产物可重建）
+/.uina/worlds/minecraft/dev-env/uina-plugin/out/
+/.uina/worlds/minecraft/dev-env/uina-plugin/javac.args
+/.uina/worlds/minecraft/dev-env/uina-plugin/*.jar
 
 # 本地质量工具与覆盖率产物（不入库；覆盖率生成：
 # npx vitest run --coverage.enabled --coverage.reporter=json --coverage.include="src/**" --coverage.reportsDirectory=coverage-raw）
