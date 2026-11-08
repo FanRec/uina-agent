@@ -67,6 +67,13 @@ interface Observation<T> extends Fact<T> {
   history?: HistoryProgress[];
 }
 interface Progress { summary?: string; [key: string]: JsonValue | undefined }
+// 长任务的领域目标摘要（capabilities §2.15）。与 Outcome 正交：Outcome 是一次执行的
+// 终态，GoalState 是世界当前是否满足目标。四态计数之和恒等于 total。
+type GoalState = "satisfied" | "unsatisfied" | "unknown";
+interface GoalSummary {
+  state: GoalState;
+  completed: number; remaining: number; blocked: number; uncertain: number; total: number;
+}
 interface ImageFileRef {
   path: string; sha256: string; bytes: number;
   mimeType: "image/png"; width: number; height: number;

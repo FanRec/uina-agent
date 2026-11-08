@@ -91,6 +91,7 @@ interface BuildValue {
 	cleared: number;
 	skipped: number;
 	remaining: unknown[];
+	goal: { state: string; completed: number; remaining: number; blocked: number; uncertain: number; total: number };
 	blueprint?: { ref: string; digest: string };
 }
 
@@ -352,12 +353,17 @@ async function main(): Promise<void> {
 			const result = valueOf<BuildValue>(await s.call("build@1", buildInput("keep", KEEP), 120000));
 			if (result.placed !== 3) throw new Error(`placed ${result.placed} != 3`);
 			if (result.cleared !== 1) throw new Error(`cleared ${result.cleared} != 1`);
-			if (result.skipped !== 2) throw new Error(`skipped ${result.skipped} != 2 (preserve+unknown)`);
+			// preserve 按设计不动 → 计入完成；unknown 来源格无法核验 → 计入 uncertain，
+			// 不能和 preserve 一起算"已满足"（旧口径把两者都算 skipped）。
+			if (result.skipped !== 1) throw new Error(`skipped ${result.skipped} != 1 (preserve only)`);
+			if (result.goal.uncertain !== 1) throw new Error(`goal.uncertain ${result.goal.uncertain} != 1 (unknown cell)`);
+			if (result.goal.completed + result.goal.remaining + result.goal.blocked + result.goal.uncertain !== result.goal.total)
+				throw new Error(`goal counts do not add up: ${JSON.stringify(result.goal)}`);
 			const cleared = await s.readBlock({ x: KEEP.x + 2, y: KEEP.y, z: KEEP.z });
 			const preserved = await s.readBlock({ x: KEEP.x, y: KEEP.y, z: KEEP.z + 1 });
 			if (cleared?.name !== "air") throw new Error(`clear target still holds ${cleared?.name}`);
 			if (preserved?.name !== "chest") throw new Error(`preserve target became ${preserved?.name}`);
-			return `placed ${result.placed}, cleared ${result.cleared}, skipped ${result.skipped}`;
+			return `placed ${result.placed}, cleared ${result.cleared}, skipped ${result.skipped}, uncertain ${result.goal.uncertain}`;
 		});
 
 		await s.step("changing the design after planning is CONFLICT, not a silent rebuild", async () => {
@@ -438,18 +444,18 @@ async function main(): Promise<void> {
 			}
 			const progress = failed.error.progress;
 			// 1s 预算下不可能建成多少，这里要证的是"超预算时如实停手并交代还剩多少"。
-			// 断言用总量守恒：已结算 + 剩下的必须等于设计格数，否则 remaining 就是在少报。
+			// 断言用总量守恒：四态之和必须等于设计格数，否则 remaining 就是在少报。
 			const counts = progress as
-				| { placed?: number; cleared?: number; skipped?: number; remainingCount?: number }
+				| { goal?: { completed: number; remaining: number; blocked: number; uncertain: number; total: number } }
 				| undefined;
-			const total =
-				(counts?.placed ?? 0) + (counts?.cleared ?? 0) + (counts?.skipped ?? 0) + (counts?.remainingCount ?? 0);
-			if (total !== 100) {
+			const goal = counts?.goal;
+			if (goal == null) throw new Error(`TIMEOUT progress has no goal: ${JSON.stringify(progress).slice(0, 300)}`);
+			const total = goal.completed + goal.remaining + goal.blocked + goal.uncertain;
+			if (total !== 100 || goal.total !== 100) {
 				throw new Error(`TIMEOUT progress does not add up to 100: ${JSON.stringify(progress).slice(0, 500)}`);
 			}
-			if ((counts?.remainingCount ?? 0) <= 0)
-				throw new Error(`TIMEOUT reported nothing left: ${JSON.stringify(progress)}`);
-			return `TIMEOUT with ${counts?.remainingCount} left, ${counts?.placed} placed, ${counts?.skipped} skipped`;
+			if (goal.remaining <= 0) throw new Error(`TIMEOUT reported nothing left: ${JSON.stringify(progress)}`);
+			return `TIMEOUT with ${goal.remaining} left, ${goal.completed} completed of ${goal.total}`;
 		});
 		await s.step("an 11-wall beyond one vantage's reach is built via vantage zones (batch30)", async () => {
 			// 旧实现"只试首站位"：两端格从盒中心走过去仍够不着 → 整格 failed。

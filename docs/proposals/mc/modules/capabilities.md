@@ -269,6 +269,29 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 介入记录、效果归属与通知见 [Runtime §3.3.3](runtime.md#safety-intervention)。死亡使旧化身引用和在途身体失效；客户端重生属于生命周期维护，不自动重跑旧任务，也不认定库存全丢。
 
+### 2.15 目标对账与进度
+
+长任务（`build` `tunnel` `excavate` `collect`）共用一套目标对账语义；短操作（单次 `mine`/`place`/`attack`/`click`）不套用。实现见 `capabilities/shared/goal.ts`。
+
+**四态**。一次执行的 `Outcome` 与"目标是否成立"是两件事：Run 可能被取消而目标恰好已满足，旧 Run 的终态不倒改。长任务的 `progress.goal` 与成功返回值里的 `goal` 是同一个 `GoalSummary`：
+
+```ts
+interface GoalSummary {
+  state: "satisfied" | "unsatisfied" | "unknown";
+  completed: number;   // 有证据支持已完成的部分
+  remaining: number;   // 计划内、还没轮到的部分
+  blocked: number;     // 已知原因挡住（缺工具、液体、够不着、现场冲突）
+  uncertain: number;   // 缺少证据（未加载、服务端未确认、来源不可核验）
+  total: number;       // 本次固定目标的规模
+}
+```
+
+四者之和恒等于 `total`。`state` 只按观测证据判定：全部完成 → `satisfied`；一条证据都没有（全部不可观测）→ `unknown`，不当作失败也不授权重试；其余 → `unsatisfied`。
+
+**进度分层**。`goal` 是短摘要，永远在摘要投影预算内；`outstanding` 是有界明细样本（最多 16 条）；`reasons` 是全量原因直方图，被样本截掉的部分折进 `not_listed`。完整明细在本次 Call 记录里（`runs record`），不需要另建目标数据库，也不写 `detailRef`。
+
+**恢复按差异续做**。`total` 与目标身份在受理时固定（蓝图另有 `digest`）；中断后重跑同一个目标时按现场重新对账，只处理 `remaining`/`blocked` 中真实未达的部分，不按旧游标重放已完成的格。
+
 ## 3. 查询（18 个）
 
 查询是 `access: "read"` 的能力：不写世界，不持身体，可以高频调用。下面写的是 `mc.read` 返回的 `value`。带“可等待”的查询有真实观察令牌（`version`），能让 `mc.waitUntil` 无漏唤醒；其余查询 `version` 恒为 `null`。
@@ -539,8 +562,8 @@ type ExploreTarget =
 - 输入 `{ item: Name, count?: 1..1024 = 1, radius?: 32, digThrough?: false, tool?: Name|ItemSelector }`
 - 做：寻找掉落匹配 item 的方块，走近、挖掘并拾取；只负责已经可执行的采集，不为 charcoal 等自动展开科技树。
 - 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
-- 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
-- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, attempted, skipped, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
+- 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name], goal }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
+- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{goal, mined, acquired, collected, toolsUsed, candidates:{attempted,skipped,blocked,uncertain}}`（§2.15）；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。`goal` 按**最终取得物品**记账（`total = count`、`completed = acquired`），候选格的成败单独放 `candidates`，两种单位不混在一个计数里。
 - 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
 - 候选纪律（批42）：`tried` 记录 `permanent`（源方块已不在）/`transient`（路线暂不可达）/`unknown`（已派发但结果未知）。**mine 的 TIMEOUT 若 `dispatch:"sent"` 或已有 effect，不得换候选**——那会把"可能已挖掉"当成没发生，必须带 progress 上抛；goto 的 TIMEOUT 只是移动预算，可换候选。真正拿到资源后释放 transient，让环境变化后的候选重新评估。候选耗尽但 `mined > acquired` 时先做一次有界 `pickup@1` 清扫地面掉落，再判定 NOT_FOUND。
 - 实现：物品名先用静态知识反查方块来源（`item@1` 的 block sources），再用 `blocks@1` 取前沿；走的是一遍遍 `goto@1` + `mine@1(collect:false)` + 掉落观察，入不了包再 `pickup@1` 兜底。**不持身体**（Body 槽与 goto 槽互斥），每一步独立取放；子调用的 `CONTROL_CONFLICT` 原样上抛，不做跨 run 隔离。可预判的失败（无来源/没工具/背包满）全在移动之前判定。
@@ -550,14 +573,15 @@ type ExploreTarget =
 - 做：挖一条到 `to` 的通道；高度差大时自动做台阶；`support` 时在头顶补支撑（防砂砾）。
 - 规划塑形：上行走廊在 height<3 的 profile 下自动把踏步列上方挖到 3 高净空（G24）——越顶瞬间头部会探进落点列的顶格；与下坡挖檐对称，多挖的格计入 `dug`/`path`。走拍前核验目标脚位支撑：规划地板落在既有挖空上（重入与既有走廊错位一格的 G30 (c) 形态）时，UNREACHABLE 带归因快速失败（"planned floor has no support"），不烧走位预算；需要节点级重入既有走廊的调用方先精确站位（stepTo 同款口径）再 tunnel。
 - 完成：通道连通且可从起点走到终点。
-- 返回 `{ dug, path:[{ at, name }], stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
+- 返回 `{ dug, path:[{ at, name }], goal, stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
+- 目标对账（§2.15）：`total = 计划格数 + 1`（最后那个 1 是"真的走通"），`completed` 只算服务端确认空气的格与走通本身；流体/挖不动记 `blocked`，未加载/未确认记 `uncertain`，没轮到的格记 `remaining`。执行中发现的头顶支撑格注册时一并计入总量。progress 带 `phase`（digging/walking/done）与 `columns:{walked,total}`
 
 #### excavate · `excavate@1` · act · P1
 - 输入 `{ region: { from: GridPos, to: GridPos }, keep?: [Name] = ["bedrock","chest","furnace","spawner"], maxTimeMs?: 300000 }`
 - 做：清空长方体区域（按层，从上到下，先收容器内容）。
-- 返回 `{ dug, kept:[{ at, name }], drops:{ [item]: number }, remaining:[{ at, reason }] }`
+- 返回 `{ dug, kept:[{ at, name }], drops:{ [item]: number }, remaining:[], goal }`
 - 失败 `TIMEOUT`、`INTERRUPTED`、`TARGET_NOT_MET`；keep 明确保留的方块不属于待清空目标
-- 进度守恒：`progress.remainingCount = plannedActionable − confirmedComplete`，**包含从未轮到的格**（`reason:"not_attempted"`）；`progress.reasons` 按原因汇总，`progress.remaining` 只是最多 64 条的有界样本。旧口径"只统计尝试失败格"会把未访问量当成完成，已废弃
+- 进度守恒（§2.15）：`goal.completed + remaining + blocked + uncertain = total`，**未轮到的格计入 `remaining`**；液体/挖不动/够不着计入 `blocked`，未加载/未确认计入 `uncertain`。`progress.reasons` 按原因汇总全量，`progress.outstanding` 只是最多 16 条的有界样本。旧口径"只统计尝试失败格"会把未访问量当成完成，已废弃
 - `dug` 只计服务端确认空气的格；`drops` 是每次挖后短窗观察到的背包正增量，不是地面掉落实体数
 
 ### 建造
@@ -603,8 +627,8 @@ Target 的机器可读形态（`target.json`，schema `minecraft:construction.ta
 - replace 缺省 false；只有源目标明确要求替换且 replace=true，才允许拆除与 set 冲突的现场方块。蓝图显式 clear 是声明的清空目标，不由 replace 猜出。preserve/unknown 始终按 Target 语义处理。
 - 做：由 Construction 解码/变换/排序并放置；复用放置、材料与可达性算法。Raw/Target/Project、clear/preserve/unknown 及 AirPolicy 仍按 Library/Construction 合同解释，未知不自动拆除。
 - expectDigest 不符当前源摘要 → CONFLICT；在途使用本次固定设计字节，不重读变更文件。
-- 完成：所有声明的 set/clear 目标匹配；成功返回 `{placed, cleared, skipped, remaining:[], scaffoldsUsed, blueprint?:{ref,digest}}`。
-- 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{placed, cleared, skipped, remaining:[{at,target,reason}], missing?, scaffoldsUsed, blueprint?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
+- 完成：所有声明的 set/clear 目标匹配；成功返回 `{placed, cleared, skipped, remaining:[], goal, blueprint?:{ref,digest}}`。
+- 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{goal, phase, placed, cleared, skipped, outstanding:[{at,target,reason}], reasons, digest?, missing?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
 - 当前已匹配格跳过；重新调用时依实际现场差异计算，不把旧完成量当新现场真相。
 
 实现口径（2026-11-01 批14）：
@@ -614,9 +638,10 @@ Target 的机器可读形态（`target.json`，schema `minecraft:construction.ta
 - **可预判的拒绝在取身体之前**：冲突、缺料、没有可点的支撑面都先判。`no-support`（还没有可点面）不算失败，留到下一轮；`out-of-reach`（有面但太远）走一次再判，同一格只走一次。
 - **支撑面按候选轮换**：服务端会拒绝某些面（真服实测：门顶放不上，门不是完整方块）。`commitPlacement` 依次试每个可点面，每个面给一次确认窗；只认第一个面会把"有支撑但被拒"变成假失败。
 - **完成口径**：`placed + skipped` 覆盖全部目标，`remaining` 为空。门的上下半是两格，放好下半时服务端自动补上半，于是上半被正确计入 `skipped` 而不是 `placed`——所以断言不能用 `placed === set 数`。
-- **可达性归调用方**：build 不做绕行寻路，也不搭脚手架；站在封闭结构里或需要登高才能到的格如实进 `remaining`（`scaffoldsUsed` 恒 0）。这与 §4 总则一致：站位是调用方的责任。
-- `remaining` 与 progress 明细截断到 128 条并附 `remainingCount`（progress 超 2048 字节会被 runtime 清空）。
-- **`remaining` 要覆盖"还没轮到"的格**：预算耗尽或被打断时队列可能只走了一小段，只把"试过但没成"的格列进去会报出 `remainingCount: 0`（真服实测：建了 6 格超时，却声称什么都不剩）。未轮到的格以 `reason: "not attempted yet"` 补进清单。判据是总量守恒：`placed + cleared + skipped + remainingCount` 等于设计的目标格数，任何时候都成立。
+- **可达性归调用方**：build 不做绕行寻路，也不搭脚手架；站在封闭结构里或需要登高才能到的格如实进 `goal.blocked`。这与 §4 总则一致：站位是调用方的责任。
+- **progress 明细是有界样本**：`outstanding` 最多 16 条，全量原因在 `reasons` 直方图里；progress 超 2048 字节时由 runtime 截断明细而不是整块丢弃（runtime/rows.ts），`goal` 与各计数一定活着。
+- **明细要覆盖"还没轮到"的格**：预算耗尽或被打断时队列可能只走了一小段，只把"试过但没成"的格列进去会报出"什么都不剩"（真服实测：建了 6 格超时，却声称什么都不剩）。未轮到的格以 `reason: "not attempted yet"` 补进清单并计入 `goal.remaining`。判据是总量守恒：`goal.completed + remaining + blocked + uncertain` 恒等于设计的目标格数。
+- **preserve 与 unknown 分开算**：`preserve` 按设计不动，计入 `goal.completed`；`unknown` 来源格无法核验，计入 `goal.uncertain`，不算完成。
 
 实现口径（2026-11-07 批30）：放置调度从"固定 4 轮 + 只试首站位 + 逐格走位"改为**站位分区批量**——每轮按候选序（当前脚位 → 盒中心 → 四侧 pad1/pad2，世界核验可站）给每格取第一个几何射程满足的站位，同站位格一批执行（组内按列自下而上，组序先零走位组再按平距）；每站位一走，走失败整组如实 defer。`out-of-reach`/`no-support` 都 defer 带因给下一轮重分区，不再为单格反复走位；支撑链深度不再受固定轮数限制（上界 16 轮纯安全网，真实终止 = 一轮零建成）。几何无解的格（任何候选站位都够不着）如实 `no candidate vantage within reach`，与"有站位但没支撑面"在 remaining 里可分辨。真服门 `dev:mc:build` 13 步（批30 起新增 11 格长墙多站位步：两端格超出单站位射程，分区经 pad 站位 11.6s 建完）。
 

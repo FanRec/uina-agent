@@ -397,10 +397,9 @@ export function recoveredEffectValueOf(
 /** Display only: omitted fields stay explicit, full data remains in fixed records. */
 export function boundedSummary(summary: RunSummary): RunSummary {
 	const out = structuredClone(summary);
-	if (Buffer.byteLength(JSON.stringify(out.progress)) > 2048) {
-		out.progress = {};
-		out.progressComplete = false;
-	}
+	const projected = projectProgress(out.progress);
+	out.progress = projected.progress;
+	if (!projected.complete) out.progressComplete = false;
 	out.unknownEffects = out.unknownEffects.slice(0, 8);
 	out.unknownEffectsComplete = out.unknownEffectCount <= 8;
 	if (out.phase === "finished" && out.error && Buffer.byteLength(out.error.message) > 1024) {
@@ -412,4 +411,79 @@ export function boundedSummary(summary: RunSummary): RunSummary {
 		out.reasonComplete = false;
 	}
 	return out;
+}
+
+/** progress 投影预算：与 public-api §7 的"摘要 2048 字节"一致。 */
+export const PROGRESS_PROJECTION_BYTES = 2048;
+
+/**
+ * 摘要投影必须保住"还剩什么"，只截断明细。
+ *
+ * 旧实现超预算就整块丢掉 progress，模型只能看到 `progressComplete:false`——
+ * 恰恰在最需要续做依据的时候（长任务、剩余几十格）把依据删了。现在改为：
+ * 标量与短摘要优先保留，明细数组按预算逐条收，被截掉的部分由 `reasons` 的
+ * 全量直方图承担，完整原文仍在本次 Call 记录里（`runs record`）。
+ */
+export function projectProgress(
+	progress: Progress,
+	budgetBytes = PROGRESS_PROJECTION_BYTES,
+): { progress: Progress; complete: boolean } {
+	if (progress == null || typeof progress !== "object") return { progress: {}, complete: true };
+	if (Buffer.byteLength(JSON.stringify(progress)) <= budgetBytes) return { progress, complete: true };
+	// 留 10% 余量：分隔符与转义让逐条累加的估算偏乐观。
+	const limit = Math.floor(budgetBytes * 0.9);
+	const cost = (key: string, value: JsonValue): number =>
+		Buffer.byteLength(JSON.stringify(key)) + Buffer.byteLength(JSON.stringify(value)) + 2;
+	const out: Record<string, JsonValue> = {};
+	let used = 2;
+	let complete = true;
+	const entries = Object.entries(progress).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined);
+	const isPrimitive = (value: JsonValue): boolean =>
+		value === null || typeof value === "number" || typeof value === "boolean" || typeof value === "string";
+	// 顺序是有意的：标量 → 短摘要对象 → 明细数组。续做时最不能丢的东西先占位，
+	// 明细按剩余预算逐条收——而不是"超了就把整块 progress 删掉"。
+	for (const [key, value] of entries) {
+		if (!isPrimitive(value)) continue;
+		const size = cost(key, value);
+		if (used + size > limit) {
+			complete = false;
+			continue;
+		}
+		out[key] = value;
+		used += size;
+	}
+	for (const [key, value] of entries) {
+		if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+		const nested: Record<string, JsonValue> = {};
+		let closed = true;
+		for (const [innerKey, innerValue] of Object.entries(value)) {
+			if (innerValue === undefined) continue;
+			const size = cost(innerKey, innerValue as JsonValue);
+			if (Array.isArray(innerValue) || used + size > limit) {
+				closed = false;
+				continue;
+			}
+			nested[innerKey] = innerValue as JsonValue;
+			used += size;
+		}
+		if (Object.keys(nested).length > 0) out[key] = nested;
+		if (!closed) complete = false;
+	}
+	for (const [key, value] of entries) {
+		if (!Array.isArray(value)) continue;
+		const kept: JsonValue[] = [];
+		let closed = true;
+		for (const item of value) {
+			const size = cost("", item) + 1;
+			if (used + size > limit) {
+				closed = false;
+				break;
+			}
+			kept.push(item);
+			used += size;
+		}
+		if (kept.length > 0) out[key] = kept;
+		if (!closed) complete = false;
+	}
+	return { progress: out, complete };
 }

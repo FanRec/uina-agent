@@ -189,10 +189,15 @@ describe("excavate@1", () => {
 		});
 		const error = (await invoke(h, "excavate@1", {
 			region: { from: { x: 10, y: 62, z: 10 }, to: { x: 13, y: 64, z: 13 } },
-		}).catch((err: unknown) => err)) as { code?: string; progress?: { dug: number; remaining: unknown[] } };
+		}).catch((err: unknown) => err)) as {
+			code?: string;
+			progress?: { dug: number; goal: { remaining: number; blocked: number }; outstanding: unknown[] };
+		};
 		expect(error.code).toBe("TARGET_NOT_MET");
 		expect(error.progress?.dug).toBe(0);
-		expect(error.progress?.remaining).toHaveLength(47);
+		// 空手挖不动石头：47 格都是已知阻碍（unbreakable），不是"剩余"也不是"未知"。
+		expect(error.progress?.goal).toMatchObject({ remaining: 0, blocked: 47, uncertain: 0 });
+		expect(error.progress?.outstanding).toHaveLength(16);
 	});
 
 	test("C11 an interrupted budget keeps never-visited cells in remainingCount (no double count)", async () => {
@@ -215,12 +220,12 @@ describe("excavate@1", () => {
 			{ ...h.ctx, signal: controller.signal },
 		).catch((err: unknown) => err)) as {
 			code?: string;
-			progress?: { dug: number; remainingCount: number; reasons: Record<string, number> };
+			progress?: { dug: number; goal: { remaining: number; total: number; completed: number }; reasons: Record<string, number> };
 		};
 		expect(error.code).toBe("INTERRUPTED");
 		expect(error.progress?.dug).toBe(5);
 		// 旧实现只统计"尝试失败"格 → 这里会是 0；守恒后必须是 64 - 5 = 59。
-		expect(error.progress?.remainingCount).toBe(59);
+		expect(error.progress?.goal).toMatchObject({ total: 64, completed: 5, remaining: 59 });
 		expect(error.progress?.reasons).toMatchObject({ not_attempted: 59 });
 	});
 

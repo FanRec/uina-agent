@@ -29,9 +29,10 @@ import { plain } from "../../contracts/values.js";
 import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/world.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, EYE_HEIGHT } from "../shared/reach.js";
-import { buildTargetSchema } from "../shared/schema.js";
+import { buildTargetSchema, GOAL_SUMMARY_SCHEMA } from "../shared/schema.js";
 import { fail } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
 import { digCell, reachHint, stepTo, walkLeg } from "./dig-cycle.js";
@@ -41,8 +42,6 @@ import { commitPlacement, inspectPlacement } from "./place-cell.js";
 const DEFAULT_MAX_TIME_MS = 300_000;
 /** 一格走位预算：不够就如实 remaining，不无限重试。 */
 const LEG_TIMEOUT_MS = 8_000;
-/** remaining 明细的截断上限：progress 超 2048 字节会被 runtime 清空（runtime/rows.ts）。 */
-const REMAINING_DETAIL_LIMIT = 128;
 const PROGRESS_EVERY = 8;
 /**
  * 放置阶段的轮数上限（安全网）：真实终止条件是"一轮零建成即停"。支撑链深度
@@ -68,9 +67,10 @@ const descriptor: CallableDescriptor = {
 			cleared: { type: "integer" },
 			skipped: { type: "integer" },
 			remaining: { type: "array" },
+			goal: GOAL_SUMMARY_SCHEMA,
 			blueprint: { type: "object" },
 		},
-		required: ["placed", "cleared", "skipped", "remaining"],
+		required: ["placed", "cleared", "skipped", "remaining", "goal"],
 		additionalProperties: false,
 	},
 	access: "act",
@@ -98,6 +98,7 @@ const descriptor: CallableDescriptor = {
 				cleared: 0,
 				skipped: 74,
 				remaining: [],
+				goal: { state: "satisfied", completed: 100, remaining: 0, blocked: 0, uncertain: 0, total: 100 },
 				blueprint: { ref: "blueprint:oak_hut", digest: "9f2c…" },
 			},
 		},
@@ -137,9 +138,13 @@ interface Unfinished {
 	at: Vec3;
 	target: string;
 	reason: string;
+	/** blocked = 已知原因挡住；uncertain = 没拿到证据（未加载/未确认）；pending = 还没轮到。 */
+	kind: "blocked" | "uncertain" | "pending";
 }
 
-type CellResult = { kind: "done"; counted: "placed" | "cleared" | "skipped" } | { kind: "failed"; reason: string };
+type CellResult =
+	| { kind: "done"; counted: "placed" | "cleared" | "skipped" }
+	| { kind: "failed"; reason: string; uncertainty?: boolean };
 
 function targetLabel(cell: ConstructionTargetCell): string {
 	if (cell.kind === "clear") return "air";
@@ -164,7 +169,7 @@ async function clearCell(deps: CapabilityDeps, ctx: CallContext, owner: ControlO
 			case "open":
 				return { kind: "done", counted: "skipped" };
 			case "not_loaded":
-				return { kind: "failed", reason: "chunk is not loaded" };
+				return { kind: "failed", reason: "chunk is not loaded", uncertainty: true };
 			case "liquid":
 				return { kind: "failed", reason: "cell holds a fluid" };
 			case "unbreakable":
@@ -173,7 +178,7 @@ async function clearCell(deps: CapabilityDeps, ctx: CallContext, owner: ControlO
 				// 确认窗边界的竞态：以世界读数复核一次，真的挖开了就记账（批13 经验 28）。
 				const after = await readBlockAt(ctx.world, at);
 				if (after != null && after.name === "air") return { kind: "done", counted: "cleared" };
-				return { kind: "failed", reason: `dig was not confirmed (${result.dispatch})` };
+				return { kind: "failed", reason: `dig was not confirmed (${result.dispatch})`, uncertainty: true };
 			}
 			case "unreachable": {
 				if (attempt > 0) return { kind: "failed", reason: `unreachable (${reachHint(result.distance, at)})` };
@@ -370,9 +375,11 @@ export const buildModule: MinecraftCapabilityModule = {
 
 					let placed = 0;
 					let cleared = 0;
-					let skipped = plan.targets.length - clears.length - sets.length;
+					/** preserve 格按设计不动，算已满足；unknown 来源格无法核验，单独计入 uncertain。 */
+					let skipped = plan.targets.filter((cell) => cell.kind === "preserve").length;
+					let unknownCells = plan.targets.filter((cell) => cell.kind === "unknown").length;
 					let processed = 0;
-					/** 试过但没成：带原因。 */
+					/** 试过但没成：带原因与归因种类。 */
 					const unfinished = new Map<string, Unfinished>();
 					/** 已结算（placed/cleared/skipped），不再出现在 remaining 里。 */
 					const accounted = new Set<string>();
@@ -386,16 +393,31 @@ export const buildModule: MinecraftCapabilityModule = {
 						for (const cell of actionable) {
 							const key = cellKey(cell.at);
 							if (accounted.has(key) || unfinished.has(key)) continue;
-							remaining.push({ at: cell.at, target: targetLabel(cell), reason: "not attempted yet" });
+							remaining.push({
+								at: cell.at,
+								target: targetLabel(cell),
+								reason: "not attempted yet",
+								kind: "pending",
+							});
 						}
-						return {
-							placed,
-							cleared,
-							skipped,
-							remainingCount: remaining.length,
-							remaining: remaining.slice(0, REMAINING_DETAIL_LIMIT) as unknown as JsonValue,
-							...(blueprint != null ? { blueprint } : {}),
-						};
+						const blocked = remaining.filter((entry) => entry.kind === "blocked");
+						const uncertain = remaining.filter((entry) => entry.kind === "uncertain");
+						const pending = remaining.filter((entry) => entry.kind === "pending");
+						const reasons: Record<string, number> = {};
+						for (const entry of remaining) reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
+						if (unknownCells > 0) reasons["target state unknown in the design source"] = unknownCells;
+						return goalProgress({
+							phase: "building",
+							total: plan.targets.length,
+							completed: placed + cleared + skipped,
+							blocked: blocked.length,
+							uncertain: uncertain.length + unknownCells,
+							// 四态之和必须等于 total：没轮到的格按剩余算，不能混进 blocked。
+							outstanding: sampleOutstanding([...blocked, ...uncertain, ...pending]),
+							reasons,
+							...(blueprint?.digest != null ? { digest: blueprint.digest } : {}),
+							extra: { placed, cleared, skipped },
+						});
 					};
 					const stopIfDone = (what: string): void => {
 						if (ctx.signal.aborted) {
@@ -415,7 +437,12 @@ export const buildModule: MinecraftCapabilityModule = {
 							else skipped += 1;
 							return;
 						}
-						unfinished.set(key, { at: cell.at, target: targetLabel(cell), reason: result.reason });
+						unfinished.set(key, {
+							at: cell.at,
+							target: targetLabel(cell),
+							reason: result.reason,
+							kind: result.uncertainty === true ? "uncertain" : "blocked",
+						});
 					};
 
 					// 3. 清空阶段：自上而下。
@@ -436,7 +463,7 @@ export const buildModule: MinecraftCapabilityModule = {
 					//       组序先"当前就站在该站位"（零走位），再按平距从近到远。
 					const box = boxOf(plan.targets);
 					/** defer 原因跟格走（最后一轮的分区/执行结论）。 */
-					const deferReasons = new Map<string, string>();
+					const deferredBy = new Map<string, { reason: string; kind: "blocked" | "uncertain" }>();
 					let queue = sets;
 					for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
 						const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
@@ -461,7 +488,10 @@ export const buildModule: MinecraftCapabilityModule = {
 						const deferred: ConstructionTargetCell[] = [];
 						for (const cell of orphans) {
 							deferred.push(cell);
-							deferReasons.set(cellKey(cell.at), "no candidate vantage within reach");
+							deferredBy.set(cellKey(cell.at), {
+								reason: "no candidate vantage within reach",
+								kind: "blocked",
+							});
 						}
 						// 组序：当前就站在该站位（零走位）优先，其余按平距从近到远。
 						const ordered = [...groups.values()].sort(
@@ -478,10 +508,10 @@ export const buildModule: MinecraftCapabilityModule = {
 								if (walkError != null) {
 									for (const cell of group.cells) {
 										deferred.push(cell);
-										deferReasons.set(
-											cellKey(cell.at),
-											`walk to vantage ${cellKey(group.vantage)} failed (${walkError})`,
-										);
+										deferredBy.set(cellKey(cell.at), {
+											reason: `walk to vantage ${cellKey(group.vantage)} failed (${walkError})`,
+											kind: "blocked",
+										});
 									}
 									continue;
 								}
@@ -493,7 +523,10 @@ export const buildModule: MinecraftCapabilityModule = {
 								const result = await placeCellTarget(ctx, cell.at, cell.block as BlockSpec, raw.replace === true);
 								if (result.kind === "defer") {
 									deferred.push(cell);
-									deferReasons.set(cellKey(cell.at), result.reason);
+									deferredBy.set(cellKey(cell.at), {
+										reason: result.reason,
+										kind: result.reason.startsWith("placement not confirmed") ? "uncertain" : "blocked",
+									});
 								} else {
 									account(cell, result);
 									if (result.kind === "done") builtThisPass += 1;
@@ -505,10 +538,12 @@ export const buildModule: MinecraftCapabilityModule = {
 						if (builtThisPass === 0) break;
 					}
 					for (const cell of queue) {
+						const deferredEntry = deferredBy.get(cellKey(cell.at));
 						unfinished.set(cellKey(cell.at), {
 							at: cell.at,
 							target: targetLabel(cell),
-							reason: deferReasons.get(cellKey(cell.at)) ?? "no clickable support face appeared after several passes",
+							reason: deferredEntry?.reason ?? "no clickable support face appeared after several passes",
+							kind: deferredEntry?.kind ?? "blocked",
 						});
 					}
 
@@ -550,6 +585,12 @@ export const buildModule: MinecraftCapabilityModule = {
 						cleared,
 						skipped,
 						remaining: [],
+						goal: goalSummaryOf({
+							total: plan.targets.length,
+							completed: placed + cleared + skipped,
+							blocked: 0,
+							uncertain: unknownCells,
+						}),
 						...(blueprint != null ? { blueprint } : {}),
 					});
 				},

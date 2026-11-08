@@ -95,6 +95,24 @@ export const FACE_SCHEMA: JsonSchema = {
 export const EMPTY_INPUT: JsonSchema = { type: "object", properties: {}, additionalProperties: false };
 
 /**
+ * 长任务的领域目标摘要（capabilities §2.15）：四态计数之和恒等于 total。
+ * 与 Outcome 正交——它描述世界是否满足目标，不是本次执行的终态。
+ */
+export const GOAL_SUMMARY_SCHEMA: JsonSchema = {
+	type: "object",
+	properties: {
+		state: { type: "string", enum: ["satisfied", "unsatisfied", "unknown"] },
+		completed: { type: "integer", minimum: 0 },
+		remaining: { type: "integer", minimum: 0 },
+		blocked: { type: "integer", minimum: 0 },
+		uncertain: { type: "integer", minimum: 0 },
+		total: { type: "integer", minimum: 0 },
+	},
+	required: ["state", "completed", "remaining", "blocked", "uncertain", "total"],
+	additionalProperties: false,
+};
+
+/**
  * BuildTargetRequest（capabilities §2.2）：cells 与 from 两种形态互斥。
  *
  * 两条分支各自声明全部允许字段并 `additionalProperties: false`，

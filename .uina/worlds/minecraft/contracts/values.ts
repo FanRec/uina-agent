@@ -92,6 +92,26 @@ export interface Progress {
 	[key: string]: JsonValue | undefined;
 }
 
+/**
+ * 领域目标是否成立。与 Outcome 正交：Outcome 是一次执行的终态，GoalState 是
+ * 世界当前是否满足目标——一个 Run 可能 cancelled 而目标恰好已满足，反之亦然。
+ * unknown 不授权安全重试，也不等于失败。
+ */
+export type GoalState = "satisfied" | "unsatisfied" | "unknown";
+
+/**
+ * 长任务的领域工作事实（四种）：已完成、已确认未达、已知阻碍、证据不足。
+ * 四者之和等于 total；total 是本次固定目标的规模，不是循环计数。
+ */
+export interface GoalSummary {
+	state: GoalState;
+	completed: number;
+	remaining: number;
+	blocked: number;
+	uncertain: number;
+	total: number;
+}
+
 export interface ImageFileRef {
 	path: string;
 	sha256: string;

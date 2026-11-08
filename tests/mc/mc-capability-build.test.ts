@@ -206,7 +206,13 @@ describe("build@1 施工执行", () => {
 			placed: number;
 			cleared: number;
 		};
-		expect(result).toMatchObject({ placed: 0, cleared: 0, skipped: 2 });
+		// preserve 算已满足（按设计不动），unknown 来源格无法核验 → 单独计入 uncertain。
+		expect(result).toMatchObject({
+			placed: 0,
+			cleared: 0,
+			skipped: 1,
+			goal: { state: "unsatisfied", completed: 1, remaining: 0, blocked: 0, uncertain: 1, total: 2 },
+		});
 		expect(harness.calls).toEqual([]);
 		expect(state.blocks.get("11,64,10")?.name).toBe("chest");
 	});
@@ -228,8 +234,9 @@ describe("build@1 施工执行", () => {
 		);
 		expect(error.code).toBe("TARGET_NOT_MET");
 		expect(error.progress).toMatchObject({
-			remainingCount: 1,
-			remaining: [{ at: { x: 11, y: 64, z: 10 }, target: "oak_planks", reason: "cell holds stone" }],
+			goal: { state: "unsatisfied", completed: 0, remaining: 0, blocked: 1, uncertain: 0, total: 1 },
+			outstanding: [{ at: { x: 11, y: 64, z: 10 }, target: "oak_planks", reason: "cell holds stone" }],
+			reasons: { "cell holds stone": 1 },
 		});
 		expect(error.dispatch).toBe("sent");
 	});
@@ -269,7 +276,7 @@ describe("build@1 施工执行", () => {
 		);
 		expect(error.code).toBe("TARGET_NOT_MET");
 		expect(error.progress).toMatchObject({
-			remaining: [{ at: { x: 11, y: 70, z: 10 }, target: "oak_planks" }],
+			outstanding: [{ at: { x: 11, y: 70, z: 10 }, target: "oak_planks" }],
 		});
 		// 批30 起原因按真实结局记：6 格高的格没有任何候选站位够得着（几何无解），
 		// 而不是"有站位但没支撑面"——两种失败在 remaining 里可分辨。
@@ -300,9 +307,17 @@ describe("build@1 施工执行", () => {
 		);
 		expect(error.code).toBe("TIMEOUT");
 		// 总量守恒才是"如实交代"的判据：已结算 + 剩下必须等于设计格数。
-		const progress = error.progress as { placed: number; cleared: number; skipped: number; remainingCount: number };
-		expect(progress.placed + progress.cleared + progress.skipped + progress.remainingCount).toBe(3);
-		expect(progress.remainingCount).toBe(3);
+		const progress = error.progress as {
+			placed: number;
+			cleared: number;
+			skipped: number;
+			goal: { completed: number; remaining: number; blocked: number; uncertain: number; total: number };
+		};
+		// 四态之和恒等于 total：这是"如实交代"的判据。
+		expect(progress.goal.completed + progress.goal.remaining + progress.goal.blocked + progress.goal.uncertain).toBe(
+			progress.goal.total,
+		);
+		expect(progress.goal.remaining).toBe(3);
 		expect(JSON.stringify(error.progress)).toContain("not attempted yet");
 	});
 

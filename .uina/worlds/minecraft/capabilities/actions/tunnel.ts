@@ -11,12 +11,13 @@
 
 import type { SelfState } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
-import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import type { GoalSummary, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { type GoalOutstanding, goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
-import { POS_SCHEMA } from "../shared/schema.js";
+import { POS_SCHEMA, GOAL_SUMMARY_SCHEMA } from "../shared/schema.js";
 import { isGravityBlock, planCorridor, type TunnelColumn, type TunnelProfile } from "../shared/spatial.js";
 import { fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
@@ -72,13 +73,14 @@ const descriptor: CallableDescriptor = {
 					additionalProperties: false,
 				},
 			},
+			goal: GOAL_SUMMARY_SCHEMA,
 			stopped: {
 				type: "string",
 				enum: ["unbreakable"],
 				description: "stopped early: no inventory tool can harvest a corridor cell",
 			},
 		},
-		required: ["dug", "path"],
+		required: ["dug", "path", "goal"],
 		additionalProperties: false,
 	},
 	access: "act",
@@ -105,7 +107,13 @@ const descriptor: CallableDescriptor = {
 	examples: [
 		{
 			input: { to: { x: 24, y: 64, z: 0 } },
-			output: { value: { dug: 6, path: [{ at: { x: 12, y: 64, z: 0 }, name: "stone" }] } },
+			output: {
+				value: {
+					dug: 6,
+					path: [{ at: { x: 12, y: 64, z: 0 }, name: "stone" }],
+					goal: { state: "satisfied", completed: 7, remaining: 0, blocked: 0, uncertain: 0, total: 7 },
+				},
+			},
 		},
 	],
 	implementation: "native",
@@ -180,6 +188,56 @@ export const tunnelModule: MinecraftCapabilityModule = {
 					const path: { at: Vec3; name: string }[] = [];
 					let stopped: "unbreakable" | null = null;
 
+					// 目标对账（capabilities §2.15）：通道目标是"这些格变成空气 + 真的走通"。
+					// 计划在开工时固定；支撑探测格在执行中才发现，注册时一并计入总量。
+					// 完成/阻碍/未知三态按格记账，剩余 = 计划内还没轮到的格。
+					const keyOf = (at: Vec3): string => `${at.x},${at.y},${at.z}`;
+					const plan = new Map<string, { at: Vec3; target: string }>();
+					const opened = new Set<string>();
+					const held = new Map<string, GoalOutstanding & { kind: "blocked" | "uncertain" }>();
+					const WALK_KEY = "walk";
+					const register = (at: Vec3): string => {
+						const key = keyOf(at);
+						if (!plan.has(key)) plan.set(key, { at, target: "air" });
+						return key;
+					};
+					for (const column of columns) for (const cell of column.cells) register(cell);
+					let walked = false;
+
+					/** 目标对账快照：progress 与返回值里的 goal 出自同一次计算。 */
+					const snapshot = (phase: string): { progress: Progress; goal: GoalSummary } => {
+						const blocked = [...held.values()].filter((entry) => entry.kind === "blocked");
+						const uncertain = [...held.values()].filter((entry) => entry.kind === "uncertain");
+						const pending: GoalOutstanding[] = [];
+						for (const [key, entry] of plan) {
+							if (opened.has(key) || held.has(key)) continue;
+							pending.push({ at: entry.at, target: entry.target, reason: "not attempted yet" });
+						}
+						if (!walked && !held.has(WALK_KEY))
+							pending.push({ target: "walk to the corridor end", reason: "not attempted yet" });
+						const reasons: Record<string, number> = {};
+						for (const entry of [...blocked, ...uncertain])
+							reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
+						if (pending.length > 0) reasons["not attempted yet"] = pending.length;
+						const input = {
+							total: plan.size + 1,
+							completed: opened.size + (walked ? 1 : 0),
+							blocked: blocked.length,
+							uncertain: uncertain.length,
+						};
+						return {
+							progress: goalProgress({
+								phase,
+								...input,
+								outstanding: sampleOutstanding([...blocked, ...uncertain, ...pending]),
+								reasons,
+								extra: { dug, columns: { walked: stoodIndex + 1, total: columns.length } },
+							}),
+							goal: goalSummaryOf(input),
+						};
+					};
+					const progressOf = (phase: string): Progress => snapshot(phase).progress;
+
 					// 执行节拍：挖 ahead 列（reach 内）→ goto 走到已挖到的最远列（≥2 格走寻路，
 					// 经验 22：近距 1-2 格寻路不可靠，尾巴短腿用 drive 步进）。挖与走不嵌套租赁。
 					let cursor = 0;
@@ -188,14 +246,14 @@ export const tunnelModule: MinecraftCapabilityModule = {
 						if (ctx.signal.aborted) {
 							fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
 								dispatch: "sent",
-								progress: { dug },
+								progress: progressOf("digging"),
 								recoverable: true,
 							});
 						}
 						if (Date.now() >= deadline) {
 							fail("TIMEOUT", `tunnel budget exhausted after ${dug} digs`, {
 								dispatch: "sent",
-								progress: { dug },
+								progress: progressOf("digging"),
 								recoverable: true,
 							});
 						}
@@ -215,43 +273,79 @@ export const tunnelModule: MinecraftCapabilityModule = {
 								const span = Math.max(spanOf(column.floor), spanOf(column.ceiling));
 								if (cursor > stoodIndex + 1 && span > DIG_REACH_LIMIT) break;
 								for (const position of await columnDigList(scope, column, support)) {
+									const key = register(position);
+									if (opened.has(key)) continue;
 									const result = await digCell(deps, scope, selfNow, position);
 									switch (result.kind) {
 										case "dug":
 											dug += 1;
+											opened.add(key);
+											held.delete(key);
 											path.push({ at: position, name: result.name });
 											break;
 										case "open":
+											opened.add(key);
+											held.delete(key);
 											break;
 										case "not_loaded":
+											held.set(key, {
+												kind: "uncertain",
+												at: position,
+												target: "air",
+												reason: "chunk is not loaded",
+											});
 											fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} is not loaded`, {
 												hint: "tunnel does not guess across unloaded chunks; goto@1 closer to load them first",
 												dispatch: "sent",
-												progress: { dug },
+												progress: progressOf("digging"),
 												recoverable: true,
 											});
 										case "liquid":
+											held.set(key, {
+												kind: "blocked",
+												at: position,
+												target: "air",
+												reason: "holds water/lava",
+											});
 											fail("UNREACHABLE", `corridor cell ${position.x},${position.y},${position.z} holds water/lava`, {
 												hint: "tunnel cannot cross fluids without a bucket; route around or drain first",
 												dispatch: "sent",
-												progress: { dug },
+												progress: progressOf("digging"),
 												recoverable: true,
 											});
 										case "unbreakable":
+											held.set(key, {
+												kind: "blocked",
+												at: position,
+												target: "air",
+												reason: "cannot harvest with the current inventory",
+											});
 											stopped = "unbreakable";
 											break;
 										case "unreachable":
+											held.set(key, {
+												kind: "blocked",
+												at: position,
+												target: "air",
+												reason: "out of reach from the current station",
+											});
 											fail("UNREACHABLE", reachHint(result.distance, position), {
 												hint: "the corridor cell is out of reach from the current station",
 												dispatch: "sent",
-												progress: { dug },
+												progress: progressOf("digging"),
 												recoverable: true,
 											});
 										case "not_met":
+											held.set(key, {
+												kind: "uncertain",
+												at: position,
+												target: "air",
+												reason: "server did not confirm the break",
+											});
 											fail("TARGET_NOT_MET", "the server did not confirm a corridor cell was broken", {
 												dispatch: result.dispatch,
 												effects: [result.effect],
-												progress: { dug },
+												progress: progressOf("digging"),
 												recoverable: true,
 											});
 									}
@@ -284,13 +378,19 @@ export const tunnelModule: MinecraftCapabilityModule = {
 							"corridor floor support",
 						);
 						if (floorSupport?.block?.name === "air") {
+							held.set(WALK_KEY, {
+								kind: "blocked",
+								at: legTo,
+								target: "walk to the corridor end",
+								reason: "corridor floor has no support (plan intersects an existing carve-out)",
+							});
 							fail(
 								"UNREACHABLE",
 								`corridor floor ${legTo.x},${legTo.y},${legTo.z} has no support (air below): the plan intersects an existing carve-out`,
 								{
 									hint: "re-enter the existing corridor from a station aligned with it (stepTo) or tunnel from its bottom node",
 									dispatch: "not_sent",
-									progress: { dug },
+									progress: progressOf("walking"),
 									recoverable: true,
 								},
 							);
@@ -308,7 +408,7 @@ export const tunnelModule: MinecraftCapabilityModule = {
 							if (ctx.signal.aborted) {
 								fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
 									dispatch: "sent",
-									progress: { dug },
+									progress: progressOf("walking"),
 									recoverable: true,
 								});
 							}
@@ -332,26 +432,38 @@ export const tunnelModule: MinecraftCapabilityModule = {
 							if (ctx.signal.aborted) {
 								fail("INTERRUPTED", "tunnel was interrupted by run stop or safety", {
 									dispatch: "sent",
-									progress: { dug },
+									progress: progressOf("walking"),
 									recoverable: true,
 								});
 							}
+							held.set(WALK_KEY, {
+								kind: "blocked",
+								at: legTo,
+								target: "walk to the corridor end",
+								reason: `did not reach ${legTo.x},${legTo.y},${legTo.z} by walking`,
+							});
 							fail(
 								"UNREACHABLE",
 								`could not advance: stuck at ${stuckAt.x.toFixed(2)},${stuckAt.y.toFixed(2)},${stuckAt.z.toFixed(2)}, want ${legTo.x},${legTo.y},${legTo.z} (dug=${dug}) path=[${trace.join(" -> ")}]`,
 								{
 									hint: "the bot did not reach the next station by walking; the corridor may be blocked",
 									dispatch: "sent",
-									progress: { dug },
+									progress: progressOf("walking"),
 									recoverable: true,
 								},
 							);
 						}
 						stoodIndex = targetIndex;
-						await ctx.progress({ dug });
-						if (stoodIndex >= columns.length - 1) break;
+						if (stoodIndex >= columns.length - 1) walked = true;
+						await ctx.progress(progressOf(walked ? "done" : "walking"));
+						if (walked) break;
 					}
-					return plain({ dug, path, ...(stopped != null ? { stopped } : {}) });
+					return plain({
+						dug,
+						path,
+						goal: snapshot("done").goal,
+						...(stopped != null ? { stopped } : {}),
+					});
 				},
 		},
 	],

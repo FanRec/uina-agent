@@ -12,13 +12,14 @@
 
 import type { SelfState } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
-import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import type { JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { GOAL_SAMPLE_LIMIT, goalProgress, sampleOutstanding } from "../shared/goal.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
-import { GRID_POS_SCHEMA } from "../shared/schema.js";
+import { GOAL_SUMMARY_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import {
 	DEFAULT_EXCAVATE_KEEP,
 	EXCAVATE_MAX_VOXELS,
@@ -82,8 +83,9 @@ const descriptor: CallableDescriptor = {
 					additionalProperties: false,
 				},
 			},
+			goal: GOAL_SUMMARY_SCHEMA,
 		},
-		required: ["dug", "kept", "drops", "remaining"],
+		required: ["dug", "kept", "drops", "remaining", "goal"],
 		additionalProperties: false,
 	},
 	access: "act",
@@ -112,6 +114,7 @@ const descriptor: CallableDescriptor = {
 					kept: [{ at: { x: 1, y: 63, z: 1 }, name: "chest" }],
 					drops: { cobblestone: 20 },
 					remaining: [],
+					goal: { state: "satisfied", completed: 64, remaining: 0, blocked: 0, uncertain: 0, total: 64 },
 				},
 			},
 		},
@@ -127,11 +130,17 @@ interface ExcavateInput {
 
 interface ExcavateProgress {
 	dug: number;
+	opened: number;
 	drops: Record<string, number>;
 }
 
-/** 未完成明细的有界样本：失败/未访问格可能成千，不能整表塞进错误文本。 */
-const REMAINING_SAMPLE_LIMIT = 64;
+/**
+ * 未清格按原因归入"已知阻碍"还是"证据不足"：
+ * 液体/挖不动/够不着是已知原因；未加载/未确认是读不到证据。
+ * 其余（not_attempted）算计划内剩余。
+ */
+const UNCERTAIN_REASONS = new Set(["not_loaded", "unconfirmed"]);
+const BLOCKED_REASONS = new Set(["liquid", "unbreakable", "unreachable"]);
 
 function reasonCounts(remaining: { at: Vec3; reason: string }[]): Record<string, number> {
 	const counts: Record<string, number> = {};
@@ -139,23 +148,35 @@ function reasonCounts(remaining: { at: Vec3; reason: string }[]): Record<string,
 	return counts;
 }
 
+function countBy(remaining: { reason: string }[], reasons: Set<string>): number {
+	return remaining.reduce((total, entry) => total + (reasons.has(entry.reason) ? 1 : 0), 0);
+}
 /**
- * progress 快照：`remainingCount` 是**计划内未确认完成**的总数（含从未轮到的格），
- * `remaining` 只是有界样本，`reasons` 是按原因汇总。三者守恒口径一致：
- * plannedActionable = dug + kept/skipped + remainingCount。
+ * progress 快照：`goal` 是统一四态摘要（四者之和 = 计划总格数），
+ * `outstanding` 是有界明细样本，`reasons` 是全量原因直方图。
+ * 完整明细仍在本次 Call 记录里（`runs record`）。
  */
 function progressSnapshot(
 	progress: ExcavateProgress,
 	remaining: { at: Vec3; reason: string }[],
+	plannedTotal: number,
+	keptCount: number,
 	fullRemaining: boolean,
-): Record<string, unknown> {
-	return {
-		dug: progress.dug,
-		drops: progress.drops,
-		remainingCount: remaining.length,
+): Progress {
+	return goalProgress({
+		phase: "clearing",
+		total: plannedTotal,
+		completed: progress.dug + progress.opened + keptCount,
+		blocked: countBy(remaining, BLOCKED_REASONS),
+		uncertain: countBy(remaining, UNCERTAIN_REASONS),
+		outstanding: sampleOutstanding(remaining.map((entry) => ({ at: entry.at, target: "air", reason: entry.reason }))),
 		reasons: reasonCounts(remaining),
-		...(fullRemaining ? { remaining: remaining.slice(0, REMAINING_SAMPLE_LIMIT) } : {}),
-	};
+		extra: {
+			dug: progress.dug,
+			drops: progress.drops,
+			...(fullRemaining ? { outstandingComplete: remaining.length <= GOAL_SAMPLE_LIMIT } : {}),
+		},
+	});
 }
 
 export const excavateModule: MinecraftCapabilityModule = {
@@ -192,7 +213,7 @@ export const excavateModule: MinecraftCapabilityModule = {
 					const keep = new Set(raw.keep ?? DEFAULT_EXCAVATE_KEEP);
 					const layers = planExcavation(box.min, box.max);
 					const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
-					const progress: ExcavateProgress = { dug: 0, drops: {} };
+					const progress: ExcavateProgress = { dug: 0, opened: 0, drops: {} };
 					const kept: { at: Vec3; name: string }[] = [];
 					const remaining: { at: Vec3; reason: string }[] = [];
 					// 计划全集只构造一次：收尾/中断时用它补"从未轮到"的格，
@@ -203,10 +224,12 @@ export const excavateModule: MinecraftCapabilityModule = {
 					const unvisited = (): { at: Vec3; reason: string }[] =>
 						planned.filter((at) => !processed.has(atKey(at))).map((at) => ({ at, reason: "not_attempted" }));
 					const outstanding = (): { at: Vec3; reason: string }[] => [...remaining, ...unvisited()];
+					const snapshot = (full: boolean): Progress =>
+						progressSnapshot(progress, outstanding(), planned.length, kept.length, full);
 					const interrupt = (): never =>
 						fail("INTERRUPTED", "excavate was interrupted by run stop or safety", {
 							dispatch: "sent",
-							progress: progressSnapshot(progress, outstanding(), false),
+							progress: snapshot(false),
 							recoverable: true,
 						});
 
@@ -236,7 +259,7 @@ export const excavateModule: MinecraftCapabilityModule = {
 								const outstandingNow = outstanding();
 								fail("TIMEOUT", `excavate budget exhausted with ${outstandingNow.length} uncleared cell(s)`, {
 									dispatch: "sent",
-									progress: progressSnapshot(progress, outstandingNow, false),
+									progress: progressSnapshot(progress, outstandingNow, planned.length, kept.length, false),
 									recoverable: true,
 								});
 							}
@@ -253,6 +276,7 @@ export const excavateModule: MinecraftCapabilityModule = {
 							}
 							if (block.name === "air") {
 								processed.add(atKey(cell));
+								progress.opened += 1;
 								continue;
 							}
 							// 读取抛错时这一格仍算"从未访问"，会进入 remainingCount；
@@ -350,12 +374,23 @@ export const excavateModule: MinecraftCapabilityModule = {
 							fail("TARGET_NOT_MET", `${still.length} target cell(s) could not be cleared`, {
 								dispatch: "sent",
 								effects: [],
-								progress: progressSnapshot(progress, still, true),
+								progress: progressSnapshot(progress, still, planned.length, kept.length, true),
 								recoverable: true,
 							});
 						}
 					}
-					return plain({ dug: progress.dug, kept, drops: progress.drops, remaining: [] });
+					return plain({
+						dug: progress.dug,
+						kept,
+						drops: progress.drops,
+						remaining: [],
+						goal: goalProgress({
+							total: planned.length,
+							completed: progress.dug + progress.opened + kept.length,
+							blocked: 0,
+							uncertain: 0,
+						}).goal,
+					});
 				},
 		},
 	],

@@ -83,7 +83,11 @@ describe("collect@1", () => {
 			harness.callable("collect@1").invoke(harness.ctx, { item: "dirt", count: 3 } as JsonValue),
 		);
 		expect(err.code).toBe("NOT_FOUND");
-		expect(err.progress).toMatchObject({ mined: 1, acquired: 1, remaining: 2 });
+		expect(err.progress).toMatchObject({
+			mined: 1,
+			acquired: 1,
+			goal: { state: "unsatisfied", completed: 1, remaining: 2, total: 3 },
+		});
 	});
 
 	test("没有能采的工具 → MISSING_TOOL，且不移动、不取身体", async () => {

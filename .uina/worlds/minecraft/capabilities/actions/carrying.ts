@@ -19,6 +19,7 @@ import { callFailure, plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { resolveEntity } from "../shared/entities.js";
+import { goalProgress } from "../shared/goal.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { blockReach, ENTITY_REACH } from "../shared/reach.js";
 import { ITEM_SELECTOR_SCHEMA, VEC3_SCHEMA } from "../shared/schema.js";
@@ -663,15 +664,32 @@ export const carryingModule: MinecraftCapabilityModule = {
 							basis: { worldRevision, observedAt: new Date().toISOString() },
 						});
 					};
-					const progressOf = (): Progress => ({
-						mined,
-						acquired,
-						collected: { ...collected },
-						remaining: Math.max(0, count - acquired),
-						attempted: attempts,
-						skipped,
-						toolsUsed: [...toolsUsed],
-					});
+					/**
+					 * 目标按"最终取得物品"记账（capabilities §4 collect）：completed 只认库存
+					 * 真实增量，挖掉的方块数不等于入包数。候选格层面的成败单独放 candidates，
+					 * 两种单位不混在一个计数里。
+					 */
+					const progressOf = (): Progress => {
+						const kinds = { permanent: 0, transient: 0, unknown: 0 };
+						for (const attempt of tried.values()) kinds[attempt.kind] += 1;
+						return goalProgress({
+							phase: "gathering",
+							total: count,
+							completed: acquired,
+							extra: {
+								mined,
+								acquired,
+								collected: { ...collected },
+								toolsUsed: [...toolsUsed],
+								candidates: {
+									attempted: attempts,
+									skipped,
+									blocked: kinds.permanent + kinds.transient,
+									uncertain: kinds.unknown,
+								},
+							},
+						});
+					};
 
 					while (acquired < count) {
 						if (Date.now() >= deadline) {
