@@ -216,8 +216,7 @@ export const tunnelModule: MinecraftCapabilityModule = {
 						if (!walked && !held.has(WALK_KEY))
 							pending.push({ target: "walk to the corridor end", reason: "not attempted yet" });
 						const reasons: Record<string, number> = {};
-						for (const entry of [...blocked, ...uncertain])
-							reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
+						for (const entry of [...blocked, ...uncertain]) reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
 						if (pending.length > 0) reasons["not attempted yet"] = pending.length;
 						const input = {
 							total: plan.size + 1,

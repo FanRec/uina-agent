@@ -357,7 +357,10 @@ async function main(): Promise<void> {
 			// 不能和 preserve 一起算"已满足"（旧口径把两者都算 skipped）。
 			if (result.skipped !== 1) throw new Error(`skipped ${result.skipped} != 1 (preserve only)`);
 			if (result.goal.uncertain !== 1) throw new Error(`goal.uncertain ${result.goal.uncertain} != 1 (unknown cell)`);
-			if (result.goal.completed + result.goal.remaining + result.goal.blocked + result.goal.uncertain !== result.goal.total)
+			if (
+				result.goal.completed + result.goal.remaining + result.goal.blocked + result.goal.uncertain !==
+				result.goal.total
+			)
 				throw new Error(`goal counts do not add up: ${JSON.stringify(result.goal)}`);
 			const cleared = await s.readBlock({ x: KEEP.x + 2, y: KEEP.y, z: KEEP.z });
 			const preserved = await s.readBlock({ x: KEEP.x, y: KEEP.y, z: KEEP.z + 1 });

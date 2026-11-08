@@ -220,7 +220,11 @@ describe("excavate@1", () => {
 			{ ...h.ctx, signal: controller.signal },
 		).catch((err: unknown) => err)) as {
 			code?: string;
-			progress?: { dug: number; goal: { remaining: number; total: number; completed: number }; reasons: Record<string, number> };
+			progress?: {
+				dug: number;
+				goal: { remaining: number; total: number; completed: number };
+				reasons: Record<string, number>;
+			};
 		};
 		expect(error.code).toBe("INTERRUPTED");
 		expect(error.progress?.dug).toBe(5);

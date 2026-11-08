@@ -397,7 +397,8 @@ export class MinecraftExecutor {
 		}
 		return { clearedGates: cleared, blocked };
 	}
-	private startHeartbeat(connection: Connection): void {		this.stopHeartbeat();
+	private startHeartbeat(connection: Connection): void {
+		this.stopHeartbeat();
 		this.lastRetirementClean = false;
 		connection.lastHeartbeat = performance.now();
 		this.heartbeatTimer = setInterval(() => {

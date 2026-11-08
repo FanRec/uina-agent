@@ -377,7 +377,7 @@ export const buildModule: MinecraftCapabilityModule = {
 					let cleared = 0;
 					/** preserve 格按设计不动，算已满足；unknown 来源格无法核验，单独计入 uncertain。 */
 					let skipped = plan.targets.filter((cell) => cell.kind === "preserve").length;
-					let unknownCells = plan.targets.filter((cell) => cell.kind === "unknown").length;
+					const unknownCells = plan.targets.filter((cell) => cell.kind === "unknown").length;
 					let processed = 0;
 					/** 试过但没成：带原因与归因种类。 */
 					const unfinished = new Map<string, Unfinished>();
