@@ -9,7 +9,7 @@ import type {
 	WorldEvent,
 } from "../../src/extensions/world-framework/types.js";
 
-test("a lost Runtime ACK reply cannot retain an already committed input slot", async () => {
+test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执滞留", async () => {
 	const pending = new Set(["first", "next"]),
 		emitted: string[] = [];
 	const host = new Map<string, HostDeliveryState>();
@@ -22,13 +22,15 @@ test("a lost Runtime ACK reply cannot retain an already committed input slot", a
 			inspect: async (key) => host.get(key) ?? { kind: "absent" },
 			retire: async () => ({ kind: "retired" }),
 		},
-		emitEvent: async (event) => {
-			emitted.push(event.receipt!.key);
-			host.set(event.receipt!.key, {
-				kind: "committed",
-				receipt: { ...event.receipt!, namespace: "n", session: "s", record: "canonical", channel: "input" },
-			});
-			return { accepted: true };
+		emitEvents: async (events) => {
+			for (const event of events) {
+				emitted.push(event.receipt!.key);
+				host.set(event.receipt!.key, {
+					kind: "committed",
+					receipt: { ...event.receipt!, namespace: "n", session: "s", record: "canonical", channel: "input" },
+				});
+			}
+			return events.map(() => ({ accepted: true }) as const);
 		},
 	};
 	const executor = {
@@ -60,19 +62,23 @@ test("a lost Runtime ACK reply cannot retain an already committed input slot", a
 	} as unknown as MinecraftExecutor;
 	const pump = new DeliveryPump(executor, ctx);
 	try {
+		// 同一批交出：两份各有自己的 attempt，互不占位。
 		await pump.reconcile();
 		await Promise.resolve();
-		expect(emitted).toEqual(["first"]);
+		expect(emitted).toEqual(["first", "next"]);
+		// first 的 ACK 回执丢了：这一页对账中断，但 next 仍在 pending 列表里等下一轮。
 		await pump.reconcile();
+		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
 		await pump.reconcile();
-		await Promise.resolve();
+		expect(pending.size).toBe(0);
+		// 回执重试不等于重投：两条各交过一次。
 		expect(emitted).toEqual(["first", "next"]);
 	} finally {
 		await pump.close();
 	}
 });
 
-test("an old input committed during retire cannot occupy the background input slot", async () => {
+test("一次交接不占位：旧激活留下的输入退役后，同一轮的完成通知照常交出", async () => {
 	const pending = new Set(["old", "next"]),
 		emitted: string[] = [];
 	const receipt = {
@@ -95,9 +101,9 @@ test("an old input committed during retire cannot occupy the background input sl
 					: { kind: "absent" },
 			retire: async () => ({ kind: "committed", receipt }),
 		},
-		emitEvent: async (e) => {
-			emitted.push(e.receipt!.key);
-			return { accepted: true };
+		emitEvents: async (events) => {
+			for (const event of events) emitted.push(event.receipt!.key);
+			return events.map(() => ({ accepted: true }) as const);
 		},
 	};
 	const executor = {
@@ -146,7 +152,7 @@ test("an old input committed during retire cannot occupy the background input sl
 		await pump.reconcile();
 		await Promise.resolve();
 		expect(emitted).toEqual(["next"]);
-		expect(pump.diagnostics().activeInput?.key).toBe("next");
+		expect(pump.diagnostics().activeInputs.map((input) => input.key)).toEqual(["next"]);
 	} finally {
 		await pump.close();
 	}
@@ -199,20 +205,22 @@ test("one unavailable report does not block other headers; unavailable content r
 				state: { kind: "pending", channel: "input", activity: "queued", attempt: "newer", since: "now" },
 			}),
 		},
-		emitEvent: async (event) => {
-			events.push(event);
-			committed.set("good", {
-				kind: "committed",
-				receipt: {
-					key: "good",
-					attempt: event.receipt!.attempt,
-					namespace: "n",
-					session: "s",
-					record: "canonical",
-					channel: "input",
-				},
-			});
-			return { accepted: true };
+		emitEvents: async (list) => {
+			for (const event of list) {
+				events.push(event);
+				committed.set("good", {
+					kind: "committed",
+					receipt: {
+						key: "good",
+						attempt: event.receipt!.attempt,
+						namespace: "n",
+						session: "s",
+						record: "canonical",
+						channel: "input",
+					},
+				});
+			}
+			return list.map(() => ({ accepted: true }) as const);
 		},
 	};
 	const executor = {
@@ -266,6 +274,87 @@ async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> 
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 }
+
+test("同轮多处完成一次交出：每条各自回执，宿主还在处理的那条不挡别人", async () => {
+	const pending = new Set(["blocked", "b", "c"]);
+	const batches: string[][] = [];
+	const acked: string[] = [];
+	const host = new Map<string, HostDeliveryState>();
+	const ctx: ServiceCompanionContext = {
+		signal: new AbortController().signal,
+		delivery: {
+			namespace: "n",
+			session: "s",
+			durability: "durable",
+			inspect: async (key) =>
+				key === "blocked"
+					? { kind: "pending", channel: "input", activity: "processing", attempt: "host-own", since: "now" }
+					: (host.get(key) ?? { kind: "absent" }),
+			retire: async () => ({ kind: "retired" }),
+		},
+		emitEvents: async (events) => {
+			batches.push(events.map((event) => event.receipt!.key));
+			// 只有 b 真的落地；c 假装丢了（宿主不认识它），下一轮必须重投。
+			host.set("b", {
+				kind: "committed",
+				receipt: {
+					key: "b",
+					attempt: events.find((event) => event.receipt!.key === "b")!.receipt!.attempt,
+					namespace: "n",
+					session: "s",
+					record: "canonical",
+					channel: "input",
+				},
+			});
+			return events.map(() => ({ accepted: true }) as const);
+		},
+	};
+	const executor = {
+		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		rpc: async (method: string, p: { ref?: string }) => {
+			if (method === "runtime.pendingDeliveries")
+				return { items: [...pending].map((completionRef) => ({ completionRef, requestId: completionRef })) };
+			if (method === "runtime.readDelivery")
+				return {
+					disposition: "pending",
+					eligible: true,
+					delivery: {
+						completionRef: p.ref,
+						requestId: p.ref,
+						run: "r",
+						segment: "s",
+						revision: 1,
+						recordBytes: 200,
+						reportKind: "terminal",
+						snapshot: { phase: "finished", outcome: "succeeded" },
+					},
+				};
+			if (method === "runtime.settleDelivery") {
+				acked.push(p.ref!);
+				pending.delete(p.ref!);
+				return null;
+			}
+			throw new Error(method);
+		},
+		readRecord: async () => ({ kind: "inline", record: { kind: "completion", value: {} } }),
+	} as unknown as MinecraftExecutor;
+	const pump = new DeliveryPump(executor, ctx);
+	try {
+		await pump.reconcile();
+		await until(() => batches.length === 1);
+		// 一次交出：宿主还在处理 blocked，它不进批次，但也挡不住 b/c。
+		expect(batches).toEqual([["b", "c"]]);
+		expect(pump.diagnostics().activeInputs.map((input) => input.key)).toContain("blocked");
+		await pump.reconcile();
+		await until(() => batches.length === 2);
+		// b 有回执就被 ACK，c 没有就重投：两条各走各的，不共享一个"在途"结论。
+		expect(acked).toEqual(["b"]);
+		expect(batches).toEqual([["b", "c"], ["c"]]);
+		expect(pump.diagnostics().activeInputs.map((input) => input.key)).not.toContain("b");
+	} finally {
+		await pump.close();
+	}
+});
 
 test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest 专用通道", async () => {
 	const events: WorldEvent[] = [];

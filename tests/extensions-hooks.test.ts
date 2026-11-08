@@ -813,6 +813,22 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(rewritten?.result).toBe("rewritten");
 		expect(rewritten).not.toHaveProperty("status");
 	});
+
+	it("a transform hook cannot hand out continuation: only the tool's own result decides it", async () => {
+		// continuation 决定"这一轮还要不要再问模型"，属于执行事实。允许钩子改写它，
+		// 等于让第三方替工具声明"我已经把事情交出去了"，而它并没有。
+		const host = new ExtensionHost();
+		host.onHook("tools.transformResult", () => ({ continuation: "yield", result: "改写过的正文" }) as never);
+		const transformed = await host.runTransformResult({
+			callId: "c3",
+			name: "probe",
+			args: {},
+			result: "原始正文",
+			status: "succeeded",
+		});
+		expect(transformed?.result).toBe("改写过的正文");
+		expect(transformed).not.toHaveProperty("continuation");
+	});
 });
 
 describe("run-safety seams: prepare model swap and shouldStop", () => {

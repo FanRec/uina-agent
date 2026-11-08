@@ -52,26 +52,30 @@ import { MinecraftFacade } from ${url(".uina/worlds/minecraft/executor/facade.ts
 const root=${JSON.stringify(dir)};
 let executor=await MinecraftExecutor.open({ownershipDir: root, sessionDataDir: root, sharedDataDir: root,config:{connection:{host:'127.0.0.1',port:1,username:'FacadeTest',authMode:'offline',version:'1.21.11'},binding:null},policy:{autoRecover:false,closeGraceMs:3000}});
 const receipts=new Map();let emitted=0;
-const ctx={signal:new AbortController().signal,delivery:{namespace:'world:minecraft',session:'session',durability:'durable',inspect:async key=>receipts.get(key)??{kind:'absent'},retire:async()=>({kind:'retired'})},onHostEvent:()=>()=>{},emitEvent:async event=>{emitted++;receipts.set(event.receipt.key,{kind:'committed',receipt:{...event.receipt,namespace:'world:minecraft',session:'session',channel:'input',record:'canonical-input'}});}};
-let facade=new MinecraftFacade(executor,ctx,{shortWindowMs:2000,pollMs:20});facade.start();
+const deliver=event=>{emitted++;receipts.set(event.receipt.key,{kind:'committed',receipt:{...event.receipt,namespace:'world:minecraft',session:'session',channel:'input',record:'canonical-input'}});};
+const ctx={signal:new AbortController().signal,delivery:{namespace:'world:minecraft',session:'session',durability:'durable',inspect:async key=>receipts.get(key)??{kind:'absent'},retire:async()=>({kind:'retired'})},onHostEvent:()=>()=>{},emitEvent:async event=>{deliver(event);return {accepted:true};},emitEvents:async events=>{for(const event of events)deliver(event);return events.map(()=>({accepted:true}));}};
+let facade=new MinecraftFacade(executor,ctx,{pollMs:20});facade.start();
 const signal=new AbortController().signal;
-let key,request;
+let request;
 try {
  const unknownQuery=await facade.execute('observe',{selector:'position@1'},signal);assert.equal(unknownQuery.status,'failed');
- const result=await facade.execute('chat',{text:'no connection'},signal);assert.equal(result.status,'failed');assert.ok(result.receipt);key=result.receipt.key;request=result.details.requestId;
- assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'pending');
- receipts.set(key,{kind:'committed',receipt:{...result.receipt,namespace:'world:minecraft',session:'session',channel:'tool',record:'canonical-tool'}});
- await facade.reconcile();assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'committed');assert.equal(emitted,0);
+ // 顶层动作只等可靠受理：未连接时任务会在后台立刻失败，但工具这一层仍然只回答"已受理"。
+ const accepted=await facade.execute('chat',{text:'no connection'},signal);
+ assert.equal(accepted.status,'succeeded');assert.equal(accepted.continuation,'yield');
+ const reply=JSON.parse(accepted.result);
+ assert.equal(reply.kind,'accepted');assert.equal(typeof reply.run,'string');request=reply.requestId;
+ // 受理结果只给句柄：进度看状态帧，结果看 minecraft_completion。
+ assert.equal(reply.snapshot,undefined);assert.equal(reply.phase,undefined);
+ assert.equal((await executor.ledger.getRequest(request)).requestId,request);
  const retry=await facade.execute('runs',{op:'retry',request},signal);assert.equal(retry.status,'succeeded');assert.equal(retry.details.kind,'found');
- const bad=await facade.execute('run',{selector:'chat',input:{text:'no'}},signal);assert.equal(bad.status,'failed');
- const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');
+ const unknownCapability=await facade.execute('run',{selector:'no-such@1',input:{}},signal);assert.equal(unknownCapability.status,'failed');assert.equal(unknownCapability.continuation,undefined);
+ const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');assert.equal(code.continuation,'yield');
  const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,2);
  await facade.close();await executor.close();
  executor=await MinecraftExecutor.open({ownershipDir: root, sessionDataDir: root, sharedDataDir: root,config:{connection:{host:'127.0.0.1',port:1,username:'FacadeTest',authMode:'offline',version:'1.21.11'},binding:null},policy:{autoRecover:false,closeGraceMs:3000}});
- facade=new MinecraftFacade(executor,ctx,{shortWindowMs:2000,pollMs:20});facade.start();
+ facade=new MinecraftFacade(executor,ctx,{pollMs:20});facade.start();
  assert.equal((await executor.ledger.getRequest(request)).requestId,request);
  assert.equal((await executor.rpc('runtime.list',{activeOnly:false})).items.length,2);
- assert.equal((await executor.rpc('runtime.readDelivery',{ref:key})).disposition,'committed');
 }finally{await facade.close();await executor.close();}
 console.log('facade passed');
 `,
@@ -89,8 +93,8 @@ console.log('facade passed');
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
-test("run {wait} overrides the short window per call; 0 skips waiting entirely (G8)", async () => {
-	const waits: { run: string; timeoutMs?: number }[] = [];
+test("顶层动作只返回受理：没有 wait 覆盖，也不再等短窗", async () => {
+	const waits: unknown[] = [];
 	const snapshot = {
 		run: "run-1",
 		rootRequestId: "q",
@@ -110,9 +114,9 @@ test("run {wait} overrides the short window per call; 0 skips waiting entirely (
 	const executor = {
 		status: () => ({ actionsAllowed: true, side: { launch: "launch" } }),
 		ledger: { putRequest: async () => {}, found: async () => {} },
-		submit: async () => ({ kind: "accepted", snapshot }),
-		wait: async (run: string, options: { timeoutMs?: number }) => {
-			waits.push({ run, timeoutMs: options?.timeoutMs });
+		submit: async () => ({ kind: "accepted", requestId: "q", segment: "s", snapshot }),
+		wait: async (...args: unknown[]) => {
+			waits.push(args);
 			return { kind: "accepted", snapshot };
 		},
 	} as unknown as MinecraftExecutor;
@@ -120,13 +124,15 @@ test("run {wait} overrides the short window per call; 0 skips waiting entirely (
 	const signal = new AbortController().signal;
 	try {
 		const plain = await facade.execute("run", { selector: "goto@1", input: {} }, signal);
-		const override = await facade.execute("run", { selector: "goto@1", input: {}, wait: 1200 }, signal);
-		const zero = await facade.execute("run", { selector: "goto@1", input: {}, wait: 0 }, signal);
-		for (const reply of [plain, override, zero]) expect(reply.status).toBe("succeeded");
-		expect(waits).toEqual([
-			{ run: "run-1", timeoutMs: 3000 },
-			{ run: "run-1", timeoutMs: 1200 },
-		]);
+		// 旧调用方仍会带 wait：schema 已经拒绝它，通道层也不再据此改变行为。
+		const legacy = await facade.execute("run", { selector: "goto@1", input: {}, wait: 1200 }, signal);
+		for (const reply of [plain, legacy]) {
+			expect(reply.status).toBe("succeeded");
+			expect(reply.continuation).toBe("yield");
+			expect(JSON.parse(reply.result)).toMatchObject({ kind: "accepted", run: "run-1", segment: "s" });
+		}
+		// 短窗那条路径已经不存在：一次都不该去问 executor.wait。
+		expect(waits).toEqual([]);
 	} finally {
 		await facade.close();
 	}

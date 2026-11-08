@@ -161,52 +161,21 @@ test("run passes explicit replacement and preemption schedules to Runtime", asyn
 	}
 });
 
-test("a decision in the short result window uses the same fixed report and Host receipt path", async () => {
+test("runs.continue 只返回受理：决策结果由 Completion 独立交付", async () => {
 	const f = fixture();
-	const snapshot = {
-		run: "run:one",
-		phase: "awaiting_decision",
-		revision: 3,
-		record: "record:one",
-		completionRef: "completion:decision",
-		decision: "decision:two",
-	};
-	const delivery = {
-		reportKind: "decision",
-		completionRef: snapshot.completionRef,
-		requestId: "request:continued",
-		run: snapshot.run,
-		segment: "segment:two",
-		revision: snapshot.revision,
-		recordBytes: 10,
-		snapshot,
-	};
-	Object.assign(f.executor, {
-		wait: async () => ({ kind: "result", snapshot }),
-		rpc: async () => ({ delivery, disposition: "pending", eligible: true }),
-		readRecord: async () => ({ kind: "inline", record: { kind: "completion", value: delivery } }),
-	});
 	try {
 		const result = await f.facade.execute("runs", continuation, new AbortController().signal);
-		expect(result).toMatchObject({
-			status: "succeeded",
-			receipt: { key: "completion:decision" },
-			details: {
-				kind: "result",
-				reportKind: "decision",
-				snapshot: { phase: "awaiting_decision" },
-				content: { kind: "inline", report: { reportKind: "decision" } },
-			},
-		});
-		expect(f.attempts).toMatchObject([{ key: "completion:decision", channel: "tool" }]);
-		// 展示投影必须把 decision 带给模型：runs.continue 只能用它续段；
-		// 细节仍在 details（CompletionView），两种通道各自稳定。
-		expect(JSON.parse(result.result)).toMatchObject({
-			phase: "awaiting_decision",
-			decision: "decision:two",
-			completionRef: "completion:decision",
-		});
-		expect(JSON.parse(result.result)).not.toHaveProperty("content");
+		expect(result.status).toBe("succeeded");
+		expect(result.continuation).toBe("yield");
+		// 工具结果只给受理句柄。decision 副本属于 Completion：新段允许继续推进，
+		// 但工具这一层不能把它当成"这一轮已经结束"。
+		expect(JSON.parse(result.result)).toMatchObject({ kind: "accepted", run: "run:one", segment: "segment:two" });
+		expect(JSON.parse(result.result)).not.toHaveProperty("snapshot");
+		expect(JSON.parse(result.result)).not.toHaveProperty("phase");
+		// 交付只剩 Completion 一条路：受理不再创建 tool 通道的 Attempt。
+		expect(f.attempts).toEqual([]);
+		// 凭据按原 request 落库——受理回复丢掉时只能靠它查证，不能重发。
+		expect([...f.credentials.values()]).toHaveLength(1);
 	} finally {
 		await f.facade.close();
 	}

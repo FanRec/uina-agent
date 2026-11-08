@@ -475,6 +475,50 @@ describe("Subject", () => {
 		expect(scenario.calls.length).toBe(batches.length);
 	});
 
+	test("延迟渲染的正文到消费时才成形：超预算的剩余项退回队列，不硬塞进一个回合", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({ scenario });
+		const batches: number[] = [];
+		harness.subscribe((event) => {
+			if (event.type === "turn_start") batches.push(event.inputRefs?.length ?? 0);
+		});
+		// 用一次前台活动占住主体，让 8 条延迟输入先落进队列，再由一次消费统一领走。
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const holding = harness.subject.runActivity(async () => {
+			await gate;
+		});
+		for (let index = 0; index < 8; index++) {
+			await harness.subject.accept({
+				id: `mc-completion-${index}`,
+				mode: "followUp",
+				source: {
+					kind: "runtime",
+					type: "minecraft_completion",
+					ref: "minecraft",
+					origin: "internal",
+					channel: "world",
+				},
+				render: async () => `${index}:${"x".repeat(2000)}`,
+			});
+		}
+		release();
+		await holding;
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		// 入队时正文还是空的，预算算不出来；只有渲染后才能按真实长度把批次截断。
+		expect(batches.length).toBeGreaterThan(1);
+		expect(batches.reduce((sum, count) => sum + count, 0)).toBe(8);
+		for (const count of batches) expect(count).toBeLessThanOrEqual(3);
+		expect(scenario.calls.length).toBe(batches.length);
+	});
+
 	test("同一世界的 steer 插队先处理，但不吞掉排队中的 follow-up", async () => {
 		const scenario = new Scenario();
 		scenario.fallback(() => [
