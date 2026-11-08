@@ -14,29 +14,64 @@ import { createWorldTool } from "./world-tool.js";
 
 /**
  * 请求前观察正文的取用上限。采样是本地内存读，正常在毫秒级；超过这个量级说明世界侧
- * 已经卡住，此时宁可不注入快照，也不能把模型请求一起挂住。
+ * 已经卡住，此时宁可给一行"没取到"，也不能把模型请求一起挂住。
  */
 const REQUEST_CONTEXT_TIMEOUT_MS = 250;
 
-/** 请求前观察帧的通知文案：说清"是什么"（快照）、"不是什么"（输入/委托）。 */
-function observationNotice(worldName: string): string {
-	return `[${worldName} 观察] 你此刻所在世界的最新可用快照（环境感知信息，非用户输入，不是新的委托，无需专门回应）；正文在随后的 external_event_frame 回执中。`;
+/** 请求前观察帧的通知文案：说清"是什么"（本轮快照或本轮缺失）、"不是什么"（输入/委托）。 */
+function observationNotice(worldName: string, available: boolean): string {
+	const tail = available
+		? "正文在随后的 external_event_frame 回执中。"
+		: "正文说明为什么没有取到。不要把它当成世界没有变化。";
+	return `[${worldName} 观察] ${
+		available ? "你此刻所在世界的最新可用快照" : "本轮没有取到世界状态"
+	}（环境感知信息，非用户输入，不是新的委托，无需专门回应）；${tail}`;
+}
+
+/** 取不到观察时的正文。静默消失会被读成"世界没有变化"，那比没有状态更危险。 */
+function observationUnavailable(reason: string): string {
+	return `本轮没有取到世界观察：${reason}。不要把它当成世界没有变化；需要确认时用查询重新读。`;
+}
+
+function reasonOf(error: unknown): string {
+	if ((error as { code?: string } | null)?.code === "CONTEXT_TIMEOUT") return "读取超时";
+	return error instanceof Error ? error.message : String(error);
 }
 
 /**
  * 给正文取用套一层时间上限。超时只放弃等待，不取消底层调用：采样本身是只读的本地读取，
  * 强行中断省不下什么，却可能把世界侧留在半途。让它自然跑完、结果丢弃即可。
+ *
+ * 三个出口（超时、世界停用、原始结果）都走同一处清理：此前清理挂在原始 Promise 的 finally
+ * 上，读取永久挂起时 abort 监听器会一直留在 scope 上，每个请求泄一份。
  */
 function withTimeout<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error("world deactivated"));
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(`request context exceeded ${ms}ms`)), ms);
-		const abort = () => reject(new Error("world deactivated"));
-		signal.addEventListener("abort", abort, { once: true });
-		void work.then(resolve, reject).finally(() => {
-			clearTimeout(timer);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const settle = (): void => {
+			if (timer) clearTimeout(timer);
 			signal.removeEventListener("abort", abort);
-		});
+		};
+		const abort = (): void => {
+			settle();
+			reject(new Error("world deactivated"));
+		};
+		timer = setTimeout(() => {
+			settle();
+			reject(Object.assign(new Error(`request context exceeded ${ms}ms`), { code: "CONTEXT_TIMEOUT" }));
+		}, ms);
+		signal.addEventListener("abort", abort, { once: true });
+		void work.then(
+			(value) => {
+				settle();
+				resolve(value);
+			},
+			(error: unknown) => {
+				settle();
+				reject(error);
+			},
+		);
 	});
 }
 
@@ -51,6 +86,8 @@ export class WorldActivation {
 	readonly scope: ResourceScope;
 	readonly exposed = new Map<string, unknown>();
 	private readonly context: ServiceCompanionContext;
+	/** 上一份还在飞的采样。世界侧卡住时，不能让每个请求都再压一份上去。 */
+	private inflight: Promise<void> | null = null;
 
 	constructor(
 		private readonly definition: WorldDef,
@@ -96,6 +133,8 @@ export class WorldActivation {
 	 *
 	 * 用 tail 相位：无论其他扩展先后注册，观察帧恒排在一切历史注入之后，作为"此刻"的
 	 * 最后一段。帧的生命周期跟随 world activation（`track`），世界停用即摘除 handler。
+	 *
+	 * 每回合都有一帧：取不到时正文写明原因，而不是让位置空着——空着会被读成"没有变化"。
 	 */
 	private registerRequestContext(): void {
 		const provide = this.definition.requestContext;
@@ -107,20 +146,13 @@ export class WorldActivation {
 				"turn.transformContext",
 				async (projection) => {
 					if (!this.scope.active) return;
-					let text: string | null;
-					try {
-						text = await withTimeout(provide(), REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
-					} catch {
-						// 取不到就不注入：缺一份快照是小事，挂住模型请求不是。
-						return;
-					}
-					if (text == null || text.trim() === "") return;
+					const { text, available } = await this.readObservation(provide);
 					const appended = appendTailFrame(
 						projection.messages,
 						buildEventFrameGroup({
 							eventId: contentAddressedEventId(`world:${name}:state`, text),
 							text,
-							notice: observationNotice(name),
+							notice: observationNotice(name, available),
 							source: { kind: "runtime", type: "runtime.observation", origin: "internal" },
 						}),
 					);
@@ -130,6 +162,31 @@ export class WorldActivation {
 				{ tail: true },
 			),
 		);
+	}
+
+	/** 本次请求的观察正文：正常给快照，异常给原因。同一时刻只有一份采样在飞。 */
+	private async readObservation(provide: () => Promise<string | null>): Promise<{ text: string; available: boolean }> {
+		if (this.inflight) return { text: observationUnavailable("上一次读取仍未返回"), available: false };
+		const work = provide();
+		// 只跟踪"还在不在飞"，不携带结果：结果由下面这次 await 自己取，失败也不产生未处理的 rejection。
+		const settled = work.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.inflight = settled;
+		void settled.then(() => {
+			this.inflight = null;
+		});
+		let text: string | null;
+		try {
+			text = await withTimeout(work, REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
+		} catch (error) {
+			const reason = this.scope.signal.aborted ? "世界已停用" : reasonOf(error);
+			return { text: observationUnavailable(reason), available: false };
+		}
+		if (text == null || text.trim() === "")
+			return { text: observationUnavailable("世界没有提供内容"), available: false };
+		return { text, available: true };
 	}
 
 	async stop(): Promise<void> {
