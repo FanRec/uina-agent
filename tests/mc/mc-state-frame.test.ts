@@ -137,10 +137,42 @@ describe("state frame", () => {
 			rig({ self: reader({ place: { position: { x: 0, y: 0, z: 0 } }, inLava: true, onGround: false }) }),
 		);
 		expect(lava.text).toContain("在岩浆里");
-		expect(lava.text).not.toContain("在空中");
+		expect(lava.text).not.toContain("在下落");
 		const water = sampleStateFrame(
 			rig({ self: reader({ place: { position: { x: 0, y: 0, z: 0 } }, inWater: true, oxygen: 12, onGround: false }) }),
 		);
 		expect(water.text).toContain("在水里(氧12)");
+	});
+
+	// 刚连上时物理还没跑第一拍：onGround 是 false，人却站在地上。说"悬在空中"会让模型
+	// 去解释一件没发生的事（真模型第一轮就照着这行说了"人正悬在空中"）。
+	test("离地只在真下落时说，刚连上的 false 不当成空中", () => {
+		const settled = sampleStateFrame(
+			rig({
+				self: reader({
+					place: { position: { x: 0, y: 64, z: 0 } },
+					onGround: false,
+					velocity: { x: 0, y: 0, z: 0 },
+					health: 20,
+					maxHealth: 20,
+					food: 20,
+				}),
+			}),
+		);
+		expect(settled.text).not.toContain("在下落");
+		expect(settled.text).not.toContain("在空中");
+		const falling = sampleStateFrame(
+			rig({
+				self: reader({
+					place: { position: { x: 0, y: 64, z: 0 } },
+					onGround: false,
+					velocity: { x: 0, y: -0.4, z: 0 },
+					health: 20,
+					maxHealth: 20,
+					food: 20,
+				}),
+			}),
+		);
+		expect(falling.text).toContain("在下落");
 	});
 });

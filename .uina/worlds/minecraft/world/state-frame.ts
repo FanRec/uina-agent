@@ -78,7 +78,12 @@ function vitalsText(self: Record<string, unknown> | null): string[] {
 	if (self.inLava === true) parts.push("在岩浆里");
 	else if (self.inWater === true) parts.push(`在水里${typeof self.oxygen === "number" ? `(氧${self.oxygen})` : ""}`);
 	else if (self.onGround === true) parts.push("在地面");
-	else if (self.onGround === false) parts.push("在空中");
+	else if (self.onGround === false) {
+		// 刚连上时物理还没跑第一拍：onGround 是 false 但人站在地上。只有真在下落才说，
+		// 否则模型会照着"悬在空中"解释一件没发生的事（真模型第一轮就这么说过）。
+		const falling = (self.velocity as { y?: number } | null | undefined)?.y;
+		if (typeof falling === "number" && falling < 0) parts.push("在下落");
+	}
 	const held = self.held as { name?: unknown; count?: unknown } | undefined;
 	if (typeof held?.name === "string") parts.push(`手持${held.name}×${typeof held.count === "number" ? held.count : 1}`);
 	return parts;
