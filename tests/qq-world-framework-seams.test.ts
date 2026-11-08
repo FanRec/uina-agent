@@ -166,32 +166,50 @@ describe("world requestContext 接缝", () => {
 		}
 	});
 
-	it("返回 null 或空白时不注入，投影保持原样", async () => {
+	// 空正文也是"这一轮没拿到"：注入一行原因，而不是让位置空着——空着会被读成没有变化。
+	it("返回 null 或空白时注入占位帧，说明没有提供内容", async () => {
 		const { activation, hooks } = await activateWith(async () => "  ");
 		try {
 			const base = projectionOf([{ role: "user", content: "hi" }]);
-			expect(await hooks[0]!.handler(base)).toBeUndefined();
+			const result = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
+			const messages = result.projection.messages;
+			expect(messages[1]!.content).toContain("本轮没有取到世界状态");
+			const receipt = JSON.parse(messages[3]!.content) as { text: string };
+			expect(receipt.text).toContain("世界没有提供内容");
 		} finally {
 			await activation.stop();
 		}
 	});
 
-	it("世界侧取不到正文（抛错）就不注入，不把模型请求挂住", async () => {
+	it("世界侧取不到正文（抛错）时注入占位帧，不把模型请求挂住", async () => {
 		const { activation, hooks } = await activateWith(async () => {
 			throw new Error("executor unavailable");
 		});
 		try {
-			expect(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))).toBeUndefined();
+			const messages = (
+				(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))) as {
+					projection: RequestProjection;
+				}
+			).projection.messages;
+			const receipt = JSON.parse(messages[3]!.content) as { text: string };
+			expect(receipt.text).toContain("executor unavailable");
+			expect(receipt.text).toContain("不要把它当成世界没有变化");
 		} finally {
 			await activation.stop();
 		}
 	});
 
-	it("取正文超时不注入：宁缺一份快照，不挂住请求", async () => {
+	it("取正文超时注入占位帧：不挂住请求，但要说清是超时", async () => {
 		const { activation, hooks } = await activateWith(() => new Promise<string>(() => {}));
 		try {
 			const started = Date.now();
-			expect(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))).toBeUndefined();
+			const messages = (
+				(await hooks[0]!.handler(projectionOf([{ role: "user", content: "hi" }]))) as {
+					projection: RequestProjection;
+				}
+			).projection.messages;
+			const receipt = JSON.parse(messages[3]!.content) as { text: string };
+			expect(receipt.text).toContain("读取超时");
 			expect(Date.now() - started).toBeLessThan(2000);
 		} finally {
 			await activation.stop();
