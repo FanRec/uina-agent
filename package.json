@@ -30,6 +30,7 @@
     "dev:mc:mobility": "tsx .uina/worlds/minecraft/dev/mobility.ts",
     "dev:mc:combat": "tsx .uina/worlds/minecraft/dev/combat.ts",
     "dev:mc:spatial": "tsx .uina/worlds/minecraft/dev/spatial.ts",
+    "dev:mc:corridor-probe": "tsx .uina/worlds/minecraft/dev/corridor-probe.ts",
     "dev:mc:i2": "tsx .uina/worlds/minecraft/dev/i2.ts",
     "dev:mc:history": "tsx .uina/worlds/minecraft/dev/history.ts",
     "dev:mc:wait": "tsx .uina/worlds/minecraft/dev/wait.ts",

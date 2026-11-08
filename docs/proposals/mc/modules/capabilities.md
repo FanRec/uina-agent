@@ -572,6 +572,7 @@ type ExploreTarget =
 - 输入 `{ to: Pos, size?: "1x2"|"1x3"|"2x2"|"3x3" = "1x2", stairs?: "auto"|"never" = "auto", support?: true, maxTimeMs?: 180000 }`
 - 做：挖一条到 `to` 的通道；高度差大时自动做台阶；`support` 时在头顶补支撑（防砂砾）。
 - 规划塑形：上行走廊在 height<3 的 profile 下自动把踏步列上方挖到 3 高净空（G24）——越顶瞬间头部会探进落点列的顶格；与下坡挖檐对称，多挖的格计入 `dug`/`path`。走拍前核验目标脚位支撑：规划地板落在既有挖空上（重入与既有走廊错位一格的 G30 (c) 形态）时，UNREACHABLE 带归因快速失败（"planned floor has no support"），不烧走位预算；需要节点级重入既有走廊的调用方先精确站位（stepTo 同款口径）再 tunnel。
+- 走拍前重新观察脚位（G31）：`opened` 记的是"这一格我开过"，不是"这一格现在是空气"。沙/砾石会跟着走廊往下掉，而且掉落滞后于挖拍——挖檐块把上方整摞重力方块带下来，落点正是下一列的脚位。所以每一段腿走之前都重读脚位与其头位：非空气就重挖（这两格都在本次走廊计划里，动的都是这次授权过的范围），清过东西就等落定再看一轮，直到某轮什么都不用清（`STATION_CLEAR_LIMIT = 支撑探测上限 + 1`）。清不掉时如实报出是哪一格、为什么（未加载 / 流体 / 够不着 / 挖不动），不再统一记成"走位卡住"。末列的到位判据比中间列严：中间列允许差一格（下一拍继续往前挖），末列必须真的站进去——完成描述是"走到尽头"。
 - 完成：通道连通且可从起点走到终点。
 - 返回 `{ dug, path:[{ at, name }], goal, stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
 - 目标对账（§2.15）：`total = 计划格数 + 1`（最后那个 1 是"真的走通"），`completed` 只算服务端确认空气的格与走通本身；流体/挖不动记 `blocked`，未加载/未确认记 `uncertain`，没轮到的格记 `remaining`。执行中发现的头顶支撑格注册时一并计入总量。progress 带 `phase`（digging/walking/done）与 `columns:{walked,total}`

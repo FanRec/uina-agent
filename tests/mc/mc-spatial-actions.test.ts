@@ -55,6 +55,53 @@ describe("tunnel@1", () => {
 		expect(h.calls.some((call) => call === "goto:14,64,10")).toBe(true);
 	});
 
+	test("a gravity block that falls back into the station is re-opened, not reported as stuck", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 64, z: 10 }, { x: 14, y: 65, z: 10 });
+		// 真服 G31 形态：挖檐块把上方砾石带下来，落点正是下一列的脚位。
+		// 掉落滞后于挖拍，所以挖开这一格时它是空气，走到跟前时已被填住。
+		let refilled = false;
+		const h = makeHarness(state, {
+			onDig: (target) => {
+				state.blocks.set(key(target.block), { name: "air", properties: {} });
+				if (!refilled && target.block.x === 14 && target.block.y === 64) {
+					refilled = true;
+					state.blocks.set(key(target.block), { name: "gravel", properties: {} });
+				}
+			},
+		});
+		const value = await invoke<{ dug: number; stopped?: string; path: { name: string }[] }>(h, "tunnel@1", {
+			to: { x: 14, y: 64, z: 10 },
+		});
+		// 8 格计划内 + 1 格回填的砾石：重挖计入 dug，通道仍然走通。
+		expect(value.dug).toBe(9);
+		expect(value.stopped).toBeUndefined();
+		expect(value.path.filter((entry) => entry.name === "gravel")).toHaveLength(1);
+		expect(state.blocks.get(key({ x: 14, y: 64, z: 10 }))?.name).toBe("air");
+		expect(h.calls).toContain("goto:14,64,10");
+	});
+
+	test("a station refilled with fluid fails UNREACHABLE with the cell named", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 64, z: 10 }, { x: 14, y: 65, z: 10 });
+		// 走到末列时脚位被水灌满：清不掉就如实说清哪一格，不再报"卡住"。
+		const h = makeHarness(state, {
+			onDig: (target) => {
+				state.blocks.set(key(target.block), { name: "air", properties: {} });
+				if (target.block.x === 14 && target.block.y === 64)
+					state.blocks.set(key(target.block), { name: "water", properties: {} });
+			},
+		});
+		await expect(invoke(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } })).rejects.toMatchObject({
+			code: "UNREACHABLE",
+			message: expect.stringContaining("14,64,10 holds water/lava"),
+		});
+	});
+
 	test("corridor crossing a fluid fails UNREACHABLE before dispatching", async () => {
 		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
 		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });

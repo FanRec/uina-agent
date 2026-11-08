@@ -25,6 +25,8 @@ import { digCell, reachHint, stepTo, walkLeg } from "./dig-cycle.js";
 
 /** 头顶重力方块延展探测上限：再多就让它掉，不无限向上挖。 */
 const SUPPORT_PROBE_LIMIT = 4;
+/** 走位前清站位的轮数上限：每轮最多清两格，够消化 SUPPORT_PROBE_LIMIT 摞起来的沙砾。 */
+const STATION_CLEAR_LIMIT = SUPPORT_PROBE_LIMIT + 1;
 /** 单列步进预算：站不上去按 UNREACHABLE 结算，不空转烧会话预算。 */
 const STEP_MAX_MS = 4000;
 /** 挖拍前瞻的 ceiling 格 3D 距离上限（reach 4.5 留余量；升坡列按实际距离自动少挖）。 */
@@ -237,6 +239,75 @@ export const tunnelModule: MinecraftCapabilityModule = {
 					};
 					const progressOf = (phase: string): Progress => snapshot(phase).progress;
 
+					/**
+					 * 走位前重新观察目标脚位：**挖过不等于还是空气**。
+					 *
+					 * 沙/砾石会跟着走廊往下掉，而且掉落滞后于挖拍：挖檐块时上方整摞重力方块
+					 * 被带下来，落地位置正是下一列的脚位。`opened` 记的是"我开过这一格"，
+					 * 不是"这一格现在是空气"——拿记忆代替观察，就会出现"计划认为已开、实际
+					 * 被自己挖塌的沙砾填住"，走位只能烧满预算报"卡住"（G31 的真因，真服实证：
+					 * 卡住格 client=gravel server=solid）。
+					 *
+					 * 站位两格（脚位与头位）都在本走廊计划里（profile 高度最小 2），所以清站位
+					 * 动的都是这次施工授权过的格，不会越权改世界。
+					 */
+					const clearStation = async (
+						legTo: Vec3,
+					): Promise<
+						| { kind: "clear" }
+						| { kind: "blocked"; at: Vec3; reason: string }
+						| { kind: "not_met"; dispatch: "not_sent" | "sent" | "unknown"; effect: string }
+					> => {
+						// 先只读，不动世界：大多数腿两格本来就是空气，不该为此付一次身体租约。
+						const obstructions: Vec3[] = [];
+						for (const at of [legTo, { x: legTo.x, y: legTo.y + 1, z: legTo.z }]) {
+							const block = await readBlockAt(ctx.world, at);
+							if (block == null)
+								return { kind: "blocked" as const, at, reason: `cell ${at.x},${at.y},${at.z} is not loaded` };
+							if (block.name === "air") continue;
+							obstructions.push(at);
+						}
+						if (obstructions.length === 0) return { kind: "clear" as const };
+						return await ctx.withBody(async (scope) => {
+							for (const at of obstructions) {
+								const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+								const result = await digCell(deps, scope, selfNow, at);
+								const key = keyOf(at);
+								if (result.kind === "dug") {
+									dug += 1;
+									opened.add(key);
+									held.delete(key);
+									path.push({ at, name: result.name });
+									continue;
+								}
+								if (result.kind === "open") {
+									opened.add(key);
+									held.delete(key);
+									continue;
+								}
+								if (result.kind === "not_met")
+									return { kind: "not_met" as const, dispatch: result.dispatch, effect: result.effect };
+								const where = `${at.x},${at.y},${at.z}`;
+								if (result.kind === "not_loaded")
+									return { kind: "blocked" as const, at, reason: `cell ${where} is not loaded` };
+								if (result.kind === "liquid")
+									return { kind: "blocked" as const, at, reason: `${where} holds water/lava` };
+								if (result.kind === "unreachable")
+									return {
+										kind: "blocked" as const,
+										at,
+										reason: `${where} is ${result.distance.toFixed(1)} blocks away (out of reach)`,
+									};
+								return {
+									kind: "blocked" as const,
+									at,
+									reason: `${where} cannot be harvested with the current inventory`,
+								};
+							}
+							return { kind: "clear" as const };
+						});
+					};
+
 					// 执行节拍：挖 ahead 列（reach 内）→ goto 走到已挖到的最远列（≥2 格走寻路，
 					// 经验 22：近距 1-2 格寻路不可靠，尾巴短腿用 drive 步进）。挖与走不嵌套租赁。
 					let cursor = 0;
@@ -394,6 +465,54 @@ export const tunnelModule: MinecraftCapabilityModule = {
 								},
 							);
 						}
+						// 走位前重新观察目标脚位（详见 clearStation）：重力方块掉落滞后于挖拍，
+						// 上一拍挖开的格这一拍可能已被填住。计划内的格重挖，计划外的如实失败。
+						// 一次不够：清掉落在脚位的那块，上方整摞里还有下一块会跟着掉下来，
+						// 所以"这一轮清过东西就等它落定再看一轮"，直到某轮什么都不用清（有界）。
+						const dugAtStation = dug;
+						let station = await clearStation(legTo);
+						for (
+							let round = 0;
+							station.kind === "clear" && dug > dugAtStation && round < STATION_CLEAR_LIMIT;
+							round++
+						) {
+							const before = dug;
+							await settle(ctx);
+							station = await clearStation(legTo);
+							if (dug === before) break;
+						}
+						if (station.kind !== "clear") {
+							if (station.kind === "not_met") {
+								held.set(WALK_KEY, {
+									kind: "uncertain",
+									at: legTo,
+									target: "walk to the corridor end",
+									reason: "server did not confirm re-opening the station",
+								});
+								return fail("TARGET_NOT_MET", "the server did not confirm re-opening the station cell", {
+									dispatch: station.dispatch,
+									effects: [station.effect],
+									progress: progressOf("walking"),
+									recoverable: true,
+								});
+							}
+							held.set(WALK_KEY, {
+								kind: "blocked",
+								at: legTo,
+								target: "walk to the corridor end",
+								reason: station.reason,
+							});
+							return fail(
+								"UNREACHABLE",
+								`corridor station ${legTo.x},${legTo.y},${legTo.z} is not clear: ${station.reason}`,
+								{
+									hint: "clear the obstruction or tunnel from another side; the corridor plan does not cover that block",
+									dispatch: "sent",
+									progress: progressOf("walking"),
+									recoverable: true,
+								},
+							);
+						}
 						const trace: string[] = [];
 						try {
 							// digThrough:true（surface@1 同款，真服已验证）：让寻路消化客户端/服务端
@@ -421,8 +540,11 @@ export const tunnelModule: MinecraftCapabilityModule = {
 							const here = selfNow.place.position;
 							// 到位 = 站在目标列且脚在目标层；GoalNear 的邻域含"正下方一格"，
 							// 3D 距离会把"贴在走廊底下"误判为到达（上坡腿的假到达陷阱）。
+							// 中间列允许差一格（下一拍继续往前挖走，不影响推进）；**末列必须真的站进去**——
+							// 完成描述是"走到尽头"，末列差一格就是少走一格，场景断言会如实判失败。
 							const flat = Math.hypot(Math.floor(here.x) - legTo.x, Math.floor(here.z) - legTo.z);
-							if (flat <= 1 && Math.floor(here.y) === legTo.y) return true;
+							const slack = targetIndex >= columns.length - 1 ? 0 : 1;
+							if (flat <= slack && Math.floor(here.y) === legTo.y) return true;
 							return await ctx.withBody((scope) => stepTo(ctx, scope, legTo, { maxMs: STEP_MAX_MS, trace }));
 						})();
 						if (!arrived) {
