@@ -82,7 +82,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | 经验的存放与证据 | modules/library.md §4 |
 | 跨模块允许依赖、唯一写入者 | contracts.md §2 |
 | 受理事务、回执丢失、替换/抢占 | modules/runtime.md §2；modules/executor.md §6 |
-| 结果直返、最终交付、投递停滞恢复 | modules/executor.md §8；modules/runtime.md §6；Host 持久交付回执 |
+| 受理出口、最终交付、投递停滞恢复 | modules/executor.md §8；modules/runtime.md §6；Host 持久交付回执 |
 | 启用/停用、IPC、父进程崩溃与退出证明 | modules/executor.md §3–§7 |
 | 模型 façade 参数、unknown 撤销/同键重试、恢复确认 | modules/executor.md §2、§6–§7 |
 | Microsoft/offline 登录、离线名字与账号独占 | modules/executor.md §3.1；modules/driver.md §4.1.1 |

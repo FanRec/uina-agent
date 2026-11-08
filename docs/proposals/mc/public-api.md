@@ -750,7 +750,7 @@ type CompletionView =
 // 也不给完成快照。完成与决策一律由完成通知投递，正文是按 phase 收窄的展示投影：
 // finished 给 outcome/progress/value/error/unknownEffects，awaiting_decision 给
 // decision/reason/progress；正文读不到时给 detail=record|unavailable 与截断标志。
-// 结构化原件仍在事件 data 与工具 details，两者不互相推导。
+// 结构化原件只在完成通知的 event.data，展示投影与原件不互相推导；工具层不带这份正文。
 type DeliveryDisposition = "pending" | "committed";
 interface DeliveryState {
   delivery: CompletionHeader; disposition: DeliveryDisposition; // 有界投影；完整正文按 completionRef 读
@@ -907,7 +907,7 @@ DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 saf
 | Driver | 输入/点击参数、版本及预期槽位/光标物品、帧代次/新鲜度与停止屏障；真实服务端另验效果，mock 不替代 |
 | World | read/游标同一点、读/订阅交界不漏唤醒、换源/重连/旧游标返回 reset；schema/CAS/证据写入受唯一所有者约束 |
 | Library | 三类条目的命名/目录/路径安全；蓝图 Raw/Target/Project 与 AirPolicy；经验弱链接；明文错误；蓝图不携带现场进度 |
-| Uina/Executor | ID 持久化后 IPC；短任务真实直返、长任务至少一次持久交付；真实 Host 回执与停滞恢复；过滤过时 decision；重复不重放游戏 |
+| Uina/Executor | ID 持久化后 IPC；顶层只回受理，完成报告至少一次持久交付；真实 Host 回执与停滞恢复；过滤过时 decision；重复不重放游戏 |
 
 这些是接口实现的验收要求，尚未执行的项目不能写成通过。解析/存储类、SQL 表、插件内部算法、完整原版函数目录及延迟常数由模块设计和实验决定；它们不应阻挡另一模块基于以上公开合同开发。
 

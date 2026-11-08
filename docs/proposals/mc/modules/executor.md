@@ -146,7 +146,7 @@ mc.read(map@1) 仍只返回 JSON；程序可返回文件引用供主脑后续 ob
 | 接口已发送但受理/写入不明 | unknown | 原 requestId 或文件目标、已知派发范围、真实查询 nextCall |
 | 只读查询取消 | cancelled | 仅本次查询已取消；Run 未因此取消 |
 
-停止 intent=unknown 时即使 control=stopped 仍返回 unknown，并同时保留已知控制事实。safeStop 的正常 resolve 要求更强，见 §7.4。查询得到一个 failed Run 时，查询工具可以 succeeded，正文仍保留该 Run 的 failed；只有 run/chat/continue 的固定直返映射该次执行 outcome。
+停止 intent=unknown 时即使 control=stopped 仍返回 unknown，并同时保留已知控制事实。safeStop 的正常 resolve 要求更强，见 §7.4。查询得到一个 failed Run 时，查询工具可以 succeeded，正文仍保留该 Run 的 failed；run/chat/continue 只回本次受理，不映射执行 outcome。
 
 本表约束 Executor 产生的回执；框架在调用 action 前取消时，仍由框架返回其既有取消回执。chat 的 sent 只表示完整消息/指令已到达声明的协议发送边界，不表示其他玩家已读、服务器允许指令或目标已改变。指令和普通消息都经过同一 Runtime 动作门，不自动重试。
 
@@ -487,7 +487,7 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 
 模型不能通过能力参数、runs.recover 或自己伪造 BodyEndpoint 调用解除操作者急停；解除仍走现有可信具身路由。
 
-## 8. 结果直返、后台通知和摘要
+## 8. 受理出口、后台通知和摘要
 
 ### 8.1 权威报告与 Host 回执
 

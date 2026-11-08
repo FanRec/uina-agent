@@ -22,7 +22,7 @@ Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独
 4. 实际写入检查真实执行来源（run Call 或安全介入）；run 再检查 read/act 交集、作用域、委托和代次；旧代理、旧回调及旧执行域永久失效。
 5. 关闭先封闭动作准入并处理控制，再等待记录。数据库故障不阻止停止，但不能在记录未提交时声称持久终结。
 6. Run 终结必须在已收到的所属派发/回执材料提交屏障之后；记录屏障不等于服务端效果确认。
-7. completionRef 引用一次不可变执行报告：terminal 表示 Run 已 finished，decision 表示执行段已交还而 Run 尚未终结。工具直返与后台输入使用同一报告，不追求跨 Runtime DB、Uina journal 和事件的恰好一次呈现。
+7. completionRef 引用一次不可变执行报告：terminal 表示 Run 已 finished，decision 表示执行段已交还而 Run 尚未终结。完成通知使用同一报告，不追求跨 Runtime DB、Uina journal 和事件的恰好一次呈现。
 8. decision 的历史事实与当前是否待处理分开。已消费 decision 不再主动作为新请求投递；最后跨 Host 竞态仍显式承认。
 9. 重启恢复记录、门和可解释检查点，不恢复 JS 栈、Promise、Body 或自动重放未知副作用。
 10. 只记录公共 Callable、有关 Operation/Effect 和执行边界；普通 helper、每次微任务和每 Tick 不自动成为持久业务事件。
@@ -237,7 +237,7 @@ record 同步复制/校验最小事实并进入 Runtime 有序内存队列，返
 3. 执行固定合同需要的宿主只读核验并登记其结果；这是受限结算路径，不重开业务准入，不偷偷开窗/移动/发动作。无法核验则 unknown。
 4. 普通子 Call：固定自己的已收到材料，保存 execution、领域结果、effects 与 control，将不可变完成截面加入同一 writer 序列后返回领域值/抛错。入队不等于持久；无逐 Call flush。无法接收入队则锁存 recorder fault，停止新副作用并将故障上抛，不伪装已记账。其父段最终封口覆盖这些材料与完成截面。
 5. 根 Segment：待后代局部关闭和核验材料均已入队，固定此刻 Runtime 已收到的所属事实集合及队列上界 H（含子 Call 完成截面）。调用 writer.flushThrough(H)，等待所有 ticket≤H 的已收材料持久提交或明确失败。全局 FIFO 前缀可包含其他 Call 的早到材料，但不等待 H 之后流量；不建每 Effect 一个 writer。
-6. 屏障成功后按固定材料结算根 execution、领域结果、effects 与 control，再在短事务写阶段/最终结论、record、completionRef 和待交付项。H 以后到达的核验不混入本结论；尚待服务端结果留 unknown，不无限等未来证据。终结事务不得越过 H；commit 确认后才允许工具直返/事件递送。
+6. 屏障成功后按固定材料结算根 execution、领域结果、effects 与 control，再在短事务写阶段/最终结论、record、completionRef 和待交付项。H 以后到达的核验不混入本结论；尚待服务端结果留 unknown，不无限等未来证据。终结事务不得越过 H；commit 确认后才允许完成通知递送。
 7. guest 退役无法证明时，Program 保留未释放容量并请求 Executor 完成隔离；Run 不能报 succeeded，若控制也未隔离则 control=unknown 且禁止接管。flush/commit 失败：实际控制继续撤销，禁止新动作；记录存储 unavailable，不能输出一个假称持久 finished 的 completion。可独立给 StopReceipt.control；恢复按未闭合段处理。
 
 屏障只覆盖 Runtime **已经接收**的材料。Driver 尚未发出的回调、未来服务端包、未入队/崩溃丢失的派发不被它“确认”。Driver close 的隔离承诺与 writer 屏障是两个先后保证，互不替代。Body 交接不必等待数据库；Run 对外终结必须等待上述持久边界。
@@ -260,9 +260,9 @@ Runtime 在段交还或 Run 终结事务中写不可变 CompletionReport、compl
 
 pendingDeliveries 只按 [public-api §7](../public-api.md) 分页返回 pending 且 eligible 的报告引用，readDelivery 读取有界固定 header 和当前 eligibility，正文由 readRecord(completionRef) 取得 inline/file。terminal 可投；decision 仅当前仍未消费、Run 未停止/终结时可投。eligibility 从已有运行事实派生，不新建任务状态机。
 
-settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。两种交付渠道复用同一回执类型；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
+settleDelivery 只接受 HostCommitReceipt，将 pending 幂等变为 committed，不回退。Runtime 核验当前可信 Executor 绑定、owner 与 receipt.key=completionRef；Host namespace/session/record 的真实性由 Executor 经绑定 HostDeliveryPort 确认，不能用 guest/模型数据代替。Runtime 不读 Host 日志或 executor.db，不因工具返回/入队/render 改处置或 outcome。交付只经完成通知，回执类型不变；状态查询/退役接缝见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，接入算法见 [Executor §8](executor.md)。
 
-submit/continue 的受理在执行侧完成，工具层只把受理回执交回模型：完成与决策一律走完成通知，通知正文是按 phase 收窄的展示投影（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），details 给完整 CompletionView；两者不互相推导。等待取消不取消已受理 Run。Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
+submit/continue 的受理在执行侧完成，工具层只把受理回执交回模型：完成与决策一律走完成通知，通知正文是按 phase 收窄的展示投影（finished 给 outcome/progress/value/error，awaiting_decision 给 decision/reason），完成通知的 event.data 给完整 CompletionView；两者不互相推导。等待取消不取消已受理 Run。Host 投递/ACK、重试与保证边界只由 [Executor §8](executor.md) 定义。Runtime 不管理 Host 队列、模型回合、跨库交付租约或 Core 工具记录事件。
 
 Run 等待与请求重试不共享一个取消域。wait 默认忽略普通进度，等 finished/awaiting_decision；已有报告立即返回。显式 afterRevision 等一次变化，未来修订拒绝，finished 始终立即返回；超时返回 timeout，不制造 revision，也不取消 Run。小型 CompletionHeader 与正文可用性分开：content=unavailable 不改原 outcome；通知允许交付真实 header 后按 HostCommitReceipt ACK，完整材料故障不能阻塞其他报告。
 
@@ -341,7 +341,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | Library | 旧 SQLite/CAS Assets 已清理；批 7 程序只读材料与共用头解析、批 8 文件管理/发现与来源保存已实现 | 沿 [Library](library.md) 文件合同使用，不兼容旧 Assets 仓库 |
 | World | 当前/静态读取、事件与容器观察历史、SQLite Worker 已实现 | 容器历史复用证据表；通用 DomainRecord 与保留清理尚缺 |
 | World Watch | 当前与事件提交的保守失效 Watch、Program waitUntil 已由批 9A 接通 | 不把历史 container.last 当作当前库存或可等待条件 |
-| Uina 接入 | 批 5 Host 通用回执、批 6 原生 World/可靠交付已接通 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
+| Uina 接入 | 批 5 Host 通用回执、批 6 原生 World/可靠交付已接通 | 完成通知凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
 QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 Windows 进程树、SQLite/Worker 和原生真服验收；批 7 已有真实 QuickJS/Worker、Host/Session 与 Paper 程序执行验收，详见 [实施记录](../archive/program-implementation.md)；断电、完整 I2 与长期运行仍未验收，不能互相替代。
@@ -350,7 +350,7 @@ QuickJS/worker 的微基准仍不证明 Program 共享池。批 4 已有实际 W
 
 | 问题 | 裁决与被放弃的复杂度 |
 | --- | --- |
-| 结果交付 | 同一报告短直返/长通知，Host 索引查询修复回调/ACK 丢失；保证至少一次持久呈现，不追求恰好一次 |
+| 结果交付 | 同一报告只经完成通知投递，Host 索引查询修复回调/ACK 丢失；保证至少一次持久呈现，不追求恰好一次 |
 | 身体组合 | 独立申请排队，委托复用，谱系内重入局部失败；不为仲裁限制普通并发，也不建通用死锁检测 |
 | 记录可靠性 | 有限接收上界+writer 屏障；不承诺所有实际动作都有持久 write-ahead |
 | 版本一致性 | 捕获不可变材料后提交自己的事实；不追求跨库提交瞬间最新 |

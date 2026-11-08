@@ -50,7 +50,7 @@ Runtime 的事务不覆盖 Library 文件或 World 存储。工作文件、执�
 
 ## 4. 交付
 
-Runtime 保存唯一不可变报告及处置，见 [Runtime §6](modules/runtime.md#delivery)。Executor 选择短直返/后台输入、核对 Host 回执和恢复停滞，见 [Executor §8](modules/executor.md)。普通查询不消费通知。
+Runtime 保存唯一不可变报告及处置，见 [Runtime §6](modules/runtime.md#delivery)。Executor 只回答受理，完成通知集中入队、核对 Host 回执和恢复停滞，见 [Executor §8](modules/executor.md)。普通查询不消费通知。
 
 <a id="control"></a>
 
