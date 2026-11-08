@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-11-08 · 批42 教学接缝与执行闭环
+
+- **教学分三层**：`WorldDef.environmentGuide` 是可选只读 getter，`WorldActivation` 在 `turn.prepare` 把活动世界的短正文追加到 systemPrompt（多世界依次追加、停用由 scope 摘除、不写 Session、不注入为用户消息）。Minecraft 的 ENV 在 `onStart` 预载，无活动会话返回 null；`nativeGuide` 从 1.75KB 混杂 API 长文压成入口；六份官方只读 Guide 通过既有 `describe {kind:'guide'}` 按需读正文，不进 Library、永不 callable；`copy-assets` 打包 ENV/Guide/参考 Program，Guide 内每段 JS 与 `safe_mining.js` 由真实 validator 编译校验。
+- **导航默认改为不改世界**：`goto@1` 与 `route.plan@1` 的 `placeToReach` 默认 false；surface/tunnel 的授权施工调用显式 true；plan 与执行共用同一 movement 配置。攀爬类 dev 探针显式授权，避免用旧默认掩盖行为变化。
+- **Window 因果按真服证据定**：`window_items.stateId` 保留到 Window 层；`stateId:-1` 每次都能拿到权威 full，用真实 stateId 的点击服务端不回包；工作台会先回"仅同步"的 full。因此回执增 `outcome:"confirmed"|"diverged"|"unknown"` 与有界 `diagnostics`，但**内容未变不判拒绝**，保持 unknown 并置 uncertain。曾把未变化判 rejected，SHELTER 真服立刻回归失败，已回退。
+- **Body 撤销不再猜**：stop/safety/preempt/disconnect/control_fault/world_disabled 在真实发起点写不可变 `retiredBy`；`interruptible()` 从 Effect 账本现算 `dispatch/effects`，只有明确 not_sent 才算未派发；`recoverable` 只对 safety 为 true，user_stop 不自动续跑；物理隔离仍由 BodySession.close() 屏障负责。
+- **领域闭环**：`excavate` 的 `remainingCount` 计入从未轮到的格（读取抛错的格也算未访问），`reasons` 汇总、`remaining` 64 条有界样本；`collect` 的候选记录 permanent/transient/unknown，已派发 TIMEOUT 不换候选，候选耗尽但"挖除数>入包数"时先有界清扫地面掉落；`craft` 返回/进度暴露 `station {source,block,placed}`。
+- **Program 终验**：MINE 在返程后重读 `self@1`/`inventory@1`，维度/立足/位置/数量任一不满足即 `mc.decide`；宿主把 `awaiting_decision` 记 `NEEDS_DECISION`，不再以 `returned` 正常结束。
+- 验收：真服 `dev:mc:task` MINE/SHELTER/NIGHT 全 PASS（服务端 Oracle：返程、背包、矿体、结构 24/24、无死亡）；`pnpm typecheck` 全绿；tests/mc 808 passed（唯一失败为既有 `node_api.h` 环境项）；全量 27 failed 与基线同文件（UI/ANSI、Python httpx、node_api.h）。
+- 明确没做：tunnel 流体/重力前视、surface 逐帧上浮、T2/T3/T5 场景与真实模型 A/B；Guide 只做编译与结构校验，未逐条真服实践验证。
+
 ## 2026-11-08 · 批41 审查收尾：缺失必须说出来
 
 - **状态帧缺一段也要说**：`state.snapshot` 原来在 `runtime.list {activeOnly:true}` 失败时静默省掉活跃任务段。world.md §9.5 已经写明"让位置空着会被读成世界没变，那比没有状态更危险"，这里模型会把"没读到"当成"没有活跃任务"。现在查询失败与查到 0 条分开：前者正文写明"本次未能读取，不代表没有活跃任务；需要确认请 runs.list"，世界 Facts 照给，不编假列表、不用旧缓存。

@@ -96,6 +96,8 @@ withBody 回调等待期间保留身体，不自动释放或重新排队。原�
 
 外层退出：封闭 BodyScope/后代准入 → 取消作用域结束时仍在途的所属工作 → Driver 撤销所属输入/插件/窗口 → 等待 close 屏障 → 下一个申请。清理可能释放蓄力物品或产生窗口后果，也要进入 ExecutionSink。未知服务器效果不阻止已经证明旧控制失效的交接；无法证明旧写来源失效就保持故障，并请求 Executor 隔离旧客户端，不能授予新主人。
 
+**撤销起因是一等事实**：stop / safety / preempt / disconnect / control_fault / world_disabled 在真实发起点写一次不可变 `retiredBy {cause, initiator, at, run?, detail?}`，不从错误字符串反推。`interruptible()` 只负责"上层不能再等旧 work"；它返回的 INTERRUPTED 失败必须从 Effect 账本现算 `dispatch/effects`：有已记录且明确 `not_sent` 的 effect 才算未派发，其余保持 `sent/unknown` 并保留全部 effect refs。`recoverable` 只对 `cause:"safety"` 为 true；`user_stop` 永不自动续跑。旧写入的物理隔离仍由 BodySession.close() 屏障负责，两者不是同一事件。
+
 自保算法归领域模块。协调内介入沿用资格，独立介入先退役旧控制再以 kind=safety 取得资格，受同一门和记录约束；不形成旁路身体控制器。
 
 <a id="safety-intervention"></a>

@@ -524,8 +524,9 @@ type ExploreTarget =
 - 做：寻找掉落匹配 item 的方块，走近、挖掘并拾取；只负责已经可执行的采集，不为 charcoal 等自动展开科技树。
 - 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
 - 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
-- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
+- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, attempted, skipped, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
 - 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
+- 候选纪律（批42）：`tried` 记录 `permanent`（源方块已不在）/`transient`（路线暂不可达）/`unknown`（已派发但结果未知）。**mine 的 TIMEOUT 若 `dispatch:"sent"` 或已有 effect，不得换候选**——那会把"可能已挖掉"当成没发生，必须带 progress 上抛；goto 的 TIMEOUT 只是移动预算，可换候选。真正拿到资源后释放 transient，让环境变化后的候选重新评估。候选耗尽但 `mined > acquired` 时先做一次有界 `pickup@1` 清扫地面掉落，再判定 NOT_FOUND。
 - 实现：物品名先用静态知识反查方块来源（`item@1` 的 block sources），再用 `blocks@1` 取前沿；走的是一遍遍 `goto@1` + `mine@1(collect:false)` + 掉落观察，入不了包再 `pickup@1` 兜底。**不持身体**（Body 槽与 goto 槽互斥），每一步独立取放；子调用的 `CONTROL_CONFLICT` 原样上抛，不做跨 run 隔离。可预判的失败（无来源/没工具/背包满）全在移动之前判定。
 
 #### tunnel · `tunnel@1` · act · P1
@@ -539,7 +540,9 @@ type ExploreTarget =
 - 输入 `{ region: { from: GridPos, to: GridPos }, keep?: [Name] = ["bedrock","chest","furnace","spawner"], maxTimeMs?: 300000 }`
 - 做：清空长方体区域（按层，从上到下，先收容器内容）。
 - 返回 `{ dug, kept:[{ at, name }], drops:{ [item]: number }, remaining:[{ at, reason }] }`
-- 失败 `TIMEOUT`、`INTERRUPTED`、`TARGET_NOT_MET`；未能清理的目标保留在 progress.remaining；keep 明确保留的方块不属于待清空目标
+- 失败 `TIMEOUT`、`INTERRUPTED`、`TARGET_NOT_MET`；keep 明确保留的方块不属于待清空目标
+- 进度守恒：`progress.remainingCount = plannedActionable − confirmedComplete`，**包含从未轮到的格**（`reason:"not_attempted"`）；`progress.reasons` 按原因汇总，`progress.remaining` 只是最多 64 条的有界样本。旧口径"只统计尝试失败格"会把未访问量当成完成，已废弃
+- `dug` 只计服务端确认空气的格；`drops` 是每次挖后短窗观察到的背包正增量，不是地面掉落实体数
 
 ### 建造
 
@@ -667,7 +670,7 @@ type EquipInput =
 - 输入 `{ item: Name, count?: 1..256 = 1, station?: "auto"|"hand"|"crafting_table" }`
 - 做：查配方 → 找附近工作台（`auto` 时没有就用背包里的放一个）→ 摆格子 → 取产物。3x3 配方自动处理。
 - 完成：背包里增加了 `count` 个该物品（多余产出也算）。
-- 返回 `{crafted, produced:{[item]:number}, consumed:{[item]:number}, remaining:0, at?:Pos}`；crafted 为目标物品实际新增数量，可因配方批量超额；不足抛错并带同名 progress 与 remaining。
+- 返回 `{crafted, produced:{[item]:number}, consumed:{[item]:number}, remaining:0, at?:Pos, station?:{source:"nearby"|"placed", block:"crafting_table", placed:boolean}}`；crafted 为目标物品实际新增数量，可因配方批量超额；不足抛错并带同名 progress 与 remaining。`station` 在批42 加入：自动放工作台是真实副作用，必须说明来源与落点，`placed:true` 表示背包里的工作台已被消耗并放到 `at`（用完不拆走）。
 - 失败 `MISSING_MATERIAL`（`hint` 给差额）、`MISSING_TOOL`（需要工作台但没有也没材料做）、`INVENTORY_FULL`、`TIMEOUT`、`TARGET_NOT_MET`、`NOT_FOUND`
 - **批 3 实施办法**：配方来自 `recipe@1` 同一份知识，按"缺料种类→总量→手持优先"排序；`station:"hand"` 排除 3×3 配方，`station:"crafting_table"` 允许把 2×2 配方放到工作台做（原版允许），`auto` 按配方自己决定。手持走玩家窗口（window 0 的 2×2 格），3×3 先找 8 格内的工作台、没有就用背包里的放到四个水平相邻格并回读确认；**用完不拆走**。
 - 每批只摆一批料（一格一件），回读网格后点结果槽，沿用 Driver 的 mode-0 服务端确认。原料消耗与产物入包分别累计；取货复用窗口搬运的实例匹配，先填组件/耐久一致的余量槽，再用空槽，允许分装。空间根据消耗原料后的快照判断，不能用调用前的满背包拒绝本可完成的制作。失败/取消的 progress 保留 `crafted/produced/consumed/remaining`，未知点击不重放。

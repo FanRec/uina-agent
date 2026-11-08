@@ -1969,8 +1969,10 @@ export class RuntimeEngine {
 			for (const child of call.children) collect(child);
 		};
 		collect(callState);
-		const receipts = refs.map((ref) => this.queue.effectRecord(ref)).filter((entry) => entry != null);
-		const dispatched = receipts.some((entry) => entry!.latest.dispatch !== "not_sent");
+		const dispatched = refs.some((ref) => {
+			const entry = this.queue.effectRecord(ref);
+			return entry != null && entry.latest.dispatch !== "not_sent";
+		});
 		return callFailure({
 			code: "INTERRUPTED",
 			message: `body scope retired by ${notice.cause} (${notice.initiator})`,

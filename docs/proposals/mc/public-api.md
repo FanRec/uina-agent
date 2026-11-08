@@ -259,6 +259,15 @@ interface StackExpectation { item: ItemSelector | null; count: number }
 interface WindowClickReceipt extends EffectReceipt {
   confirmed?: WindowSnapshot; // 确认时的服务端完整快照；本次点击只归因被点击槽与光标的转换
   needsSnapshot: boolean;
+  // 真服探针：强制 stateId 的 click 必回权威 full，但工作台会先回"仅同步"的 full。
+  // 因此内容未变不判拒绝；未变化/迟到包保持 completion:"unknown"。
+  outcome?: "confirmed" | "diverged" | "unknown";
+  diagnostics?: {
+    stateBefore: number | null; stateAfter: number | null;
+    slot: number; button: number; elapsedMs: number;
+    slotChanged: boolean; cursorChanged: boolean;
+    recovery: string; // 上层据此决定重开窗口还是交还主脑
+  };
 }
 // 商人报价：来自服务端 trade_list 的真实载荷；index 是 0 基报价序号（对应 select_trade 的 slot）。
 interface MerchantOfferValue {
@@ -357,7 +366,7 @@ dig 的 aim 默认 target，可调整视角；preserve 不自动瞄准，供同�
 
 窗口绑定本次打开和当前身体段。revision 覆盖全部槽位与光标；click 在驱动同一串行步骤核验版本、当前槽位/光标与调用者的 StackExpectation 后派发，不符返回 CONFLICT。count 是精确堆叠数，item=null 要求空且 count=0；非空按 ItemSelector 的组件/耐久/替代约定匹配，不声称物品全值相等。expectedSlots 至少覆盖本次直接操作的非负槽位，数量须为非负整数；具体点击模式检查其涉及的槽位（包括自动分配/交换的潜在目标）；不能用未声明槽位的假定代替现实，校验不产生自动换槽/重试。close 幂等且只关闭自己的代次；多人仍可能在协议到达前改变现实，多次点击不构成服务端事务。合法 button/mode 按客户端版本开放，不支持在派发前失败。
 
-click 的 confirmed 是确认时的完整服务端快照，供消费者直接推进内容 revision 与观察值。只有被点击槽与光标的 mode-0 转换归因于本次点击，其他槽位只是同次观察。相关后态无法确认时 needsSnapshot=true；当前实现封闭该窗口的后续业务点击并要求关闭，不用另一次读取洗白未知或重放业务点击。
+click 的 confirmed 是确认时的完整服务端快照，供消费者直接推进内容 revision 与观察值。只有被点击槽与光标的 mode-0 转换归因于本次点击，其他槽位只是同次观察。相关后态无法确认时 needsSnapshot=true；当前实现封闭该窗口的后续业务点击并要求关闭，不用另一次读取洗白未知或重放业务点击。真服探针（Paper 1.21.11）证明工作台会先回一个"仅同步"的 full（stateId 推进、内容不变），所以内容未变不能证明拒绝：`outcome` 只区分 confirmed/diverged/unknown，未变化与迟到包都保持 unknown，不设 rejected。`diagnostics` 是有界因果证据（stateId before/after、clicked slot、耗时、槽位/光标是否变化、待恢复条件），不替代 `confirmed` 快照。
 
 窗口另有跨 open 返回和多次 click 的会话 Operation，click 是其短子操作；打开/点击 Promise 完成不退役窗口。所属调用作用域或 Body 结束则强制退役。WindowSnapshot.revision 覆盖类型、布局、槽位与光标的变化，**不随 `properties` 推进**（炉子进度每秒数次；revision 是点击的 CAS 前置条件，只约束点击真正依赖的内容），也不能直接复用服务器 stateId 或仅数 updateSlot；type/layout/properties 按该版本实际窗口提供，专用属性的确切意义由窗口/领域 schema 说明，不猜空值。区域名由布局表统一定义：普通容器 `container`+`player`；玩家窗口 `result`/`crafting`/`armor`/`player`/`offhand`；工作台 `result`/`crafting`+`player`；熔炉 `input`/`fuel`/`result`+`player`；酿造台 `bottle`/`ingredient`/`fuel`+`player`；附魔台 `input`/`lapis`+`player`；铁砧、砂轮与商人 `input`/`result`+`player`。工作站窗口**不产出 `container` 区域**，按 `container` 取格的调用方必须显式失败而不是把 input 当普通格。
 

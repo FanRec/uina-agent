@@ -208,6 +208,15 @@
 
 验收：tests/mc 89 文件 / 806 项全绿 + `pnpm typecheck`（biome + 10 边界 + 双 tsc），五个 PR 独立提交；断线入库、私聊推送、recover 重连、慢读测量的真服回归随 G14 窗口执行。
 
+## 批42（2026-11-08）：v2 闭环改造关闭事实
+
+- **教学接缝**：`WorldDef.environmentGuide` + `turn.prepare` 注入静态 ENV（只在活动 MC 会话、多世界可组合、停用摘除、不写历史）；`describe {kind:'guide'}` 提供六份官方只读 Guide，`nativeGuide` 压到入口描述；`copy-assets` 打包 ENV/Guide/示例，Guide 代码块与 `examples/safe_mining.js` 由真实 Program validator 编译校验。证据：`tests/world-environment-guide.test.ts`、`mc-guide-directory.test.ts`、`mc-guide-examples.test.ts`。
+- **Window 因果**：真服探针 `dev:mc:window-probe` 钉住两条协议事实——`stateId:-1` 必回带单调 stateId 的权威 full；工作台会先回"仅同步"的 full。因此保留 `window_items.stateId` 做迟到包防护，回执增加 `outcome/diagnostics`，但**内容未变不判拒绝**（保持 unknown）。证据：`mc-driver-window.test.ts`、SHELTER 真服回归（曾因误判 rejected 失败，回退后 PASS）。
+- **Body 撤销因果**：stop/safety/disconnect 在真实发起点写不可变 `retiredBy`；`interruptible()` 从 Effect 账本现算 `dispatch/effects`，不再硬编码 `not_sent`/`[]`；`user_stop` 不自动续跑。证据：`mc-control-retirement.test.ts` 三类故障注入。
+- **excavate 计划集合守恒**：`remainingCount` 包含从未轮到的格，`reasons` 汇总，`remaining` 为 64 条有界样本；读取方块抛错时该格仍算未访问。证据：`mc-spatial-actions.test.ts` C11（64−5=59）。
+- **collect 候选安全**：`tried` 记录 `permanent/transient/unknown`；已派发/有 effect 的 mine TIMEOUT 不换候选；候选耗尽但"挖除数>入包数"时先有界清扫地面掉落（SHELTER 由 `NOT_FOUND` 转 PASS）。证据：`mc-capability-carrying.test.ts` C10 与真服 SHELTER。
+- **MINE 任务级终验**：返程与背包以最新 `self@1`/`inventory@1` 核验，任一不满足 `mc.decide`；宿主把 `awaiting_decision` 记 `NEEDS_DECISION`，不再打印 returned 后正常结束。证据：`dev:mc:task --task mine` 服务端 Oracle 四项全绿。
+
 ## 附：不要照抄的部分
 
 对照 Cortico 后确认**不采用**：常驻 policy 层（G18 已裁决）、作弊传送脱困、把观测渲染成散文塞进 World。理由：分别违反"不堆隐藏配置"、"正常生存验收不靠传送"、"World 只给事实不给台词"。台词属表达侧。

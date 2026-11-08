@@ -526,9 +526,9 @@ export class WindowSessionImpl implements WindowSession {
 					recovery:
 						outcome === "unknown"
 							? "no authoritative full was attributable to this click; close this window, reopen a controlled session, re-read server state before any further inventory write"
-							: outcome === "rejected"
-								? "server returned an unchanged authoritative state; recompute remaining work from the new snapshot, do not resend the original click"
-								: "server state diverged from the predicted result; cursor may be held, close and reopen before computing remaining work",
+							: outcome === "diverged"
+								? "server state diverged from the predicted result; cursor may be held, close and reopen before computing remaining work"
+								: "server confirmed the exact clicked slot and cursor result; no recovery needed",
 				};
 			};
 			if (!responded || !this.live() || this.value === null)

@@ -1170,6 +1170,13 @@ Window Session 绑定：
 
 click 返回共享 WindowClickReceipt，confirmed 携带确认时的服务端 WindowSnapshot（含内容 revision）。消费者直接用该快照推进参照视图并登记确认量，不在已确认回执与记账之间再做一次可能因取消而失败的 snapshot。仅被点击槽与光标的转换归因于本次操作，其他槽位是同次服务端观察，不能推断全部变化都由本次点击产生。
 
+真服探针（Paper 1.21.11，`dev:mc:window-probe`）确定了两条协议事实，回执按它们设计：
+
+- `window_click` 携带 `stateId:-1` 时，服务端每次都会回一个带单调 `stateId` 的权威 `window_items`；用客户端跟踪的真实 stateId 时，服务端对已接受的点击通常不回包。因此 Uina 用强制 stateId 换取可归因的权威后态，`window_items.stateId` 必须保留到 Window 层。
+- 工作台窗口会先回一个"仅同步"的 full（`stateId` 推进、槽位/光标内容不变），真正的点击结果随后才到。**内容未变不能证明拒绝**，不设 rejected 分类：未变化/迟到包保持 `completion:"unknown"` 并置 `uncertain`，由上层关闭重开、重新观察后再计算剩余工作。
+
+回执新增可选 `outcome:"confirmed"|"diverged"|"unknown"` 与有界 `diagnostics`（stateBefore/After、clicked slot、elapsedMs、slotChanged/cursorChanged、recovery）。`confirmed` 只表示"与客户端预测的 mode-0 结果精确一致"；`diverged` 表示服务端状态确实变了但与预测不符，不推断成功也不抹掉已派发事实。
+
 相关后态无法完整确认时 needsSnapshot=true，下次点击要求显式 snapshot。严格前态、潜在目标槽、光标与版本验证仍执行，不允许 expect:null 关闭检查；多次点击不构成服务端事务。此回执与 Program 参照推进属于待实现接线，不能由既有 fake bot 验收推定已经完成。
 
 当前槽位符合预期，不必然证明某次历史交易完成。

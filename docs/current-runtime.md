@@ -133,6 +133,8 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批41（2026-11-08）把 MC 顶层换成纯异步受理：`run`/`chat`/`runs.continue` 删掉默认 3 秒等待窗与公开 `wait`，只回 `accepted`/`not_accepted`/`unknown`，终态一律经 `minecraft_completion` 投递；Program 内的 `await mc.call()` 不变。工具结果增 `continuation:'yield'`，整批都是可靠委派的结果时 Subject 才结束本轮，混合批次照常请求模型。完成通知从单槽串行改为一轮最多 8 个 key 集中入队（新接线 `submitInputs` → `onInputs` → `Subject.acceptBatch` → `emitEvents`），每条独立 attempt、独立 Host committed 回执与 ACK；批量受理只表示逐条持久入队，不等于模型已读。`accept` 在 idle 且队列空时仍同步直启，避免 `waitForIdle()` 在回合未提交时空转返回。请求前状态帧增加有界活跃任务简表（最多 4 条，与世界事实分别标采样时间），Runtime 列表查不到时正文写明"未知"而不是省略，不产生定时推送。完成通知的批量入口缺省或宿主少回一条回执时都让本轮对账显式失败并记进诊断，不静默丢弃、不留假在途。`heldRequests` 保留为受理期间压住同 request 完成通知的屏障；`shortWindowMs`/`toolAttempt`/`heldTools`/`RunReply` 等旧双通道接口已删。批20 G8 的 `run {wait}` 关闭方式由本批替换，缺口仍关闭。验收见 [changelog 批41](proposals/mc/changelog.md)；真实服与真实模型对照窗口本轮未跑。
 
+批42（2026-11-08）教学与闭环：`WorldDef` 新增可选只读 `environmentGuide`，`WorldActivation` 在 `turn.prepare` 把活动世界的 ENV 追加到 systemPrompt（多世界依次追加、停用摘除、不写 Session）；Minecraft 的 ENV 在 `onStart` 预载、无活动会话时返回 null。`describe` 增 `kind:'guide'`，六份官方只读 Guide 随包发布并按需读正文，`nativeGuide` 压成入口。`goto@1`/`route.plan@1` 默认 `placeToReach:false`。Body 撤销在真实发起点写不可变 `retiredBy`，`interruptible()` 从 Effect 账本现算 `dispatch/effects`，`user_stop` 不自动续跑。Window 保留 `window_items.stateId` 做迟到包防护，回执增 `outcome/diagnostics`；真服探针证明工作台会先回"仅同步"的 full，因此内容未变仍按 unknown，不设 rejected。`excavate` 的 `remainingCount` 计入未访问格；`collect` 候选分 permanent/transient/unknown，已派发 TIMEOUT 不换候选，候选耗尽先清扫地面掉落；`craft` 暴露 `station` 来源。MINE Program 以最新 `self/inventory` 终验，不满足即 `mc.decide`。真服 `dev:mc:task` MINE/SHELTER/NIGHT 全 PASS；`pnpm typecheck` 全绿；tests/mc 808 passed（唯一失败为既有 `node_api.h` 环境项）。
+
 ## QQ World
 
 

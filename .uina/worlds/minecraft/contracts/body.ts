@@ -174,11 +174,13 @@ export interface StackExpectation {
 }
 
 /**
- * 真服探针（Paper 1.21.11）证实：强制 stateId 的 click 每次都会收到权威 full 回包。
- * 因此回执必须区分"服务端确认 / 明确拒绝 / 状态分歧 / 无因果关联"，而不是把后两类
- * 一律压成模糊 unknown。已有字段语义不变，新增字段是可选的有界诊断。
+ * 真服探针（Paper 1.21.11）证实：强制 stateId 的 click 每次都会收到权威 full 回包，
+ * 但工作台窗口会先回一个"仅同步"的 full（stateId 推进、内容不变），随后才是点击结果。
+ * 因此"内容未变"不能证明拒绝，不设 rejected 分类：未变化/迟到包一律保持 unknown。
+ * 可区分的是：与预测一致（confirmed）、状态变了但与预测不符（diverged）、
+ * 没有可归因的权威回包（unknown）。
  */
-export type WindowClickOutcome = "confirmed" | "rejected" | "diverged" | "unknown";
+export type WindowClickOutcome = "confirmed" | "diverged" | "unknown";
 
 export interface WindowClickReceipt extends EffectReceipt {
 	/** Authoritative response snapshot; only the clicked slot/cursor transition is attributed to this click. */

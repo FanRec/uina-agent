@@ -395,6 +395,8 @@ Watch 是"等变化的拉取原语"；状态帧是"每次决策前读一眼"：`
 
 活跃任务段是批41 加进同一帧的第二段，同样不许留白：`runtime.list {activeOnly:true}` 查不到时正文写明"本次未能读取，不代表没有活跃任务"，并把 `runs.list` 作为确认入口；查到 0 条才省略这一段。世界 Facts 与任务列表分别采样，前者照常给出，不编一份假任务列表，也不拿旧缓存充当实时结果。
 
+批42 增加第二类世界文本，与状态帧严格分工：`WorldDef.environmentGuide` 是**同步、纯读、无副作用**的 getter，返回"这个世界怎么理解、怎么做"的静态认知（如 Minecraft 的 ENV），由 `WorldActivation` 在 `turn.prepare` 追加到本轮 systemPrompt，带稳定边界名 `[world:<name>:environment]`。它只在世界自己判定适用时返回正文（Minecraft 只在有活动会话时给），每回合一次，不随事实变化；多个启用世界依次追加、互不覆盖，停用由 ResourceScope 摘除，不写 Session canonical history，不注入为用户消息。会变的坐标/库存仍只由上面的状态帧提供；API 合同与场景做法由 `describe {kind:'guide'}` 的官方只读 Guide 提供。三者不合并成一个 PromptManager。
+
 <a id="retention"></a>
 
 ## 10. 领域记录、证据引用与保留

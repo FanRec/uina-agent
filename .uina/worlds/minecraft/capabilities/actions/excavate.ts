@@ -240,19 +240,24 @@ export const excavateModule: MinecraftCapabilityModule = {
 									recoverable: true,
 								});
 							}
-							// 只要轮到过这一格就记账，无论结果是 dug/open/kept/失败；
-							// 收尾时"未记账"才等于"从未访问"。
-							processed.add(atKey(cell));
 							const block = await readBlockAt(ctx.world, cell);
 							if (block == null) {
+								processed.add(atKey(cell));
 								remaining.push({ at: cell, reason: "not_loaded" });
 								continue;
 							}
 							if (keep.has(block.name)) {
+								processed.add(atKey(cell));
 								kept.push({ at: cell, name: block.name });
 								continue;
 							}
-							if (block.name === "air") continue;
+							if (block.name === "air") {
+								processed.add(atKey(cell));
+								continue;
+							}
+							// 读取抛错时这一格仍算"从未访问"，会进入 remainingCount；
+							// 确认是可处理方块后，才记为已尝试。
+							processed.add(atKey(cell));
 							// 容器先收内容再挖（不在 keep 时）：transfer@1 自己完成开箱/搬运/关窗。
 							// 不再先 container@1 再 transfer——连续开合同一窗口在真服上会搬不动（批13 实测）。
 							if (isContainerBlock(block.name)) {

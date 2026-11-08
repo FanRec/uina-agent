@@ -66,8 +66,6 @@ interface NativeItem {
 }
 interface ItemCodec {
 	fromNotch(value: unknown): NativeItem | null;
-	/** 与 mineflayer 上游同一个 Item 构造器：window_click 的 cursorItem 必须是客户端真实 cursor。 */
-	toNotch(item: NativeItem): unknown;
 }
 /** 商人报价的线上形态：付款项给 itemId/count，产物是 Slot（count=0 表示空）。 */
 interface RawTradeCost {
