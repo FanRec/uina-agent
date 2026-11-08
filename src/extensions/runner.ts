@@ -172,7 +172,7 @@ export interface ExtensionRunnerOptions {
 	onInput?: (input: AgentInput, owner?: InputDeliveryOwner) => Promise<void>;
 	/**
 	 * 批量受理：逐条入队，不逐条启动回合。返回逐条结果，允许部分成功。
-	 * 缺省时扩展只能走单条路径——调用方必须知道"合批不可用"，不能假装已经集中受理。
+	 * 缺省时调用方必须显式处理"合批不可用"，不能假装已经集中受理，也不能静默丢事件。
 	 */
 	onInputs?: (
 		inputs: readonly AgentInput[],

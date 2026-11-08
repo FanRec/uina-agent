@@ -83,12 +83,9 @@ export type InputSubmissionOutcome =
 	| { id: string; accepted: true }
 	| { id: string; accepted: false; reason: string; retryable: boolean };
 
-/** 准入拒绝：`retryable` 只说"用同一个 id 再交一次有没有意义"。 */
+/** 准入拒绝：明确的结构/去重问题，用同一个 id 再交一次也不会变。 */
 class InputRejected extends Error {
-	constructor(
-		message: string,
-		readonly retryable: boolean,
-	) {
+	constructor(message: string) {
 		super(message);
 		this.name = "InputRejected";
 	}
@@ -99,7 +96,7 @@ class InputRejected extends Error {
  *（重复提交由 id 去重拦住）。只有明确的准入拒绝才不可重试。
  */
 function isRetryableRejection(error: unknown): boolean {
-	return !(error instanceof InputRejected) || error.retryable;
+	return !(error instanceof InputRejected);
 }
 
 /** 把一轮请求准备切成多段，让 TUI 心跳与终端 IO 有机会插进来。
@@ -766,7 +763,7 @@ export class Subject {
 			input.receipt !== undefined &&
 			(!validDeliveryTag(input.receipt) || !owner || !owner.isActive() || this.deliveryClosed)
 		)
-			throw new InputRejected("Invalid receipt or inactive input source", false);
+			throw new InputRejected("Invalid receipt or inactive input source");
 		if (input.receipt && owner) {
 			if (
 				this.store?.state.deliveryCommits.has(deliveryKey(owner.namespace, input.receipt.key)) ||
@@ -774,13 +771,12 @@ export class Subject {
 			)
 				return null;
 		}
-		if (!validImages(input.images)) throw new InputRejected("图片内容无效", false);
+		if (!validImages(input.images)) throw new InputRejected("图片内容无效");
 		if (!input.id || (!input.text?.trim() && !input.render))
-			throw new InputRejected("AgentInput 必须包含 id，且 text 或 render 至少一个非空", false);
+			throw new InputRejected("AgentInput 必须包含 id，且 text 或 render 至少一个非空");
 		if (this.inputDeliveries.has(input.id) || this.queues.has(input.id) || this.store?.state.queued.has(input.id))
-			throw new InputRejected(`输入 id 已在队列中: ${input.id}`, false);
-		if (this.store?.state.recordIds.has(input.id))
-			throw new InputRejected(`输入 id 已存在于会话记录中: ${input.id}`, false);
+			throw new InputRejected(`输入 id 已在队列中: ${input.id}`);
+		if (this.store?.state.recordIds.has(input.id)) throw new InputRejected(`输入 id 已存在于会话记录中: ${input.id}`);
 
 		const queued: QueuedMessage = {
 			...this.queues.create((input.text ?? "").trim(), input.mode, {

@@ -62,8 +62,8 @@ export interface ServiceCompanionContext {
 	 * 看到：一次决策带几条仍由宿主的有界领取预算决定。Steer 不要混进来——那会打乱
 	 * "紧急先处理"的边界。
 	 *
-	 * 宿主没有这个入口时字段缺省，调用方必须退回单条并知道"合批不可用"，
-	 * 不能自称已经集中受理。
+	 * 宿主没有这个入口时字段缺省。调用方必须自己决定降级方式并显式知道"合批不可用"：
+	 * 既不能自称已经集中受理，也不能静默丢掉事件。
 	 */
 	emitEvents?: (events: readonly WorldEvent[]) => Promise<readonly EventSubmission[]>;
 	/** 探测主脑是否忙碌（可选通用能力） */
