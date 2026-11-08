@@ -1,5 +1,34 @@
 # 设计变更记录
 
+## 2026-11-09 · 目标对账统一、机械恢复、交付有界、落水策略（重构轮 R1）
+
+- **目标对账（capabilities §2.15，新增）**：`contracts/values.ts` 增 `GoalState` / `GoalSummary`；
+  新增 `capabilities/shared/goal.ts`（`goalStateOf` / `goalSummaryOf` / `goalProgress` /
+  `sampleOutstanding`）。`build` `tunnel` `excavate` `collect` 共用同一套四态语义与 progress 形状：
+  `goal` 是短摘要（四态计数之和恒等于 `total`），`outstanding` 是最多 16 条的有界明细，
+  `reasons` 是全量原因直方图。**不接管**各领域的计划与执行算法，不新建 Goal Engine。
+  - `tunnel` 从"只报 `dug`"改为按格对账：`total = 计划格数 + 1`（最后那个 1 是"真的走通"），
+    流体/挖不动记 `blocked`，未加载/未确认记 `uncertain`，没轮到的记 `remaining`。
+  - `build` 的 `preserve` 与 `unknown` 分开算：`preserve` 计入 `completed`，`unknown` 计入
+    `uncertain`（旧实现把两者都算 `skipped`，等于把"无法核验"当成了"已满足"）。
+  - `excavate` 的 `remainingCount` 换成 `goal.remaining`，未清格按原因归入 blocked/uncertain。
+  - `collect` 的 `goal` 按**最终取得物品**记账（`total = count`、`completed = acquired`），
+    候选格成败单独放 `candidates:{attempted,skipped,blocked,uncertain}`，两种单位不混算。
+- **progress 摘要投影（runtime）**：`boundedSummary` 超 2048 字节时不再整块清空 progress，改为
+  `projectProgress` 按"标量 → 短摘要对象 → 明细数组"的顺序占位、逐条截断，被截掉的部分置
+  `progressComplete:false`。旧行为恰好在长任务最需要续做依据时把依据删了。
+- **机械恢复（executor）**：新执行域 attach 成功即证明旧控制域已退役（`launch` 本身拒绝未退役
+  的旧树），因此 `disabled` 与 `owner_lost` 在激活时自动解除，`status().recovery` 报告
+  `{clearedGates, blocked}`。`emergency` 永不自动解除，且它关着时 `owner_lost` 一并保持关闭。
+  模型不再需要"读 attachment → 带 expected 重调 `runs recover`"这两轮纯机械往返。
+- **交付有界扫描（executor + runtime）**：`pendingDeliveries` 的分页游标从偏移改为 **rowid 键集**
+  （ACK 会把行移出 pending 集合，偏移分页会跳过未处理项）；Executor 每轮最多检查 96 条、
+  最多交 8 条，用满预算记住游标下一轮继续，扫到末尾回到开头。
+- **落水策略（driver）**：`MOVEMENTS_POLICY` 显式 `infiniteLiquidDropdownDistance=false`——上游
+  默认让"从平台边缘落进海里"成为 cost 1 的合法一步，目标不可达时 A* 会把整片海面搜完
+  （70,916 节点 / 5s 超时；关掉后 1,922 节点 / 1352ms 诚实 noPath）。同时修掉
+  `upstream-nav` 的跨轮场景污染（prepare 只铺一层）与 S5b 沟槽深度，G28 关闭。
+
 ## 2026-11-08 · Addon 基础设施重构 S0–S4（设计包 Uina-Addon-Refactor.md）
 
 - **S1 解析与冻结**：`requiresAddons` 从"显式启用 + 精确版本"改为递归依赖闭包 + SemVer 范围 +

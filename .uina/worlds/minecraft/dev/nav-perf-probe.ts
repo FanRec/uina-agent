@@ -76,7 +76,7 @@ async function main(): Promise<void> {
 		const assembly = (
 			bot as unknown as { pathfinder: { movements: { heuristicWeight: number }; getPathFromTo: Function } }
 		).pathfinder;
-		// 适配层默认已带 SEARCH_HEURISTIC_WEIGHT=3；A/B 需要直接控制字段，
+		// 适配层默认已带 MOVEMENTS_POLICY.heuristicWeight=3；A/B 需要直接控制字段，
 		// goal.heuristic 不再包装（权重全部走 Movements，与生产路径同口径）。
 		assembly.movements.heuristicWeight = weight;
 		const goal = new pf.goals.GoalNear(target.x, target.y, target.z, 1);

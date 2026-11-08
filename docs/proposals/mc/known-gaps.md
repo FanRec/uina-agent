@@ -99,12 +99,18 @@
 - **vec3 单一化**：顶层 `vec3@0.1.7` 依赖删除，adapter 经 mineflayer 解析链取生态 0.2.0（双 Vec3 类并存的隐患消除）。
 - **工具等级材料修正**：`driver/mineflayer/upstream-fixes.ts` `fixToolTierMaterials(registry)`——minecraft-data 3.117.0 的 1.21.11 数据 108 种方块 material 错标 `incorrect_for_*`（铁镐挖铁矿 4.55s，实际 0.75s），按 harvestTools 推回 `mineable/<kind>`，等级约束保留；client-host login 时装配。T0 `mc-upstream-materials`。
 
-### G28 · 水中爬岸导航不稳（批28 自 M2 搜索预算项拆出登记）
+### G28 · 水中爬岸导航不稳（批28 登记，✅ 已于 2026-11-09 关闭——登记归因不成立）
 
-- **现象**：1 深水洞游上岸（`dev:mc:upstream-nav` S3）耗时方差大且偶发不可达——同几何历史五轮 3472/20950/5663/13210/25194ms（末次 TIMEOUT）；批28 当日 w=1（与批27 代码严格等价）连续两轮 TIMEOUT，加权后两轮 4536–5041ms 到达。
-- **证据**：批28 画像（`dev:mc:nav-perf`）显示该几何的 A* 搜索本身极小（毫秒级、双位数节点），搜索加速不改变其成败——瓶颈不在搜索规模。失败形态两种：规划侧（"could not plan a path within its think budget"，UNREACHABLE 提前结束）与执行侧（有路径但物理不达标，烧满墙钟）。场景几何已铺底固定（G26 根因修复后），变的是 bot 落水姿态与水节点出发的移动控制。
-- **修法方向**：水节点出发的移动控制与规划交互（water takeoff 规则的执行器侧、水中驱动的反馈拍），归 M3 移动执行/水域控制工作项；先以 S3 失败轮的搜索指标 + 位置轨迹（批28 已给 upstream-nav 的 nav() 补轨迹与指标输出）定位是规划环路还是物理打滑，再定修法。`dev:mc:upstream-nav` S3 断言保持 20s 不放宽。
-- **验收**：S3 连续多轮稳定到达（含服务器冷启动首轮），或失败时给出可归因的根因记录。
+- **现象**：1 深水洞游上岸（`dev:mc:upstream-nav` S3）耗时方差大且偶发不可达——同几何历史五轮 3472/20950/5663/13210/25194ms（末次 TIMEOUT）；批28 当日 w=1 连续两轮 TIMEOUT。
+- **证据（批28）**：该几何的 A* 搜索本身极小（毫秒级、双位数节点），搜索加速不改变成败。失败形态两种：规划侧（"could not plan a path within its think budget"）与执行侧（有路径但物理不达标）。
+- **关闭事实（一次性探针 + 三轮真服复跑）**：
+  1. **爬岸本身没有缺陷**。干净几何上从水洞中心到岸上目标 A* 只用 **4 个节点 / 3–7ms**（w=3 与 w=1 都是 4 节点），goto 端到端 **2008/2015/2009ms**，三轮无方差。批28 的"执行侧物理不达标"没有复现。
+  2. **规划侧超时的真因是目标不可达**：`upstream-nav` 的 prepare 只重铺 y=199 一层，而 S5b 的沟槽挖到 GY+2；上一轮留下的空洞让 S3 的目标格悬空。目标不可达时 A* 搜了 **70,916 个节点、烧满 5s think budget** 才超时。
+  3. **上游默认让"落水"成为廉价的越界一步**：`Movements.infiniteLiquidDropdownDistance` 默认 true = 落水不受 maxDropDown 约束。平台架在 y≈199、正下方 y≈62 是海面，"从平台边缘落进海里"因此是 cost 1 的合法移动，A* 把整片海面搜完。同一不可达几何关掉该策略后 **1,922 节点 / 1352ms 诚实 noPath**。
+- **修法（已落地）**：
+  - `driver/mineflayer/pathfinder.ts` 的 `MOVEMENTS_POLICY` 显式 `infiniteLiquidDropdownDistance=false`（与 allowParkour/canOpenDoors/heuristicWeight 同一处策略）；规划出 100+ 格落水本来也不是这台机器能执行的动作。
+  - 场景自洽：prepare 重铺 9 层（GY-8..GY，20,367 格在 /fill 上限内），S5b 沟槽相应挖穿 11 格（深到不能"跳下去再爬上来"），S3 在派发前核验目标格下方是实心方块。
+- **验收**：`dev:mc:upstream-nav` **7/7 连续三轮全绿**（S3 2008/2015/2009ms）；S5b 的诚实失败从 6647ms 降到 2008ms（不再烧搜索预算）；`dev:mc:climb` 6/6、`dev:mc:terrain-nav` 6/6 回归不变；T0 `mc-pathfinder-water-drop`（策略常量 + 真实 Movements：137 格落水不生成候选、3 格浅水照常）。
 
 ### G29 · 苦力怕残余爆炸擦伤与近身拍占空比（批29 登记；批33 主体关闭，击杀路径残余）
 

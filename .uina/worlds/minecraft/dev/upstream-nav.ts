@@ -138,7 +138,10 @@ async function main(): Promise<void> {
 			await s.command(`/clear ${USER}`);
 			const px = BASE.x - 10;
 			const qx = BASE.x + 62;
-			await s.command(`/fill ${px} ${GY} ${BASE.z - 15} ${qx} ${GY} ${BASE.z + 15} minecraft:stone`);
+			// 铺 9 层而不是 1 层：S5b 的沟槽要挖穿平台本体才不会被当成"可跳下的坑"，
+			// 而上一轮留下的深坑只补顶层会让下一轮的目标格悬空（G28 首轮失败的真实
+			// 成因——场景状态跨轮污染）。9 层 × 73 × 31 = 20,367 格，在 /fill 上限内。
+			await s.command(`/fill ${px} ${GY - 8} ${BASE.z - 15} ${qx} ${GY} ${BASE.z + 15} minecraft:stone`);
 			await s.command(`/fill ${px - 1} ${GY + 1} ${BASE.z - 16} ${qx + 1} ${GY + 9} ${BASE.z + 16} minecraft:air`);
 			await reset({ x: STAND.x, y: GY + 1, z: STAND.z + 0.5 });
 			const at = await serverPos();
@@ -215,6 +218,12 @@ async function main(): Promise<void> {
 			const inWater = await s.readSelf();
 			if ((inWater as { inWater?: boolean }).inWater !== true) throw new Error(`bot not in water at setup`);
 			const target = { x: hx + 5, y: GY + 1, z };
+			// 目标脚下必须实心：悬空目标会让 A* 搜满 think budget（而不是给出可归因失败）。
+			// 不依赖 prepare 的铺层覆盖到这里——本步骤自己补一格，几何才与本轮无关。
+			await s.command(`/setblock ${target.x} ${GY} ${z} minecraft:stone`);
+			const targetFloor = await s.readBlock({ x: target.x, y: GY, z });
+			if (targetFloor?.name !== "stone")
+				throw new Error(`scenario geometry: target floor is ${targetFloor?.name ?? "unknown"}, not stone`);
 			const outcome = await nav(target, { placeToReach: false });
 			if (!outcome.ok)
 				throw new Error(
@@ -285,8 +294,9 @@ async function main(): Promise<void> {
 		await s.step("planned bridge without scaffolding material: honest fast failure, no fake success", async () => {
 			const gx = BASE.x + 52;
 			const z = STAND.z;
-			// 全宽沟槽（横贯平台）：任何 z 行过沟都要垫块
-			await s.command(`/fill ${gx} ${GY} ${BASE.z - 15} ${gx + 1} ${GY + 2} ${BASE.z + 15} minecraft:air`);
+			// 全宽沟槽（横贯平台、挖穿平台本体 11 格深）：任何 z 行过沟都要垫块，
+			// 且深到不能靠"跳下去再爬上来"绕过（> maxDropDown）。
+			await s.command(`/fill ${gx} ${GY - 8} ${BASE.z - 15} ${gx + 1} ${GY + 2} ${BASE.z + 15} minecraft:air`);
 			await s.command(`/clear ${USER}`);
 			await reset({ x: gx - 2.5, y: GY + 1, z: z + 0.5 });
 			const target = { x: gx + 4, y: GY + 1, z };

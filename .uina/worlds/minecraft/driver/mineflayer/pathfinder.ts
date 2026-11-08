@@ -42,6 +42,8 @@ interface PathfinderMovements {
 	canDig: boolean;
 	allow1by1towers: boolean;
 	canOpenDoors: boolean;
+	/** 上游默认 true：落水不受 maxDropDown 约束，见 MOVEMENTS_POLICY 的说明。 */
+	infiniteLiquidDropdownDistance: boolean;
 	scafoldingBlocks: number[];
 	/** 补丁扩展字段：A* 扩展偏置（1 = 上游原序）。 */
 	heuristicWeight: number;
@@ -84,13 +86,27 @@ export function loadPathfinderPlugin(bot: MineflayerBot): void {
 }
 
 /**
- * A* 启发式扩展偏置（补丁消费 movements.heuristicWeight）。欧氏启发式在爬升地形
- * 严重低估真实代价，无偏置的搜索会沿山体等高线泛洪——实测 24 格山头穿越 5s think
- * budget 搜不出（5.8 万节点 Timeout，known-gaps G25 残余）。真服画像（dev/nav-perf-probe）：
- * 同一自然山头 w=1 → 10,974 节点/428ms，w=3 → 556 节点/12ms（÷20），路径代价 +6.7%、
- * 步数更少，且跨次完全确定；平地/水域对照无害。合法性与 g 代价不动，只改扩展顺序。
+ * 规划口径的固定策略（不是每次调用可调的参数）。放在一处是为了让"哪些是策略、
+ * 哪些是调用方选项"一眼可分，并让单测能直接断言策略本身。
+ *
+ * - allowParkour=false：上游执行器做不稳跑酷节点（要精确的起跳时机），
+ *   默认 true 会让 A* 规划出走不出来的路线，因此规划与执行一致地关闭。
+ * - canOpenDoors=true：上游默认关（闭门 useOne 会再"用一下"把开着的门关上）；
+ *   补丁已修为仅闭门生成 useOne 且执行器核验开门事实。
+ * - infiniteLiquidDropdownDistance=false：落水下落同样受 maxDropDown 约束。
+ *   上游默认 true = 不限深度，真服实测（G28 归因）：平台架在 y≈199、下方 y≈62 是
+ *   海面时，"从平台边缘落进海里"成为 cost 1 的合法一步，目标不可达的几何上 A*
+ *   把整片海面搜完（70,916 节点 / 5s think budget 超时）；关掉后同题 1,922 节点 /
+ *   1352ms 诚实 noPath。规划出 100+ 格落水也不是这台机器能执行的动作。
+ * - heuristicWeight=3：欧氏启发式在爬升地形严重低估真实代价，无偏置搜索沿等高线
+ *   泛洪（24 格山头 5.8 万节点超时）。只改扩展顺序：合法性、g 代价、isEnd 不动。
  */
-const SEARCH_HEURISTIC_WEIGHT = 3;
+export const MOVEMENTS_POLICY = {
+	allowParkour: false,
+	canOpenDoors: true,
+	infiniteLiquidDropdownDistance: false,
+	heuristicWeight: 3,
+} as const;
 
 /**
  * 导航选项 → Movements 字段的唯一赋值口径：活动导航（configureMovements）与只读
@@ -108,11 +124,10 @@ function applyMovementsConfig(
 	movements.allowSprinting = config.sprint;
 	movements.canDig = config.digThrough;
 	movements.allow1by1towers = config.placeToReach;
-	movements.allowParkour = false;
-	movements.heuristicWeight = SEARCH_HEURISTIC_WEIGHT;
-	// 上游默认关（闭门 useOne 会再"用一下"把开着的门关上）；补丁已修为仅闭门
-	// 生成 useOne 且执行器核验开门事实，开启门穿越能力（N04）。
-	movements.canOpenDoors = true;
+	movements.allowParkour = MOVEMENTS_POLICY.allowParkour;
+	movements.heuristicWeight = MOVEMENTS_POLICY.heuristicWeight;
+	movements.canOpenDoors = MOVEMENTS_POLICY.canOpenDoors;
+	movements.infiniteLiquidDropdownDistance = MOVEMENTS_POLICY.infiniteLiquidDropdownDistance;
 	movements.scafoldingBlocks = config.placeToReach
 		? [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id]
 		: [];
