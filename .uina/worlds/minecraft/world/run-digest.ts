@@ -29,8 +29,17 @@ function runLine(run: RunSummary): string {
 	return `- ${parts.join(" · ")}`;
 }
 
-/** 没有活跃任务时返回 null：空标题只会占掉每次请求的 token。 */
-export function formatActiveRuns(runs: readonly RunSummary[], sampledAt: string): string | null {
+/**
+ * `runs === null` 表示这次 Runtime 查询没读到，和"查到 0 条"是两回事：后者可以不占
+ * 每回合的 token，前者必须写出"未知"。留白会被模型读成"没有活跃任务"，而状态帧里
+ * 把缺失当成"没变化"比不给状态更危险（world.md §9.5）。
+ */
+export function formatActiveRuns(runs: readonly RunSummary[] | null, sampledAt: string): string | null {
+	if (runs === null)
+		return [
+			`[Minecraft 活跃任务]（观测时间：${sampledAt}；本次查询失败）`,
+			"- 本次未能读取任务列表，这不代表没有活跃任务；需要确认请 runs.list",
+		].join("\n");
 	if (runs.length === 0) return null;
 	const lines = runs.slice(0, MAX_RUNS).map(runLine);
 	const folded = runs.length - lines.length;

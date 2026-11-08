@@ -1,4 +1,7 @@
-/** One report, two presentation channels. Host canonical receipts alone acknowledge Runtime. */
+/**
+ * 完成通知只走一条路：Runtime 的 completion 报告 → Host 批量持久入队 → 模型回合消费。
+ * Host 的 Canonical 回执才 ACK Runtime；工具层只回受理，不带报告正文。
+ */
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
@@ -132,12 +135,13 @@ export class DeliveryPump {
 			};
 		}
 	}
-	private async prepare(key: string, channel: "tool" | "input"): Promise<DeliveryAttempt> {
+	/** 批41 起只写入 input 通道；"tool" 仅可能出现在旧账本记录里，由 scan 退役。 */
+	private async prepare(key: string): Promise<DeliveryAttempt> {
 		const port = this.ctx.delivery!;
 		const attempt: DeliveryAttempt = {
 			key,
 			attempt: randomUUID(),
-			channel,
+			channel: "input",
 			namespace: port.namespace,
 			session: port.session,
 			activation: this.activation,
@@ -180,7 +184,12 @@ export class DeliveryPump {
 		// 已停用/已取消：这一批不再交出，尝试记录留在账本里，下次启动重投。
 		if (this.stopped || this.ctx.signal.aborted) return;
 		// 先交出能交的，再报对账失败：一条查不到回执不该拖住同一轮里别的完成通知。
-		if (scan.ready.length > 0) this.deliver(scan.ready);
+		if (scan.ready.length > 0) {
+			// 完成通知只走批量入口。没有它必须让本轮对账显式失败：往 this.error 里写一句
+			// 会被 reconcile 的成功分支立刻清掉，诊断永远看不到这批事件根本没交出去。
+			if (!this.ctx.emitEvents) throw new Error("宿主没有批量投递入口，完成通知无法交付");
+			this.deliver(scan.ready);
+		}
 		if (scan.unconfirmed) throw scan.unconfirmed;
 	}
 	/** 恢复只查原始意图，绝不重发动作。 */
@@ -264,7 +273,7 @@ export class DeliveryPump {
 				ready.push({
 					ref,
 					view: await this.view(state),
-					attempt: await this.prepare(ref.completionRef, "input"),
+					attempt: await this.prepare(ref.completionRef),
 				});
 			}
 		} while (cursor);
@@ -278,10 +287,6 @@ export class DeliveryPump {
 	 */
 	private deliver(ready: readonly Deliverable[]): void {
 		if (this.emitting) return;
-		if (!this.ctx.emitEvents) {
-			this.error = { code: "DELIVERY_UNCONFIRMED", message: "宿主没有批量投递入口，完成通知无法交付" };
-			return;
-		}
 		this.emitting = true;
 		const events = ready.map(({ ref, view, attempt }) => ({
 			id: attempt.attempt,
@@ -315,10 +320,13 @@ export class DeliveryPump {
 						delivered++;
 						continue;
 					}
-					if (!submission) continue;
-					// 宿主明确没接手：这条不在途，下一次唤醒用新 attempt 重投。
+					// 宿主没接手：明确拒收与"少回一条"都算未交出。都清掉在途记录，
+					// 下一次唤醒用新 attempt 重投，不留一个永远退不了的输入。
 					this.inputs.delete(item.attempt.key);
-					this.error = { code: "DELIVERY_UNCONFIRMED", message: submission.reason };
+					this.error = {
+						code: "DELIVERY_UNCONFIRMED",
+						message: submission ? submission.reason : "宿主批量回执缺少对应条目",
+					};
 				}
 			})
 			.catch((error: unknown) => {

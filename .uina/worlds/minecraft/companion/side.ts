@@ -19,6 +19,7 @@ import type {
 	DriverExecutionSink,
 	OwnerState,
 	RunRequest,
+	RunSummary,
 	StopCommand,
 } from "../contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../contracts/values.js";
@@ -486,14 +487,15 @@ export async function openExecutionSide(
 				case "state.snapshot": {
 					const frame = sampleStateFrame({ facts, readers: stateReaders });
 					// 活跃任务是请求前事实，不是事件：同一次 RPC 里附上，各自标采样时间。
-					// Runtime 不可用时只丢这一段——环境事实仍然可读，不编一个假的任务列表。
-					let digest: string | null = null;
+					// null = 这次 Runtime 查询没读到；世界 Facts 照给，但这一段必须明说"未知"——
+					// 静默省略会被读成"没有活跃任务"，也不能拿旧缓存充当实时结果。
+					let activeRuns: RunSummary[] | null = null;
 					try {
-						const active = await getRuntime().list({ activeOnly: true });
-						digest = formatActiveRuns(active.items, new Date().toISOString());
+						activeRuns = (await getRuntime().list({ activeOnly: true })).items;
 					} catch {
-						digest = null;
+						// 保留 null：查询失败不是"零条"，由 formatActiveRuns 如实写出。
 					}
+					const digest = formatActiveRuns(activeRuns, new Date().toISOString());
 					value = digest ? { ...frame, text: `${frame.text}\n${digest}` } : frame;
 					break;
 				}
