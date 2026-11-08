@@ -375,7 +375,9 @@ export class MinecraftRuntime {
 	): Promise<{ items: CallSummary[]; next?: string }> {
 		return this.query({ op: "calls", run, ...filter });
 	}
-	pendingDeliveries(page: { cursor?: string; limit?: number } = {}): Promise<{ items: DeliveryRef[]; next?: string }> {
+	pendingDeliveries(
+		page: { cursor?: string; limit?: number } = {},
+	): Promise<{ items: DeliveryRef[]; next?: string; total: number }> {
 		return this.query({ op: "pending", ...page });
 	}
 	readDelivery(ref: Ref): Promise<DeliveryState> {

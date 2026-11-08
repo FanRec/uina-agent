@@ -173,6 +173,12 @@ function pageRowid(cursor?: string): number {
 		fail("CURSOR_INVALID", "invalid delivery cursor");
 	return Number(cursor);
 }
+/**
+ * 可交付的完成报告：terminal 恒可投；decision 只在 Run 仍等这个决策时可投。
+ * 分页与总数必须用同一个条件，否则"积压总数"和"能翻到的页"会对不上。
+ */
+const PENDING_WHERE =
+	"c.disposition='pending' AND (json_extract(c.header,'$.reportKind')='terminal' OR (r.phase='awaiting_decision' AND r.completion_ref=c.completion_ref))";
 function page<T>(items: T[], offset: number, limit: number) {
 	return { items: items.slice(0, limit), ...(items.length > limit ? { next: String(offset + limit) } : {}) };
 }
@@ -262,7 +268,7 @@ export async function queryStorage(db: DatabaseSync, dbPath: string, q: StorageQ
 		const after = pageRowid(q.cursor);
 		const rows = db
 			.prepare(
-				"SELECT c.rowid AS rid, c.header FROM completions c JOIN runs r ON r.run=c.run WHERE c.rowid > ? AND c.disposition='pending' AND (json_extract(c.header,'$.reportKind')='terminal' OR (r.phase='awaiting_decision' AND r.completion_ref=c.completion_ref)) ORDER BY c.rowid LIMIT ?",
+				`SELECT c.rowid AS rid, c.header FROM completions c JOIN runs r ON r.run=c.run WHERE c.rowid > ? AND ${PENDING_WHERE} ORDER BY c.rowid LIMIT ?`,
 			)
 			.all(after, limit + 1);
 		const items = rows.slice(0, limit).map((r) => {
@@ -275,8 +281,13 @@ export async function queryStorage(db: DatabaseSync, dbPath: string, q: StorageQ
 				revision: h.revision,
 			};
 		});
-		const last = rows[Math.min(limit, rows.length) - 1];
-		return { items, ...(rows.length > limit ? { next: String(last.rid) } : {}) };
+		// 积压总数与"本轮看了几条"是两件事：有界扫描下调用方看到的是后者，
+		// 若把它当总数显示，10000 条积压会伪装成"只剩 96 条"。这里给真值。
+		const total = Number(
+			db.prepare(`SELECT COUNT(*) AS n FROM completions c JOIN runs r ON r.run=c.run WHERE ${PENDING_WHERE}`).get()
+				?.n ?? 0,
+		);
+		return { items, total, ...(rows.length > limit ? { next: String(rows[limit - 1]!.rid) } : {}) };
 	}
 	const row = db.prepare("SELECT * FROM completions WHERE completion_ref=?").get(q.ref);
 	if (!row) fail("NOT_FOUND", `completion ${q.ref} not found`);

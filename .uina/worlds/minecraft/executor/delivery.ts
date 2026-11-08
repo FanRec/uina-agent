@@ -190,7 +190,7 @@ export class DeliveryPump {
 		const attempts = new Map((await this.executor.ledger.attempts()).map((a) => [a.key, a]));
 		await this.recoverRequests();
 		const scan = await this.scan(this.ctx.delivery!, attempts);
-		this.pendingCount = scan.pending;
+		this.pendingCount = scan.backlog;
 		// 已停用/已取消：这一批不再交出，尝试记录留在账本里，下次启动重投。
 		if (this.stopped || this.ctx.signal.aborted) return;
 		// 先交出能交的，再报对账失败：一条查不到回执不该拖住同一轮里别的完成通知。
@@ -220,23 +220,24 @@ export class DeliveryPump {
 	private async scan(
 		port: HostDeliveryPort,
 		attempts: ReadonlyMap<string, DeliveryAttempt>,
-	): Promise<{ pending: number; unconfirmed: Error | null; ready: Deliverable[] }> {
+	): Promise<{ backlog: number; unconfirmed: Error | null; ready: Deliverable[] }> {
 		const ready: Deliverable[] = [];
 		let cursor = this.scanCursor;
-		let pending = 0;
+		/** 积压总数：Runtime 与分页同条件算出，与"本轮检查了几条"不是一回事。 */
+		let backlog: number | null = null;
 		let inspected = 0;
 		let unconfirmed: Error | null = null;
 		do {
 			// 页大小按剩余预算取：单页不会超出本轮预算，于是"扫不完"时一定有 next 可续。
 			const limit = Math.max(1, Math.min(100, SCAN_BUDGET - inspected));
-			const page = await this.executor.rpc<{ items: DeliveryRef[]; next?: string }>("runtime.pendingDeliveries", {
-				...(cursor ? { cursor } : {}),
-				limit,
-			});
+			const page = await this.executor.rpc<{ items: DeliveryRef[]; next?: string; total?: number }>(
+				"runtime.pendingDeliveries",
+				{ ...(cursor ? { cursor } : {}), limit },
+			);
 			cursor = page.next;
-			pending += page.items.length;
+			if (backlog == null && page.total != null) backlog = page.total;
 			for (const ref of page.items) {
-				if (this.stopped || this.ctx.signal.aborted) return { pending, unconfirmed, ready };
+				if (this.stopped || this.ctx.signal.aborted) return { backlog: backlog ?? inspected, unconfirmed, ready };
 				inspected += 1;
 				if (this.heldRequests.has(ref.requestId)) continue;
 				const host = await port.inspect(ref.completionRef);
@@ -298,7 +299,7 @@ export class DeliveryPump {
 		// 扫到末尾（没有 next）就回到开头：下一轮从最新的待办开始，积压不会让新完成饿死。
 		this.scanCursor = cursor;
 		this.scannedThisRound = inspected;
-		return { pending, unconfirmed, ready };
+		return { backlog: backlog ?? inspected, unconfirmed, ready };
 	}
 	/**
 	 * 一批完成通知一次交出：每条独立回执、独立结论。没交出去的那条不推进任何状态——

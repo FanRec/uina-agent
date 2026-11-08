@@ -235,7 +235,9 @@ const definitions = {
 	},
 	"runtime.pendingDeliveries": {
 		input: object({ cursor: ref, limit: { type: "integer", minimum: 1, maximum: 100 } }, []),
-		output: shaped({ items: { type: "array" } }),
+		// total 是积压总数（与分页同条件），不是本页条数：有界扫描的调用方靠它区分
+		// "还剩多少"与"这轮看了多少"。
+		output: shaped({ items: { type: "array" }, total: { type: "integer" } }),
 		cancellable: true,
 	},
 	"runtime.readDelivery": {
