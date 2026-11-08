@@ -39,6 +39,7 @@ import type {
 	WindowSession,
 } from "../../contracts/body.js";
 import type { ClientWindowObservation } from "../../contracts/client-facts.js";
+import type { LocalScreenActivity } from "../../contracts/protocol.js";
 import type { ControlRetirement, DriverExecutionSink } from "../../contracts/runtime.js";
 import type { UiActInput, UiActReceipt } from "../../contracts/ui.js";
 import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
@@ -70,6 +71,11 @@ export interface HostView {
 	readonly state: "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 	readonly identity: { connection: Ref; incarnation: Ref } | null;
 	on(listener: (notice: ClientHostListener) => void): () => void;
+	/**
+	 * 本地界面展示事件（个人背包事务的起止）。返回 true 表示至少一个包的
+	 * Payload 已提交给协议层；未接线或没有包接收时为 false。
+	 */
+	emitLocalScreen?(event: Readonly<LocalScreenActivity>): boolean;
 }
 
 export interface BodySessionDeps {
@@ -1132,10 +1138,41 @@ export class BodySessionImpl implements BodySession {
 				},
 			});
 			this.ownedWindow = window;
+			// 展示边界：只有真实进入个人背包窗口事务才产生一对 open/close。
+			// 读库存（inventory@1）、捡拾、快捷栏切换都不经过这里；openContainer 走
+			// 原版窗口协议，由服务端自行观察，也不经过这里（否则会和上游镜像互相覆盖）。
+			const presentation = this.deps.mintOp();
+			const screen = (phase: LocalScreenActivity["phase"]): boolean => {
+				try {
+					return (
+						this.deps.host.emitLocalScreen?.({
+							kind: "player_inventory",
+							phase,
+							session: presentation,
+							connection: this.identity.connection,
+							incarnation: this.identity.incarnation,
+						}) ?? false
+					);
+				} catch (error) {
+					// 画面失败只影响画面：物品事务的真实结果不因它改变。但绝不静默——
+					// 没有镜像就是没有镜像，不能装作"显示成功"。
+					console.warn(`[mc-body] local screen ${phase} failed: ${String(error)}`);
+					return false;
+				}
+			};
+			let opened = false;
 			try {
+				// opened 只表示"至少一个包的 Payload 已提交给协议层"，不是"真的有人看到"。
+				opened = screen("open");
 				return await work({ ...deps, window, selectedSlot: bot.quickBarSlot });
 			} finally {
-				await window.close({ force: true });
+				try {
+					await window.close({ force: true });
+				} finally {
+					// 失败/取消也要收尾；只在本次真的开过时才发，且身份仍由 ClientHost 核验，
+					// 因此绝不会把旧 close 发到新连接上。
+					if (opened) screen("close");
+				}
 			}
 		} finally {
 			this.exitOp();

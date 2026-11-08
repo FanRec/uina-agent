@@ -456,6 +456,41 @@ describe("loader：只加载预检过的计划", () => {
 		await loaded.close();
 	});
 
+	test("正式包 spectatorplus：只做协议转换，不贡献能力/知识/事实", async () => {
+		const dir = join(process.cwd(), ".uina/worlds/minecraft/packages/spectatorplus");
+		const loaded = await loadAddons(await selectionOf([dir]), { minecraftVersion: "1.21.11" });
+		expect(loaded.statuses).toEqual([
+			expect.objectContaining({
+				id: "spectatorplus",
+				state: "loaded",
+				contributed: { actions: 0, queries: 0, knowledgeItems: 0, refs: [] },
+				serverRequirement: expect.objectContaining({ kind: "mod", requiredFor: "feature" }),
+			}),
+		]);
+		expect(loaded.knowledge).toEqual([]);
+		// 空模块是装配的正常产物，关键是它一条能力定义都没贡献。
+		expect(loaded.modules.flatMap((module) => module.definitions)).toEqual([]);
+		const extension = loaded.extensions[0];
+		expect(loaded.extensions.map((entry) => entry.id)).toEqual(["spectatorplus"]);
+		// 只做纯编码：不订阅包、不预构造 client、不开私有通道。
+		expect(extension?.attach).toBeUndefined();
+		expect(extension?.prepare).toBeUndefined();
+
+		const base = { kind: "player_inventory", session: "op:1", connection: "conn:1", incarnation: "inc:1" } as const;
+		// Fabric 端按 1 字节布尔解析：open = 01、close = 00，同一通道。
+		expect(extension?.localScreen?.({ ...base, phase: "open" })).toEqual({
+			channel: "spectatorplus:opened_inventory_sync",
+			data: Uint8Array.of(1),
+		});
+		expect(extension?.localScreen?.({ ...base, phase: "close" })).toEqual({
+			channel: "spectatorplus:opened_inventory_sync",
+			data: Uint8Array.of(0),
+		});
+		// 其它本地界面种类不归它管。
+		expect(extension?.localScreen?.({ ...base, kind: "other" } as never)).toBeNull();
+		await loaded.close();
+	});
+
 	test("目录按状态里的 ref 清单列出包内能力（不靠 id 前缀猜）", async () => {
 		const exampleDir = join(process.cwd(), ".uina/worlds/minecraft/examples/addons/example-mod");
 		const loaded = await loadAddons(await selectionOf([exampleDir]), { minecraftVersion: "1.21.11" });
@@ -494,6 +529,24 @@ describe("loader：只加载预检过的计划", () => {
 				'export const id = "bad-actions";',
 				"export function create() {",
 				'\treturn { actions: "press" };',
+				"}",
+				"",
+			].join("\n"),
+		});
+		await expect(loadAddons(await selectionOf([dir]), { minecraftVersion: "1.21.11" })).rejects.toMatchObject({
+			code: "ADDON_CONTRIBUTION_INVALID",
+		});
+	});
+
+	test("贡献字段形状非法（localScreen 不是函数）被拒绝", async () => {
+		const root = await tempDir();
+		const dir = await writePackage(root, "bad-screen", {
+			id: "bad-screen",
+			source: [
+				"export const api = 1;",
+				'export const id = "bad-screen";',
+				"export function create() {",
+				'\treturn { client: { localScreen: "open" } };',
 				"}",
 				"",
 			].join("\n"),

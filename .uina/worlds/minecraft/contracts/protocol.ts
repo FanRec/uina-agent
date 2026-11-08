@@ -43,11 +43,37 @@ export interface ConnectionPort {
 	publishFact(key: string, value: JsonValue, unknown?: string[]): void;
 }
 
+/**
+ * 本地界面活动：Uina 自己的窗口事务边界，不含任何第三方协议知识。
+ *
+ * 只描述"个人背包正在被操作"这一 Minecraft 通用事实。真实方块/实体窗口走原版
+ * 协议，由服务端自行观察，**不经过**这个事件（否则会和上游镜像互相覆盖）。
+ */
+export interface LocalScreenActivity {
+	kind: "player_inventory";
+	phase: "open" | "close";
+	/** 同一次 withInventoryScope 的稳定引用；一次事务最多一对 open/close。 */
+	session: Ref;
+	connection: Ref;
+	incarnation: Ref;
+}
+
+/** Addon 的纯编码结果：只说"要发什么"，不含发送能力。 */
+export interface ClientPresentationPayload {
+	channel: string;
+	data: Uint8Array;
+}
+
 /** 组合根注入的贡献；id 必须等于 addon id。 */
 export interface ProtocolExtension {
 	id: string;
 	prepare?(ctx: ProtocolPrepareContext): PreparedProtocol | void;
 	attach?(ctx: ConnectionPort): void | (() => void);
+	/**
+	 * 纯同步映射，无写权限：只把本地界面活动编码成 Payload，实际派发由 Driver 完成。
+	 * 不允许异步、不允许持有连接对象；返回 null 表示本包对这次事件无话可说。
+	 */
+	localScreen?(event: Readonly<LocalScreenActivity>): ClientPresentationPayload | null;
 }
 
 /** ClientHost 发布事实所需的最小口子（由 FactsSource 实现）。 */

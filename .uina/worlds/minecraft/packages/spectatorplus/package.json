@@ -1,0 +1,20 @@
+{
+	"name": "@uina-addons/spectatorplus",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.js",
+	"description": "Mirror Uina's own player-inventory window to SpectatorPlus spectators on a Fabric server (protocol translation only)",
+	"uinaMinecraft": {
+		"api": 1,
+		"id": "spectatorplus",
+		"minecraft": ["1.21.11"],
+		"requiresAddons": {},
+		"serverRequirement": {
+			"kind": "mod",
+			"id": "spectatorplus",
+			"requiredFor": "feature",
+			"note": "Fabric server with the SpectatorPlus mod. The Paper plugin is not supported: its serverbound opened_inventory_sync handler has no close path, so a close byte would be read as another open"
+		}
+	}
+}

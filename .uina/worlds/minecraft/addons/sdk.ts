@@ -4,7 +4,7 @@
  * 唯一定义来源：docs/proposals/mc/addons.md §3。这里只有贡献面：
  * Addon 不拥有执行层，也不能创建 Runtime/World/Loop。动作走现有 NativeCallable，
  * 查询走现有 QueryDescriptor + QueryReader，连接级协议走 prepare/attach 两个时机，
- * 事实走 FactsSource 的连接绑定发布口。
+ * 事实走 FactsSource 的连接绑定发布口，本地界面展示走纯编码钩子 localScreen。
  *
  * 运行时安全边界：
  * - `attach` 只拿到只读 ConnectionPort（订阅包、发布事实），**没有**裸 bot/socket；
@@ -20,11 +20,23 @@
  */
 
 import type { NativeCallable, QueryDescriptor, QueryReader } from "../contracts/capabilities.js";
-import type { ConnectionPort, PreparedProtocol, ProtocolPrepareContext } from "../contracts/protocol.js";
+import type {
+	ClientPresentationPayload,
+	ConnectionPort,
+	LocalScreenActivity,
+	PreparedProtocol,
+	ProtocolPrepareContext,
+} from "../contracts/protocol.js";
 import type { JsonValue } from "../contracts/values.js";
 
 /** 连接级端口与准备入参由 contracts/protocol.ts 定义，SDK 只做公开再导出。 */
-export type { ConnectionPort, PreparedProtocol, ProtocolPrepareContext };
+export type {
+	ClientPresentationPayload,
+	ConnectionPort,
+	LocalScreenActivity,
+	PreparedProtocol,
+	ProtocolPrepareContext,
+};
 
 /** manifest 与模块导出的 API 版本；不匹配即拒绝装配。 */
 export const ADDON_API_VERSION = 1 as const;
@@ -38,6 +50,11 @@ export interface AddonLogger {
 export interface ClientContribution {
 	prepare?(ctx: ProtocolPrepareContext): PreparedProtocol | void;
 	attach?(ctx: ConnectionPort): void | (() => void);
+	/**
+	 * 本地界面活动的纯编码器（可选）。只返回 Payload，不发送、不持有连接；
+	 * 与 attach 互不依赖：只做协议转换的包不需要订阅任何包。
+	 */
+	localScreen?(event: Readonly<LocalScreenActivity>): ClientPresentationPayload | null;
 }
 
 /** 包内静态知识：只声明可确证的身份字段，其余来源保持未知。 */

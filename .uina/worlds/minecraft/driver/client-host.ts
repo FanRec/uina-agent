@@ -8,7 +8,12 @@
  * 不自动重连、不自动重启旧游戏任务（§4.4）：重建 = 新 Connection，旧资格全部失效。
  */
 
-import type { ConnectionFactSink, ProtocolExtension } from "../contracts/protocol.js";
+import type {
+	ClientPresentationPayload,
+	ConnectionFactSink,
+	LocalScreenActivity,
+	ProtocolExtension,
+} from "../contracts/protocol.js";
 import type { Ref } from "../contracts/values.js";
 import { trackVitals } from "./facts/vitals.js";
 import {
@@ -45,6 +50,13 @@ export interface ClientHostHooks {
 	facts?: ConnectionFactSink;
 }
 
+/** 第三方返回值不能当类型已验：只接受 `{ channel: string, data: Uint8Array }`。 */
+function isPresentationPayload(value: unknown): value is ClientPresentationPayload {
+	if (value == null || typeof value !== "object") return false;
+	const candidate = value as Partial<ClientPresentationPayload>;
+	return typeof candidate.channel === "string" && candidate.data instanceof Uint8Array;
+}
+
 /** ref 前缀约定：driver 拥有 conn:/inc:/body:/op:/eff:/ev: 空间，各前缀独立单调发号。 */
 function makeRefIssuer() {
 	const counters = new Map<string, number>();
@@ -70,6 +82,8 @@ export class ClientHost {
 	private detachConnection: (() => void) | null = null;
 	/** 本代连接的扩展订阅解除器（close 与断线共用）。 */
 	private detachExtensions: (() => void) | null = null;
+	/** 本代连接里带 localScreen 编码器的扩展；随连接退役一起清空。 */
+	private _screenExtensions: { id: string; localScreen: NonNullable<ProtocolExtension["localScreen"]> }[] = [];
 
 	get state(): ConnectionState {
 		return this._state;
@@ -129,6 +143,7 @@ export class ClientHost {
 		const ports: DisposableConnectionPort[] = [];
 		const detachExtensions = () => {
 			for (const port of ports.splice(0)) port.dispose();
+			this._screenExtensions = [];
 		};
 		this.detachExtensions = detachExtensions;
 		try {
@@ -246,6 +261,48 @@ export class ClientHost {
 		this.emit({ kind: "disconnected", facts: this._disconnect });
 	}
 
+	/**
+	 * 派发一次本地界面展示事件（Driver 内部入口，只在真实个人背包事务期间调用）。
+	 *
+	 * 三条边界：
+	 * - 身份：连接/化身必须与事件一致且连接 ready；否则丢弃，绝不向新连接重放旧事件。
+	 * - 顺序：同步编码、同步写入，与随后的原版窗口包保持确定顺序；不排队、不 await。
+	 * - 隔离：单个包的编码/发送失败只记录诊断，不影响游戏物品事务的真实结果。
+	 *
+	 * 返回 true 表示至少一个 Payload 已提交给协议层——这只是"发出去了"，
+	 * 没有服务端 ACK 时不能据此宣称观察者真的看到了界面。
+	 */
+	emitLocalScreen(event: Readonly<LocalScreenActivity>): boolean {
+		const bot = this._bot;
+		const identity = this.identity;
+		if (bot == null || identity == null || this._state !== "ready") return false;
+		if (identity.connection !== event.connection || identity.incarnation !== event.incarnation) return false;
+		if (this._screenExtensions.length === 0) return false;
+		const protocol = protocolFor(bot);
+		let sent = false;
+		for (const extension of this._screenExtensions) {
+			let payload: ClientPresentationPayload | null;
+			try {
+				payload = extension.localScreen(event) ?? null;
+			} catch (error) {
+				console.warn(`[mc-addon:${extension.id}] localScreen(${event.phase}) failed: ${String(error)}`);
+				continue;
+			}
+			if (payload == null) continue;
+			if (!isPresentationPayload(payload)) {
+				console.warn(`[mc-addon:${extension.id}] localScreen(${event.phase}) returned a malformed payload`);
+				continue;
+			}
+			try {
+				protocol.customPayload(payload.channel, payload.data);
+				sent = true;
+			} catch (error) {
+				console.warn(`[mc-addon:${extension.id}] localScreen(${event.phase}) was not sent: ${String(error)}`);
+			}
+		}
+		return sent;
+	}
+
 	/** 当前维度名（ minecraft: 前缀已剥离）；未就绪为 null。 */
 	get dimension(): string | null {
 		return this._bot?.game.dimension ?? null;
@@ -306,6 +363,10 @@ export class ClientHost {
 				throw new Error("connection fact sink is not bound; addon facts would be silently lost");
 			},
 		};
+		// 纯编码器只在当前连接有效；不持有连接对象，也不获得任何写权限。
+		this._screenExtensions = extensions.flatMap((extension) =>
+			extension.localScreen == null ? [] : [{ id: extension.id, localScreen: extension.localScreen }],
+		);
 		for (const extension of extensions) {
 			if (extension.attach == null) continue;
 			const port = createConnectionPort({

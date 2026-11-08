@@ -71,6 +71,7 @@ function isContribution(value: unknown): value is AddonContribution {
 		if (candidate.client == null || typeof candidate.client !== "object") return false;
 		if (candidate.client.prepare !== undefined && typeof candidate.client.prepare !== "function") return false;
 		if (candidate.client.attach !== undefined && typeof candidate.client.attach !== "function") return false;
+		if (candidate.client.localScreen !== undefined && typeof candidate.client.localScreen !== "function") return false;
 	}
 	if (candidate.close !== undefined && typeof candidate.close !== "function") return false;
 	return true;
@@ -91,7 +92,10 @@ function assertKnowledgeItems(addonId: string, items: readonly AddonKnowledgeIte
 		if (!Number.isInteger(candidate.stackSize) || (candidate.stackSize as number) <= 0)
 			throw loadFailure("ADDON_CONTRIBUTION_INVALID", `${addonId}: knowledge item ${name} needs a positive stackSize`);
 		if (candidate.placeAs !== undefined && candidate.placeAs !== null && typeof candidate.placeAs !== "string")
-			throw loadFailure("ADDON_CONTRIBUTION_INVALID", `${addonId}: knowledge item ${name} placeAs must be a string or null`);
+			throw loadFailure(
+				"ADDON_CONTRIBUTION_INVALID",
+				`${addonId}: knowledge item ${name} placeAs must be a string or null`,
+			);
 	}
 }
 
@@ -155,6 +159,8 @@ export async function loadAddons(
 				id: entry.id,
 				...(client.prepare == null ? {} : { prepare: (ctx) => client.prepare?.(ctx) }),
 				...(client.attach == null ? {} : { attach: (ctx) => client.attach?.(ctx) }),
+				// 纯转换钩子：只转发，不建独立 runtime，也不给它写权限。
+				...(client.localScreen == null ? {} : { localScreen: (event) => client.localScreen?.(event) ?? null }),
 			});
 		}
 		if (items.length > 0) knowledge.push({ addonId: entry.id, items });
