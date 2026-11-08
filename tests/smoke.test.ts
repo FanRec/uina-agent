@@ -286,6 +286,72 @@ describe("Subject", () => {
 		).toEqual(["mc-event", "mc-completion"]);
 	});
 
+	// 合批只改变"读几条"，不改变"认几条"：每条投递仍各自结算一次，
+	// 回执（input_settled）绝不能被合并成一个。
+	test("一回合消费的两条投递各自结算，回执不因合批而合并", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let calls = 0;
+		const stream: ModelStreamFn = async (_m, _req, onDelta) => {
+			calls++;
+			// 第一回合挂住，让两条带回执的投递都排进队列，才有得合批。
+			if (calls === 1) await gate;
+			onDelta({ kind: "text", text: "收到" });
+			onDelta({ kind: "finish", reason: "stop" });
+		};
+		const harness = SubjectHarness.create({ stream });
+		const settled: string[] = [];
+		harness.subscribe((event) => {
+			if (event.type === "input_settled" && "inputId" in event)
+				settled.push(`${String(event.inputId)}:${String(event.outcome)}`);
+		});
+		const owner = { namespace: "minecraft", isActive: () => true };
+		void harness.pushInput("先跑起来");
+		await wait(20);
+		await harness.subject.accept(
+			{
+				id: "mc-event",
+				mode: "followUp",
+				text: "玩家私聊：先采木头",
+				source: { kind: "runtime", type: "minecraft_event", ref: "minecraft", origin: "external", channel: "world" },
+				receipt: { key: "k1", attempt: "a1" },
+			},
+			owner,
+		);
+		await harness.subject.accept(
+			{
+				id: "mc-completion",
+				mode: "followUp",
+				text: "采集完成：16/16",
+				source: {
+					kind: "runtime",
+					type: "minecraft_completion",
+					ref: "minecraft",
+					origin: "internal",
+					channel: "world",
+				},
+				receipt: { key: "k2", attempt: "a2" },
+			},
+			owner,
+		);
+		release();
+		await harness.waitForIdle();
+		// 首回合 + 合批回合：两条投递只多花一次请求。
+		expect(calls).toBe(2);
+		expect(settled.filter((entry) => entry.startsWith("mc-"))).toEqual([
+			"mc-event:committed",
+			"mc-completion:committed",
+		]);
+		expect(
+			harness.subject
+				.historySnapshot()
+				.filter((message) => message.id === "mc-event" || message.id === "mc-completion")
+				.map((message) => message.id),
+		).toEqual(["mc-event", "mc-completion"]);
+	});
+
 	test("用户发言切断同一世界的合批", async () => {
 		const scenario = new Scenario();
 		scenario.fallback(() => [
