@@ -765,3 +765,79 @@ describe("G34 intent wait must not leave a stale pre-state behind", () => {
 		expect(dispatchOfEffect).toHaveLength(0);
 	});
 });
+
+/**
+ * 派发前态判据是"调用方声明的那几格 + 光标"，不是"这期间没有任何同步"。
+ *
+ * 真服上的形态：一次 equip/toss/craft 由多次点击组成，服务端对上一击的回执本身
+ * 就会再推一次全量同步，玩家窗口的 revision 因此每击必涨——拿版本相等做准入会把
+ * 正常的多次点击序列判成冲突（G36）。但"别人真动过窗口"仍然必须拦下，并且要说清
+ * 差在哪一格。
+ */
+describe("G36 click pre-state is content, not sync count", () => {
+	test("a sync that leaves the clicked slot and cursor alone does not block the click", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const click = await input(window);
+		// 别人往别处放了点东西：整窗 revision 前进，但这一击依赖的那格与光标没变。
+		h.contents[10] = stone(2);
+		h.full();
+		const receipt = await window.click(click);
+		expect(receipt).toMatchObject({ dispatch: "sent" });
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(1);
+		await h.session.close();
+	});
+
+	test("the clicked slot moving is rejected before any packet and names the slot", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const click = await input(window);
+		h.contents[0] = stone(7);
+		h.full();
+		const failure = await captureFailure(window.click(click));
+		expect(failure).toMatchObject({ code: "CONFLICT", dispatch: "not_sent" });
+		expect(failure.message).toContain("slot 0");
+		expect(failure.message).toContain("revision");
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		await h.session.close();
+	});
+
+	test("the cursor moving is rejected and names the cursor", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const first = await input(window);
+		// 第一击把 8 块石头抓到光标上（服务端也会再推一次全量同步）。
+		await window.click(first);
+		const stale = first;
+		h.contents[0] = stone(8);
+		h.full();
+		const failure = await captureFailure(window.click(stale));
+		expect(failure).toMatchObject({ code: "CONFLICT" });
+		expect(failure.message).toContain("cursor");
+		await h.session.close();
+	});
+
+	test("the same holds for the player inventory window, where revision tracks every sync", async () => {
+		const h = harness();
+		await primePlayerInventory(h);
+		h.contents[12] = stone(3);
+		h.full(0);
+		// withInventory 的作用域一返回窗口就退役，所以断言必须在作用域内部做。
+		await h.session.withInventory(async (window) => {
+			const snapshot = (await window.snapshot()).value;
+			// 玩家窗口的 revision 每次 windowId=0 的全量同步都 +1：这里制造"只涨版本"。
+			h.contents[20] = stone(1);
+			h.full(0);
+			const receipt = await window.click({
+				slot: 12,
+				button: 0,
+				mode: 0,
+				expectedRevision: snapshot.revision,
+				expectedSlots: [{ slot: 12, stack: { item: { name: "stone" }, count: 3 } }],
+				expectedCursor: empty,
+			});
+			expect(receipt).toMatchObject({ dispatch: "sent" });
+		});
+		await h.session.close();
+	});
+});
