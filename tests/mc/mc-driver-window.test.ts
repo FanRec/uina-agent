@@ -524,9 +524,54 @@ describe("Driver window lifetime and server confirmation", () => {
 			dispatch: "unknown",
 		});
 		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		// recorder 已故障：不能再追加一条看似已结算的事实，恢复侧只看到 intent，
+		// 按 unknown 对账；任何"已结算"的假象都会让调用方误以为可以重放。
 		expect(h.facts.filter((fact) => fact.contract === "body.window.click@1").map((fact) => fact.kind)).toEqual([
 			"intent",
-			"receipt",
+		]);
+		await h.session.close();
+	});
+
+	test("写前意图没拿到 ACK 前绝不派发窗口点击包（端到端屏障时序）", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const sink = h.deps.sink as DriverExecutionSink;
+		let release!: () => void;
+		sink.ensureDurable = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		const pending = window.click(await input(window));
+		const confirmed = expect(pending).resolves.toMatchObject({ dispatch: "sent", completion: "met" });
+		await vi.waitFor(() => expect(h.facts.some((fact) => fact.kind === "intent")).toBe(true));
+		await Promise.resolve();
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		release();
+		await confirmed;
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(1);
+		await h.session.close();
+	});
+
+	test("协议写端在发包瞬间抛错：包可能已发出，按 unknown 收口而非 not_sent", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const original = h.client.write;
+		h.client.write = (name: string, data: unknown) => {
+			if (name === "window_click") throw new Error("socket write failed");
+			return original(name, data);
+		};
+		await expect(window.click(await input(window))).rejects.toMatchObject({
+			name: "CallFailure",
+			dispatch: "unknown",
+		});
+		// intent 已持久、包未确认，不能追加"明确取消"的终态，也不能谎报已结算。
+		expect(
+			h.facts
+				.filter((fact) => fact.contract === "body.window.click@1")
+				.map((fact) => [fact.kind, fact.dispatch, fact.completion]),
+		).toEqual([
+			["intent", "unknown", "unknown"],
+			["receipt", "unknown", "unknown"],
 		]);
 		await h.session.close();
 	});

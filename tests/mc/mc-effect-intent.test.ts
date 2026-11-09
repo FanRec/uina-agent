@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ControlOwner } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { EffectRecorder } from "../../.uina/worlds/minecraft/driver/execution.js";
 import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import type { ApplyItem, EffectRow } from "../../.uina/worlds/minecraft/runtime/runtime-db-worker.js";
@@ -42,29 +42,30 @@ function intentRow(applied: ApplyItem[]): EffectRow {
 }
 
 /**
- * 只把编号 ≤ through 的材料算作已提交，其余视为崩溃丢失。
- * effect_fact 在 DB 里按 effect upsert，所以恢复看到的是最后一版累积 facts，
- * 而不是逐条重放；这与 runtime-db-worker 的物化方式一致。
+ * 只把 ticket.sequence ≤ through 的材料算作已提交，其余视为崩溃丢失。
+ * effects 表按 effect upsert：恢复看到的是**每个 effect** 最后一版累积 facts，
+ * 而不是逐条重放全部 effect_fact 行；engine.recover() 也是遍历 rows.effects
+ * 对每个 effect 调一次 restoreEffect。这里按 effect 取最后一行与之对齐。
  */
 function restart(applied: ApplyItem[], through: number) {
 	const next = boot("rw:probe:2", { "rw:probe:1": through });
-	const committed = applied
-		.slice(0, through)
-		.filter(
-			(
-				item,
-			): item is { ticket: ApplyItem["ticket"]; mutation: Extract<ApplyItem["mutation"], { kind: "effect_fact" }> } =>
-				item.mutation.kind === "effect_fact",
-		);
-	const last = committed.at(-1);
-	if (last) next.queue.restoreEffect(last.mutation.row);
+	const committed = applied.filter(
+		(
+			item,
+		): item is { ticket: ApplyItem["ticket"]; mutation: Extract<ApplyItem["mutation"], { kind: "effect_fact" }> } =>
+			item.ticket.sequence <= through && item.mutation.kind === "effect_fact",
+	);
+	const latest = new Map<string, EffectRow>();
+	for (const item of committed) latest.set(item.mutation.row.effect, item.mutation.row);
+	for (const row of latest.values()) next.queue.restoreEffect(row);
 	return next.queue;
 }
 
-/** 等 worker 真的收到第 count 份材料；"已交给 apply" 与 "已提交" 是两件事。 */
+/** 等 worker 真的收到 sequence ≥ count 的材料；"已交给 apply" 与 "已提交" 是两件事。 */
 async function settled(applied: ApplyItem[], count: number): Promise<void> {
-	for (let i = 0; i < 20 && applied.length < count; i++) await Promise.resolve();
-	if (applied.length < count) throw new Error(`worker never received batch #${count}`);
+	const arrived = () => applied.some((item) => item.ticket.sequence >= count);
+	for (let i = 0; i < 20 && !arrived(); i++) await Promise.resolve();
+	if (!arrived()) throw new Error(`worker never received batch #${count}`);
 }
 
 /** 真实 ACK 只可能发生在 apply 之后；先等 apply，再回报水线。 */
@@ -192,6 +193,40 @@ describe("Effect 写前意图与崩溃窗口", () => {
 			completion: "not_met",
 		});
 		expect(recovered.unknownEffectsFor(OWNER.run)).toEqual([]);
+	});
+
+	test("C07：多个未决 effect 在恢复时都可见，恢复不只装入最后一行", async () => {
+		const { queue, recorder, applied } = boot();
+		const second = "eff:probe:2";
+		const firstGate = recorder.beforeWrite(EFFECT, OPERATION, CONTRACT);
+		await commit(queue, applied, 1);
+		await firstGate;
+		const secondGate = recorder.beforeWrite(second, "op:probe:2", CONTRACT);
+		await commit(queue, applied, 2);
+		await secondGate;
+
+		const recovered = restart(applied, 2);
+		expect(recovered.unknownEffectsFor(OWNER.run).sort()).toEqual([EFFECT, second].sort());
+	});
+
+	test("屏障失败后 recorder 封闭新副作用，后续事实也不再写入", async () => {
+		const recorded: DriverExecutionFact[] = [];
+		const sink: DriverExecutionSink = {
+			record: (fact) => {
+				recorded.push(fact);
+				return { instance: "rw:broken:2", sequence: recorded.length };
+			},
+			ensureDurable: async () => {
+				throw new Error("sqlite ack lost");
+			},
+		};
+		const recorder = new EffectRecorder(sink);
+		await expect(recorder.beforeWrite(EFFECT, OPERATION, CONTRACT)).rejects.toMatchObject({
+			dispatch: "unknown",
+		});
+		expect(recorded).toHaveLength(1);
+		recorder.record(EFFECT, OPERATION, CONTRACT, "receipt", "unknown", "unknown");
+		expect(recorded).toHaveLength(1); // 故障后不得追加看似已结算的事实
 	});
 
 	test("屏障失败后 recorder 封闭新副作用，不再派发", async () => {
