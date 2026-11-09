@@ -56,6 +56,9 @@ export class DeliveryPump {
 	private emitting = false;
 	private error: { code: string; message: string } | null = null;
 	private lastCheckedAt: string | null = null;
+	/** 本激活累计：已提交给宿主的完成通知、被宿主明确退掉的输入。 */
+	private committed = 0;
+	private retired = 0;
 	private pendingCount: number | null = null;
 	/** 上一轮有界扫描停在哪（rowid 键集）；扫到末尾即清空，下一轮从头开始。 */
 	private scanCursor: string | undefined;
@@ -163,6 +166,7 @@ export class DeliveryPump {
 			throw new Error("Host receipt scope mismatch");
 		// Host has durably received this input. A lost Runtime ACK reply must not hold the local input slot.
 		this.inputs.delete(key);
+		this.committed++;
 		await this.executor.rpc("runtime.settleDelivery", { ref: key, receipt: r });
 	}
 	reconcile(): Promise<void> {
@@ -365,7 +369,10 @@ export class DeliveryPump {
 	async retry(key: string, expectedAttempt: string): Promise<unknown> {
 		const reply = await this.ctx.delivery!.retire(key, expectedAttempt);
 		if (reply.kind === "committed") await this.ack(key, reply);
-		if (reply.kind === "retired" && this.inputs.get(key)?.attempt === expectedAttempt) this.inputs.delete(key);
+		if (reply.kind === "retired" && this.inputs.get(key)?.attempt === expectedAttempt) {
+			this.inputs.delete(key);
+			this.retired++;
+		}
 		this.wake(0);
 		return reply;
 	}
@@ -384,6 +391,18 @@ export class DeliveryPump {
 			})),
 			lastCheckedAt: this.lastCheckedAt,
 			hostBusy: this.ctx.isBusy?.() ?? null,
+			/**
+			 * 交付三态（§10.6）：committed = 宿主已回执并落库；activated = 本激活发出的
+			 * 条数（换激活后老的回执不归这里）；consumption 恒为 consumption_unknown ——
+			 * 宿主没有把"模型真的读到了"这一事实交回来的合法入口，MC 只能如实说不知道，
+			 * 不在这里编一个 consumed 游标或 Outbox。
+			 */
+			commit: {
+				activation: this.activation,
+				activated: this.committed,
+				retired: this.retired,
+				consumption: "consumption_unknown" as const,
+			},
 			error: this.error,
 		};
 	}

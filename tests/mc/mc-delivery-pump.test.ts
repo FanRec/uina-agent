@@ -73,6 +73,12 @@ test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执
 		expect(pending.size).toBe(0);
 		// 回执重试不等于重投：两条各交过一次。
 		expect(emitted).toEqual(["first", "next"]);
+		// §10.6 三态：本激活提交数可数；"模型有没有真读到"没有合法入口，如实说未知。
+		expect(pump.diagnostics().commit).toMatchObject({
+			activated: 2,
+			retired: 0,
+			consumption: "consumption_unknown",
+		});
 	} finally {
 		await pump.close();
 	}

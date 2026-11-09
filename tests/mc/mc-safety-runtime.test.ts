@@ -75,6 +75,15 @@ test("safety retires an uncooperative guest body; outer program handles interrup
 		);
 		expect(record.ended).toBe("safe");
 		expect(closed).toBe(2);
+		// §6.7 七点指标：全是可比 ISO 时间戳，顺序不能倒（撤销在拿到身体之前）。
+		const t = record.timeline!;
+		expect(t.interruptIssuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(t.interruptIssuedAt! <= t.controlRetiredAt!).toBe(true);
+		expect(t.controlRetiredAt! <= t.bodyGrantedAt!).toBe(true);
+		expect(t.bodyGrantedAt! <= t.finishedAt!).toBe(true);
+		expect(t.finishedAt).toBe(record.finishedAt);
+		// 这次干预没有派发任何动作：如实 null，不拿 bodyGrantedAt 冒充。
+		expect(t.firstActionAt).toBeNull();
 		expect(owners[1]).toMatchObject({ kind: "safety", intervention: record.intervention });
 		const result = await runtime.wait(accepted.snapshot.run, { timeoutMs: 5000 });
 		expect(result.snapshot).toMatchObject({ phase: "finished", outcome: "succeeded" });

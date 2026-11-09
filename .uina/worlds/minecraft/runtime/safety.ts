@@ -99,6 +99,15 @@ export class RuntimeSafety {
 			thresholds: { oxygen: 4, healthRatio: 0.3, maxTimeMs: 10000 },
 			interruptedRun: null,
 			startedAt: new Date().toISOString(),
+			// §6.7 七点指标：每一步都盖可比时间戳，缺的就是没观察到，不补猜。
+			timeline: {
+				hazardObservedAt: trigger.sample.observedAt ?? null,
+				interruptIssuedAt: null,
+				controlRetiredAt: null,
+				bodyGrantedAt: null,
+				firstActionAt: null,
+				finishedAt: null,
+			},
 			effects: [],
 			unknownEffects: [],
 			finishedAt: null,
@@ -120,8 +129,11 @@ export class RuntimeSafety {
 			let ended: "safe" | "blocked" | "timeout" | "cancelled" | "invalidated" = "invalidated";
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			let evidenceReady = record.trigger.evidence.length === 0;
+			const timeline = record.timeline!;
 			try {
+				timeline.interruptIssuedAt = new Date().toISOString();
 				record.interruptedRun = await this.deps.interrupt();
+				timeline.controlRetiredAt = new Date().toISOString();
 				this.deps.guard();
 				if (abort.signal.aborted) throw new Error("cancelled");
 				if (record.trigger.evidence.length) {
@@ -139,6 +151,7 @@ export class RuntimeSafety {
 					...(record.interruptedRun ? { interruptedRun: record.interruptedRun } : {}),
 				};
 				grant = await this.deps.bodies.request(owner, record.intervention, abort.signal);
+				timeline.bodyGrantedAt = new Date().toISOString();
 				timer = setTimeout(() => abort.abort("timeout"), 10000);
 				ended = await work(grant.session, abort.signal);
 			} catch (error) {
@@ -162,11 +175,18 @@ export class RuntimeSafety {
 			}
 			const effects = this.deps.queue.effectsForSafety(record.intervention);
 			await this.deps.queue.flushThrough(this.deps.queue.capture());
+			const finishedAt = new Date().toISOString();
 			const final: SafetyInterventionRecord = {
 				...record,
 				...effects,
 				record: this.deps.refs.record(),
-				finishedAt: new Date().toISOString(),
+				finishedAt,
+				timeline: {
+					...record.timeline!,
+					// 第一个动作的实际派发时刻取该干预名下最早的一条效果事实。
+					firstActionAt: firstFactAt(this.deps.queue, effects.effects),
+					finishedAt,
+				},
 				ended,
 				outcome:
 					ended === "safe"
@@ -203,4 +223,17 @@ function recoveredEffects(record: SafetyInterventionRecord, rows: EffectRow[]) {
 		return !row || (JSON.parse(row.facts) as DriverExecutionFact[]).at(-1)?.completion !== "met";
 	});
 	return { effects, unknownEffects };
+}
+
+/**
+ * 本次干预名下的第一个动作时刻：取该干预所拥有效果的最早一条事实。
+ * 没有效果就是 null（真的什么都没做，不拿 bodyGrantedAt 冒充）。
+ */
+function firstFactAt(queue: { effectRecord(effect: Ref): { facts: DriverExecutionFact[] } | null }, effects: Ref[]) {
+	let earliest: string | null = null;
+	for (const effect of effects) {
+		const at = queue.effectRecord(effect)?.facts[0]?.observedAt ?? null;
+		if (at != null && (earliest == null || at < earliest)) earliest = at;
+	}
+	return earliest;
 }

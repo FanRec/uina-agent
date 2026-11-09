@@ -309,6 +309,26 @@ export interface EffectRecord {
 	latest: import("./values.js").EffectReceipt;
 }
 
+/**
+ * 安全干预的可比时间线（§6.7 / §12.5）：全是 ISO 墙上时钟，跨进程可比，
+ * 不用 `performance.now()`（它只配做进程内冷却，不能相减成对外证据）。
+ * 缺字段表示"那一刻没有被观察到"，不补猜值。
+ */
+export interface SafetyTimeline {
+	/** 危险事实的观察时刻（触发样本的 observedAt；样本没带就是 null）。 */
+	hazardObservedAt: string | null;
+	/** 开始撤销旧控制（safety.interrupt 发起）。 */
+	interruptIssuedAt: string | null;
+	/** 旧控制确认退役（interrupt 返回）。 */
+	controlRetiredAt: string | null;
+	/** 拿到安全动作的身体资格。 */
+	bodyGrantedAt: string | null;
+	/** 本次干预名下的第一条效果事实（真正的第一个动作）。 */
+	firstActionAt: string | null;
+	/** 干预结案（真正脱险/受阻/超时的观察时刻）。 */
+	finishedAt: string | null;
+}
+
 /** 安全介入记录形状（I1 预留；实现归属 Runtime 工作包后续条目）。 */
 export type SafetyInterventionRecord = {
 	intervention: Ref;
@@ -322,6 +342,7 @@ export type SafetyInterventionRecord = {
 	thresholds: { oxygen: number; healthRatio: number; maxTimeMs: number };
 	interruptedRun: Ref | null;
 	startedAt: string;
+	timeline?: SafetyTimeline;
 	effects: Ref[];
 	unknownEffects: Ref[];
 } & (
