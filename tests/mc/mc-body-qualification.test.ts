@@ -40,13 +40,14 @@ describe("PlayerPort 资格闸门", () => {
 
 	test("goto 受控独占期间拒绝新资格；Body 持有期间 goto 槽同样被拒", async () => {
 		const h = makeHarness();
-		expect(h.arbiter.tryClaimGoto()).toBe(true);
+		const goto = h.arbiter.claim("goto");
+		expect(goto).not.toBeNull();
 		const err = await captureFailure(h.port.acquire(ownerT(1), openSignal()));
 		expect(err.name).toBe("CallFailure");
 		expect(err.code).toBe("CONTROL_CONFLICT");
-		h.arbiter.releaseGoto();
+		h.arbiter.release(goto!);
 		const session = await h.port.acquire(ownerT(1), openSignal());
-		expect(h.arbiter.tryClaimGoto()).toBe(false);
+		expect(h.arbiter.claim("goto")).toBeNull();
 		await session.close();
 	});
 

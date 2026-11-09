@@ -84,6 +84,8 @@ function makeSink(): { sink: DriverExecutionSink; facts: DriverExecutionFact[] }
 				sequence += 1;
 				return { instance: "rw:t1", sequence };
 			},
+			// 内存 sink 没有持久层：ticket 一经发出即视为已提交。
+			async ensureDurable() {},
 		},
 	};
 }

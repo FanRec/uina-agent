@@ -74,10 +74,10 @@ describe("GotoDirector.plan seams", () => {
 	test("a plan never claims the arbiter goto slot", async () => {
 		const d = director({
 			arbiter: {
-				tryClaimGoto: () => {
+				claim: () => {
 					throw new Error("plan must not claim the goto slot");
 				},
-				releaseGoto: () => {},
+				release: () => {},
 			} as never,
 		});
 		// 目标校验在寻路之前：跨维度目标在未触达寻路的情况下如实失败。

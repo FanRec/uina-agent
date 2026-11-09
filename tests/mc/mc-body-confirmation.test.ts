@@ -56,6 +56,7 @@ function harness() {
 				facts.push(fact);
 				return { instance: "test", sequence: facts.length };
 			},
+			async ensureDurable() {},
 		}),
 		mintOp: () => `op:${++serial}`,
 		mintEff: () => `eff:${++serial}`,

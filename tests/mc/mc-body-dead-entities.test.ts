@@ -51,6 +51,7 @@ function makeHarness(): Harness {
 			facts.push(fact);
 			return { instance: "rw:t", sequence: facts.length };
 		},
+		async ensureDurable() {},
 	};
 	const arbiter = new DriverControlArbiter();
 	let serial = 0;

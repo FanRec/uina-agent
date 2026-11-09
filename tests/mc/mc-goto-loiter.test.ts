@@ -28,7 +28,7 @@ const wiggle = setInterval(() => {
 	swing = 1 - swing;
 	bot.entity.position = { x: 5 + swing, y: 64, z: 0 };
 }, 500);
-const director = new GotoDirector({ assertActionAllowed: () => {}, bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: 1 }) }, mintOp: () => "op:1", mintEff: () => "eff:1" });
+const director = new GotoDirector({ assertActionAllowed: () => {}, bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: 1 }), ensureDurable: async () => {} }, mintOp: () => "op:1", mintEff: () => "eff:1" });
 const request = { at: { x: 0, y: 64, z: 0 }, tolerance: 1, sprint: false, digThrough: false, placeToReach: false, timeoutMs: 30000 };
 const t0 = Date.now();
 let outcome;

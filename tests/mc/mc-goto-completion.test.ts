@@ -24,7 +24,7 @@ function director(mode, endX) {
 		: async () => { const error = new Error("No path to the goal!"); error.name = "NoPath"; throw error; };
 	bot.pathfinder = { movements: null, goal: null, setMovements: () => {}, goto, isMoving: () => false };
 	let sequence = 0;
-	return new GotoDirector({ assertActionAllowed: () => {}, bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: ++sequence }) }, mintOp: () => \`op:\${++sequence}\`, mintEff: () => \`eff:\${++sequence}\` });
+	return new GotoDirector({ assertActionAllowed: () => {}, bot: () => bot, host: { state: "ready", identity: { connection: "c", incarnation: "i" }, on: () => () => {} }, arbiter: new DriverControlArbiter(), sink: { record: () => ({ instance: "w", sequence: ++sequence }), ensureDurable: async () => {} }, mintOp: () => \`op:\${++sequence}\`, mintEff: () => \`eff:\${++sequence}\` });
 }
 const request = { at: { x: 0, y: 64, z: 0 }, tolerance: 1, sprint: false, digThrough: false, placeToReach: false, timeoutMs: 1000 };
 const results = [];

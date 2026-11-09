@@ -70,7 +70,7 @@ function harness(options: HarnessOptions = {}) {
 			host: host as never,
 			bot: () => bot as unknown as MineflayerBot,
 			sampleSelf: () => null,
-			sink: { record: () => ({ instance: "i", sequence: ++serial }) },
+			sink: { record: () => ({ instance: "i", sequence: ++serial }), async ensureDurable() {} },
 			mintOp: () => `op:${++serial}`,
 			mintEff: () => `eff:${++serial}`,
 			onClosed: () => {},

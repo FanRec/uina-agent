@@ -4,7 +4,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { WindowSession } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { ClientWindowObservation } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import type { ControlRetirement, DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type {
+	ControlRetirement,
+	DriverExecutionFact,
+	DriverExecutionSink,
+} from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
 import { type BodySessionDeps, BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/session.js";
@@ -97,6 +101,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 				facts.push(fact);
 				return { instance: "rw:test", sequence: facts.length };
 			},
+			async ensureDurable() {},
 		},
 		mintOp: () => `op:${++serial}`,
 		mintEff: () => `eff:${++serial}`,
@@ -477,6 +482,8 @@ describe("Driver window lifetime and server confirmation", () => {
 			settled = true;
 			return value;
 		});
+		// 写前意图是真实异步屏障：等"包已发出"这个可观测事实，而不是猜 microtask 层数。
+		await vi.waitFor(() => expect(h.writes.some((write) => write.name === "window_click")).toBe(true));
 		h.client.emit("window_items", initial);
 		await Promise.resolve();
 		expect(settled).toBe(false);
@@ -491,6 +498,8 @@ describe("Driver window lifetime and server confirmation", () => {
 			expectedSlots: [{ slot: 1, stack: empty }],
 			expectedCursor: { item: { name: "stone" }, count: 8 },
 		});
+		// 写前意图是异步屏障：服务端回包不可能早于这次 click 真正发出。
+		await vi.waitFor(() => expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(2));
 		h.full();
 		expect((await second).completion).toBe("met");
 		expect(
@@ -502,11 +511,33 @@ describe("Driver window lifetime and server confirmation", () => {
 		await h.session.close();
 	});
 
+	test("写前意图 ACK 丢失时窗口点击不发包，如实按 unknown 收口（C02）", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const sink = h.deps.sink as DriverExecutionSink;
+		sink.ensureDurable = async () => {
+			throw new Error("sqlite ack lost");
+		};
+		await expect(window.click(await input(window))).rejects.toMatchObject({
+			name: "CallFailure",
+			code: "INTERNAL",
+			dispatch: "unknown",
+		});
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		expect(h.facts.filter((fact) => fact.contract === "body.window.click@1").map((fact) => fact.kind)).toEqual([
+			"intent",
+			"receipt",
+		]);
+		await h.session.close();
+	});
+
 	test("revoke settles a pending click unknown; late response cannot publish or close a newer generation", async () => {
 		const h = harness();
 		const window = await h.session.openContainer(target);
 		h.setRespond(false);
 		const pending = window.click(await input(window));
+		// 写前意图是异步屏障：撤销要落在"包已派发之后"，才检验迟到回包的代次隔离。
+		await vi.waitFor(() => expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(1));
 		await h.session.close();
 		expect(await pending).toMatchObject({ dispatch: "sent", completion: "unknown", needsSnapshot: true });
 		const newer = windows.createWindow(1, "minecraft:generic_9x3", "New chest");
@@ -519,6 +550,34 @@ describe("Driver window lifetime and server confirmation", () => {
 		expect(h.client.listenerCount("window_items")).toBe(2);
 		h.bot.emit("end", "test complete");
 		expect(h.client.listenerCount("window_items")).toBe(1);
+	});
+
+	test("写前意图屏障期间被撤销：不发包，intent 由终态事实收口（C02/C09）", async () => {
+		const h = harness();
+		const window = await h.session.openContainer(target);
+		const sink = h.deps.sink as DriverExecutionSink;
+		let release!: () => void;
+		sink.ensureDurable = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		const pending = window.click(await input(window));
+		// 立刻挂上拒绝处理器，避免屏障解除瞬间的 unhandled rejection。
+		const rejected = expect(pending).rejects.toMatchObject({ name: "CallFailure", dispatch: "not_sent" });
+		expect(h.facts.some((fact) => fact.kind === "intent")).toBe(true);
+		const closing = h.session.close();
+		release();
+		await rejected;
+		await closing;
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		expect(
+			h.facts
+				.filter((fact) => fact.contract === "body.window.click@1")
+				.map((fact) => [fact.kind, fact.dispatch, fact.completion]),
+		).toEqual([
+			["intent", "unknown", "unknown"],
+			["cleanup", "not_sent", "not_met"],
+		]);
 	});
 
 	test("a newer native window invalidates an old handle even with the same network id", async () => {

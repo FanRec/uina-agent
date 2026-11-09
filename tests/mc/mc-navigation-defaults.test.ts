@@ -70,7 +70,7 @@ const bot = {
 const director = new GotoDirector({
   assertActionAllowed: () => {}, bot: () => bot,
   host: { state: 'ready', identity: { connection: 'c', incarnation: 'i' }, on: () => () => {} },
-  sink: { record: () => ({ instance: 'w', sequence: 1 }) },
+  sink: { record: () => ({ instance: 'w', sequence: 1 }), ensureDurable: async () => {} },
   arbiter: new DriverControlArbiter(), mintOp: () => 'op:1', mintEff: () => 'eff:1'
 });
 await director.plan({ at: { x: 5, y: 64, z: 0 }, tolerance: 2 });

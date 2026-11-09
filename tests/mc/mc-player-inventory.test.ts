@@ -41,7 +41,7 @@ function harness(version = "1.21.11") {
 			host: { state: "ready", identity: { connection: "con", incarnation: "inc" }, on: () => () => {} },
 			bot: () => bot as unknown as MineflayerBot,
 			sampleSelf: () => null,
-			sink: { record: () => ({ instance: "i", sequence: ++serial }) },
+			sink: { record: () => ({ instance: "i", sequence: ++serial }), async ensureDurable() {} },
 			mintOp: () => `op:${++serial}`,
 			mintEff: () => `eff:${++serial}`,
 			onClosed: () => {},

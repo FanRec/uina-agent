@@ -224,6 +224,7 @@ function dispatchHarness(options: { sink?: DriverExecutionSink } = {}) {
 			facts.push(fact);
 			return { instance: "rw:s4:1", sequence: facts.length };
 		},
+		async ensureDurable() {},
 	};
 	let connection = "conn:s4:1";
 	let incarnation = "inc:s4:1";
@@ -301,7 +302,9 @@ describe("Driver 派发：真实写入 + 现有 Effect Ledger", () => {
 			recoveredWatermarks: {},
 			apply: () => {},
 		});
-		const h = dispatchHarness({ sink: { record: (fact) => queue.record(fact) } });
+		const h = dispatchHarness({
+			sink: { record: (fact) => queue.record(fact), ensureDurable: (ticket) => queue.ensureDurable(ticket) },
+		});
 		h.dispatcher.send(bindingOf(), "uina:example", "hello");
 		expect(queue.unknownEffectsFor("run:s4:1")).toEqual(["eff:s4:1"]);
 		expect(queue.effectsForCall("call:s4:1")).toEqual(["eff:s4:1"]);
@@ -319,7 +322,9 @@ describe("Driver 派发：真实写入 + 现有 Effect Ledger", () => {
 			recoveredWatermarks: {},
 			apply: () => {},
 		});
-		const h = dispatchHarness({ sink: { record: (fact) => queue.record(fact) } });
+		const h = dispatchHarness({
+			sink: { record: (fact) => queue.record(fact), ensureDurable: (ticket) => queue.ensureDurable(ticket) },
+		});
 		const dispatch = h.dispatcher.send(bindingOf(), "uina:example", "hello");
 		expect(queue.unknownEffectsFor("run:s4:1")).toEqual([dispatch.effect]);
 
@@ -379,7 +384,7 @@ describe("Driver 派发：真实写入 + 现有 Effect Ledger", () => {
 	});
 
 	test("Effect Ledger 拒收：包已发出，如实以 sent + unknown 效果失败", () => {
-		const h = dispatchHarness({ sink: { record: () => null } });
+		const h = dispatchHarness({ sink: { record: () => null, async ensureDurable() {} } });
 		expectFailure(() => h.dispatcher.send(bindingOf(), "uina:example", "hello"), {
 			code: "EFFECT_RECORD_FAILED",
 			dispatch: "sent",
