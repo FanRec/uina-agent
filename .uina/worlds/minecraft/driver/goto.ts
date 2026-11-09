@@ -624,33 +624,41 @@ export class GotoDirector {
 		reason: string,
 		permit: ControlPermit,
 	): Promise<void> {
-		if (bot != null && pathfinderGoalActive(bot)) clearGoal(bot);
-		const quiesced = await this.awaitQuiesced(bot);
-		if (bot != null && !quiesced) {
-			this.deps.requireRetirement?.({
-				source: "driver",
-				subject: eff,
-				code: "CONTROL_ISOLATION_FAILED",
-				detail: "navigation quiescence deadline exceeded",
-			});
-			this.seal(bot); // 期限兜底：保持封印至本调用结束
+		/**
+		 * 单 active 资格槽：结算任何一步抛错都不能把 permit 留在槽里，否则之后
+		 * 所有 body/goto 永久 CONTROL_CONFLICT。clearGoal / requireRetirement /
+		 * recorder.record 都可能抛，所以释放必须挂在 finally 而不是最后一行。
+		 */
+		try {
+			if (bot != null && pathfinderGoalActive(bot)) clearGoal(bot);
+			const quiesced = await this.awaitQuiesced(bot);
+			if (bot != null && !quiesced) {
+				this.deps.requireRetirement?.({
+					source: "driver",
+					subject: eff,
+					code: "CONTROL_ISOLATION_FAILED",
+					detail: "navigation quiescence deadline exceeded",
+				});
+				this.seal(bot); // 期限兜底：保持封印至本调用结束
+			}
+			this.recorder.record(
+				eff,
+				op,
+				"body.goto@1",
+				"cleanup",
+				bot == null ? "unknown" : "sent",
+				bot == null || !quiesced ? "unknown" : "met",
+				{
+					reason,
+					quiesced,
+					note: quiesced
+						? "navigation write sources sealed (no goal, no path, no digging, keys released)"
+						: "quiescence deadline exceeded; residual writes cannot be excluded",
+				},
+			);
+		} finally {
+			this.deps.arbiter.release(permit);
 		}
-		this.recorder.record(
-			eff,
-			op,
-			"body.goto@1",
-			"cleanup",
-			bot == null ? "unknown" : "sent",
-			bot == null || !quiesced ? "unknown" : "met",
-			{
-				reason,
-				quiesced,
-				note: quiesced
-					? "navigation write sources sealed (no goal, no path, no digging, keys released)"
-					: "quiescence deadline exceeded; residual writes cannot be excluded",
-			},
-		);
-		this.deps.arbiter.release(permit);
 	}
 
 	private awaitQuiesced(bot: MineflayerBot | null): Promise<boolean> {

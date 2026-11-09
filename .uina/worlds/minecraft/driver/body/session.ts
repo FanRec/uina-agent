@@ -192,22 +192,29 @@ export class BodySessionImpl implements BodySession {
 		return this.closePromise;
 	}
 	private async finishClose(): Promise<void> {
-		await this.awaitPendingSettled(2000);
-		if (this.pendingOps > 0) {
-			this.barrierProven = false; // §10.5：无法证明旧写入失效，不允许新主人复用该客户端
+		/**
+		 * onClosed 是 PlayerPort 释放控制资格的唯一入口。退订宿主、上报无法证明的
+		 * 屏障等步骤抛错时也必须走完它，否则单 active 资格槽永久占死（§10.5）。
+		 */
+		try {
+			await this.awaitPendingSettled(2000);
+			if (this.pendingOps > 0) {
+				this.barrierProven = false; // §10.5：无法证明旧写入失效，不允许新主人复用该客户端
+			}
+			this.state = "quiesced";
+			this.state = "closed";
+			this.detachHost();
+			this.detachHost = () => {};
+			if (!this.barrierProven)
+				this.deps.requireRetirement?.({
+					source: "driver",
+					subject: this.body,
+					code: "CONTROL_ISOLATION_FAILED",
+					detail: "Body close could not prove that all old writes retired",
+				});
+		} finally {
+			this.deps.onClosed(this.barrierProven);
 		}
-		this.state = "quiesced";
-		this.state = "closed";
-		this.detachHost();
-		this.detachHost = () => {};
-		if (!this.barrierProven)
-			this.deps.requireRetirement?.({
-				source: "driver",
-				subject: this.body,
-				code: "CONTROL_ISOLATION_FAILED",
-				detail: "Body close could not prove that all old writes retired",
-			});
-		this.deps.onClosed(this.barrierProven);
 	}
 
 	/** 撤销资格：立即拒绝旧写入并清理持续输入（§10.2 前段，同步完成）。 */

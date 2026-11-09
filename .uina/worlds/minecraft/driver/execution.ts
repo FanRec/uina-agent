@@ -125,6 +125,9 @@ export class EffectRecorder {
 		completion: FactCompletion,
 		detail?: JsonValue,
 	): void {
+		// §7.1：记录故障封闭新副作用。屏障失败后 intent 是否落盘未知，此时再追加
+		// 一条"看起来已结算"的事实只会让恢复侧读错，所以任何后续事实都不写入。
+		if (this.faulted) return;
 		const ticket = this.sink.record({
 			effect,
 			operation,

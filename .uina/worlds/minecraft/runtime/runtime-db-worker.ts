@@ -468,11 +468,18 @@ function loadRecovered(db: DatabaseSync): RecoveredRows {
  * （不重复应用物化行），不一致抛冲突（整批回滚、不入库）。
  */
 function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; through: number } | null {
+	if (items.length === 0) return null;
 	db.exec("BEGIN");
 	try {
-		let lastInstance: string | null = null;
-		let lastSeq = 0;
+		let through = 0;
 		for (const item of items) {
+			/**
+			 * ACK 水线是本批**全部**材料的上界：record_log 幂等跳过同样证明该 seq
+			 * 已提交。只取最后一次 INSERT 会在重放批次上低报、甚至整批跳过时不发
+			 * ACK，RecordQueue.flushThrough(ticket) 的 waiter 永不 resolve，写前
+			 * intent 的派发屏障永久挂起（§5.3）。
+			 */
+			if (item.ticket.sequence > through) through = item.ticket.sequence;
 			const payload = JSON.stringify(item.mutation);
 			const existing = db
 				.prepare("SELECT payload FROM record_log WHERE instance = ? AND seq = ?")
@@ -489,11 +496,9 @@ function applyBatch(db: DatabaseSync, items: ApplyItem[]): { instance: string; t
 				payload,
 			);
 			if (applyMutation(db, item.mutation) !== false) snapshotMutation(db, item.mutation);
-			lastInstance = item.ticket.instance;
-			lastSeq = item.ticket.sequence;
 		}
 		db.exec("COMMIT");
-		return lastInstance == null ? null : { instance: lastInstance, through: lastSeq };
+		return { instance: items[items.length - 1].ticket.instance, through };
 	} catch (err) {
 		db.exec("ROLLBACK");
 		throw err;

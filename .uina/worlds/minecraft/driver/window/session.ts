@@ -607,9 +607,16 @@ export class WindowSessionImpl implements WindowSession {
 			if (sent) return this.unknown(effect, operation);
 			const failure = error as import("../../contracts/values.js").CallFailure;
 			const knownFailure = failure?.name === "CallFailure";
-			// dispatch 以失败对象自带的事实为准：写前 intent 已提交却没拿到 ACK 时，
-			// 它必须是 unknown，不能因为"本进程没走到 wire.click"就改写成 not_sent。
-			const dispatch = knownFailure ? failure.dispatch : writing ? "unknown" : "not_sent";
+			/**
+			 * dispatch 只由本调用栈能证明的事实决定，不无条件采信外部 failure 的字段：
+			 * - writing=true：包可能已进入协议写端，只能 unknown；
+			 * - intent 已落盘且没走到发包：本进程可证明没发，记 not_sent 并追加终态；
+			 * - 其余只可能是 beforeWrite 自身的失败，它的 CallFailure 已区分
+			 *   "sink 拒收"(not_sent) 与 "ACK 丢失"(unknown)。
+			 */
+			let dispatch: typeof failure.dispatch = "not_sent";
+			if (writing) dispatch = "unknown";
+			else if (!intentDurable && knownFailure) dispatch = failure.dispatch;
 			if (intentDurable && dispatch === "not_sent") {
 				/**
 				 * intent 已落盘、但这一步明确决定不派发（撤销 / 版本冲突 / 输入非法）。
