@@ -308,6 +308,16 @@
 - **`custom_click_action` 的编码是绕过 minecraft-data 的**：数据包定义少了外层 VarInt 长度前缀，Driver 自己拼包体（`encodeAnonymousNbt`）。如果上游修正了定义，这段需要复查，否则会多写一层前缀。
 - **没有 NPC 实体交互的专用能力**：NPC 对话目前只能通过"右键实体 → 服务器推界面 → `ui@1` 读 + `ui.act` 点"这条通用路径走，没有 `npc.talk@1` 之类的高层动作。本地插件夹具里也没有 NPC（没有 Citizens 依赖）。
 
+## 持久等待（2026-11-09 登记，未完成）
+
+### G33 · 持久等待与 `smelt(wait=true)` 跨进程恢复（**未解决**）
+
+- **现象**：`smelt@1` 的等待是 `capabilities/shared/observe.ts:104-122` 的 `setTimeout`，`withStation()`（`capabilities/shared/workstation.ts:123-152`）每轮重新申请 Body/开窗。整段在同一调用栈、同一进程内完成；`runtime/engine.ts:312-354` 的 `recover()` 把 `phase:"waiting"` 与其余未终结 Run 一起保守终结为 `finished/unknown` 并清空 `waiting`。`program/shim.ts:123-153` 的 `mc.waitUntil` 是活 Guest Promise，不是持久等待。`world/watch.ts` 没有 timer/scheduler，`world/state-frame.ts` 也明确不落调度。全仓没有跨进程复活等待记录的机制。
+- **证据**：`runtime/engine.ts:314`（`phase:"waiting"` 不在排除列表）、`:335-342`（`phase:"finished"` + `outcome:"unknown"`）、`runtime/rows.ts:201`（`waiting` 只落 JSON）、`runtime/runtime-db-worker.ts:221`（`runs.waiting TEXT`）、`capabilities/actions/smelt.ts:328-355`。附件 §5.9 标为 `[D/P0]`，验收项 C14/C21/C23 本轮均 `NOT_RUN`。
+- **修法要点**（附件 §5.9 允许复用受信任 decision 机制的挂起分支，不另建并行 Call 状态机）：`phase:"awaiting_decision"` 是唯一跨进程存活的非终结状态（`engine.ts:314` 明确排除），由 `engine.ts:411-577` 的 `continuePrepared()` 在 `runtime/admission.ts:33-44` 的 `(phase, decision, revision)` CAS 下原子认领新 Segment；`continue()` 的 `requestId` 幂等（`engine.ts:384-410`）可保证多次唤醒只认领一次。挂起记录可放 `DecisionRequest.checkpoint.value`，恢复入口放新 Segment 的 `Entry`。
+- **必须一起做完的三处，缺一就是半接线抽象**：① `runtime/owner.ts:140-145` 的 `capture(origin)` 要求 `origin.activation` 等于当前 binding；重启后 Host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值（`OwnerState` 目前不暴露 activation）。② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只触发重新观察，时间到不等于世界变化完成。③ `smelt.ts` 必须显式新增可持久模式（不能改旧 `wait` 的返回含义），把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物；现有装料循环会把结果槽清空且不记入 `completed`，直接重跑整函数会多生产。
+- **验收**：提交前/后 kill、Watch 丢失、唤醒时并发 stop、换连接/换世界、炉区块未加载、他人取走材料、两个 Run 不因同一份旧库存预算重复支付；分别得到未持久挂起 / 正常重扫 / 唯一重入 / 不续跑 / unknown，不能强行记 PASS。本批未起 Paper，未跑 `dev:mc:*`，未做性能对照。
+
 ## 附：不要照抄的部分
 
 对照 Cortico 后确认**不采用**：常驻 policy 层（G18 已裁决）、作弊传送脱困、把观测渲染成散文塞进 World。理由：分别违反"不堆隐藏配置"、"正常生存验收不靠传送"、"World 只给事实不给台词"。台词属表达侧。

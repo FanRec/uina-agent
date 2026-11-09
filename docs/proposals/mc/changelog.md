@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-11-09 · 控制权资格与 Effect 写前意图
+
+- **Driver Control Gate（`driver/control-arbiter.ts`）**：`bodyClaimed`/`gotoClaimed` 两个裸布尔槽换成单 active `ControlPermit`（绑定 `{id, kind}`），`release(permit)` 只释放同一对象。旧会话迟到的 `onClosed` 不再抹掉新 owner 的资格，Pathfinder 与新 Body 不会并行控制同一 Bot（C09）。`player-port.ts`/`goto.ts` 旧 API 全删，不留兼容层。
+- **Effect 写前意图（§5.3）**：`DriverExecutionSink` 增 `ensureDurable(ticket)`，`RecordQueue` 等 DB worker 的真实 `onDurable` ACK；`EffectRecorder.beforeWrite()` 先落 `kind:"intent"`、`dispatch:"unknown"`，ACK 后才放行不可重放的业务写。`driver/window/session.ts` 的 `click()` 把屏障放在冻结窗口前态之前，屏障之后到发包全程同步。生产组合根 `companion/side.ts` 与 `body/session.ts` 的 scoped/root recorder 都转发到真实队列。
+- **崩溃窗口语义**：ACK 丢失按 `unknown` 上报，绝不谎报 `not_sent`（否则调用方会重放扣料点击）；只有 sink 明确拒收 intent 才判 `not_sent`。intent 已落盘却决定不派发时追加终态 `cleanup(not_sent, not_met)`；`RecordQueue.unknownEffectsFor()`/`effectsForSafety()` 不再把终态明确"没发包"的效果计入未知效果。
+- **证据**：`pnpm typecheck` 全绿；`tests/mc` 121 文件 / 1010 项全绿；全仓 `pnpm test --maxWorkers=4` 349 文件 / 3576 通过 + 1 预期失败；编译链（native / tsc build / assets / web）四步全过。新增 `mc-control-permit.test.ts` 与 `mc-effect-intent.test.ts`（C02–C06 崩溃矩阵）。详细台账与未完成项见 [archive/control-gate-and-effect-intent.md](archive/control-gate-and-effect-intent.md)。
+- **未完成**：持久等待 / `smelt(wait=true)` 跨进程恢复（§5.9、C14/C21/C23）本批未实现，源码级施工路径与三处阻塞点已登记在 [known-gaps.md](known-gaps.md) 的 G33；F01–F20、T2 真服、T3 真模型窗口、性能对照均为 `NOT_RUN`，不冒充通过。
+
 ## 2026-11-09 · 目标对账统一、机械恢复、交付有界、落水策略（重构轮 R1）
 
 - **目标对账（capabilities §2.15，新增）**：`contracts/values.ts` 增 `GoalState` / `GoalSummary`；
