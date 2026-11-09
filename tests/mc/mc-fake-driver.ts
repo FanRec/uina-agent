@@ -73,19 +73,29 @@ function makeHost(): { view: HostView; setConnection: (connection: string) => vo
 }
 
 /** DriverExecutionSink stub：同步收事实并返回 ticket；永不返回 null（不触发 recorder fault）。 */
-function makeSink(): { sink: DriverExecutionSink; facts: DriverExecutionFact[] } {
+function makeSink(): {
+	sink: DriverExecutionSink;
+	facts: DriverExecutionFact[];
+	acknowledge: () => void;
+} {
 	const facts: DriverExecutionFact[] = [];
 	let sequence = 0;
+	let release!: () => void;
+	// 受控门闩：内存 sink 没有持久层，但"何时算已持久"必须由测试显式决定，
+	// 否则任何走写前屏障的用例都会默认放行，屏障时序在测试里等于不存在。
+	const durable = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	return {
 		facts,
+		acknowledge: () => release(),
 		sink: {
 			record(fact) {
 				facts.push(fact);
 				sequence += 1;
 				return { instance: "rw:t1", sequence };
 			},
-			// 内存 sink 没有持久层：ticket 一经发出即视为已提交。
-			async ensureDurable() {},
+			ensureDurable: () => durable,
 		},
 	};
 }
@@ -113,6 +123,13 @@ export interface BodyHarness {
 	port: PlayerPortImpl;
 	arbiter: DriverControlArbiter;
 	facts: DriverExecutionFact[];
+	/** 接线到 PlayerPort 的真实 sink：测试可直接驱动 ensureDurable 观察屏障时序。 */
+	sink: DriverExecutionSink;
+	/**
+	 * 显式确认持久化。共享 harness 不再默认放行写前屏障——不确认就挂起，
+	 * 这样"忘了 ack"会变成红，而不是悄悄拿到假绿。
+	 */
+	acknowledgeDurability(): void;
 	/** 实际接线的那只 stub：测试可就地改字段/读回状态（overrides 里改的是副本）。 */
 	bot: MineflayerBot;
 	setConnection(connection: string): void;
@@ -124,7 +141,7 @@ export function makeBodyHarness(
 	options: Partial<Pick<PlayerPortDeps, "sampleSelf" | "prepareFeedback">> = {},
 ): BodyHarness {
 	const { view: host, setConnection } = makeHost();
-	const { sink, facts } = makeSink();
+	const { sink, facts, acknowledge } = makeSink();
 	const arbiter = new DriverControlArbiter();
 	let serial = 0;
 	const mint = (prefix: string) => (): string => {
@@ -144,7 +161,7 @@ export function makeBodyHarness(
 		mintOp: mint("op"),
 		mintEff: mint("eff"),
 	});
-	return { port, arbiter, facts, bot, setConnection };
+	return { port, arbiter, facts, sink, acknowledgeDurability: acknowledge, bot, setConnection };
 }
 
 /** 取一个可用会话（测试里几乎总是紧接着写操作）。 */
