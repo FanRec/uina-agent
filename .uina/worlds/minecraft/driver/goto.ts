@@ -18,7 +18,7 @@ import type { CallFailure, EffectReceipt, JsonValue, Ref, Vec3 } from "../contra
 import { plain } from "../contracts/values.js";
 import type { RoutePlanResult } from "../contracts/world.js";
 import type { HostView } from "./body/session.js";
-import type { DriverControlArbiter } from "./control-arbiter.js";
+import type { ControlPermit, DriverControlArbiter } from "./control-arbiter.js";
 import { EffectRecorder, fail } from "./execution.js";
 import type { MineflayerBot } from "./mineflayer/adapter.js";
 import { fromMineflayerVec3 } from "./mineflayer/adapter.js";
@@ -158,7 +158,10 @@ export class GotoDirector {
 			});
 		}
 		this.validateRequest(request);
-		if (!this.deps.arbiter.tryClaimGoto()) {
+		// permit 绑定本次 Operation：迟到 settle 只释放自己那次授予，
+		// 不会抹掉此后新 owner 的资格（§6.2 不变量 3 / C09）。
+		const permit = this.deps.arbiter.claim("goto");
+		if (permit == null) {
 			throw fail({
 				code: "CONTROL_CONFLICT",
 				source: "capability",
@@ -313,7 +316,7 @@ export class GotoDirector {
 			}
 			throw this.mapOutcomeFailure(outcome, eff, ticks, bot, signal.aborted);
 		} finally {
-			await this.settle(bot, eff, op, signal.aborted ? "aborted" : "finished");
+			await this.settle(bot, eff, op, signal.aborted ? "aborted" : "finished", permit);
 			this.state = "done";
 			// 守卫随 Operation 注销：调用结束后本 Operation 的 signal 已 abort，
 			// 陈旧守卫会在后续导航运行期误触发封印并 clearGoal（上游表现为 GoalChanged）。
@@ -614,7 +617,13 @@ export class GotoDirector {
 	 * 结算：清目标 → 等插件静止（有界）→ 退役 → release 槽位。
 	 * 静止判据（§9.3 屏障证据）：无目标、路径空、无在挖方块、键位全 false。
 	 */
-	private async settle(bot: MineflayerBot | null, eff: Ref, op: Ref, reason: string): Promise<void> {
+	private async settle(
+		bot: MineflayerBot | null,
+		eff: Ref,
+		op: Ref,
+		reason: string,
+		permit: ControlPermit,
+	): Promise<void> {
 		if (bot != null && pathfinderGoalActive(bot)) clearGoal(bot);
 		const quiesced = await this.awaitQuiesced(bot);
 		if (bot != null && !quiesced) {
@@ -641,7 +650,7 @@ export class GotoDirector {
 					: "quiescence deadline exceeded; residual writes cannot be excluded",
 			},
 		);
-		this.deps.arbiter.releaseGoto();
+		this.deps.arbiter.release(permit);
 	}
 
 	private awaitQuiesced(bot: MineflayerBot | null): Promise<boolean> {

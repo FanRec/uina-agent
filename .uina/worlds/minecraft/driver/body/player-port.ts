@@ -146,8 +146,10 @@ export class PlayerPortImpl implements PlayerPort {
 				recoverable: false,
 			});
 		}
-		// 控制仲裁：goto 受控独占期间拒绝新资格（调度违约 CONTROL_CONFLICT）
-		if (!this.deps.arbiter.tryClaimBody()) {
+		// 控制闸门：body 与 goto 共用唯一资格（调度违约 CONTROL_CONFLICT）。
+		// permit 绑定本次授予，旧会话迟到的 onClosed 无法释放新 owner 的资格。
+		const permit = this.deps.arbiter.claim("body");
+		if (permit == null) {
 			throw fail({
 				code: "CONTROL_CONFLICT",
 				source: "capability",
@@ -175,7 +177,7 @@ export class PlayerPortImpl implements PlayerPort {
 				deadEntities: () => this.deadLog,
 				onClosed: (barrierProven) => {
 					if (onAbort != null) signal.removeEventListener("abort", onAbort);
-					this.deps.arbiter.releaseBody();
+					this.deps.arbiter.release(permit);
 					if (this.current === session) this.current = null;
 					if (!barrierProven) {
 						this.brokenBarrierConnection = identity.connection;
@@ -184,7 +186,7 @@ export class PlayerPortImpl implements PlayerPort {
 				},
 			});
 		} catch (err) {
-			this.deps.arbiter.releaseBody(); // 构造失败不泄漏资格槽
+			this.deps.arbiter.release(permit); // 构造失败只释放自己这次授予
 			throw err;
 		}
 		this.current = session;
