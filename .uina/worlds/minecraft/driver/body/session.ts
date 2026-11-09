@@ -699,11 +699,16 @@ export class BodySessionImpl implements BodySession {
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
-			const entity = this.resolveEntity(bot, target);
+			// 先确认目标还在：不为一个已经消失的实体花一次写前意图。
+			this.resolveEntity(bot, target);
 			const evidenceMs = Math.max(100, Math.min(options?.evidenceMs ?? 600, 5000));
+			// 写前意图（§5.12）：攻击不可撤销且无回执。先落盘，再登记证据监听、再发包。
+			await this.recorder.beforeWrite(eff, op, "body.attack@1", { target: target.networkId });
+			this.recheck();
+			const live = this.resolveEntity(bot, target);
 			// 先登记证据监听再派发：受击包可能在 dispatch 之后极早到达。
 			const evidence = this.awaitHurtEvidence(bot, target.networkId, evidenceMs);
-			bot.attack(entity);
+			bot.attack(live);
 			const { hit, dead } = await evidence;
 			// 派发已发生：hit 只是证据，不改变 dispatch 事实。
 			this.recorder.record(
@@ -925,6 +930,19 @@ export class BodySessionImpl implements BodySession {
 					recoverable: true,
 				});
 			}
+			// 写前意图（§5.12）：使用手持物可能吃掉/放置/点燃东西，不可安全重放。
+			await this.recorder.beforeWrite(eff, op, "body.useItem@1", { hand });
+			this.recheck();
+			if (!this.handHasItem(bot, hand))
+				throw fail({
+					code: "WRONG_STATE",
+					source: "input",
+					message: `hand ${hand} no longer holds an item after the write intent`,
+					hint: "equip the item again",
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
 			protocolFor(bot).useItem(hand === "off" ? 1 : 0);
 			this.ownedUse.set(hand, {
 				operation: op,
@@ -1073,6 +1091,9 @@ export class BodySessionImpl implements BodySession {
 			this.recheck();
 			const f = direction ?? { x: 0, y: 1, z: 0 };
 			const face = f.y > 0 ? 1 : f.y < 0 ? 0 : f.z > 0 ? 3 : f.z < 0 ? 2 : f.x > 0 ? 5 : 4;
+			// 写前意图（§5.12）：方块交互是放置/使用/开门这类真实世界写，不可安全重放。
+			await this.recorder.beforeWrite(eff, op, "body.interact@1", plain({ block: target.block, hand: input.hand }));
+			this.recheck();
 			protocolFor(bot).activateBlock(target.block, face, input.hand === "off" ? 1 : 0, cursorPos);
 			this.recorder.record(
 				eff,

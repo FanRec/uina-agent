@@ -324,6 +324,9 @@ export async function runUiAct(deps: UiActDeps, input: UiActInput): Promise<UiAc
 	};
 
 	try {
+		// 写前意图（§5.12）：菜单里的购买/选择会扣货币或扣物，不可安全重放；
+		// 原来只有"发包之后"那条事实，崩溃时无法区分"点了没发出去"和"发出去了"。
+		await deps.recorder.beforeWrite(effect, operation, "body.uiAct@1", { kind: input.kind });
 		deps.guard();
 		dispatch = "unknown";
 		planResult.dispatch();

@@ -238,7 +238,8 @@ describe("ui.act pre-state validation", () => {
 			signal: new AbortController().signal,
 			guard: () => {},
 			canCleanup: () => true,
-			recorder: { record: () => {} } as unknown as UiActDeps["recorder"],
+			// beforeWrite 是写前意图门（G34）；这里验的是前态校验，放行即可。
+			recorder: { record: () => {}, beforeWrite: async () => {} } as unknown as UiActDeps["recorder"],
 			mintOp: () => "op:1" as UiActDeps["connection"],
 			mintEff: () => "eff:1" as UiActDeps["connection"],
 			state,

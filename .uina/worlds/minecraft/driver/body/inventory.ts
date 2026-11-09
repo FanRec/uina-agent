@@ -178,7 +178,12 @@ export async function runToss(deps: InventoryDeps, selector: ItemSelector, count
 	const removed: Record<string, number> = {};
 	let remaining = count;
 	deps.guard();
-	deps.recorder.record(effect, operation, "body.toss@1", "dispatch", "sent", "unknown");
+	// 写前意图（§5.12）：丢弃是不可撤销的库存写。原来那条 dispatch=sent 记在循环
+	// 之前，崩溃时既没有 intent 也没有真实派发，恢复只能猜"丢没丢"。
+	await deps.recorder.beforeWrite(effect, operation, "body.toss@1", { count, selector: String(selector) });
+	deps.guard();
+	// 意图落盘之后才开始点：在此之前抛错确定没有动过库存。
+	let clicked = false;
 	try {
 		for (const source of sources) {
 			if (remaining === 0) break;
@@ -186,6 +191,7 @@ export async function runToss(deps: InventoryDeps, selector: ItemSelector, count
 			if (item == null || !matchesItem(selector, item))
 				throw failure("CONFLICT", "selected source changed before toss");
 			const quantity = Math.min(remaining, item.count);
+			clicked = true;
 			snapshot = await click(deps, snapshot, source.slot);
 			if (quantity === item.count) {
 				snapshot = await click(deps, snapshot, -999, 0, () => {
@@ -205,11 +211,13 @@ export async function runToss(deps: InventoryDeps, selector: ItemSelector, count
 		deps.recorder.record(effect, operation, "body.toss@1", "receipt", "sent", "met", { removed, remaining });
 		return { receipt: { effect, dispatch: "sent", completion: "met", evidence: [] }, removed, remaining };
 	} catch (error) {
-		deps.recorder.record(effect, operation, "body.toss@1", "receipt", "sent", "unknown", { removed, remaining });
+		// 没点过就确定没丢：不能照旧记一条"已派发"的收口，更不能不问就升级 not_sent。
+		if (clicked)
+			deps.recorder.record(effect, operation, "body.toss@1", "receipt", "sent", "unknown", { removed, remaining });
 		if (error instanceof Error && error.name === "CallFailure") {
 			const failure = error as CallFailure;
 			failure.progress = { ...failure.progress, removed, remaining };
-			if (failure.dispatch === "not_sent") failure.dispatch = "sent";
+			if (clicked && failure.dispatch === "not_sent") failure.dispatch = "sent";
 		}
 		throw error;
 	}

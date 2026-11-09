@@ -604,7 +604,25 @@ export class WindowSessionImpl implements WindowSession {
 				diagnostics: diagnostics("diverged"),
 			};
 		} catch (error) {
-			if (sent) return this.unknown(effect, operation);
+			if (sent) {
+				const terminal = this.unknown(effect, operation);
+				/**
+				 * 包已经发出去了，但之后 check()/view() 报控制资格被撤（身体让出/退役/
+				 * 调用被取消）。这不是"点歪了"：调用方必须知道身体已经不在了，否则会把
+				 * 一次控制层撤销当成业务 unknown 继续重试。收口照旧留 unknown 事实，
+				 * 但把失败原样透传，并如实标成已派发。
+				 */
+				const failure = error as import("../../contracts/values.js").CallFailure;
+				if (
+					failure?.name === "CallFailure" &&
+					(failure.code === "CONTROL_INVALID" || failure.code === "BODY_SUSPENDED" || failure.code === "INTERRUPTED")
+				) {
+					failure.dispatch = "sent";
+					failure.effects = [effect];
+					throw failure;
+				}
+				return terminal;
+			}
 			const failure = error as import("../../contracts/values.js").CallFailure;
 			const knownFailure = failure?.name === "CallFailure";
 			/**
@@ -669,22 +687,31 @@ export class WindowSessionImpl implements WindowSession {
 	 * 工作站专用提交（批 15）：只写包，不改 revision、不做槽位预测、不置 uncertain。
 	 * 完成合同与 chat 同口径——"包已进入当前连接的协议发送边界"，
 	 * 由此产生的窗口状态是另一次观察，由能力层按证据判定。
+	 *
+	 * G34：这三条（附魔/命名/选交易）都会扣经验、扣材料或搬动整摞付款，属于不可
+	 * 安全重放的业务写，所以写前意图必须先落盘。beforeWrite 之后到 write(native)
+	 * 之间不再夹异步缝隙：窗口前态与派发时的状态必须一致（§7.7）。
 	 */
-	private commit(
+	private async commit(
 		contract: `${string}@${string}`,
 		expect: string[],
 		detail: Record<string, JsonValue>,
 		write: (native: NativeWindow) => void,
-	): EffectReceipt {
+	): Promise<EffectReceipt> {
+		this.check();
+		const type = this.view()?.type;
+		if (type != null && !expect.includes(type))
+			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${type}`);
+		const operation = this.deps.operation;
+		const effect = this.deps.mintEff();
+		await this.deps.recorder.beforeWrite(effect, operation, contract, detail);
+		// 意图等盘期间窗口可能换了或退役：重新取当前前态，不拿 await 之前的视图写包。
 		this.check();
 		const native = this.nativeWindow();
 		const view = this.view();
 		if (native === null || view == null) throw failure("WRONG_STATE", "window is not ready");
-		const type = view.type;
-		if (!expect.includes(type))
-			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${type}`);
-		const operation = this.deps.operation;
-		const effect = this.deps.mintEff();
+		if (!expect.includes(view.type))
+			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${view.type}`);
 		try {
 			write(native);
 		} catch (error) {

@@ -20,6 +20,8 @@ function harnessWithEvents() {
 		},
 		entities: { [ID]: { id: ID, position: { x: 0, y: 64, z: 0 }, isValid: true, type: "hostile" } },
 	});
+	// 这些用例看的是证据窗口语义，不是持久屏障：显式放行写前意图的门闩。
+	harness.acknowledgeDurability();
 	return { harness, emitter, attacks: () => attacks };
 }
 

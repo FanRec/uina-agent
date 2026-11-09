@@ -139,6 +139,13 @@ export async function runMining(
 						recoverable: true,
 					});
 				deps.guard();
+				// 写前意图（§5.12）：破坏方块不可撤销。原来的 dispatch=unknown 只是内存标记，
+				// 崩溃后连"可能已经开始挖"都没有持久证据。
+				await deps.recorder.beforeWrite(effect, operation, "body.dig@1", {
+					target: { x: target.block.x, y: target.block.y, z: target.block.z },
+					predictedMs: waitMs,
+				});
+				deps.guard();
 				dispatch = "unknown";
 				deps.protocol.startDig(target.block, face);
 				dispatch = "sent";

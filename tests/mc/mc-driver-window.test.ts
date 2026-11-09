@@ -650,3 +650,75 @@ describe("Driver window lifetime and server confirmation", () => {
 		await h.session.close();
 	});
 });
+
+/**
+ * G34：每个不可安全重放的写端都必须先落写前意图，再发包。
+ *
+ * 这里钉的是驱动层的顺序与门槛，不是 Runtime 的记录格式（那由
+ * mc-effect-intent 用真实 RecordQueue 证）。两个方向：
+ * - 意图是这条 effect 的第一条事实，且早于 dispatch；
+ * - intent 被 sink 拒收时一次包都不发，失败按 not_sent 收口。
+ */
+describe("G34 write ends record intent before dispatch", () => {
+	const kindsOf = (facts: DriverExecutionFact[]) => facts.map((fact) => fact.kind);
+	const entityRef = { connection: "conn:t1", incarnation: "inc:t1", appearance: "entity:zombie", networkId: 7 };
+
+	test("block interaction records the intent before the placement packet", async () => {
+		const h = harness();
+		await h.session.interact({ target: target as never, hand: "main" });
+		expect(kindsOf(h.facts)[0]).toBe("intent");
+		expect(h.facts[0]).toMatchObject({ contract: "body.interact@1", dispatch: "unknown" });
+		const dispatchAt = h.facts.findIndex((fact) => fact.kind === "dispatch");
+		expect(dispatchAt).toBeGreaterThan(0);
+		expect(h.writes.filter((write) => write.name === "block_place").length).toBeGreaterThan(0);
+		await h.session.close();
+	});
+
+	test("using a held item records the intent before the activation packet", async () => {
+		const h = harness();
+		h.bot.heldItem = stone(1);
+		await h.session.useItem("main");
+		expect(kindsOf(h.facts)[0]).toBe("intent");
+		expect(h.facts[0]).toMatchObject({ contract: "body.useItem@1" });
+		expect(h.facts.findIndex((fact) => fact.kind === "dispatch")).toBeGreaterThan(0);
+		await h.session.close();
+	});
+
+	test("attacking an entity records the intent before the swing", async () => {
+		const h = harness();
+		h.bot.entities = { 7: { id: 7, position: { x: 0, y: 64, z: 0 }, height: 1.8, name: "zombie" } };
+		h.bot.attack = () => {};
+		await h.session.attack(entityRef as never, { evidenceMs: 100 });
+		expect(kindsOf(h.facts)[0]).toBe("intent");
+		expect(h.facts[0]).toMatchObject({ contract: "body.attack@1" });
+		expect(h.facts.findIndex((fact) => fact.kind === "receipt")).toBeGreaterThan(0);
+		await h.session.close();
+	});
+
+	test("tossing records the intent before the first click and stays not_sent when it is refused", async () => {
+		const h = harness();
+		h.contents[12] = stone(3);
+		h.full();
+		h.deps.sink.record = () => null;
+		const failure = await captureFailure(h.session.toss({ name: "stone" }, 2));
+		expect(failure).toMatchObject({ dispatch: "not_sent" });
+		// sink 拒收 = 没有 intent = 确定没发：一个 window_click 都不许出去。
+		expect(h.writes.filter((write) => write.name === "window_click")).toHaveLength(0);
+		await h.session.close();
+	});
+
+	test("a workstation commit records the intent before the selection packet", async () => {
+		const h = harness(true, { type: "minecraft:enchantment" });
+		const window = await h.session.openContainer(target);
+		// 打开窗口本身已经发过 block_place：这里只关心附魔包不许出去。
+		const packetsBefore = h.writes.length;
+		h.deps.sink.record = () => null;
+		const failure = await captureFailure(window.selectEnchant(1));
+		expect(failure).toMatchObject({ dispatch: "not_sent", code: "INTERNAL" });
+		expect(h.writes.filter((write) => write.name === "enchant_item")).toHaveLength(0);
+		expect(h.writes).toHaveLength(packetsBefore);
+		// recorder 已故障：关窗也算写端，会被拒；这里只确认"故障之后不再出去任何包"。
+		await window.close().catch(() => {});
+		await h.session.close().catch(() => {});
+	});
+});
