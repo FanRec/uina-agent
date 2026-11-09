@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import { key, makeHarness, type HarnessState } from "./mc-capability-harness.js";
+import { key, makeHarness, type HarnessHooks, type HarnessState } from "./mc-capability-harness.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -81,6 +81,79 @@ describe("tunnel@1", () => {
 		expect(value.path.filter((entry) => entry.name === "gravel")).toHaveLength(1);
 		expect(state.blocks.get(key({ x: 14, y: 64, z: 10 }))?.name).toBe("air");
 		expect(h.calls).toContain("goto:14,64,10");
+	});
+
+	test("the support cap is dug top-down: the upper gravity block goes first", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 62, z: 10 }, { x: 14, y: 66, z: 10 });
+		// 下坡走廊（to y=62），col1 檐上是两格砾石帽。真服批39：先挖下层砾石会让上层
+		// 立刻失去支撑、坠进正在挖的走廊，落点正是走位目标脚位（G31 回归的机制）。
+		state.blocks.set(key({ x: 11, y: 66, z: 10 }), { name: "gravel", properties: {} });
+		state.blocks.set(key({ x: 11, y: 67, z: 10 }), { name: "gravel", properties: {} });
+		const order: string[] = [];
+		const h = makeHarness(state, {
+			onDig: (target) => {
+				order.push(`${target.block.x},${target.block.y},${target.block.z}`);
+				state.blocks.set(key(target.block), { name: "air", properties: {} });
+			},
+		});
+		const value = await invoke<{ dug: number; stopped?: string }>(h, "tunnel@1", { to: { x: 14, y: 62, z: 10 } });
+		expect(value.stopped).toBeUndefined();
+		expect(value.dug).toBe(12);
+		// col1 整列自上而下：帽顶 67 → 帽底 66 → 檐 65 → 头 64 → 脚 63。
+		expect(order.filter((cell) => cell.startsWith("11,"))).toEqual([
+			"11,67,10",
+			"11,66,10",
+			"11,65,10",
+			"11,64,10",
+			"11,63,10",
+		]);
+		expect(state.blocks.get(key({ x: 11, y: 66, z: 10 }))?.name).toBe("air");
+		expect(state.blocks.get(key({ x: 11, y: 67, z: 10 }))?.name).toBe("air");
+	});
+
+	test("a station refilled during the walk is re-cleared, not walked through", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 64, z: 10 }, { x: 14, y: 65, z: 10 });
+		// 真服批39 形态：砾石落定晚于走位前的站位清理，goto 腿中途填住本腿目标脚位
+		// （当时 GoalNear tolerance=1 谎报到位，机器人站在它头顶）。tunnel 必须按同一
+		// 口径重清站位再步进，而不是隔着砾石"走到"然后烧满预算报一句无归因的卡住。
+		const hooks: HarnessHooks = {
+			onDig: (target) => state.blocks.set(key(target.block), { name: "air", properties: {} }),
+			// 只绊第一腿：砾石在第一腿中途落进目标脚位，重清后不再复发。
+			gotoFailure: () => {
+				hooks.gotoFailure = undefined;
+				state.blocks.set(key({ x: 13, y: 64, z: 10 }), { name: "gravel", properties: {} });
+				const error = new Error("goto leg timed out");
+				(error as { code?: string }).code = "TIMEOUT";
+				return error;
+			},
+			// drive 替身带碰撞语义：目标脚位被砾石填住时 bot 过不去（真服形态是站在它头顶），
+			// 清掉之后才走得到——这让"重清再步进"与"隔墙传送"在替身里可区分。
+			onDrive: (_ticks, self) => {
+				const blocked = state.blocks.get(key({ x: 13, y: 64, z: 10 }))?.name === "gravel";
+				self.place = {
+					...self.place,
+					position: blocked ? { x: 10.5, y: 64, z: 10.5 } : { x: 13.5, y: 64, z: 10.5 },
+				};
+			},
+		};
+		const h = makeHarness(state, hooks);
+		const value = await invoke<{
+			dug: number;
+			stopped?: string;
+			path: { at: { x: number; y: number }; name: string }[];
+		}>(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } });
+		expect(value.stopped).toBeUndefined();
+		// 8 格计划内 + 1 格走拍中途回填的砾石：重清计入 dug，本腿目标真的站进去。
+		expect(value.dug).toBe(9);
+		expect(value.path.filter((entry) => entry.name === "gravel")).toHaveLength(1);
+		expect(state.blocks.get(key({ x: 13, y: 64, z: 10 }))?.name).toBe("air");
+		expect(h.calls).toContain("goto:13,64,10");
 	});
 
 	test("a station refilled with fluid fails UNREACHABLE with the cell named", async () => {
