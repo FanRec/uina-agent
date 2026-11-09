@@ -339,7 +339,7 @@
 - **已排除**：这是既有行为，不是本轮改动引入。同一台服务器、同一世界状态下，把 `.uina/worlds/minecraft` 整体回退到会话基线 `cba81d5f` 复跑，`task shelter` 同样在第一批 craft 的第二次点击就撞 `CONFLICT`；`dev:mc:build` 的失败步骤也与 HEAD 一致。写端意图（探针实测 `beforeWrite` 2ms）、唤醒扫描定时器、executor 各自回退后都能复现，逐个排除。
 - **根因**：`click()` 的派发准入拿 `expectedRevision === view.revision` 当条件，而两个窗口族的 revision 语义根本不同。工作台/容器窗口的 `ConnectionWindowState.contentRevision` 只在内容真变时 +1；**玩家自带窗口（windowId=0）每次收到 `window_items` 全量同步都 `revision = previous + 1`**（`driver/mineflayer/protocol.ts:478`），而服务端对上一击的回执本身就会再推一次全量。于是一次 `equip`/`toss`/`craft` 由多次点击组成时，第二击起必然"版本过期"——那是自己的回执还没到齐，不是别人动过窗口。窗口不是不可用，是这个判据把时序当成了冲突。
 - **关闭方式**：准入判据改成**内容**——调用方在点击里声明的 `expectedSlots`（覆盖点击槽、槽号在范围内、计数非负）与 `expectedCursor` 与当前窗口逐格比对（`describeDrift`）。`INVALID_INPUT` 的形状校验与内容比对分开：形状不对是调用方写错，内容不对才是冲突。`expectedRevision` 保留，但只进冲突消息，用来区分"自己的回执晚到（差一版）"和"别人真动过窗口（且内容必然也对不上）"。合同注释（`contracts/body.ts`）与 `modules/driver.md` / `public-api.md` 同步改成同一口径。
-- **证据**：`tests/mc/mc-driver-window.test.ts` 新增 4 条（内容相同、revision 前进 → 放行；内容不同 → `CONFLICT` 且消息指出差在哪一格；光标漂移 → `CONFLICT`；槽号越界/未覆盖点击槽 → `INVALID_INPUT`）。真服：`dev:mc:task --task night` 与 `--task shelter` 由红转绿（shelter 24/24 格），`dev:mc:build` 13/13 步全过。
+- **证据**：`tests/mc/mc-driver-window.test.ts` 新增 4 条——容器窗口"只涨版本、点击依赖的那格与光标都没动"必须放行；点击槽内容变了 → `CONFLICT` 且消息指出槽号与两个 revision；光标变了 → `CONFLICT` 且指出 cursor；玩家库存窗口（每次全量同步都 +1 版本）同款放行。形状类拒绝（`expectedSlots` 未覆盖点击槽、计数非负、光标形状）由既有用例覆盖，不重复造。真服：`dev:mc:task --task night` 与 `--task shelter` 由红转绿（shelter 24/24 格），`dev:mc:build` 13/13 步全过。
 - **同族遗留**：`dev:mc:stations` 的 `anvil 合并` 步骤偶发 `TARGET_NOT_MET ... cost -1`，见 G38——那是服务端真没给结果，与本条无关，修复前后都出现过。
 
 ### G37 · §5.11 effect footprint 与 §8.5 跨任务物料预留（本轮不做）
