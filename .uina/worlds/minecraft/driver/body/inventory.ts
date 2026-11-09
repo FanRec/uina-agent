@@ -157,22 +157,27 @@ export async function runEquip(
 
 export async function runToss(deps: InventoryDeps, selector: ItemSelector, count: number): Promise<TossOutcome> {
 	if (!Number.isInteger(count) || count < 1) throw failure("INVALID_INPUT", "toss count must be a positive integer");
+	/** 按当前快照挑源格；两次调用（意图前、意图后）走同一份判据。 */
+	const pickSources = (snapshot: WindowSnapshot) => {
+		const sources = snapshot.slots.filter(
+			(entry) =>
+				entry.slot >= 9 &&
+				entry.slot <= 44 &&
+				entry.item != null &&
+				matchesItem(selector, entry.item as unknown as ItemValue),
+		);
+		if (sources.length === 0)
+			throw failure(
+				hasUnverifiable(snapshot, selector) ? "WRONG_STATE" : "NOT_FOUND",
+				"no verifiable matching item in main inventory",
+			);
+		if (sources.reduce((sum, entry) => sum + (entry.item as unknown as ItemValue).count, 0) < count)
+			throw failure("MISSING_MATERIAL", "main inventory contains fewer matching items than requested");
+		return sources;
+	};
 	let snapshot = (await deps.window.snapshot()).value;
 	emptyCursor(snapshot);
-	const sources = snapshot.slots.filter(
-		(entry) =>
-			entry.slot >= 9 &&
-			entry.slot <= 44 &&
-			entry.item != null &&
-			matchesItem(selector, entry.item as unknown as ItemValue),
-	);
-	if (sources.length === 0)
-		throw failure(
-			hasUnverifiable(snapshot, selector) ? "WRONG_STATE" : "NOT_FOUND",
-			"no verifiable matching item in main inventory",
-		);
-	if (sources.reduce((sum, entry) => sum + (entry.item as unknown as ItemValue).count, 0) < count)
-		throw failure("MISSING_MATERIAL", "main inventory contains fewer matching items than requested");
+	let sources = pickSources(snapshot);
 	const operation = deps.mintOp();
 	const effect = deps.mintEff();
 	const removed: Record<string, number> = {};
@@ -182,6 +187,21 @@ export async function runToss(deps: InventoryDeps, selector: ItemSelector, count
 	// 之前，崩溃时既没有 intent 也没有真实派发，恢复只能猜"丢没丢"。
 	await deps.recorder.beforeWrite(effect, operation, "body.toss@1", { count, selector: String(selector) });
 	deps.guard();
+	// 意图等盘期间服务端可能已经同步过库存：重新取一份快照，否则第一次点击必然
+	// 拿旧 revision 撞 CONFLICT（§7.7 的前态检查不负责替调用方续期）。
+	snapshot = (await deps.window.snapshot()).value;
+	try {
+		emptyCursor(snapshot);
+		sources = pickSources(snapshot);
+	} catch (error) {
+		// 意图已经落盘、这一版又决定不点：必须补终态，否则恢复侧只看到一条 intent，
+		// 会把"什么都没做"当成"可能丢过东西"永远挂在 unknown。
+		deps.recorder.record(effect, operation, "body.toss@1", "cleanup", "not_sent", "not_met", {
+			completionContract: "durable intent closed before dispatch; no click was sent",
+			reason: (error as { code?: string }).code ?? "INTERNAL",
+		});
+		throw error;
+	}
 	// 意图落盘之后才开始点：在此之前抛错确定没有动过库存。
 	let clicked = false;
 	try {

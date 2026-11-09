@@ -471,6 +471,9 @@ export const smeltModule: MinecraftCapabilityModule = {
 									}),
 									recheckAfterMs: Math.max(1000, (batchTicks / 20) * 1000),
 									deadlineAfterMs: Math.max(0, deadline - Date.now()),
+									// 这一轮到底取到了产物没有：取到就说明世界在推进，静默预算重新起算；
+									// 没取到就沿用上次的起点，让"多久没进展"真的能到点。
+									progressed: resume != null && completed > resume.completed,
 								});
 							}
 							needsLoad = false;

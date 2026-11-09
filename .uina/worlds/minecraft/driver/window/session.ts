@@ -467,7 +467,11 @@ export class WindowSessionImpl implements WindowSession {
 			const native = this.nativeWindow();
 			if (view == null || native === null) throw failure("WRONG_STATE", "window is not ready");
 			if (input.expectedRevision !== view.revision)
-				throw failure("CONFLICT", "window revision changed before dispatch");
+				// 带上两个数值：真服排障时"差了一版"和"差了很多版"是两类问题。
+				throw failure(
+					"CONFLICT",
+					`window revision changed before dispatch (expected ${input.expectedRevision}, actual ${view.revision})`,
+				);
 			if (
 				!Number.isInteger(input.slot) ||
 				(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
@@ -707,12 +711,24 @@ export class WindowSessionImpl implements WindowSession {
 		const effect = this.deps.mintEff();
 		await this.deps.recorder.beforeWrite(effect, operation, contract, detail);
 		// 意图等盘期间窗口可能换了或退役：重新取当前前态，不拿 await 之前的视图写包。
-		this.check();
-		const native = this.nativeWindow();
-		const view = this.view();
-		if (native === null || view == null) throw failure("WRONG_STATE", "window is not ready");
-		if (!expect.includes(view.type))
-			throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${view.type}`);
+		let native: NativeWindow;
+		try {
+			this.check();
+			const current = this.nativeWindow();
+			const view = this.view();
+			if (current === null || view == null) throw failure("WRONG_STATE", "window is not ready");
+			if (!expect.includes(view.type))
+				throw failure("WRONG_STATE", `${contract} needs ${expect.join(" or ")}, this window is ${view.type}`);
+			native = current;
+		} catch (error) {
+			// 意图已经落盘，这一版又决定不派发：必须补一条终态，否则恢复侧只看到
+			// 一条 intent，会把它当成"可能已经发出"的崩溃窗口，永远挂在 unknown。
+			this.deps.recorder.record(effect, operation, contract, "cleanup", "not_sent", "not_met", {
+				completionContract: "durable intent closed before dispatch; no packet was written",
+				reason: (error as { code?: string }).code ?? "INTERNAL",
+			});
+			throw error;
+		}
 		try {
 			write(native);
 		} catch (error) {

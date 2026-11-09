@@ -156,6 +156,11 @@ export interface DurableSuspendRequest {
 	recheckAfterMs: number;
 	/** 静默预算：到期仍无进展，能力必须如实报告未完成，不能继续挂起。 */
 	deadlineAfterMs: number;
+	/**
+	 * 自上次挂起以来世界是否真的推进了（目标有改善）。false 时不刷新
+	 * `lastProgressAt`，静默预算因此是"多久没进展"而不是"挂了多久"。
+	 */
+	progressed?: boolean;
 }
 
 /**

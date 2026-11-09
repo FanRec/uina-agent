@@ -128,6 +128,14 @@ const RETIREMENT_HINT: Record<ControlRetirementCause, string> = {
  */
 const MAX_DURABLE_WAKE_ATTEMPTS = 16;
 
+/** 明确拒绝里可以靠下一轮扫描自愈的：绑定过期/换手、存储暂不可用。 */
+const TRANSIENT_WAKE_REFUSALS = new Set([
+	"OWNER_EXPIRED",
+	"OWNER_GATE_CLOSED",
+	"OWNER_STATE_CHANGED",
+	"STORAGE_UNAVAILABLE",
+]);
+
 function isJsonValue(value: unknown): value is JsonValue {
 	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
 	if (typeof value === "number") return Number.isFinite(value);
@@ -227,6 +235,8 @@ export class RuntimeEngine {
 	private wakeTimer: ReturnType<typeof setInterval> | null = null;
 	private wakeScanning = false;
 	private wakeClosed = false;
+	/** 被明确拒绝过的唤醒：run → 那一版挂起的 revision，同一版不再重试。 */
+	private readonly wakeRefusals = new Map<Ref, number>();
 	private isolationFailed = false;
 	private chatGate: Promise<void> = Promise.resolve();
 	readonly safety: RuntimeSafety;
@@ -1378,13 +1388,18 @@ export class RuntimeEngine {
 		const attempts = (previous?.attempts ?? 0) + 1;
 		if (attempts > MAX_DURABLE_WAKE_ATTEMPTS) return null;
 		const now = Date.now();
-		// 静默预算是从"最后一次世界推进"起算的总预算，不是每次复查都续期。
-		const lastProgressAt = previous?.lastProgressAt ?? new Date(now).toISOString();
+		// 静默预算按"多久没进展"算：能力说这次复查真的推进了才刷新起点，
+		// 否则沿用上一次——一个每轮都复查一遍却毫无变化的等待必须能到点。
+		const lastProgressAt =
+			suspend.progressed === true || previous == null ? new Date(now).toISOString() : previous.lastProgressAt;
+		const deadlineAt = new Date(Date.parse(lastProgressAt) + Math.max(0, suspend.deadlineAfterMs)).toISOString();
+		const requested = new Date(now + Math.max(0, suspend.recheckAfterMs)).toISOString();
 		return {
 			attempts,
-			earliestCheckAt: new Date(now + Math.max(0, suspend.recheckAfterMs)).toISOString(),
+			// 复查时刻被夹在预算之内：能力要等一小时、预算只剩十秒时，十秒后再看一眼。
+			earliestCheckAt: requested < deadlineAt ? requested : deadlineAt,
 			lastProgressAt,
-			deadlineAt: new Date(Date.parse(lastProgressAt) + Math.max(0, suspend.deadlineAfterMs)).toISOString(),
+			deadlineAt,
 			resume: { selector: state.callable.ref, input: plain(state.rootCall.input) },
 			checkpoint: plain(suspend.checkpoint),
 		};
@@ -1422,9 +1437,24 @@ export class RuntimeEngine {
 					entry: { kind: "call", selector: item.wait.resume.selector, input: item.wait.resume.input },
 					environment: "inherit",
 				});
-				if (acceptance.kind === "accepted") claimed++;
-				else if (acceptance.kind === "unknown")
+				if (acceptance.kind === "accepted") {
+					claimed++;
+					this.wakeRefusals.delete(item.run);
+					continue;
+				}
+				if (acceptance.kind === "unknown") {
 					console.error(`[mc-runtime] durable wake for ${item.run} was not confirmed: ${acceptance.reason}`);
+					continue;
+				}
+				// 明确拒绝里只有"资格没到位"是瞬时的；其余（入口解析不到、输入不合法、
+				// 环境已换）在这一版挂起上是确定结论，每秒重试只是空转加噪声。
+				if (TRANSIENT_WAKE_REFUSALS.has(acceptance.code)) continue;
+				if (this.wakeRefusals.get(item.run) === item.revision) continue;
+				this.wakeRefusals.set(item.run, item.revision);
+				console.error(
+					`[mc-runtime] durable wake for ${item.run} refused (${acceptance.code}): ${acceptance.message}; ` +
+						"the run stays parked until a host decision or stop",
+				);
 			}
 			return claimed;
 		} finally {
@@ -1438,12 +1468,14 @@ export class RuntimeEngine {
 		for (const state of this.runs.values()) {
 			const wait = state.phase === "awaiting_decision" ? state.decisionRequest?.wait : undefined;
 			if (wait == null || state.decision == null || state.stopped || wait.earliestCheckAt > at) continue;
+			if (this.wakeRefusals.get(state.run) === state.revision) continue;
 			due.push({ run: state.run, decision: state.decision, revision: state.revision, wait });
 		}
 		for (const row of this.recoveredRuns.values()) {
 			if (row.phase !== "awaiting_decision" || row.decision == null) continue;
 			const parsed = parseWait(row.decision);
 			if (parsed == null || parsed.wait.earliestCheckAt > at) continue;
+			if (this.wakeRefusals.get(row.run) === row.revision) continue;
 			due.push({ run: row.run, decision: parsed.decision, revision: row.revision, wait: parsed.wait });
 		}
 		return due;
