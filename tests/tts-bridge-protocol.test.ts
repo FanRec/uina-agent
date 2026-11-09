@@ -22,7 +22,18 @@ beforeAll(async () => {
 			const found = output.match(/\{"port":\s*(\d+)\}/);
 			if (found) resolve("http://127.0.0.1:" + found[1]);
 		});
-		processHandle.once("exit", (code) => reject(new Error("Bridge fixture exited " + code + ": " + logs)));
+		processHandle.once("exit", (code) => {
+			// 缺包是环境问题，不是契约回归：把可操作的出口直接写进错误里。
+			const missing = /ModuleNotFoundError: No module named '([^']+)'/.exec(logs);
+			reject(
+				new Error(
+					`Bridge fixture exited ${code}: ${logs}` +
+						(missing == null
+							? ""
+							: `\n\nset UINA_TEST_PYTHON to a Python that has the TTS bridge dependencies (missing: ${missing[1]})`),
+				),
+			);
+		});
 	});
 	for (let attempts = 0; attempts < 100; attempts++) {
 		try {
