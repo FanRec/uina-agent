@@ -4,7 +4,7 @@ import type { WindowSnapshot } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { JsonValue } from "../../contracts/values.js";
-import { plain } from "../../contracts/values.js";
+import { plain, createSuspendError } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { settleFailure } from "../shared/failure.js";
@@ -87,7 +87,8 @@ const smeltDescriptor: CallableDescriptor = {
 			count: { type: "integer", minimum: 1, maximum: 256 },
 			fuel: { type: "string", minLength: 1 },
 			at: GRID_POS_SCHEMA,
-			wait: { type: "boolean" },
+			/** true/false 是原有语义；"durable" 是显式可持久模式，挂起后由 Runtime 续段。 */
+			wait: { enum: [true, false, "durable"] },
 			maxTimeMs: { type: "integer", minimum: 1000, maximum: 600000 },
 		},
 		required: ["item"],
@@ -130,6 +131,60 @@ function ticks(snapshot: WindowSnapshot, property: string): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/**
+ * 一次"装好料就交还给世界"的持久挂起里，必须跨进程活下来的全部内容。
+ * 都是纯 JSON：炉位、这一炉还差多少、已经装进去多少、预算到期时刻。
+ */
+interface SmeltWait {
+	kind: "smelt@1";
+	at: JsonValue;
+	item: string;
+	wanted: number;
+	completed: number;
+	/** 这一炉还差几件产物；恢复后只用它算目标，不重新装料。 */
+	outstanding: number;
+	/** 这一炉预计需要的刻数，用来定第一次复查的时机。 */
+	batchTicks: number;
+	produced: Record<string, number>;
+	loaded: { input: { item: string; count: number }; fuel: { item: string | null; count: number } };
+	deadlineAt: string;
+}
+
+/**
+ * 只接受本能力自己写下的检查点。形状不对说明这份检查点不是这一炉的进度，
+ * 拿它推算"已经装了多少"会直接导致重复投料。
+ */
+function readSmeltWait(checkpoint: JsonValue | null): SmeltWait | null {
+	if (checkpoint == null) return null;
+	const cp = checkpoint as Partial<SmeltWait>;
+	if (
+		cp.kind !== "smelt@1" ||
+		cp.at == null ||
+		typeof cp.item !== "string" ||
+		typeof cp.wanted !== "number" ||
+		typeof cp.completed !== "number" ||
+		typeof cp.outstanding !== "number" ||
+		cp.loaded == null ||
+		typeof cp.deadlineAt !== "string" ||
+		Number.isNaN(Date.parse(cp.deadlineAt))
+	)
+		fail("WRONG_STATE", "the resume checkpoint is not a smelt@1 furnace progress", {
+			hint: "a durable wait can only be resumed by the call that created it",
+		});
+	return {
+		kind: "smelt@1",
+		at: cp.at,
+		item: cp.item,
+		wanted: cp.wanted,
+		completed: cp.completed,
+		outstanding: cp.outstanding,
+		batchTicks: cp.batchTicks ?? 0,
+		produced: cp.produced ?? {},
+		loaded: cp.loaded,
+		deadlineAt: cp.deadlineAt,
+	};
+}
+
 export const smeltModule: MinecraftCapabilityModule = {
 	id: "smelt",
 	definitions: [
@@ -144,14 +199,25 @@ export const smeltModule: MinecraftCapabilityModule = {
 						count?: number;
 						fuel?: string;
 						at?: unknown;
-						wait?: boolean;
+						wait?: boolean | "durable";
 						maxTimeMs?: number;
 					};
-					const deadline = Date.now() + (input.maxTimeMs ?? SMELT_TIMEOUT_MS);
 					const knowledge = requireKnowledge(deps);
 					const name = stripNamespace(input.item);
-					const wanted = input.count ?? 1;
+					const durable = input.wait === "durable";
+					// 显式可持久模式的重入：料和燃料上次就送进去了，这一段只能观察与取产物。
+					const resume = durable ? readSmeltWait(ctx.checkpoint) : null;
+					if (resume != null && resume.item !== name)
+						fail("WRONG_STATE", `the durable wait belongs to ${resume.item}, not ${name}`, {
+							hint: "resume the same item; another item needs its own furnace run",
+						});
+					const wanted = resume?.wanted ?? input.count ?? 1;
 					const wait = input.wait !== false;
+					const deadline =
+						resume == null
+							? Date.now() + (input.maxTimeMs ?? SMELT_TIMEOUT_MS)
+							: // 续段也得先看一眼才谈得上"超时"：留一次观察的最低窗口，其余仍受原预算约束。
+								Math.max(Date.parse(resume.deadlineAt), Date.now() + 2000);
 					const before = await readInventory(ctx.world);
 					const recipes = knowledge.recipesFor(name).filter((recipe) => recipe.station === "furnace");
 					if (recipes.length === 0)
@@ -161,20 +227,44 @@ export const smeltModule: MinecraftCapabilityModule = {
 					const usable = recipes
 						.filter((recipe) => (before.counts[recipe.ingredients[0].item] ?? 0) > 0)
 						.sort((a, b) => (before.counts[b.ingredients[0].item] ?? 0) - (before.counts[a.ingredients[0].item] ?? 0));
-					if (usable.length === 0)
+					// 重入时原材料已经在炉里，背包里没有是正常的：按检查点认原料，不重判可用性。
+					if (usable.length === 0 && resume == null)
 						fail("MISSING_MATERIAL", `no smeltable input for ${name} in the inventory`, {
 							hint: `needs one of ${[...new Set(recipes.map((recipe) => recipe.ingredients[0].item))].join(", ")}`,
 						});
-					const recipe = usable[0];
-					const inputItem = recipe.ingredients[0].item;
+					const recipe =
+						resume == null
+							? usable[0]
+							: (recipes.find((candidate) => candidate.ingredients[0].item === resume.loaded.input.item) ??
+								usable[0] ??
+								recipes[0]);
+					const inputItem = resume?.loaded.input.item ?? recipe.ingredients[0].item;
 					const cookTicks = recipe.cookTicks ?? 200;
 					// Explicit unknown fuels fail before acquiring a body. Existing burning fuel may cover a batch.
-					let fuel: FuelChoice | null = input.fuel != null ? resolveFuel(knowledge, input.fuel, before.counts) : null;
-					const loaded = { input: { item: inputItem, count: 0 }, fuel: { item: fuel?.item ?? null, count: 0 } };
-					const produced: Record<string, number> = {};
-					let completed = 0;
+					let fuel: FuelChoice | null =
+						resume != null
+							? resume.loaded.fuel.item == null
+								? null
+								: {
+										item: resume.loaded.fuel.item,
+										unitTicks: knowledge.item(resume.loaded.fuel.item)?.fuel?.ticks ?? 0,
+									}
+							: input.fuel != null
+								? resolveFuel(knowledge, input.fuel, before.counts)
+								: null;
+					const loaded = resume?.loaded ?? {
+						input: { item: inputItem, count: 0 },
+						fuel: { item: fuel?.item ?? null, count: 0 },
+					};
+					const produced: Record<string, number> = { ...(resume?.produced ?? {}) };
+					let completed = resume?.completed ?? 0;
+					/** 这一炉还差几件产物；重入段的目标由它算，不重新装料。 */
+					let outstanding = resume?.outstanding ?? 0;
+					let batchTicks = resume?.batchTicks ?? 0;
+					/** 本段还没装过料：重入段的头一次循环只观察。 */
+					let needsLoad = resume == null || outstanding <= 0;
 					let dispatched = false;
-					let endpoint: JsonValue | undefined;
+					let endpoint: JsonValue | undefined = resume == null ? undefined : plain(resume.at);
 					const progress = () =>
 						plain({
 							produced,
@@ -204,7 +294,7 @@ export const smeltModule: MinecraftCapabilityModule = {
 							ctx,
 							{
 								block: "furnace",
-								at: input.at,
+								at: resume?.at ?? input.at,
 								deadline,
 								hint: "craft a furnace from 8 cobblestone, place it, or pass at; blast_furnace and smoker are not supported yet",
 							},
@@ -212,6 +302,39 @@ export const smeltModule: MinecraftCapabilityModule = {
 						);
 						endpoint = plain({ position: furnace.position, dimension: furnace.target.place.dimension });
 						while (completed < wanted) {
+							if (!needsLoad) {
+								// 这一炉的料已经装好：只观察与取产物。重入段不允许再投一次料。
+								const goal = completed + outstanding;
+								let estimate = resume == null ? Math.max(1000, (batchTicks / 20) * 1000) : 0;
+								let idle = 0;
+								while (completed < goal) {
+									checkBudget(ctx, deadline, "smelting");
+									await waitFor(ctx, Math.min(estimate, Math.max(0, deadline - Date.now())), "smelting");
+									await withStation(ctx, furnace, "minecraft:furnace", deadline, async (window) => {
+										const snapshot = (await window.snapshot()).value;
+										checkBudget(ctx, deadline, "smelting");
+										const resultSlot = windowRegion(snapshot, "result")[0];
+										const available = producedIn(snapshot, resultSlot, name);
+										if (available > 0)
+											await transferWindow(
+												window,
+												{ direction: "from", item: name, count: Math.min(available, goal - completed) },
+												{ regions: { block: "result", player: "player" }, onProgress: record("output", true) },
+											);
+										if (completed >= goal) return;
+										idle =
+											furnaceIdle(snapshot) && countInRegion(snapshot, "fuel", fuel?.item ?? "") === 0 ? idle + 1 : 0;
+										if (idle >= 2) fail("TARGET_NOT_MET", "furnace stopped before producing the requested output");
+										estimate = Math.max(
+											1000,
+											(((goal - completed) * cookTicks) / recipe.output.count - ticks(snapshot, "2")) * 50,
+										);
+									});
+									await ctx.progress(progress() as never);
+								}
+								needsLoad = true;
+								continue;
+							}
 							const batch = await withStation(ctx, furnace, "minecraft:furnace", deadline, async (window) => {
 								dispatched = true;
 								let snapshot = (await window.snapshot()).value;
@@ -326,34 +449,31 @@ export const smeltModule: MinecraftCapabilityModule = {
 									hint: `transfer@1 {from:{position:${JSON.stringify(furnace.position)}}, item:"${name}"} takes the output out; readyAt is an estimate`,
 								});
 							}
-							const goal = completed + batch.output;
-							let estimate = Math.max(1000, (batch.ticks / 20) * 1000);
-							let idle = 0;
-							while (completed < goal) {
-								checkBudget(ctx, deadline, "smelting");
-								await waitFor(ctx, Math.min(estimate, Math.max(0, deadline - Date.now())), "smelting");
-								await withStation(ctx, furnace, "minecraft:furnace", deadline, async (window) => {
-									const snapshot = (await window.snapshot()).value;
-									checkBudget(ctx, deadline, "smelting");
-									const resultSlot = windowRegion(snapshot, "result")[0];
-									const available = producedIn(snapshot, resultSlot, name);
-									if (available > 0)
-										await transferWindow(
-											window,
-											{ direction: "from", item: name, count: Math.min(available, goal - completed) },
-											{ regions: { block: "result", player: "player" }, onProgress: record("output", true) },
-										);
-									if (completed >= goal) return;
-									idle =
-										furnaceIdle(snapshot) && countInRegion(snapshot, "fuel", fuel?.item ?? "") === 0 ? idle + 1 : 0;
-									if (idle >= 2) fail("TARGET_NOT_MET", "furnace stopped before producing the requested output");
-									estimate = Math.max(
-										1000,
-										(((goal - completed) * cookTicks) / recipe.output.count - ticks(snapshot, "2")) * 50,
-									);
-								});
+							outstanding = batch.output;
+							batchTicks = batch.ticks;
+							if (durable) {
+								// 装料已经确认（含服务端回执），现在把这一炉交给世界：释放窗口与身体，
+								// 只留纯 JSON 进度，到点由 Runtime 用同一入口续段。
 								await ctx.progress(progress() as never);
+								throw createSuspendError({
+									reason: `furnace at ${JSON.stringify(furnace.position)} holds ${inputItem}; ${Math.max(0, wanted - completed)} of ${name} still to collect`,
+									checkpoint: plain({
+										kind: "smelt@1",
+										at: endpoint,
+										item: name,
+										wanted,
+										completed,
+										outstanding,
+										batchTicks,
+										produced,
+										loaded,
+										deadlineAt: new Date(deadline).toISOString(),
+									}),
+									recheckAfterMs: Math.max(1000, (batchTicks / 20) * 1000),
+									deadlineAfterMs: Math.max(0, deadline - Date.now()),
+								});
 							}
+							needsLoad = false;
 						}
 						checkBudget(ctx, deadline, "smelting");
 						return plain({ produced, consumed: loaded, at: endpoint });
