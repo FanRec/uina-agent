@@ -1,5 +1,29 @@
 # 设计变更记录
 
+## 2026-11-10 · 批40 关 G40（阶梯隧道回归：砾石帽坠进走位目标脚位）
+
+批37 关 G31 时 `dev:mc:spatial` 曾 8/8，批38 起真服回到 7/8，卡点坐标与当年一字不差——这是回归，不是老问题复发。
+
+- **根因**：`columnDigList` 的支撑探测段按 `ceiling+1` **升序** push，再接降序的 profile 格，整列挖序变成 `201 → 202 → 200 → 199 → 198`——先挖**下层**砾石恰好放跑上层砾石，坠落实体与挖拍赛跑。时序好，落地的砾石被走位前的站位清理重挖（G31 关闭证据里的 `gravel 4`/`dug=24` 就是这个舞蹈的痕迹）；时序差，它落在最后一读之后，机器人站上回填块头顶，`GoalNear tolerance=1` 谎报到位，烧满预算报无归因的卡住。**批37 的关闭是"症状修复 + 幸运时序"。**
+- **排障方式**：探针 `dev:mc:stair-probe`（`pnpm dev:mc:stair-probe`）在 setup 后、tunnel 前后各读一遍 client/server 方块。pre-flight 两端一致，失败后 post-mortem 显示 (9517,198) 变成 gravel——机制当场钉死，不需要猜时序。
+- **修法**：挖除序列整列按 y 降序（帽顶先挖，挖下层时上层已不在）；走位腿未站进目标层时，按同一口径重跑一轮站位清理再步进一次，仍不到位才报卡住。
+- **证据**：两条新单测在旧实现上先红（挖序 `[66,67,…]` 实测反序；旧实现 dug=8 隔着回填块"走到了"）；修复后 `tests/mc` 138 文件 1170 项全绿；真服探针 4/4（挖序 `202→201→200→199→198`，`dug=22` 恒定）、`dev:mc:spatial` **8/8 ×2**（`dug=22 (gravel 2)`，回填舞蹈消失）、`pnpm typecheck` 全绿。
+- **顺带**：`/fill` 的回执只计**发生变化**的格（"Successfully filled 10 block(s)" 是因为 585 格里只有 10 格不已是石头）——拿回执数量判断"填没填成功"会误判，这条与探针排障手法一起记进 `dev/FACTS.md`。
+
+## 2026-11-10 · 全量审查清理轮：单源化收编与回归 flake 修复
+
+对 mc world 全量（源码 51.6k 行 + tests/mc 29.2k 行）做了一轮只读审查后的清理。审查结论是确认"该删"级为零，所以本轮只收编重复与死项，不改任何行为合同。
+
+- **名字归一化恢复单源**：`contracts/items.ts` 的 `itemName()` 本就是全仓唯一实现，但 `construction/target.ts` 自称"唯一"又定义了逐字相同的 `stripNamespace`，`driver/facts` 还藏着两份私有拷贝。现在 `construction/target.ts` 以 `export { itemName as stripNamespace }` 再导出，driver/facts 两份删除，"全仓只有这一份实现"重新为真。
+- **小件去重**：`flatDistance` 三份收敛到 `shared/targets.ts` 的 `distance` 旁（navigation 那份是零调用的死导出，删除）；`placeOf` 四份私有拷贝统一 import place-cell 的既有导出（能力间互调沿用 combat→navigation 先例）。
+- **死项**：删 `contracts/runtime.ts` 的 `Delivery` 类型（全仓零使用；`DeliveryRef`/`CompletionReport` 仍被 `CompletionHeader` 使用，保留）；`sealProgramCalls` 删从未使用的 `reason` 参数（engine → index 门面 → side.ts 同步）。
+- **tests/mc 样板收编（净删 75 行）**：`captureFailure/failureOf` 五份收敛为 `mc-native-fixture.ts` 单源 + re-export（14 个 importer 零改动）；`until()` 收两份（`mc-production-runtime` 那份在子进程模板字符串里，不强行统一）；native descriptor 构建器九文件收七（catalog/addons 两种形状不同，保留）。
+- **修掉一条并行 flake**：`mc-effect-intent-dig` 在 `protocol.startDig` 回调里抛 expect，被 `runMining` 的 floating async 吞掉包成 CallFailure，测试结束后变成 file-level unhandled rejection（约 1/3 概率）。修复为记录违规现场、`await digging` 收口后断言（同一检查、同一失败条件）；连跑 6 次全量未再复现。
+- **新登记 [G39](known-gaps.md)**：`mc-executor-kill-write` 有约 1/3 概率真实悬挂（240s 超时耗尽），测试轮询全有界，悬挂点在生产侧 executor IPC/spawn 的无界等待。本轮只诊断不修。
+- **有意不动**：`engine.ts` 受理路径上两处幂等重复 `set`（夹在抢占 await 之间，删除收益 3 行、风险在最核心状态机里）；`session-identity` 缺目录并入空列表（行为变更，不属清理）；`public-api.md §7` 的 `Delivery` 文档描述与代码类型名漂移（另议）。
+- **文档订正**：README 验收行的 tests/mc 数字从"109 文件 901/903"订正为"138 文件 1168/1168"。
+- **证据**：`pnpm vitest run tests/mc` 138 文件 1168 项全绿、0 unhandled（flake 修复后连跑 6 次）；`tsc --noEmit` 除进行中的 `dev/stair-probe.ts`（未跟踪、非本轮改动）外 0 错误；边界检查 10 规则过。
+
 ## 2026-11-09 · 批39 关 G36（窗口前态按内容比）与 G38（铁砧互斥附魔）
 
 批38 把 G36 猜成"调用侧在 `unknown` 之后重新取快照并重试"。查下来**判据本身就是错的**，不需要任何重试。

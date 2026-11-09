@@ -355,6 +355,21 @@
 - **证据**：`pnpm dev:mc:stations` 连续 3 轮 15/15；失败现场样本（两把剑的逐槽组件、`cost -1`、`unknownEffectCount: 0`）留在本机 `dev/stations-run-5.log`。
 - **顺带登记**：1.21.11 的 `/give` 附魔组件是**扁平映射** `[enchantments={"minecraft:sharpness":1}]`；写成 1.20.5～1.21.4 的 `[enchantments={levels:{...}}]` 会被服务端判 `Malformed 'minecraft:enchantments' component`，而且**指令静默失败**（steering 回执只在聊天里，服务端日志只留 `issued server command` 没有 `Gave`）。五种写法实测记录见 `dev/FACTS.md`。
 
+### G39 · `mc-executor-kill-write` 间歇悬挂：生产侧 IPC/spawn 无界等待（2026-11-10 登记，未修）
+
+- **现象**：`tests/mc/mc-executor-kill-write.test.ts` 在全量并行跑时约 1/3 概率 `Test timed out`；把测试 timeout 从 120s 提到 240s 后仍耗尽——是真实悬挂，不是机器慢。单跑该文件全绿。
+- **已排除**：测试内部的轮询预算全部有界且会先失败（rebuild 30s、forensic 30s×2、settle 14s、gate 10s），挂的不是断言。
+- **根因（诊断到生产侧为止）**：悬挂点在 `executor.submit/rpc` 对伴生进程的 IPC 调用与 autoRecover 拉起 tsx 冷启动——这些等待本身没有超时上限，伴生一旦不回包就永远等。修复应给 Executor 的 RPC/spawn 加有界等待与超时失败（口径归 modules/executor.md §3–§7），本轮只诊断不改生产代码。
+
+### G40 · 下行阶梯隧道回归：支撑段不是自上而下，砾石帽坠进走位目标（✅ 已于 2026-11-10 关闭）
+
+- **现象**：批37 关闭 G31 时 `dev:mc:spatial` 曾 8/8 两轮，批38 起真服回到 7/8，`tunnel digs a staircased corridor` 步稳定卡在 `9517.32,199.00, want 9517,198,9500`，20 个采样点全程同一坐标。
+- **排障**（探针 `dev:mc:stair-probe`，setup 前后各读一遍 client/server 方块）：pre-flight 两端一致（(9517,198) stone、砾石帽在 201/202）；失败后 post-mortem (9517,198) = **gravel**——上层砾石（202）在跑的过程中坠进了走位目标脚位，机器人站在它头顶。
+- **根因**：`columnDigList` 把支撑探测段按 `ceiling+1` **升序** push，再接上降序的 profile 格——整列的挖序是 `201 → 202 → 200 → 199 → 198`：先挖**下层**砾石恰好放跑上层砾石，坠落实体与挖拍赛跑。时序好，落地的砾石被走位前的站位清理重挖（G31 关闭时的 `gravel 4`、`dug=24` 就是这个舞蹈的痕迹）；时序差，它落在"最后一读"之后，机器人站上头顶，`GoalNear tolerance=1` 谎报到位，`stepTo` 推不动，烧满预算报无归因的卡住。批37 的关闭是"症状修复 + 幸运时序"，不是根因修复。
+- **关闭方式**：挖除序列整列按 y 降序（帽顶先挖，挖下层时上层已经不在）；走位腿未站进目标层时，按同一口径重跑一轮站位清理再步进一次，仍不到位才报卡住。
+- **证据**：`tests/mc/mc-spatial-actions.test.ts` 新增 2 条（砾石帽帽顶先挖的顺序钉子；走拍中途回填 → 重清再步进，旧实现两先红）；真服探针 4/4（挖序 `202→201→200→199→198`，`dug=22` 恒定，不再有 `gravel 4`/`dug=24` 的回填抖动）、`dev:mc:spatial` **8/8 ×2**（`dug=22 (gravel 2)`）。
+- **证据**：修复前全套多次复现、单跑全绿、240s 超时一轮复现；诊断期间的试改已全部 revert，工作树无残留。
+
 ## 附：不要照抄的部分
 
 对照 Cortico 后确认**不采用**：常驻 policy 层（G18 已裁决）、作弊传送脱困、把观测渲染成散文塞进 World。理由：分别违反"不堆隐藏配置"、"正常生存验收不靠传送"、"World 只给事实不给台词"。台词属表达侧。
@@ -371,7 +386,7 @@
 | `dev:mc:task --task night` | **PASS** | 修复前 setup 阶段 `equip` 同款 `CONFLICT`；修复后全绿 |
 | `dev:mc:build` | **13/13** | 修复前 5/13（房屋两步与预算超时步撞 `CONFLICT`）；修复后 13 步全过 |
 | `dev:mc:stations` | **15/15 ×3** | 附魔/命名/选交易/酿造/交易 + 新增的 anvil 互斥负例；`commit()` 三处写端也在这里 |
-| `dev:mc:spatial` | 7/8 | 唯一失败是 G31 登记过的下行阶梯第一段走位（`stuck at 9517.32,199`），与批 37 同族，本轮未动该路径 |
+| `dev:mc:spatial` | **8/8 ×2** | 批38 起曾 7/8（G40：砾石帽坠进走位目标，见 G40 条目）；帽顶先挖后确定性全绿 |
 
 未跑：durable smelt 真服端到端（无专用炉子场景）、30 分钟真模型窗口（T3，用户决定暂缓）、`dev:mc:ui|combat|climb|terrain-nav|upstream-nav|window-probe`。
 

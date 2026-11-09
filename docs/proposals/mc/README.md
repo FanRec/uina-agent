@@ -19,7 +19,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | Program（单文件 JS + 共享 worker/独立 guest） | 批 7 执行、正式入口、快照与取消；9A 可等待查询与 waitUntil；9B 决策/checkpoint；批10 feedback/loop；批21 priority 透传 | 2026-11-03 |
 | refactor-v2（批次 A 导航 / 批次 B 战斗+施工+探索） | **批26–33 已实施并真服验证**（01-DESIGN 的"待实施"口径已过时）：G25 贴角对角线+Paper 贴面回弹双根因修复（三补丁入库）、G26/G27 关闭（upstream-nav 7/7）、A* 启发式加权 w=3（批28）、fight@1 近身拍 context steering + feedback 流 + fuse 感知（批29/33）、build@1 站位分区批量（批30）、explore@1 前沿覆盖重写（批32）；剩余 = 批次 C（M7 生存/M8 生产/M9 体验/M10 收敛）未开工 | 2026-11-07 |
 | 任务级基线（批34） | `dev:mc:task` 三任务竞技场（SHELTER/MINE/NIGHT，完整 Program，终态服务端判决，失败强制归因，记录落 task-runs/）；暴露 mine 回程 11 轮全挂 → 探针钉死执行器缺陷集群登记 **G30**（批35/36 关闭 (a)(c)(b)）；goto 圈禁看门狗 NoCloser；场地自毁修复（矿石格=阶梯末级踏步块） | 2026-11-07 |
-| 真实 Minecraft 游玩验收 | 真服场景 37 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查/Addon 各有独立验收）+ 任务级基线 `dev:mc:task`；确定性回归 tests/mc 109 文件 **901/903**（vmThreads，重负载限 4 worker；`mcp-extension-loading` 2 项为既有基线红）；真模型 30 分钟窗口 G14 待跑 | 2026-11-08 |
+| 真实 Minecraft 游玩验收 | 真服场景 37 个 `pnpm dev:mc:*`（能力面/生产链/移动/建造/会话/审查/Addon 各有独立验收）+ 任务级基线 `dev:mc:task`；确定性回归 tests/mc 138 文件 **1168/1168**（vmThreads，重负载限 4 worker；`mcp-extension-loading` 2 项为 `pnpm test` 全仓既有基线红）；真模型 30 分钟窗口 G14 待跑 | 2026-11-10 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件，SessionController 拥有会话生命周期。
 
