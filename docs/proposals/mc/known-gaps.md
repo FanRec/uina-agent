@@ -308,28 +308,43 @@
 - **`custom_click_action` 的编码是绕过 minecraft-data 的**：数据包定义少了外层 VarInt 长度前缀，Driver 自己拼包体（`encodeAnonymousNbt`）。如果上游修正了定义，这段需要复查，否则会多写一层前缀。
 - **没有 NPC 实体交互的专用能力**：NPC 对话目前只能通过"右键实体 → 服务器推界面 → `ui@1` 读 + `ui.act` 点"这条通用路径走，没有 `npc.talk@1` 之类的高层动作。本地插件夹具里也没有 NPC（没有 Citizens 依赖）。
 
-## 持久等待（2026-11-09 登记，未完成）
+## 持久等待与写端意图（2026-11-09 关闭）
 
-### G33 · 持久等待与 `smelt(wait=true)` 跨进程恢复（**未解决**）
+### G33 · 持久等待与 `smelt(wait="durable")` 跨进程恢复（✅ 已于 2026-11-09 关闭）
 
-- **现象**：`smelt@1` 的等待是 `capabilities/shared/observe.ts:104-122` 的 `setTimeout`，`withStation()`（`capabilities/shared/workstation.ts:123-152`）每轮重新申请 Body/开窗。整段在同一调用栈、同一进程内完成；`runtime/engine.ts:312-354` 的 `recover()` 把 `phase:"waiting"` 与其余未终结 Run 一起保守终结为 `finished/unknown` 并清空 `waiting`。`program/shim.ts:123-153` 的 `mc.waitUntil` 是活 Guest Promise，不是持久等待。`world/watch.ts` 没有 timer/scheduler，`world/state-frame.ts` 也明确不落调度。全仓没有跨进程复活等待记录的机制。
-- **证据**：`runtime/engine.ts:314`（`phase:"waiting"` 不在排除列表）、`:335-342`（`phase:"finished"` + `outcome:"unknown"`）、`runtime/rows.ts:201`（`waiting` 只落 JSON）、`runtime/runtime-db-worker.ts:221`（`runs.waiting TEXT`）、`capabilities/actions/smelt.ts:328-355`。附件 §5.9 标为 `[D/P0]`，验收项 C14/C21/C23 本轮均 `NOT_RUN`。
-- **修法要点**（附件 §5.9 允许复用受信任 decision 机制的挂起分支，不另建并行 Call 状态机）：`phase:"awaiting_decision"` 是唯一跨进程存活的非终结状态（`engine.ts:314` 明确排除），由 `engine.ts:411-577` 的 `continuePrepared()` 在 `runtime/admission.ts:33-44` 的 `(phase, decision, revision)` CAS 下原子认领新 Segment；`continue()` 的 `requestId` 幂等（`engine.ts:384-410`）可保证多次唤醒只认领一次。挂起记录可放 `DecisionRequest.checkpoint.value`，恢复入口放新 Segment 的 `Entry`。
-- **必须一起做完的三处，缺一就是半接线抽象**：① `runtime/owner.ts:140` 的 `assertAllowed()` 检查 `origin.activation === binding.activation`，`capture()` 定义在 `:145`；重启后 Host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值（`OwnerState` 目前不暴露 activation）。② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只触发重新观察，时间到不等于世界变化完成。③ `smelt.ts` 必须显式新增可持久模式（不能改旧 `wait` 的返回含义），把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物；现有装料循环会把结果槽清空且不记入 `completed`，直接重跑整函数会多生产。
-- **验收**：提交前/后 kill、Watch 丢失、唤醒时并发 stop、换连接/换世界、炉区块未加载、他人取走材料、两个 Run 不因同一份旧库存预算重复支付；分别得到未持久挂起 / 正常重扫 / 唯一重入 / 不续跑 / unknown，不能强行记 PASS。本批未起 Paper，未跑 `dev:mc:*`，未做性能对照。
+- **关闭方式**：走附件 §5.9 允许的"复用受信任 decision 机制的挂起分支"，没有第二套任务表、没有 `CallRecord.execution: "suspended"`、没有 `mc.suspend`，`SCHEMA_VERSION` 保持 `"6"`（`runtime-db-worker.ts` 没有 migration 分支，bump 会让所有现存库打不开）。
+- **持久形状**：根原生能力抛挂起请求后，Run 停在 `awaiting_decision`，`runs.decision` 里多出 `wait`（`attempts / earliestCheckAt / lastProgressAt / deadlineAt / resume / checkpoint`）。`resume` 是"同一能力 ref + 原输入"，检查点经 `CallContext.checkpoint` 交回；换能力的续段被拒（`CHECKPOINT_INVALID`），子调用挂起被拒（`SUSPEND_NOT_ROOT`）——父帧已经不在，静默续会把检查点喂给错误的调用栈。
+- **唤醒**：`MinecraftRuntime.open` 在 `recover()` 之后、ready 之前起扫描；定时器 `unref`，随 `engine.shutdown()` 清理。扫描只做"到点再看一眼"，单次认领仍走 `continue()`，因此"stop 优先 / 并发只认领一次 / 没有合法 Owner 绑定就不唤醒"三件事由既有受理 CAS 承担，不是扫描器自己保证的。`OwnerState` 因此增 `activation`：重启后 Host 用新 activation，扫描器必须取当前 binding。
+- **消费者**：`smelt@1` 增 `wait: "durable"`（旧 `true`/`false` 语义一字不动）。装料确认后抛挂起把这一炉交给世界，恢复段整段跳过装料、只观察与取产物——重跑整函数会清空结果槽并多生产一份。
+- **收口**：能力反复 wake→check→wait 时按 16 次预算终成 `unknown`（`WAIT_BUDGET_EXHAUSTED`）；`deadlineAt` 由能力自报的剩余预算决定，扫描的复查时刻被夹在它之前。
+- **证据**：`tests/mc/mc-durable-wait.test.ts` 8 项（挂起/重开续段/无绑定不唤醒/stop 优先/并发唯一认领/预算收口/嵌套拒绝/running|waiting 仍保守终结）、`tests/mc/mc-smelt-durable.test.ts` 4 项；`mc-capability-smelt-repair` 26 项仍绿；`tests/mc` 全量 128 文件 1037 项通过。
+- **未验证**：真服 durable smelt 端到端（没有专门的炉子场景，`dev:mc:*` 未覆盖这一模式）；"两个 Run 不因同一份旧库存预算重复支付"随 G37 一起挂着。
 
-### G34 · 写前意图只接了一个消费者（2026-11-09 审查登记，**部分实现**）
+### G34 · 写前意图逐写端接入（✅ 已于 2026-11-09 关闭，Addon 除外）
 
-- **现状**：`EffectRecorder.beforeWrite()` 只在 `driver/window/session.ts` 的 `click()` 接入，合同名 `body.window.click@1`。公共合同 `public-api.md §7.1` 与 `contracts/runtime.ts` 已定义 `ensureDurable` 和 `kind:"intent"`，但附件 §5.12 第 1 类要求"逐个"落 intent 的写端大多还没接。
-- **未接入的高风险写端**（源码位置）：`driver/window/session.ts` 的 `commit()` → `selectEnchant@1` / `renameItem@1` / `selectTrade@1`（真实扣经验/扣绿宝石）；`driver/body/inventory.ts` 的 `runToss`（丢弃物品）；`driver/body/ui-act.ts` 的 `planResult.dispatch()`（菜单购买，且发包后才记 dispatch 事实）；`driver/body/session.ts` 的 `activateBlock`（place）、`attack`、`useItem`（consume）、`mining.ts` 的 `startDig`。
-- **Addon 写端**：`driver/protocol-dispatch.ts` 的 `send()` 先调 `protocolFor(bot).customPayload()` 再 `sink.record()`，注释明确"写入发生在记录之前"；注入的 sink 虽带 `ensureDurable`，`send()` 从不调用。它精确落在 §5.3 崩溃矩阵「(3) 后、(4) 前」。**Addon 内部本轮不重构**，但公共契约兼容性缺口如实登记；`addon.protocol@1` 的完成口径是"包已进入协议发送边界"，不等于业务效果已核验。
-- **不需要 intent 的写端**（§5.12 第 3 类）：纯本地可撤销输入（`drive` 键位、`lookAt`、feedback steering），以及 chat / `endSleep` / `interact` 这类"只承诺派发、结果由另一次观察判定"的口径。注意：`commit()` 的完成合同是后者，**不等于写前 intent 豁免**。
-- **本轮不补的原因**：逐个接入需要每个写端各自的红测试与真服证据；只接一两个就宣称 §5.3 收口就是被禁止的半接线抽象。台账里 C02–C05 的 `PASS` 只代表 `body.window.click@1` 的 T1 崩溃矩阵，不代表 §5.3 全覆盖。
+- **已接入**：`body.window.click@1`（既有）、`body.window.selectEnchant@1` / `renameItem@1` / `selectTrade@1`（`commit()` 由同步改异步，意图落盘后重新取窗口前态）、`body.toss@1`（原来那条 `dispatch: sent` 记在点击循环之前，现在意图先落盘、没点过不记 sent）、`body.uiAct@1`（事实前移到发包之前）、`body.interact@1` 的方块分支、`body.attack@1`、`body.useItem@1`、`body.dig@1`（原来的 `dispatch = "unknown"` 只是内存标记）。
+- **不需要 intent**：纯本地可撤销输入（`drive` 键位、`lookAt`、feedback steering）与"只承诺派发"的 `chat` / `endSleep` / 实体 `interact`；`equip` 只在同一背包内换槽位，不增不减材料。
+- **证据**：`tests/mc/mc-driver-window.test.ts` 增 5 条（五处写端的顺序与拒收）、`tests/mc/mc-effect-intent-dig.test.ts` 2 条；真服 `dev:mc:stations` 14/14 全绿，其中附魔/命名/选交易正是 `commit()` 三处。
+- **仍未接**：Addon 写端 `driver/protocol-dispatch.ts` 的 `send()` 先发包再记录，附件明确本轮不重构，保持登记；`ui.act@1` 的业务成功口径仍由另一次观察判定。
 
-### G35 · 结算路径的两处既有语义缺口（2026-11-09 审查登记，**未修**）
+### G35 · 结算路径的两处语义缺口（✅ 已于 2026-11-09 关闭）
 
-- `driver/goto.ts` 的"目标已在邻域、没派发路径"分支先记 `receipt(not_sent, met)`，但 `finally` 的 `settle()` 会对同一 effect 无条件追加 `cleanup(dispatch = bot==null?"unknown":"sent", completion = quiesced?"met":"unknown")`。bot 非 null 且静止判据超时时，一个明确没派发的效果被覆写成"可能已派发"并计入 `unknownEffectsFor()`。修法需要给 goto 加"本次是否真的派发过路径"的标记，属领域重构，本轮不动。
-- `driver/window/session.ts` 的 `catch` 在 `sent=true` 时直接 `return this.unknown(...)`，会吞掉之后 `check()` / `view()` 抛出的 `CONTROL_INVALID` / `BODY_SUSPENDED` 等控制权失败，调用方只看到 `outcome:"unknown"`；`unknown()` 也只记 `receipt(sent, unknown)`，没有终态。两处都是本批之前就存在的行为，与本批改动无关，改动会牵动既有窗口用例，本轮只登记。
+- `driver/goto.ts`：新增"本次是否真派发过路径"标记，`settle()` 的 cleanup 事实按它决定 `not_sent` 还是 `sent/unknown`。原实现按 `bot == null` 判断，于是"规划前就失败"和"已经在 GoalNear 邻域、无需导航"这两种确定没派发的情况都会留下 `sent/unknown`，被 `unknownEffectsFor()` 判成未决，整个 Run 结算成 `unknown`。
+- `driver/window/session.ts`：包已发出后 `check()` / `view()` 抛 `CONTROL_INVALID` / `BODY_SUSPENDED` / `INTERRUPTED` 时，照旧留 `unknown` 事实，但把失败原样透传并标成已派发，调用方才知道身体已经不在。
+- **证据**：`tests/mc/mc-goto-settle-not-sent.test.ts` 2 项。
+
+### G36 · 任务级场景的窗口确认竞态（2026-11-09 真服登记，**未解决**）
+
+- **现象**：真服复跑 `dev:mc:task --task shelter` 与 `--task night`、`dev:mc:build` 的房屋两步时，稳定出现 `CONFLICT: window revision changed before dispatch`。`dev:mc:stations` 14/14、`dev:mc:build` 的 11-wall  vantage 步骤、`dev:mc:spatial` 7/8 都通过——所以不是窗口整体不可用。
+- **已排除**：这是既有行为，不是本轮改动引入。同一台服务器、同一世界状态下，把 `.uina/worlds/minecraft` 整体回退到会话基线 `cba81d5f` 复跑，`task shelter` 同样在第一批 craft 的第二次点击就撞 `CONFLICT`；`dev:mc:build` 的失败步骤也与 HEAD 一致。
+- **已排除的猜测**：不是我的写端 intent 拖慢（探针实测 `beforeWrite` 2ms）；不是扫描定时器（回退 `runtime/index.ts` 仍复现）；不是 executor（回退 `executor/` 仍复现）。
+- **形态**：失败前一步的点击以 `completion: "unknown"` 结束（`unknownEffectCount ≥ 1`），下一个点击拿着旧 revision 比对就冲突；`build` 另有一处 `CURSOR_NOT_EMPTY`。也就是"这一步的服务器确认没在窗口内到达"，后续点击按严格前态检查被判冲突——严格检查本身是有意的（§7.7），缺的是调用侧在 `unknown` 之后的重新取快照与重试。
+- **复现**：`node .uina/worlds/minecraft/dev-env/reset-server.ps1 -Confirm`（或旧脚本删 `server/bench*`）→ 起服 → `pnpm dev:mc:task --task shelter`。
+- **登记原因**：修它要动 `craft` / `build` 的点击重试语义，需要自己的红测试与真服证据；本轮只做登记，不冒充已修。
+
+### G37 · §5.11 effect footprint 与 §8.5 跨任务物料预留（本轮不做）
+
+- 两条互为消费者：footprint（`read/writeFootprint` 与未决集相交判定）唯一的真实用途是让"另一个 Run 尚未对账的库存写"进入候选预算；没有 §8.5 的预留记录，footprint 就只是一张没人读的表。按"不造无消费者框架"处理，两条一起留到有真实消费场景时再做。
 
 ## 附：不要照抄的部分
 
@@ -337,4 +352,17 @@
 
 ## 附：证据边界
 
-本轮仅源码阅读 + 实施记录交叉核对。未复跑 `tests/mc` 51 文件 / 378 项，未起 Paper，未调用真实模型。G14–G17 的"未验证"指记录里最后一次结论的状态，不是本轮新测。
+本轮（2026-11-09 重构收尾）跑了 `pnpm typecheck`、`tests/mc` 全量 128 文件 1037 项，并起了 Paper 1.21.11 build132 真服跑过 `dev:mc:task --task mine|shelter|night`、`dev:mc:build`、`dev:mc:stations`、`dev:mc:spatial`、连接冒烟。真服结果逐条在下面，失败项都有基线对拍结论：
+
+| 场景 | 结果 | 说明 |
+|---|---|---|
+| 连接冒烟 | PASS | 1.21.11 / protocol 774 / 出生点在地面 |
+| `dev:mc:task --task mine` | **ALL PASS**（48.8s） | 服务端返回坐标精确、`raw_iron=4`/`cobblestone=22`、4 格矿全成空气、no_death |
+| `dev:mc:task --task shelter` | FAIL | 第一批 craft 的第二次点击撞 `CONFLICT`；基线 `cba81d5f` 同样失败，见 G36 |
+| `dev:mc:task --task night` | FAIL | setup 阶段 `equip` 同款 `CONFLICT`；基线在 14:43 曾通过一次、之后同样失败，见 G36 |
+| `dev:mc:build` | 5/13 | 通过与失败两半都有价值：plan / 缺料 / 513 格拒绝 / 11 墙 vantage 全 PASS；房屋两步与预算超时步撞 `CONFLICT`（G36） |
+| `dev:mc:stations` | **STATIONS PASS**（14/14） | 附魔/命名/选交易/酿造/交易全绿，正是 `commit()` 三处写端 |
+| `dev:mc:spatial` | 7/8 | 唯一失败是 G31 登记过的下行阶梯第一段走位（`stuck at 9517.32,199`），与批 37 同族 |
+
+未跑：durable smelt 真服端到端（无专用炉子场景）、30 分钟真模型窗口（T3，用户决定暂缓）、`dev:mc:ui|combat|climb|terrain-nav|upstream-nav|window-probe`。
+

@@ -1,5 +1,17 @@
 # 设计变更记录
 
+## 2026-11-09 · 持久等待、逐写端意图、结算语义与真服 T2
+
+上一轮登记的三条缺口全部关闭，并补上 §6.7 / §10.6 两项 P0。
+
+- **持久等待（§5.9，关 G33）**：走"复用受信任 decision 机制的挂起分支"，没有第二套任务表、没有 `CallRecord.execution: "suspended"`、没有 `mc.suspend`，`SCHEMA_VERSION` 仍是 `"6"`。根原生能力抛挂起后 Run 停在 `awaiting_decision`，`runs.decision` 里带 `wait`（`attempts / earliestCheckAt / lastProgressAt / deadlineAt / resume / checkpoint`）；唤醒扫描在 `recover()` 之后、ready 之前起，定时器 `unref` 并随 `shutdown()` 清理；**认领仍走 `continue()`**，所以 stop 优先、并发唯一认领、没有合法 binding 就不唤醒这三件事由既有受理 CAS 承担。`OwnerState` 增 `activation`（重启后必须取当前 binding），`CallContext` 增 `checkpoint`。首个消费者是 `smelt@1 { wait: "durable" }`：装料确认后把这一炉交给世界，恢复段整段跳过装料、只观察与取产物。能力反复 wake→check→wait 时按 16 次预算收口成 `unknown`。
+- **写前意图逐写端（§5.12，关 G34）**：`commit()`（附魔/命名/选交易）、`toss`、`uiAct`、`interact` 的方块分支、`attack`、`useItem`、`dig` 各自在发包前落 intent。`commit()` 由同步改异步后重新取窗口前态；`toss` 原来那条"循环之前就记 dispatch sent"和"catch 里无条件升级 not_sent→sent"一并改掉。Addon 写端 `protocol-dispatch.ts` 按附件要求保持登记。
+- **结算语义（关 G35）**：goto 的 `settle()` 按"本次是否真派发过路径"决定 cleanup 的 dispatch——原实现按 `bot` 是否存在判断，让"规划前失败"和"已在邻域无需导航"这两种确定没派发的效果被记成 `sent/unknown`，进而把整个 Run 结算成 `unknown`。窗口 `click` 在包已发出后遇到 `CONTROL_INVALID` / `BODY_SUSPENDED` / `INTERRUPTED` 现在原样透传（仍留 `unknown` 事实），不再压成普通 unknown 回执。
+- **安全干预时间线（§6.7 / §12.5）**：`SafetyInterventionRecord` 增 `timeline`（`hazardObservedAt / interruptIssuedAt / controlRetiredAt / bodyGrantedAt / firstActionAt / finishedAt`），全是 ISO 墙上时钟，缺的字段如实 `null`，不编 SLA。
+- **交付三态（§10.6）**：`delivery.diagnostics()` 增 `commit{activation, activated, retired, consumption}`；`consumption` 恒为 `consumption_unknown`——宿主没有交回"模型真的读到了"的合法入口，如实说不知道，不建 MC 侧的 consumed 游标或 Outbox。
+- **样例诚实度**：`mc-fake-driver.ts` 的 `ensureDurable` 从"立即放行"改成受控门闩并暴露 `acknowledgeDurability()`；`mc-driver-window` / `mc-evidence-window` / `mc-ui-projection` 的夹具按新合同补齐（否则它们测的是不存在的屏障）。
+- **证据**：`pnpm typecheck` 全绿；`tests/mc` 128 文件 1037 项通过；真服 Paper 1.21.11 build132 上 `task mine` ALL PASS、`stations` 14/14、`spatial` 7/8、`build` 5/13、`task shelter|night` 失败（基线同样失败，登记为 G36）。未跑：durable smelt 真服端到端、T3 真模型窗口、`dev:mc:ui|combat|climb|terrain-nav|upstream-nav|window-probe`。
+
 ## 2026-11-09 · 实现质量审查与修复轮
 
 - **结论：附件 v3.1 未圆满完成。** 已交付 S1/S2 的两个真实缺口（Control Gate、窗口点击写前意图）与 S5 的全量回归/台账；S3 领域能力成熟化、S4 高层自主任务、F01–F20 逐项复验、真服 T2、真模型 T3、性能对照均为 `NOT_RUN`。§5.3 写前意图只接了 `body.window.click@1`，不是全覆盖，登记为 G34。

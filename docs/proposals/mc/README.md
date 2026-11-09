@@ -10,7 +10,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|---|
 | Driver（受控玩家）、World（观察与记录） | 连接级 1.21.11 协议窄口、玩家/容器/工作站共享确认、独立库存/采矿/牌面、统一查询校验、窗口会话（批2/3/修复轮）、feedback 与默认自保（批10）、领域记录与 places/route（批11）、Watch 类别化失效与断线证据链（批23）；地图/图片出口（批17） | 2026-11-04 |
 | Runtime（Run / Segment / Call / Effect） | 原生受理、Call 组合、身体仲裁（含 priority 档，批21）、效果与恢复；Owner/心跳/三门（批4）、固定记录与交付处置（批6）、决策/续段/替换/抢占（批9B）、feedback（批10）；schema v6 | 2026-11-03 |
-| 能力面（16 查询 + 35 动作） | **51/51 全部落地**（批19 transit 收口）；批20 G6 节流 digest / G7 inventory@1 {since} / G8 run {wait}；批21 G9 priority / G10 FRAME_EXPIRED hint / G24 tunnel 上行加高；批22 G15 关闭（残余 G25）；批24 静态 Catalog（批43 起 `createCapabilityCatalog()`/`builtinDescriptors`，describe 离线可发现）；**批37 G6 关闭方式换成请求前状态帧**（`state.snapshot` + `WorldDef.requestContext`，digest 链路已删） | 2026-11-08 |
+| 能力面（18 查询 + 36 动作） | **54/54 全部落地**（批19 transit 收口后仍在增补；权威口径是 `createCapabilityCatalog().allDescriptors()` 与 `mc-capability-catalog.test.ts` 的断言，本文档早先的 16+35=51 是批19 当时的事实）；批20 G6 节流 digest / G7 inventory@1 {since} / G8 run {wait}；批21 G9 priority / G10 FRAME_EXPIRED hint / G24 tunnel 上行加高；批22 G15 关闭（残余 G25）；批24 静态 Catalog（批43 起 `createCapabilityCatalog()`/`builtinDescriptors`，describe 离线可发现）；**批37 G6 关闭方式换成请求前状态帧**（`state.snapshot` + `WorldDef.requestContext`，digest 链路已删） | 2026-11-08 |
 | 会话与多世界（session / Profile） | **批25**：`session` 动作（status/list/connect/disconnect）、World 启用默认不入服、Profile 身份文件与 `sessions/<profileId>/` 数据根、Executor 双根 + 目录 Job 跨 Profile 唯一、close 三事实、connection.wait 入服回执、离线 describe/library；设计合同见 [multi-world-v3.md](multi-world-v3.md)；批26 剩 RuntimeArchiveReader/profile 查询/离线 saveFromRun/交付 envelope/M4 | 2026-11-05 |
 | Addon（非原版兼容） | **已落地**：Manifest/SemVer 依赖闭包/冻结 `AssemblyPlan`/不可变 artifact store/Companion 装配与统一 Catalog/连接级协议（`install`+`attach`+`localScreen`+`minecraft:register`，单一 Driver Client 延迟连接）/scoped `ProtocolWritePort` + Effect Ledger 派发事实/带采集身份与作用域的 addon facts/包内知识/`directory.snapshot`；示例 `example-mod` 真服纵向闭环；正式包 `spectatorplus`（Fabric 服务端专用）把个人背包窗口事务编码成 `opened_inventory_sync` 的 1 字节布尔，Core 侧只有通用 `localScreen` 接缝；`/spectate` 方向仍否决；**真实 Fabric/Forge/NeoForge 服与 registry 纵向验证未做**；合同见 [addons.md](addons.md) | 2026-11-08 |
 | Library（程序、蓝图与经验） | 批 8 三类文件 CRUD、来源保存与统一发现；批25 收敛宿主常驻唯一写入口（Companion 只读、离线 validator、无会话可读写）；蓝图解释/施工留 Construction | 2026-11-05 |
@@ -43,7 +43,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | [Host 持久交付回执](../runtime/delivery-receipts.md) | 工具/输入标记、持久接收查询、尝试退役；不含游戏逻辑 | Host/Core/World 接入实现者 |
 | [modules/runtime.md](modules/runtime.md) | Run / Segment / Call / Effect、身体排队与委托、记录屏障 | Runtime 实现者 |
 | [modules/program.md](modules/program.md) | 程序模型、编程面、执行材料、guest 与关闭 | Program 实现者 |
-| [modules/capabilities.md](modules/capabilities.md) | 16 查询 + 35 动作、事件/地图/文字交互与生存合同 | 能力实现者；§7–§8 给模型 |
+| [modules/capabilities.md](modules/capabilities.md) | 18 查询 + 36 动作、事件/地图/文字交互与生存合同 | 能力实现者；§7–§8 给模型 |
 | [modules/driver.md](modules/driver.md) | 客户端操作、写入资格、反馈时序、停止屏障 | Driver 实现者 |
 | [modules/world.md](modules/world.md) | 分区、证据交付、查询切面、Watch、持久化 | World 实现者 |
 | [modules/library.md](modules/library.md) | 三类文件、程序头、CRUD、save from 与统一发现 | Library 实现者 |
