@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
-import type { CallFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import {
 	buildEventPage,
 	decodeCursor,
@@ -9,6 +8,7 @@ import {
 	parseEventInput,
 	resolveEventQuery,
 } from "../../.uina/worlds/minecraft/world/events.js";
+import { captureFailureSync as failureOf } from "./mc-native-fixture.js";
 
 /**
  * events@1 游标与分页（capabilities §3 events / world §8.5）。
@@ -30,15 +30,6 @@ const validate = createCapabilityCatalog()
 		gotoDirector: {} as never,
 	})
 	.validators.get("events@1")!;
-
-function failureOf(run: () => unknown): CallFailure {
-	try {
-		run();
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected the call to throw CallFailure");
-}
 
 describe("events 输入校验", () => {
 	test("cursor 不能与 kinds/after/limit 同时出现", () => {

@@ -19,6 +19,7 @@ import { createSuspendError } from "../../.uina/worlds/minecraft/contracts/value
 import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import type { RunSummary } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
+import { nativeCallable as native } from "./mc-native-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -89,27 +90,6 @@ async function setup(callables: NativeCallable<JsonValue, JsonValue>[]) {
 			).runtime;
 			await enable();
 		},
-	};
-}
-
-function native(
-	ref: `${string}@${string}`,
-	invoke: NativeCallable<JsonValue, JsonValue>["invoke"],
-): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: {
-			ref,
-			summary: ref,
-			input: {},
-			output: {},
-			access: "act",
-			completion: { scope: "execution", description: ref },
-			implementation: "native",
-			errors: [],
-			requires: [],
-			examples: [],
-		},
-		invoke,
 	};
 }
 

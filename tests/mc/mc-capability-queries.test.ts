@@ -4,6 +4,7 @@ import type { SelfState } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { ClientFactView } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
 import type { CallFailure, Fact, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
+import { captureFailureSync as failureOf } from "./mc-native-fixture.js";
 
 /**
  * 能力层查询 reader（capabilities §3）。
@@ -142,15 +143,6 @@ function makeView(overrides: Partial<ClientFactView> = {}): ClientFactView {
 		window: () => fact(null, ["window not implemented"]),
 	} as unknown as ClientFactView;
 	return { ...view, ...overrides } as ClientFactView;
-}
-
-function failureOf(fn: () => unknown): CallFailure {
-	try {
-		fn();
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected a CallFailure");
 }
 
 describe("self@1", () => {

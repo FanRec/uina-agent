@@ -11,6 +11,7 @@ import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js"
 import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
 import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
+import { nativeCallable as native } from "./mc-native-fixture.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -75,26 +76,6 @@ async function setup(callables: NativeCallable<JsonValue, JsonValue>[] = [], pla
 			).runtime;
 			await enable();
 		},
-	};
-}
-function native(
-	ref: `${string}@${string}`,
-	invoke: NativeCallable<JsonValue, JsonValue>["invoke"],
-): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: {
-			ref,
-			summary: ref,
-			input: {},
-			output: {},
-			access: "act",
-			completion: { scope: "execution", description: ref },
-			implementation: "native",
-			errors: [],
-			requires: [],
-			examples: [],
-		},
-		invoke,
 	};
 }
 test("replace_pending atomically replaces only a never-started same-caller run", async () => {

@@ -8,6 +8,7 @@ import type {
 	ServiceCompanionContext,
 	WorldEvent,
 } from "../../src/extensions/world-framework/types.js";
+import { pollUntil as until } from "./mc-native-fixture.js";
 
 test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执滞留", async () => {
 	const pending = new Set(["first", "next"]),
@@ -273,14 +274,6 @@ test("one unavailable report does not block other headers; unavailable content r
 		await pump.close();
 	}
 });
-async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!condition()) {
-		if (Date.now() > deadline) throw new Error("condition not met in time");
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-}
-
 test("同轮多处完成一次交出：每条各自回执，宿主还在处理的那条不挡别人", async () => {
 	const pending = new Set(["blocked", "b", "c"]);
 	const batches: string[][] = [];

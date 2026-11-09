@@ -17,27 +17,16 @@ import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js"
 import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
 import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import { RuntimeRefs } from "../../.uina/worlds/minecraft/runtime/refs.js";
+import { nativeCallable } from "./mc-native-fixture.js";
 
-function makeCallable(
+const makeCallable = (
 	ref: ExactRef,
 	invoke: NativeCallable<JsonValue, JsonValue>["invoke"],
-): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: {
-			ref,
-			summary: "scoped protocol write engine regression",
-			input: {},
-			output: {},
-			access: "act",
-			completion: { scope: "execution", description: "returns when the test work is done" },
-			errors: [],
-			requires: [],
-			examples: [],
-			implementation: "native",
-		},
-		invoke,
-	};
-}
+): NativeCallable<JsonValue, JsonValue> =>
+	nativeCallable(ref, invoke, {
+		summary: "scoped protocol write engine regression",
+		completion: { scope: "execution", description: "returns when the test work is done" },
+	});
 
 async function submitAndWait(
 	engine: RuntimeEngine,

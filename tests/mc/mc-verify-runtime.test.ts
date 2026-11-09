@@ -21,27 +21,17 @@ import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
 import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import { RuntimeRefs } from "../../.uina/worlds/minecraft/runtime/refs.js";
 import { DIG_VERIFIER_REF, digVerifier } from "../../.uina/worlds/minecraft/capabilities/shared/verify.js";
+import { nativeCallable } from "./mc-native-fixture.js";
 
-function callable(
+/** verify 回归的固定 descriptor 口径（capability scope 的 completion）。 */
+const callable = (
 	ref: ExactRef,
 	invoke: NativeCallable<JsonValue, JsonValue>["invoke"],
-): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: {
-			ref,
-			summary: "verify regression",
-			input: {},
-			output: {},
-			access: "act",
-			implementation: "native",
-			completion: { scope: "capability", description: "observed result" },
-			errors: [],
-			requires: [],
-			examples: [],
-		},
-		invoke,
-	};
-}
+): NativeCallable<JsonValue, JsonValue> =>
+	nativeCallable(ref, invoke, {
+		summary: "verify regression",
+		completion: { scope: "capability", description: "observed result" },
+	});
 
 function digReceipt(effect: string, completion: DriverExecutionFact["completion"]): DriverExecutionFact {
 	return {

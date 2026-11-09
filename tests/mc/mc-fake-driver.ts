@@ -8,7 +8,7 @@ import { EventEmitter } from "node:events";
 
 import type { BodySession, ControlOwner, EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
-import type { CallFailure, Place } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { Place } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { type PlayerPortDeps, PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
 import type { BodySessionImpl, HostView } from "../../.uina/worlds/minecraft/driver/body/session.js";
 import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
@@ -37,15 +37,8 @@ export const entityT = (): EntityRef => ({
 	networkId: 42,
 });
 
-/** 捕获 CallFailure；调用未失败时显式失败。 */
-export async function captureFailure(promise: Promise<unknown>): Promise<CallFailure> {
-	try {
-		await promise;
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected the call to reject with CallFailure, but it resolved");
-}
+/** 捕获 CallFailure；调用未失败时显式失败。实现收编在 mc-native-fixture。 */
+export { captureFailure } from "./mc-native-fixture.js";
 
 /** 等待会话到达 closed（revoke 的挂起结算在微任务/定时器后完成）。 */
 export async function awaitClosed(session: BodySessionImpl): Promise<void> {

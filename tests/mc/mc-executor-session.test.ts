@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
 import { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
+import { pollUntil } from "./mc-native-fixture.js";
 
 const config = () => ({
 	connection: {
@@ -20,13 +21,8 @@ const config = () => ({
 async function root() {
 	return await mkdtemp(join(tmpdir(), "uina-executor-session-"));
 }
-async function until(check: () => boolean) {
-	const deadline = Date.now() + 10_000;
-	while (!check()) {
-		if (Date.now() > deadline) throw new Error("condition timed out");
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
-}
+/** 本文件的等待口径：10s 上限、20ms 节拍（executor 启动/退出比动作慢一个量级）。 */
+const until = (check: () => boolean): Promise<void> => pollUntil(check, 10_000, 20);
 
 test("a remote pre-acceptance gate rejection remains not accepted while the parent cache is stale", async () => {
 	const dataRoot = await root();

@@ -16,7 +16,7 @@ import type {
 } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../.uina/worlds/minecraft/contracts/knowledge.js";
-import type { CallFailure, JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { JsonValue, Observation } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { SurfaceProbe, WorldReadPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { buildRegistryKnowledge, type RegistryLike } from "../../.uina/worlds/minecraft/driver/facts/knowledge.js";
 
@@ -581,11 +581,5 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 	return { ctx, calls, callable, bodyAcquired: () => bodyAcquired };
 }
 
-export async function failureOf(promise: Promise<unknown>): Promise<CallFailure> {
-	try {
-		await promise;
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected a CallFailure");
-}
+/** 捕获 CallFailure；调用未失败时显式失败。实现收编在 mc-native-fixture。 */
+export { captureFailure as failureOf } from "./mc-native-fixture.js";

@@ -7,6 +7,7 @@ import { BodyLeaseQueue } from "../../.uina/worlds/minecraft/runtime/body-queue.
 import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
 import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import { RuntimeRefs } from "../../.uina/worlds/minecraft/runtime/refs.js";
+import { captureFailure, nativeCallable } from "./mc-native-fixture.js";
 
 /**
  * Body 单槽 FIFO 队列回归（runtime.md §3.3.1/§3.3.2）。
@@ -60,15 +61,6 @@ function makePort(options: { delayMs?: number } = {}): { port: PlayerPort; stats
 		},
 	} as PlayerPort;
 	return { port, stats };
-}
-
-async function captureFailure(promise: Promise<unknown>): Promise<CallFailure> {
-	try {
-		await promise;
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected the promise to reject");
 }
 
 describe("BodyLeaseQueue：单槽 + 同步占槽", () => {
@@ -243,26 +235,14 @@ describe("BodyLeaseQueue：显式优先级一档（G9）", () => {
 
 // ---- 引擎级：谱系冲突与独立申请的排队 ----
 
-function makeCallable(
+const makeCallable = (
 	ref: ExactRef,
 	invoke: (ctx: CallContext, input: JsonValue) => Promise<JsonValue>,
-): NativeCallable<JsonValue, JsonValue> {
-	return {
-		descriptor: {
-			ref,
-			summary: `test callable ${ref}`,
-			input: {},
-			output: {},
-			access: "act",
-			completion: { scope: "execution", description: "returns when the test work is done" },
-			errors: [],
-			requires: [],
-			examples: [],
-			implementation: "native",
-		},
-		invoke,
-	};
-}
+): NativeCallable<JsonValue, JsonValue> =>
+	nativeCallable(ref, invoke, {
+		summary: `test callable ${ref}`,
+		completion: { scope: "execution", description: "returns when the test work is done" },
+	});
 
 function makeEngine(port: PlayerPort, callables: NativeCallable<JsonValue, JsonValue>[]): { engine: RuntimeEngine } {
 	const refs = new RuntimeRefs("t");
