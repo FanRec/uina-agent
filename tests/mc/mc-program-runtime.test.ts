@@ -42,12 +42,16 @@ test("formal Runtime executes code and named children, preserves snapshots acros
 			throw new Error("unused");
 		},
 	} satisfies PlayerPort;
-	const callable: NativeCallable<JsonValue, JsonValue> = nativeCallable("echo@1", async (ctx, input) => {
-		return await ctx.withBody(async (scope) => {
-			await scope.player.lookAt({ x: 0, y: 64, z: 0 });
-			return input;
-		});
-	}, { summary: "echo", completion: { scope: "execution", description: "echo" } });
+	const callable: NativeCallable<JsonValue, JsonValue> = nativeCallable(
+		"echo@1",
+		async (ctx, input) => {
+			return await ctx.withBody(async (scope) => {
+				await scope.player.lookAt({ x: 0, y: 64, z: 0 });
+				return input;
+			});
+		},
+		{ summary: "echo", completion: { scope: "execution", description: "echo" } },
+	);
 	const options = {
 		dbPath: join(root, "runtime.db"),
 		storageId: "test",

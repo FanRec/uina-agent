@@ -24,6 +24,11 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 	const facts: DriverExecutionFact[] = [];
 	const packets: string[] = [];
 	let notify: ((notice: ProtocolNotice) => void) | null = null;
+	// startDig 时"第一条事实必须是 intent"的违规现场；断言在流程被完整 await 之后
+	// 做（见 test 1 末尾）。不能在 startDig 回调里直接 expect：抛出的 AssertionError
+	// 会被 runMining 的 async 流程吞掉再包成 CallFailure，一旦所属测试已结束就成了
+	// file-level unhandled rejection（全套并行时偶发）。
+	let intentOrderViolation: string | null = null;
 	const deps = {
 		guard: () => {},
 		mintOp: () => "op:1",
@@ -39,7 +44,7 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 		protocol: {
 			startDig: () => {
 				// 发包瞬间，这条 effect 的第一条事实必须是意图。
-				expect(facts[0]?.kind).toBe("intent");
+				if (facts[0]?.kind !== "intent") intentOrderViolation = JSON.stringify(kinds());
 				packets.push("startDig");
 			},
 			finishDig: () => packets.push("finishDig"),
@@ -64,7 +69,14 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 	};
 	deps.recorder = recorder;
 	const kinds = () => facts.map((fact) => fact.kind);
-	return { deps, facts, kinds, packets, emit: (notice: ProtocolNotice) => notify?.(notice) };
+	return {
+		deps,
+		facts,
+		kinds,
+		packets,
+		violation: () => intentOrderViolation,
+		emit: (notice: ProtocolNotice) => notify?.(notice),
+	};
 }
 
 test("the write intent is durable before startDig and the packet confirms it", async () => {
@@ -77,6 +89,8 @@ test("the write intent is durable before startDig and the packet confirms it", a
 	// 只有服务端方块更新能确认：客户端计时到了也只算 unknown。
 	h.emit({ kind: "block", position: target.block, air: true } as never);
 	expect(await digging).toMatchObject({ dispatch: "sent", completion: "met" });
+	// 流程已完整收口：此刻 startDig 已经跑过，回读违规现场。
+	expect(h.violation(), "startDig fired before the intent fact was recorded").toBeNull();
 });
 
 test("a refused intent sends no packet at all and stays not_sent", async () => {
