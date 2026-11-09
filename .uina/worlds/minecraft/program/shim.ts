@@ -57,7 +57,6 @@ export const SHIM = String.raw`(() => {
     assign(e, data); failureSet(e, data); throw e;
     }),() => { pending--; });
   };
-  const unavailable = () => { throw error('PROGRAM_UNAVAILABLE','this API is not delivered in batch 7'); };
   const windowHandle = h => ({
     snapshot: () => rpc('handleOp',{handle:h.handle,op:'snapshot',args:{}}),
     click: args => rpc('handleOp',{handle:h.handle,op:'click',args}),

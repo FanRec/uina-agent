@@ -524,7 +524,8 @@ export class WindowSessionImpl implements WindowSession {
 			/**
 			 * 真服探针（Paper 1.21.11）：强制 stateId 的 click 每次都收到权威 full 回包，
 			 * 而且 window_items 带单调递增 stateId。因此"收到 full"本身就是响应，
-			 * 不再要求槽位内容必须变化——内容没变是**明确拒绝**，不是 unknown。
+			 * 不再要求槽位内容必须变化——内容没变既不是拒绝也不是成功，只能是 unknown
+			 * （Paper 只同步 full 的情况无法与"真的没变"区分，判拒绝会凭空造出否证）。
 			 * 有 stateId 时用它做因果归因，迟到的初始 full（stateId 不增）不会误结算本次点击。
 			 */
 			const responded = await this.waitFor(() => {

@@ -107,7 +107,7 @@ function factBase(
 	};
 }
 
-/** I1 未实现的读数：值与 unknown 都如实，不给假值。 */
+/** 读不到的读数：值为 null、原因进 unknown，不给假值（未连接/未加载/未收到都走这里）。 */
 function absent<T>(reason: string): Fact<T | null> {
 	return { value: null, ...factBase([reason]) } as Fact<T | null>;
 }

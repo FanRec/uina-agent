@@ -88,7 +88,7 @@ export async function windowClick(
 		fail("TARGET_NOT_MET", "window click has no confirmed server result; it will not be repeated", {
 			dispatch: receipt.completion === "not_met" ? "sent" : "unknown",
 			effects: [receipt.effect],
-			// 有界诊断：把服务端判定（confirmed/rejected/diverged/unknown）与 stateId 因果带出去，
+			// 有界诊断：把服务端判定（confirmed/diverged/unknown）与 stateId 因果带出去，
 			// 上层不必靠"没回执"猜是协议、预测还是材料问题。
 			progress: plain({
 				outcome: receipt.outcome ?? "unknown",
