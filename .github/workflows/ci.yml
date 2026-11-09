@@ -17,5 +17,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # typecheck 已含 check:boundaries（package.json：pnpm typecheck = check:boundaries && tsc --noEmit）
       - run: pnpm typecheck
-      - run: pnpm test
+      # Windows x64 ownership 需要 N-API 原生模块与 Windows Job Object 语义，
+      # 在 Linux Runner 上没有可验证的对象。跨平台能力在这里全量跑；
+      # 平台专属证据由 Windows 真机执行 `pnpm test:platform`（会真实编译并加载 native）。
+      # 两处都保留测试文件内的 skipIf 约束，不通过放宽平台检查换取绿灯。
+      - run: pnpm test:ci
       - run: pnpm build
