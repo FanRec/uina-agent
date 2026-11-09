@@ -925,7 +925,7 @@ ExecutorClient 不把 observe、目录或 Library 变成 Runtime 职责；三者
 只服务 Runtime / Driver / 组合根的本地合同，不接受模型 JSON 注入；函数是可信本地实现，不跨执行域传输。程序的执行端口不在本文：`ProgramPort` / `ProgramCapacity` 见 [program.md §7](modules/program.md)。
 
 ```typescript
-interface CheckpointSchemaDefinition { ref: ExactRef; value: JsonSchema }
+interface CheckpointSchemaDefinition { ref: ExactRef; value: JsonSchema } // 预留：本仓库 0 引用
 interface DriverExecutionFact {
   effect: Ref; operation: Ref; contract: ExactRef; observedAt: string;
   kind: "intent" | "dispatch" | "receipt" | "cleanup";
@@ -961,6 +961,29 @@ interface EffectVerifier {
 DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 safety）；EffectRecord.owner 来自该绑定，不接受 guest 自填。安全介入只补齐已有 safety 所有者的记录，不生成虚构 Call/Segment。`record` 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket，**不代表持久或服务端 ACK**；无法接收时返回 null、锁存 recorder fault 并封闭新副作用（故障后 `record` 也不再写入）。
 
 **写前意图（§5.3）**：`kind:"intent"` 是派发前已持久的意图，证明"本次业务操作可能已经发出"，不证明服务端已执行；恢复时只剩 intent 一律按 `unknown` 对账，不能判 `not_sent`。`ensureDurable(ticket)` 是唯一派发前屏障，由 RecordQueue 等 DB worker 的真实 `onDurable` ACK 实现：**不可安全重放的业务写必须先落 intent 并等它提交，才允许派发**。ACK 丢失无法证明 intent 是否落盘，必须上报 `unknown`；只有 `record` 返回 null（本次没有 intent）才允许判 `not_sent`。intent 已落盘却明确决定不派发时追加终态 `cleanup(not_sent, not_met)`，恢复侧才不会把"只剩 intent"当成崩溃窗口。撤销与清理路径本身不等磁盘，这不构成业务写绕过派发前屏障的理由。
+
+**持久挂起与唤醒（G33）**：跨进程存活的状态只有 `awaiting_decision`。根原生能力在"写不可重放的那一半已经落地"之后抛挂起请求，Run 停在 `awaiting_decision`，`runs.decision` 里多出 `wait`：
+
+```typescript
+interface DurableSuspendRequest {          // 能力交给 Runtime 的请求形状
+  reason: string; checkpoint: JsonValue;
+  recheckAfterMs: number; deadlineAfterMs: number;
+  progressed?: boolean;                    // 自上次挂起以来世界是否真的推进了
+}
+interface DecisionRequest {
+  code: "NEEDS_DECISION"; reason: string;
+  checkpoint: ProgramCheckpoint | null; origin: ProgramOrigin;
+  wait?: DurableWait;                      // 带它 = 等世界条件，不是等 Host 决策
+}
+interface DurableWait {                     // Runtime 落库的形状
+  attempts: number; earliestCheckAt: string; lastProgressAt: string; deadlineAt: string;
+  resume: { selector: Selector; input: JsonValue }; checkpoint: JsonValue;
+}
+```
+
+`earliestCheckAt` 被夹在 `deadlineAt` 之内；`lastProgressAt` 只在能力声明 `progressed` 时前移，所以静默预算是"多久没进展"而不是"挂了多久"。唤醒扫描在 `recover()` 之后、ready 之前起，定时器 `unref` 并随 `shutdown()` 清理；**认领一律走 `continue()`**，因此 stop 优先、并发只认领一次、没有合法 Owner 绑定就不唤醒都由既有受理 CAS 承担。恢复入口是"同一能力 ref + 原输入"，检查点经 `CallContext.checkpoint` 交回；换能力的续段（`CHECKPOINT_INVALID`）与子调用挂起（`SUSPEND_NOT_ROOT`）一律拒绝。明确拒绝的唤醒只记一次并停止重试（资格类瞬时拒绝除外）；能力反复 wake→check→wait 时按 16 次预算终成 `unknown`（`WAIT_BUDGET_EXHAUSTED`）。`OwnerState` 因此增 `activation`：重启后 Host 用新代次，扫描器必须取当前 binding。
+
+**安全干预时间线（§6.7）**：`SafetyInterventionRecord.timeline` 记录 `hazardObservedAt / interruptIssuedAt / controlRetiredAt / bodyGrantedAt / firstActionAt / finishedAt`，全是 ISO 墙上时钟（跨进程可比），缺的字段如实 `null`，不拿相邻时刻冒充。
 
 `RuntimeRecordBarrier.capture` 固定已收到前缀 H，`flushThrough(H)` 保证 ≤H 材料已提交，否则明确失败；材料丢失的故障不得返回成功。DB worker 的 ACK 水线必须覆盖本批全部材料（`record_log` 幂等跳过同样算已提交），否则 `flushThrough` 的等待者永不 resolve。ticket 不跨实例或重启比较，H 之后的材料不纳入原终结。Driver 关闭 Promise 完成前，已产生的清理派发与可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime 详细设计](modules/runtime.md)。
 

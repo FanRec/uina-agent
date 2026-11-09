@@ -1,5 +1,18 @@
 # 设计变更记录
 
+## 2026-11-09 · 批38 复审：把"缺的字段真有用"补上
+
+对上一批自己交的代码做常规审查，四处"写进了合同但没人读/写得不对"的地方：
+
+- **唤醒会被每秒重试**：`recheckDurableWaits()` 原来对 `not_accepted` 静默忽略，于是"入口解析不到 / 输入不合法 / 环境已换"这类确定结论会一秒一次去撞受理路径，永远不停。现在明确拒绝按 `(run, revision)` 记一次并停止重试（`OWNER_*` / 存储类瞬时拒绝除外），日志只打一次。
+- **`deadlineAt` 没有读者、而且算错**：原来按 `lastProgressAt + deadlineAfterMs`，而 `lastProgressAt` 一旦写下就不再变，配合能力自报的"剩余预算"会让截止时刻每轮往前漂。现在 `DurableSuspendRequest` 增 `progressed`——只有能力声明这次复查真的推进了才前移起点，并让 `earliestCheckAt` 夹在 `deadlineAt` 之内（能力要等一小时、预算只剩十秒时，十秒后再看）。
+- **写前意图自己造了一个窗口前态缝隙**：`runToss` 把 `beforeWrite` 插在读快照与第一次点击之间，快照一过期第一次点击必撞 `CONFLICT`（正是 G36 那一族）。现在意图之后重新取快照并按同一判据重挑源格；重挑失败时补一条终态，别只留 intent。`commit()` 的"意图已落盘但窗口换了"同样补终态（`cleanup(not_sent, not_met)`）。
+- **契约文档欠账**：`public-api.md §7.1` 补 `DurableSuspendRequest` / `DecisionRequest.wait` / `DurableWait` / `OwnerState.activation` / `SafetyInterventionTimeline` 的合同与边界。
+
+顺带把窗口冲突消息从"revision changed"改成带 `expected/actual` 两个数值——真服排障时"差一版"和"差很多版"是两类问题。
+
+用例：`mc-durable-wait` 增 3 条（复查时刻夹在预算内、无进展不刷新预算/有进展才刷新、被拒唤醒只报一次不重试）、新增 `mc-effect-intent-toss`（意图之后必须重读快照，按替身直接断言 revision 顺序；在旧实现上先跑红）、`mc-driver-window` 增 1 条（意图期间窗口退役 → 只留 intent + 终态，没有 dispatch 事实）。
+
 ## 2026-11-09 · 持久等待、逐写端意图、结算语义与真服 T2
 
 上一轮登记的三条缺口全部关闭，并补上 §6.7 / §10.6 两项 P0。

@@ -316,8 +316,8 @@
 - **持久形状**：根原生能力抛挂起请求后，Run 停在 `awaiting_decision`，`runs.decision` 里多出 `wait`（`attempts / earliestCheckAt / lastProgressAt / deadlineAt / resume / checkpoint`）。`resume` 是"同一能力 ref + 原输入"，检查点经 `CallContext.checkpoint` 交回；换能力的续段被拒（`CHECKPOINT_INVALID`），子调用挂起被拒（`SUSPEND_NOT_ROOT`）——父帧已经不在，静默续会把检查点喂给错误的调用栈。
 - **唤醒**：`MinecraftRuntime.open` 在 `recover()` 之后、ready 之前起扫描；定时器 `unref`，随 `engine.shutdown()` 清理。扫描只做"到点再看一眼"，单次认领仍走 `continue()`，因此"stop 优先 / 并发只认领一次 / 没有合法 Owner 绑定就不唤醒"三件事由既有受理 CAS 承担，不是扫描器自己保证的。`OwnerState` 因此增 `activation`：重启后 Host 用新 activation，扫描器必须取当前 binding。
 - **消费者**：`smelt@1` 增 `wait: "durable"`（旧 `true`/`false` 语义一字不动）。装料确认后抛挂起把这一炉交给世界，恢复段整段跳过装料、只观察与取产物——重跑整函数会清空结果槽并多生产一份。
-- **收口**：能力反复 wake→check→wait 时按 16 次预算终成 `unknown`（`WAIT_BUDGET_EXHAUSTED`）；`deadlineAt` 由能力自报的剩余预算决定，扫描的复查时刻被夹在它之前。
-- **证据**：`tests/mc/mc-durable-wait.test.ts` 8 项（挂起/重开续段/无绑定不唤醒/stop 优先/并发唯一认领/预算收口/嵌套拒绝/running|waiting 仍保守终结）、`tests/mc/mc-smelt-durable.test.ts` 4 项；`mc-capability-smelt-repair` 26 项仍绿；`tests/mc` 全量 128 文件 1037 项通过。
+- **收口**：能力反复 wake→check→wait 时按 16 次预算终成 `unknown`（`WAIT_BUDGET_EXHAUSTED`）；`DurableSuspendRequest.progressed` 只在世界真的推进时前移静默预算的起点，`earliestCheckAt` 夹在 `deadlineAt` 之内；明确拒绝的唤醒只记一次并停止重试（资格类瞬时拒绝除外），不会一秒一次空转。
+- **证据**：`tests/mc/mc-durable-wait.test.ts` 11 项（挂起/重开续段/无绑定不唤醒/stop 优先/并发唯一认领/预算收口/嵌套拒绝/running|waiting 仍保守终结/复查夹在预算内/推进才刷新预算/被拒唤醒不重试）、`tests/mc/mc-smelt-durable.test.ts` 4 项；`mc-capability-smelt-repair` 26 项仍绿；`tests/mc` 全量 128 文件 1037 项通过。
 - **未验证**：真服 durable smelt 端到端（没有专门的炉子场景，`dev:mc:*` 未覆盖这一模式）；"两个 Run 不因同一份旧库存预算重复支付"随 G37 一起挂着。
 
 ### G34 · 写前意图逐写端接入（✅ 已于 2026-11-09 关闭，Addon 除外）
