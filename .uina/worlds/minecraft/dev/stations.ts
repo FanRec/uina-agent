@@ -54,6 +54,23 @@ function enchantmentLevels(
 	return Array.isArray(list) ? (list as { id: number; level: number }[]) : [];
 }
 
+type SlotView = InventoryView["slots"][number];
+
+/** 单槽的附魔表：同名的两件必须逐槽读，不能拿"某一件有附魔"代替两件都有。 */
+function slotEnchantments(slot: SlotView): { id: number; level: number }[] {
+	const added = (slot.components as { added?: { type?: string; data?: { enchantments?: unknown } }[] } | undefined)
+		?.added;
+	const list = added?.find((part) => part.type === "enchantments")?.data?.enchantments;
+	return Array.isArray(list) ? (list as { id: number; level: number }[]) : [];
+}
+
+/** 排障用：把一件物品的**全部**组件原样摊开（含 `repair_cost` 这类会推高铁砧费用的组件）。 */
+function describeSlot(slot: SlotView): string {
+	const added = (slot.components as { added?: { type?: string; data?: unknown }[] } | undefined)?.added ?? [];
+	const parts = added.map((part) => `${part.type}=${JSON.stringify(part.data)}`);
+	return `slot ${slot.slot} ${slot.name} x${slot.count} [${parts.length === 0 ? "no components" : parts.join(" | ")}]`;
+}
+
 async function main(): Promise<void> {
 	const dataRoot = process.env.MC_DEV_DATA_DIR ?? mkdtempSync(join(tmpdir(), "uina-mc-stations-"));
 	const h = await openHarness("stations", { dataRoot });
@@ -199,28 +216,71 @@ async function main(): Promise<void> {
 		});
 
 		await s.step("anvil 合并（两把附魔剑）", async () => {
-			// 原版只在"真的有变化"时才给结果：白板+白板、附魔+白板都是 cost 0 → 结果槽为空。
-			// 两把各带附魔的剑合起来必有变化（同名升级或叠加不同附魔），是可靠的合并输入。
+			// 材料用 `/give` 指名组件，不再"附魔两次再合"。原版铁砧**不给结果**的情形不止
+			// "白板+白板"：`sharpness`/`smite`/`bane_of_arthropods` 互斥，合到一起等于没有变化，
+			// 服务端直接回 cost -1 且结果槽为空（真服 9 轮里撞到 2 次，两把剑分别是 smite I
+			// 与 bane_of_arthropods I）。附魔台出什么是随机的，用它当合并输入等于让这一步
+			// 按概率失败——互斥那一条单独做负例（下一步）。
+			// 同等级同附魔相加是"必有变化"的最小组合：原版给 +1 级。
 			await reset([
-				"/give @s minecraft:diamond_sword 2",
-				"/give @s minecraft:lapis_lazuli 8",
+				'/give @s minecraft:diamond_sword[enchantments={"minecraft:sharpness":1}] 1',
+				'/give @s minecraft:diamond_sword[enchantments={"minecraft:sharpness":1}] 1',
 				"/xp set UinaDev 30 levels",
 			]);
-			valueOf(await s.call("enchant@1", { item: "diamond_sword", slot: 1 }));
-			await s.command("/xp set UinaDev 30 levels");
-			valueOf(await s.call("enchant@1", { item: "diamond_sword", slot: 1 }));
-			await s.command("/xp set UinaDev 30 levels");
-			const value = valueOf<{
+			const weapons = (await s.readInventory()).slots.filter((slot) => slot.name === "diamond_sword");
+			const before = weapons.map(describeSlot).join(" / ");
+			if (weapons.length !== 2 || weapons.some((slot) => slotEnchantments(slot).length === 0))
+				throw new Error(`the combine needs two enchanted swords, got ${weapons.length}: ${before}`);
+			const combined = await s.call("anvil@1", {
+				operation: "combine",
+				base: "diamond_sword",
+				material: "diamond_sword",
+			});
+			if (!combined.ok) throw new Error(`${combined.code}: ${combined.message ?? ""} (before combine: ${before})`);
+			const value = combined.value as unknown as {
 				result: { name: string; enchantments: { name: string; level: number }[] | null };
 				cost: number;
-			}>(await s.call("anvil@1", { operation: "combine", base: "diamond_sword", material: "diamond_sword" }));
-			if (value.result.enchantments == null) throw new Error("the combined sword reports no enchantments");
+			};
+			const merged = value.result.enchantments ?? [];
+			if (merged.length === 0) throw new Error("the combined sword reports no enchantments");
+			if (!merged.some((entry) => entry.name === "sharpness" && entry.level === 2))
+				throw new Error(`expected sharpness 2 on the result, got ${JSON.stringify(merged)}`);
 			const after = await s.readInventory();
-			if (enchantmentLevels(after, "diamond_sword").length === 0)
-				throw new Error("no enchanted sword in the inventory after combining");
+			const levels = enchantmentLevels(after, "diamond_sword");
+			if (levels.length === 0) throw new Error("no enchanted sword in the inventory after combining");
 			if (countOf(after, "diamond_sword") !== 1)
 				throw new Error(`expected 1 sword after combining, found ${countOf(after, "diamond_sword")}`);
-			return `result=${value.result.enchantments.map((entry) => `${entry.name} ${entry.level}`).join(",")} cost=${value.cost}`;
+			return `result=${merged.map((entry) => `${entry.name} ${entry.level}`).join(",")} ids=${levels
+				.map((entry) => `${entry.id}x${entry.level}`)
+				.join(",")} cost=${value.cost}`;
+		});
+
+		await s.step("anvil 互斥附魔不给结果", async () => {
+			// 负例：`smite` 与 `bane_of_arthropods` 互斥（都与 `sharpness` 同组）。两件合成等于
+			// 没有任何变化，原版结果槽为空、费用回 -1；能力面如实报 TARGET_NOT_MET，不是"合并成功"。
+			await reset([
+				'/give @s minecraft:diamond_sword[enchantments={"minecraft:smite":1}] 1',
+				'/give @s minecraft:diamond_sword[enchantments={"minecraft:bane_of_arthropods":1}] 1',
+				"/xp set UinaDev 30 levels",
+			]);
+			const before = (await s.readInventory()).slots
+				.filter((slot) => slot.name === "diamond_sword")
+				.map(describeSlot)
+				.join(" / ");
+			const failure = await s.call("anvil@1", {
+				operation: "combine",
+				base: "diamond_sword",
+				material: "diamond_sword",
+			});
+			if (failure.ok) throw new Error(`conflicting enchantments must not merge (before combine: ${before})`);
+			if (failure.code !== "TARGET_NOT_MET")
+				throw new Error(`expected TARGET_NOT_MET, got ${failure.code}: ${failure.message ?? ""}`);
+			// 关窗后服务端才把两件退回背包，等一次全量同步再清点。
+			await sleep(600);
+			const after = await s.readInventory();
+			if (countOf(after, "diamond_sword") !== 2)
+				throw new Error(`the anvil should hand both swords back, found ${countOf(after, "diamond_sword")}`);
+			return `${failure.code} inputs=[${before}]`;
 		});
 
 		await s.step("anvil 改名", async () => {

@@ -28,20 +28,24 @@ const checkWindow: NativeCallable<JsonValue, JsonValue> = {
 			const window = await scope.player.openContainer({ place: { ...self.place, position: raw.at }, block: raw.at });
 			try {
 				const snapshot = (await window.snapshot()).value;
-				try {
-					await window.click({
-						slot: 0,
-						button: 0,
-						mode: 0,
-						expectedRevision: snapshot.revision - 1,
-						expectedSlots: [],
-						expectedCursor: { item: null, count: 0 },
-					});
-				} catch (error) {
-					if ((error as { code: string }).code !== "CONFLICT") throw error;
-					return { rejected: true };
-				}
-				throw new Error("stale revision was accepted");
+				const item = (snapshot.slots[0]?.item ?? null) as { name: string; count: number } | null;
+				// G36 裁决之后，版本只是排序/诊断信息：内容对得上就必须放行。
+				// 探针因此反过来验"旧版本号 + 正确内容"不会被拒。
+				const receipt = await window.click({
+					slot: 0,
+					button: 0,
+					mode: 0,
+					expectedRevision: snapshot.revision - 1,
+					expectedSlots: [
+						{
+							slot: 0,
+							stack: { item: item == null ? null : { name: item.name }, count: item?.count ?? 0 },
+						},
+					],
+					expectedCursor: { item: null, count: 0 },
+				});
+				if (receipt.dispatch !== "sent") throw new Error(`stale revision was rejected: ${receipt.dispatch}`);
+				return { rejected: false };
 			} finally {
 				await window.close();
 			}
