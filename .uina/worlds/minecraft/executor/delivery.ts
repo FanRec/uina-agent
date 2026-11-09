@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
+import type { JsonValue } from "../contracts/values.js";
 import type { MinecraftExecutor } from "./index.js";
 import type { DeliveryAttempt } from "./ledger-worker.js";
 
@@ -123,16 +124,9 @@ export class DeliveryPump {
 		try {
 			const full = await this.executor.readRecord(header.completionRef, { format: "inline" });
 			if (full.kind !== "inline" || full.record.kind !== "completion") throw new Error("completion record unavailable");
-			const delivery = full.record.value as unknown as import("../contracts/runtime.js").Delivery;
 			return {
 				...header,
-				content: {
-					kind: "inline",
-					report: {
-						reportKind: delivery.reportKind,
-						snapshot: delivery.snapshot,
-					} as import("../contracts/runtime.js").CompletionReport,
-				},
+				content: { kind: "inline", report: completionReportOf(full.record.value) },
 			};
 		} catch (error) {
 			return {
@@ -494,4 +488,24 @@ export function formatCompletion(view: CompletionView): string {
 		completionRef: view.completionRef,
 		nextCall: { action: "runs", params: { op: "record", ref: view.completionRef } },
 	});
+}
+
+/**
+ * 持久层存的是 JSON；恢复时先按 `reportKind` 与 `phase` 判别，再取两个字段构造，
+ * 不把整块任意 JSON 直接当成 CompletionReport。剩余的一次类型断言是 JSON 反序列化
+ * 边界的必要成本——没有 schema 解码器时无法完全消除。
+ */
+function completionReportOf(value: JsonValue): import("../contracts/runtime.js").CompletionReport {
+	if (value == null || typeof value !== "object" || Array.isArray(value))
+		throw new Error("completion record value is not an object");
+	const stored = value as Record<string, JsonValue>;
+	const snapshot = stored.snapshot;
+	if (snapshot == null || typeof snapshot !== "object" || Array.isArray(snapshot))
+		throw new Error("completion record has no snapshot");
+	const phase = (snapshot as Record<string, JsonValue>).phase;
+	if (stored.reportKind === "terminal" && phase === "finished")
+		return { reportKind: "terminal", snapshot } as unknown as import("../contracts/runtime.js").CompletionReport;
+	if (stored.reportKind === "decision" && phase === "awaiting_decision")
+		return { reportKind: "decision", snapshot } as unknown as import("../contracts/runtime.js").CompletionReport;
+	throw new Error("completion record does not match its reportKind");
 }

@@ -13,10 +13,11 @@
 
 import type { EntityRef, ItemValue, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
-import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
+import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { settleFailure } from "../shared/failure.js";
 import { requireKnowledge } from "../shared/knowledge.js";
 import { checkBudget, pollUntil } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
@@ -71,14 +72,15 @@ async function watch(
 	return result.last;
 }
 
-/** 把失败时的进度并进 CallFailure，保留已发生的搬运/产出。 */
+/**
+ * 把失败时的进度并进 CallFailure，保留已发生的搬运/产出。
+ *
+ * `dispatched: true` 是保守上界：这些失败发生在 withStation 的窗口写路径上，
+ * 能力层没有逐点击账本，宁可报 `sent` 也不谎报 `not_sent`——后者会给调用方
+ * 一个"确定没发过、可以重放"的错误许可（§5.3）。
+ */
 function attachProgress(error: unknown, progress: () => Record<string, JsonValue>): never {
-	if (error instanceof Error && error.name === "CallFailure") {
-		const failure = error as CallFailure;
-		if (failure.dispatch === "not_sent") failure.dispatch = "sent";
-		failure.progress = plain({ ...failure.progress, ...progress() }) as CallFailure["progress"];
-	}
-	throw error;
+	settleFailure(error, { dispatched: true, progress: progress() });
 }
 
 /* ------------------------------------------------------------------ brew */

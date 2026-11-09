@@ -74,23 +74,48 @@ export function projectSummary(state: RunState): RunSummary {
 	return { ...base, phase: state.phase };
 }
 
-/** 等待回复用的快照：finished 才带根返回值与被打断的子 Call。 */
+/**
+ * 等待回复用的快照：finished 才带根返回值与被打断的子 Call。
+ *
+ * 这里按 RunSnapshot 的字段逐项构造，不从 RunSummary 强转：RunSummary 多出的
+ * `progressComplete` / `unknownEffectCount` / `waitingComplete` / `reasonComplete`
+ * 会随展开运算符漏进快照，消费者读到的形状与类型声明不一致。
+ */
 export function runSnapshotOf(state: RunState): RunSnapshot {
-	const summary = projectSummary(state);
-	// I1 无 awaiting_decision：非 finished 只会是 queued/running/stopping 投影
-	if (summary.phase === "awaiting_decision")
+	const base = {
+		run: state.run,
+		rootRequestId: state.requestId,
+		revision: state.revision,
+		segment: state.segment,
+		record: state.record,
+		completion: state.callable.completion,
+		progress: plain(state.progress) as Progress,
+		control: state.control,
+		unknownEffects: [...state.unknownEffects],
+	};
+	if (state.phase === "awaiting_decision")
 		return {
-			...summary,
-			completion: state.callable.completion,
+			...base,
+			phase: "awaiting_decision",
+			decision: state.decision!,
+			reason: state.decisionRequest!.reason,
 			checkpoint: state.checkpoint ?? null,
 			request: state.decisionRequest,
+			completionRef: state.completionRef!,
 		};
-	if (summary.phase !== "finished") return summary as unknown as RunSnapshot;
-	return {
-		...summary,
-		...(state.value != null ? { value: state.value } : {}),
-		interruptedChildren: [...state.interruptedChildren],
-	} as unknown as RunSnapshot;
+	if (state.phase === "finished")
+		return {
+			...base,
+			phase: "finished",
+			outcome: state.outcome ?? "unknown",
+			...(state.value != null ? { value: state.value } : {}),
+			...(state.error != null ? { error: { code: state.error.code, message: state.error.message } } : {}),
+			completionRef: state.completionRef ?? state.record,
+			interruptedChildren: [...state.interruptedChildren],
+		};
+	if (state.phase === "waiting")
+		return { ...base, phase: "waiting", waiting: state.waiting ?? { kind: "idle", sinceMs: 0 } };
+	return { ...base, phase: state.phase };
 }
 
 /** 落库行 → 摘要（恢复路径；行里没有的字段按 §5.6 表如实补 unknown）。 */

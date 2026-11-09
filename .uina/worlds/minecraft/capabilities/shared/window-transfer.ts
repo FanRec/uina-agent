@@ -2,8 +2,9 @@
 
 import type { ItemSelector, ItemValue, StackExpectation, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import { matchesItem, sameItem } from "../../contracts/items.js";
-import type { CallFailure, JsonValue } from "../../contracts/values.js";
+import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
+import { settleFailure } from "./failure.js";
 import { fail } from "./targets.js";
 
 export interface TransferSelection {
@@ -262,11 +263,9 @@ export async function transferWindow(
 		}
 		return amounts();
 	} catch (err) {
-		if (err instanceof Error && err.name === "CallFailure") {
-			const failure = err as CallFailure;
-			if (state.dispatched && failure.dispatch === "not_sent") failure.dispatch = "sent";
-			failure.progress = plain({ ...failure.progress, ...amounts() }) as CallFailure["progress"];
-		}
-		throw err;
+		settleFailure(err, {
+			dispatched: state.dispatched,
+			progress: plain(amounts()) as Record<string, JsonValue>,
+		});
 	}
 }

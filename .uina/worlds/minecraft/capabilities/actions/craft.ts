@@ -3,11 +3,12 @@
 import type { BlockTarget, SelfState, WindowSession, WindowSnapshot } from "../../contracts/body.js";
 import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { KnowledgeRecipe, RegistryKnowledge } from "../../contracts/knowledge.js";
-import type { CallFailure, JsonValue, Vec3 } from "../../contracts/values.js";
+import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { approachBlock } from "../shared/approach.js";
+import { settleFailure } from "../shared/failure.js";
 import { requireKnowledge } from "../shared/knowledge.js";
 import { readValue } from "../shared/observe.js";
 import { findStation, placeStation } from "../shared/stations.js";
@@ -374,12 +375,7 @@ export const craftModule: MinecraftCapabilityModule = {
 							}
 						});
 					} catch (error) {
-						if (error instanceof Error && error.name === "CallFailure") {
-							const failure = error as CallFailure;
-							if (state?.dispatched && failure.dispatch === "not_sent") failure.dispatch = "sent";
-							failure.progress = plain({ ...failure.progress, ...progress() }) as CallFailure["progress"];
-						}
-						throw error;
+						settleFailure(error, { dispatched: state?.dispatched ?? false, progress: progress() });
 					}
 					const gained = produced[name] ?? 0;
 					// 自动放工作台是真实副作用：进度与结果都要说明来源与位置，

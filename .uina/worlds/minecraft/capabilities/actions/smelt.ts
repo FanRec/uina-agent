@@ -3,10 +3,11 @@
 import type { WindowSnapshot } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
-import type { CallFailure, JsonValue } from "../../contracts/values.js";
+import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { settleFailure } from "../shared/failure.js";
 import { requireKnowledge } from "../shared/knowledge.js";
 import { checkBudget, waitFor } from "../shared/observe.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
@@ -357,15 +358,7 @@ export const smeltModule: MinecraftCapabilityModule = {
 						checkBudget(ctx, deadline, "smelting");
 						return plain({ produced, consumed: loaded, at: endpoint });
 					} catch (error) {
-						if (error instanceof Error && error.name === "CallFailure") {
-							const failure = error as CallFailure;
-							if (dispatched && failure.dispatch === "not_sent") failure.dispatch = "sent";
-							failure.progress = plain({
-								...failure.progress,
-								...(progress() as Record<string, JsonValue>),
-							}) as CallFailure["progress"];
-						}
-						throw error;
+						settleFailure(error, { dispatched, progress: progress() as Record<string, JsonValue> });
 					}
 				},
 		},
