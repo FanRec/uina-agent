@@ -226,11 +226,11 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progres
 
 ### 5.4 效果来源与记录队列
 
-Driver 在实际派发/回执/清理边界调用非阻塞 DriverExecutionSink；来源在 Operation 创建时由可信宿主绑定，Runtime 建 effect→ControlOwner/Operation 关联，不根据 guest 自述或“当前 Run”猜归属。sink 不拥有第二份 Operation，也不控制派发。
+Driver 在实际派发/回执/清理边界调用 DriverExecutionSink；来源在 Operation 创建时由可信宿主绑定，Runtime 建 effect→ControlOwner/Operation 关联，不根据 guest 自述或“当前 Run”猜归属。sink 不拥有第二份 Operation；`record` 仍是非阻塞入队，但不可安全重放的业务写必须先落写前 intent 并经 `ensureDurable(ticket)` 等真实 ACK 才允许派发（见 [public-api §7.1](../public-api.md)）。
 
 record 同步复制/校验最小事实并进入 Runtime 有序内存队列，返回本执行实例递增 ticket（起点 1；空前缀 H=0）；ticket 只是记录入口顺序，不是协议确认/物理步/World cursor。清理导致的事实也必须在 Driver 对应关闭 Promise 完成前入队。异步晚到证据仍关联原 effect，不能绑定新 Call。
 
-队列/Worker 故障显式记录 recorder fault 并关闭新副作用准入；已经可能派发的材料标未知/缺口，不能回退 not_sent。停止与私有清理不依赖 record 持久成功。没有逐包 write-ahead 承诺，崩溃仍可丢未提交尾部。
+队列/Worker 故障显式记录 recorder fault 并关闭新副作用准入；已经可能派发的材料标未知/缺口，不能回退 not_sent。停止与私有清理不依赖 record 持久成功。除显式落写前 intent 的业务写外，没有逐包 write-ahead 承诺，崩溃仍可丢未提交尾部；DB worker 的 ACK 水线必须覆盖本批全部材料（幂等跳过同样算已提交），否则派发前屏障的等待者永不 resolve。
 
 ### 5.5 局部关闭与段封口
 

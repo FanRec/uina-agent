@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-09 · 实现质量审查与修复轮
+
+- **结论：附件 v3.1 未圆满完成。** 已交付 S1/S2 的两个真实缺口（Control Gate、窗口点击写前意图）与 S5 的全量回归/台账；S3 领域能力成熟化、S4 高层自主任务、F01–F20 逐项复验、真服 T2、真模型 T3、性能对照均为 `NOT_RUN`。§5.3 写前意图只接了 `body.window.click@1`，不是全覆盖，登记为 G34。
+- **ACK 水线（`runtime/runtime-db-worker.ts`）**：`applyBatch` 原先只在 INSERT 分支更新 `lastSeq`，整批命中 `record_log` 幂等跳过时不发 `durable`，或尾部幂等项让水线低报，`flushThrough(ticket)` 的等待者永不 resolve、写前屏障挂死。改为按批次内全部 `ticket.sequence` 取上界。
+- **资格释放（`driver/goto.ts`、`driver/body/session.ts`）**：`settle()` 的 `arbiter.release(permit)` 是最后一行，`clearGoal` / `requireRetirement` / `recorder.record` 任一抛错即泄漏；`finishClose()` 的宿主退订或屏障上报抛错会让 `onClosed` 不执行，`PlayerPortImpl` 的释放同样泄漏。单 active 槽泄漏会让整个连接的 body/goto 永久 `CONTROL_CONFLICT`。两处释放改挂 `finally`。
+- **失败语义（`driver/execution.ts`、`driver/window/session.ts`）**：`EffectRecorder.record()` 原先不检查 `faulted`，屏障失败后仍写入一条看似已结算的事实；`click()` 的 catch 无条件采信任意 `CallFailure.dispatch`，外部 guard 抛非 `not_sent` 时会把未派发的包记成 `sent`。改为故障后拒绝写入、`dispatch` 只由本调用栈能证明的事实决定（writing / intentDurable / beforeWrite 三种）。
+- **测试补强**：新增 `mc-runtime-ack-watermark.test.ts`（真实 worker 的幂等重放 ACK）、`mc-control-permit-release.test.ts`（两处异常路径释放）；`mc-effect-intent.test.ts` 的 `restart()` 改为按 `ticket.sequence` 过滤并对每个 effect 取最后一版，新增 C07 多 effect 恢复与故障封闭用例；`mc-driver-window.test.ts` 新增端到端屏障时序（未 ACK 前不发包）与协议写端发包瞬间抛错两条。每条都先在旧实现上跑红。
+- **文档**：`public-api.md §7.1` 同步 `kind:"intent"`、`ensureDurable(ticket)` 和写前意图条款，澄清"撤销/清理不等磁盘"不适用于业务写派发前屏障；`modules/runtime.md §5.4` 修正"非阻塞 sink、不控制派发、没有逐包 write-ahead 承诺"三处与屏障冲突的旧口径；修正 G33 的 `owner.ts` 行号、验收数字与提交数；新增 G34（写前意图覆盖面与 Addon 协议写端）、G35（两处既有结算语义缺口，本轮不修）。详见 [archive/review-2026-11-09-quality.md](archive/review-2026-11-09-quality.md)。
+
 ## 2026-11-09 · 控制权资格与 Effect 写前意图
 
 - **Driver Control Gate（`driver/control-arbiter.ts`）**：`bodyClaimed`/`gotoClaimed` 两个裸布尔槽换成单 active `ControlPermit`（绑定 `{id, kind}`），`release(permit)` 只释放同一对象。旧会话迟到的 `onClosed` 不再抹掉新 owner 的资格，Pathfinder 与新 Body 不会并行控制同一 Bot（C09）。`player-port.ts`/`goto.ts` 旧 API 全删，不留兼容层。

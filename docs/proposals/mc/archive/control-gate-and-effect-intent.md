@@ -16,7 +16,7 @@
 
 **红测试先行**：`tests/mc/mc-control-permit.test.ts` 初版用旧 API 复现，实测 `AssertionError: expected true to be false`（旧 `releaseBody()` 后 `tryClaimGoto()` 返回 true），改生产代码后才转绿。
 
-## 3. 改造二：Effect 写前意图与真实持久屏障
+## 3. 改造二：Effect 写前意图与真实持久屏障（**部分实现**）
 
 `DriverExecutionSink` 增加 `ensureDurable(ticket)`；`RecordQueue.ensureDurable()` 走 `flushThrough(ticket)`，等 DB worker 的 `onDurable` 回报，不把"已入队"当"已持久"。`runtime-db-worker.ts:731-735` 的 `apply` 分支确实对每个批次回报 `durable`，`runtime/index.ts:225-229` 把它转给 `queue.onDurable`，所以生产路径的屏障不会挂死。组合根 `companion/side.ts`、`driver/body/session.ts` 的 scoped/root recorder 都把屏障转发到真实队列。
 
@@ -28,6 +28,8 @@
 - intent 已落盘但这一步明确决定不派发（撤销 / 版本冲突 / 输入非法）时，追加终态 `cleanup(not_sent, not_met)`，恢复侧才知道"只剩 intent"是明确取消而不是崩溃窗口。
 - `RecordQueue.unknownEffectsFor()` 与 `effectsForSafety()` 原先只看 `completion !== "met"`，会把终态明确"没发包"的效果报成未知效果，让模型误以为可能发生过扣料。现在终态 `dispatch === "not_sent"` 的效果不计入未知。
 
+**覆盖面**：本批只在 `body.window.click@1` 接入，附件 §5.12 第 1 类要求逐个落 intent 的写端（工作站提交、丢弃、菜单购买、place、dig、attack、consume、addon 协议写端）都还没接。这不等于 §5.3 已收口；未接入清单、原因与 Addon 契约边界见 [known-gaps.md G34](../known-gaps.md)。§5 台账里 C02–C05 的 `PASS` 只代表这一个消费者的 T1 崩溃矩阵。
+
 ## 4. 验证证据
 
 | 命令 | 结果 |
@@ -35,7 +37,7 @@
 | `pnpm typecheck` | `Checked 878 files` + `boundary check ok: 10 rules`，双 tsc 无输出，exit 0 |
 | `pnpm exec vitest run $(ls tests/mc/*.test.ts) --maxWorkers=4` | `121 passed (121)` / `1010 passed (1010)` |
 | `UINA_TEST_PYTHON=<uv 隔离环境> pnpm test --maxWorkers=4` | `349 passed (349)` / `3576 passed + 1 expected fail`，exit 0 |
-| `pnpm exec vitest run tests/mc/mc-driver-window.test.ts tests/mc/mc-effect-intent.test.ts` | `31 passed (31)`（修复前为 `4 failed \| 25 passed`，含 1 个未处理 rejection） |
+| `pnpm exec vitest run tests/mc/mc-driver-window.test.ts tests/mc/mc-effect-intent.test.ts` | 修复前 4 失败 / 25 通过（29 项，含 1 个未处理 rejection）→ 本批收口时 31/31 通过；2026-11-09 审查轮补测后 36/36 通过 |
 | `node scripts/build-mc-native.mjs && pnpm exec tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && pnpm build:web` | 四步全部 exit 0 |
 
 两条环境性失败与本批无关，已定位：
@@ -49,10 +51,10 @@
 
 | 项 | 状态 | 证据或原因 |
 |---|---|---|
-| C02 | PASS（T1） | `mc-effect-intent.test.ts`「intent 被拒收时不派发」「ACK 丢失按 unknown 上报」+ `mc-driver-window.test.ts`「ACK 丢失不发包」 |
-| C03 | PASS（T1） | `mc-effect-intent.test.ts`「intent 已提交、派发前崩溃 → unknown」 |
-| C04 | PASS（T1） | `mc-effect-intent.test.ts`「包已发但 dispatch 事实没落盘 → 仍按 unknown 对账」 |
-| C05 | PASS（T1） | `mc-effect-intent.test.ts`「业务结果已提交但核验未提交 → 旧 Effect 不丢」 |
+| C02 | PASS（T1，**仅 window.click**） | `mc-effect-intent.test.ts`「intent 被拒收时不派发」「ACK 丢失按 unknown 上报」+ `mc-driver-window.test.ts`「ACK 丢失不发包」 |
+| C03 | PASS（T1，**仅 window.click**） | `mc-effect-intent.test.ts`「intent 已提交、派发前崩溃 → unknown」 |
+| C04 | PASS（T1，**仅 window.click**） | `mc-effect-intent.test.ts`「包已发但 dispatch 事实没落盘 → 仍按 unknown 对账」 |
+| C05 | PASS（T1，**仅 window.click**） | `mc-effect-intent.test.ts`「业务结果已提交但核验未提交 → 旧 Effect 不丢」 |
 | C09 | PASS（T1） | `mc-control-permit.test.ts` 三条：迟到释放不抹掉新 owner、body/goto 共用唯一资格、资格退役不可复活 |
 | C15 | PASS（既有测试本轮重跑） | `mc-driver-window.test.ts`「an unchanged full cannot prove rejection」 |
 | T0 | PASS | typecheck + boundaries + 双 tsc + 单测全绿 |
@@ -70,15 +72,16 @@
 - `capabilities/actions/smelt.ts:328-355` 的等待是 `capabilities/shared/observe.ts:104-122` 的 `setTimeout`，`withStation()`（`shared/workstation.ts:123-152`）每轮重新申请 Body/开窗；全部在同一次调用栈内，重启无状态可恢复。
 - `runtime/engine.ts:312-354` 的 `recover()` 把 `phase:"waiting"` 与其余未终结 Run 一起保守终结为 `finished/unknown` 并清空 `waiting`。
 - `phase:"awaiting_decision"` 是**唯一**跨进程存活的非终结状态（`recover` 在 `:314` 明确排除），由 `engine.ts:411-577` 的 `continuePrepared()` 在 `runtime/admission.ts:33-44` 的 `(phase, decision, revision)` CAS 下原子认领新 Segment。附件 §5.9 允许「复用现有受信任 decision 机制扩展其挂起分支」，这是不另建并行 Call 状态机的正路。
-- 阻塞点有三处，必须一起做完：① `owner.capture(origin)`（`runtime/owner.ts:140-145`）要求 `origin.activation` 等于当前 binding，重启后 host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值；② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只能触发重新观察，时间到不等于世界变化完成；③ `smelt.ts` 需要显式新增可持久模式（不能改旧 `wait` 的返回含义），并把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物。
+- 阻塞点有三处，必须一起做完：① `runtime/owner.ts:140` 的 `assertAllowed()` 检查 `origin.activation === binding.activation`（`capture()` 在 `:145`），重启后 host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值；② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只能触发重新观察，时间到不等于世界变化完成；③ `smelt.ts` 需要显式新增可持久模式（不能改旧 `wait` 的返回含义），并把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物。
 - 验收必须覆盖 C14、C21、C23 的崩溃矩阵：提交前/后 kill、Watch 丢失、唤醒时并发 stop、区块未加载、他人取走材料、两个 Run 不因同一份旧库存预算重复支付。
 
 ## 7. Git 状态
 
-本批三个提交，均为路径限定提交，未推送：
+本批四个提交，均为路径限定提交，未推送：
 
 - `78e7d4c` `fix(mc): 控制权资格改为单一 ControlPermit，旧回调无法越权释放`（3 源码文件）
 - `c6cc437` `feat(mc): 窗口点击接入 Effect 写前意图与真实持久屏障`（6 源码文件）
 - `44a8de8` `test(mc): 控制权资格与 Effect 写前意图的确定性回归`（14 测试文件，含 2 个新增）
+- `f533a90` `docs(mc): 登记控制权资格与写前意图批次的证据和验收台账`（本文件及索引）
 
-用户原有的未提交文件未改动、未提交、未推送。
+后续 2026-11-09 审查轮的修复与结论见 [review-2026-11-09-quality.md](review-2026-11-09-quality.md)。用户原有的未提交文件未改动、未提交、未推送。

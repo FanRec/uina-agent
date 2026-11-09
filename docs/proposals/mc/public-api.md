@@ -928,13 +928,16 @@ ExecutorClient 不把 observe、目录或 Library 变成 Runtime 职责；三者
 interface CheckpointSchemaDefinition { ref: ExactRef; value: JsonSchema }
 interface DriverExecutionFact {
   effect: Ref; operation: Ref; contract: ExactRef; observedAt: string;
-  kind: "dispatch" | "receipt" | "cleanup";
+  kind: "intent" | "dispatch" | "receipt" | "cleanup";
   dispatch: "not_sent" | "sent" | "unknown";
   completion: "met" | "not_met" | "unknown"; evidence: Ref[];
   detail?: JsonValue; // 操作声明的原始回执/缺口，不是 guest 自述
 }
 interface RecordTicket { instance: Ref; sequence: number }
-interface DriverExecutionSink { record(fact: DriverExecutionFact): RecordTicket | null }
+interface DriverExecutionSink {
+  record(fact: DriverExecutionFact): RecordTicket | null;
+  ensureDurable(ticket: RecordTicket): Promise<void>;
+}
 interface RuntimeRecordBarrier {
   capture(): RecordTicket;                  // 无事实时为该实例 sequence=0，不是未知回退值
   flushThrough(through: RecordTicket): Promise<void>;
@@ -955,7 +958,11 @@ interface EffectVerifier {
 
 `ctx.verify(effect, verifier, input)` 与程序桥 `mc.verify(effect, verifier, input)` 走同一注册表：未注册/效果无记录 → NOT_FOUND；核验器不派发动作，只按已记录事实 + 当前世界读数给出追加判断（读不到保持 unknown，不冒充 met/not_met）；结果以 `EffectVerification` append-only 追加到原 Effect（新 record ref 的新不可变截面），原 completion 与历史报告不改写，返回 receipt 的 completion 取核验结论、dispatch 沿用原事实。首个注册者：`verify/dig@1`（body.dig@1 效果的目标格现在是空气吗），运行事实 detail 自批13 起携带 `target`。
 
-DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 safety）；EffectRecord.owner 来自该绑定，不接受 guest 自填。安全介入只补齐已有 safety 所有者的记录，不生成虚构 Call/Segment。DriverExecutionSink 的行为：`record` 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket，不代表持久或服务端 ACK；无法接收时返回 null、锁存 recorder fault 并封闭新副作用，Driver 的撤销/清理不等磁盘。`RuntimeRecordBarrier.capture` 固定已收到前缀 H，`flushThrough(H)` 保证 ≤H 材料已提交，否则明确失败；材料丢失的故障不得返回成功。ticket 不跨实例或重启比较，H 之后的材料不纳入原终结。Driver 关闭 Promise 完成前，已产生的清理派发与可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime 详细设计](modules/runtime.md)。
+DriverExecutionSink 由 Runtime 注入并绑定可信 ControlOwner（run 或 safety）；EffectRecord.owner 来自该绑定，不接受 guest 自填。安全介入只补齐已有 safety 所有者的记录，不生成虚构 Call/Segment。`record` 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket，**不代表持久或服务端 ACK**；无法接收时返回 null、锁存 recorder fault 并封闭新副作用（故障后 `record` 也不再写入）。
+
+**写前意图（§5.3）**：`kind:"intent"` 是派发前已持久的意图，证明"本次业务操作可能已经发出"，不证明服务端已执行；恢复时只剩 intent 一律按 `unknown` 对账，不能判 `not_sent`。`ensureDurable(ticket)` 是唯一派发前屏障，由 RecordQueue 等 DB worker 的真实 `onDurable` ACK 实现：**不可安全重放的业务写必须先落 intent 并等它提交，才允许派发**。ACK 丢失无法证明 intent 是否落盘，必须上报 `unknown`；只有 `record` 返回 null（本次没有 intent）才允许判 `not_sent`。intent 已落盘却明确决定不派发时追加终态 `cleanup(not_sent, not_met)`，恢复侧才不会把"只剩 intent"当成崩溃窗口。撤销与清理路径本身不等磁盘，这不构成业务写绕过派发前屏障的理由。
+
+`RuntimeRecordBarrier.capture` 固定已收到前缀 H，`flushThrough(H)` 保证 ≤H 材料已提交，否则明确失败；材料丢失的故障不得返回成功。DB worker 的 ACK 水线必须覆盖本批全部材料（`record_log` 幂等跳过同样算已提交），否则 `flushThrough` 的等待者永不 resolve。ticket 不跨实例或重启比较，H 之后的材料不纳入原终结。Driver 关闭 Promise 完成前，已产生的清理派发与可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime 详细设计](modules/runtime.md)。
 
 ## 8. 模块独立验证的最小要求
 

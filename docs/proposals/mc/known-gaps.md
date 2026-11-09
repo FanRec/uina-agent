@@ -315,8 +315,21 @@
 - **现象**：`smelt@1` 的等待是 `capabilities/shared/observe.ts:104-122` 的 `setTimeout`，`withStation()`（`capabilities/shared/workstation.ts:123-152`）每轮重新申请 Body/开窗。整段在同一调用栈、同一进程内完成；`runtime/engine.ts:312-354` 的 `recover()` 把 `phase:"waiting"` 与其余未终结 Run 一起保守终结为 `finished/unknown` 并清空 `waiting`。`program/shim.ts:123-153` 的 `mc.waitUntil` 是活 Guest Promise，不是持久等待。`world/watch.ts` 没有 timer/scheduler，`world/state-frame.ts` 也明确不落调度。全仓没有跨进程复活等待记录的机制。
 - **证据**：`runtime/engine.ts:314`（`phase:"waiting"` 不在排除列表）、`:335-342`（`phase:"finished"` + `outcome:"unknown"`）、`runtime/rows.ts:201`（`waiting` 只落 JSON）、`runtime/runtime-db-worker.ts:221`（`runs.waiting TEXT`）、`capabilities/actions/smelt.ts:328-355`。附件 §5.9 标为 `[D/P0]`，验收项 C14/C21/C23 本轮均 `NOT_RUN`。
 - **修法要点**（附件 §5.9 允许复用受信任 decision 机制的挂起分支，不另建并行 Call 状态机）：`phase:"awaiting_decision"` 是唯一跨进程存活的非终结状态（`engine.ts:314` 明确排除），由 `engine.ts:411-577` 的 `continuePrepared()` 在 `runtime/admission.ts:33-44` 的 `(phase, decision, revision)` CAS 下原子认领新 Segment；`continue()` 的 `requestId` 幂等（`engine.ts:384-410`）可保证多次唤醒只认领一次。挂起记录可放 `DecisionRequest.checkpoint.value`，恢复入口放新 Segment 的 `Entry`。
-- **必须一起做完的三处，缺一就是半接线抽象**：① `runtime/owner.ts:140-145` 的 `capture(origin)` 要求 `origin.activation` 等于当前 binding；重启后 Host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值（`OwnerState` 目前不暴露 activation）。② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只触发重新观察，时间到不等于世界变化完成。③ `smelt.ts` 必须显式新增可持久模式（不能改旧 `wait` 的返回含义），把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物；现有装料循环会把结果槽清空且不记入 `completed`，直接重跑整函数会多生产。
+- **必须一起做完的三处，缺一就是半接线抽象**：① `runtime/owner.ts:140` 的 `assertAllowed()` 检查 `origin.activation === binding.activation`，`capture()` 定义在 `:145`；重启后 Host 会用新 activation，扫描器必须取当前 binding 而不是挂起时存下的旧值（`OwnerState` 目前不暴露 activation）。② 需要启动扫描 + 定时复查 + 世界事件唤醒，且唤醒只触发重新观察，时间到不等于世界变化完成。③ `smelt.ts` 必须显式新增可持久模式（不能改旧 `wait` 的返回含义），把 `furnace` / `loaded` / `produced` / `completed` / `deadline` / `idle` 变成纯 JSON 检查点，恢复后跳过装料、只重新观察与取产物；现有装料循环会把结果槽清空且不记入 `completed`，直接重跑整函数会多生产。
 - **验收**：提交前/后 kill、Watch 丢失、唤醒时并发 stop、换连接/换世界、炉区块未加载、他人取走材料、两个 Run 不因同一份旧库存预算重复支付；分别得到未持久挂起 / 正常重扫 / 唯一重入 / 不续跑 / unknown，不能强行记 PASS。本批未起 Paper，未跑 `dev:mc:*`，未做性能对照。
+
+### G34 · 写前意图只接了一个消费者（2026-11-09 审查登记，**部分实现**）
+
+- **现状**：`EffectRecorder.beforeWrite()` 只在 `driver/window/session.ts` 的 `click()` 接入，合同名 `body.window.click@1`。公共合同 `public-api.md §7.1` 与 `contracts/runtime.ts` 已定义 `ensureDurable` 和 `kind:"intent"`，但附件 §5.12 第 1 类要求"逐个"落 intent 的写端大多还没接。
+- **未接入的高风险写端**（源码位置）：`driver/window/session.ts` 的 `commit()` → `selectEnchant@1` / `renameItem@1` / `selectTrade@1`（真实扣经验/扣绿宝石）；`driver/body/inventory.ts` 的 `runToss`（丢弃物品）；`driver/body/ui-act.ts` 的 `planResult.dispatch()`（菜单购买，且发包后才记 dispatch 事实）；`driver/body/session.ts` 的 `activateBlock`（place）、`attack`、`useItem`（consume）、`mining.ts` 的 `startDig`。
+- **Addon 写端**：`driver/protocol-dispatch.ts` 的 `send()` 先调 `protocolFor(bot).customPayload()` 再 `sink.record()`，注释明确"写入发生在记录之前"；注入的 sink 虽带 `ensureDurable`，`send()` 从不调用。它精确落在 §5.3 崩溃矩阵「(3) 后、(4) 前」。**Addon 内部本轮不重构**，但公共契约兼容性缺口如实登记；`addon.protocol@1` 的完成口径是"包已进入协议发送边界"，不等于业务效果已核验。
+- **不需要 intent 的写端**（§5.12 第 3 类）：纯本地可撤销输入（`drive` 键位、`lookAt`、feedback steering），以及 chat / `endSleep` / `interact` 这类"只承诺派发、结果由另一次观察判定"的口径。注意：`commit()` 的完成合同是后者，**不等于写前 intent 豁免**。
+- **本轮不补的原因**：逐个接入需要每个写端各自的红测试与真服证据；只接一两个就宣称 §5.3 收口就是被禁止的半接线抽象。台账里 C02–C05 的 `PASS` 只代表 `body.window.click@1` 的 T1 崩溃矩阵，不代表 §5.3 全覆盖。
+
+### G35 · 结算路径的两处既有语义缺口（2026-11-09 审查登记，**未修**）
+
+- `driver/goto.ts` 的"目标已在邻域、没派发路径"分支先记 `receipt(not_sent, met)`，但 `finally` 的 `settle()` 会对同一 effect 无条件追加 `cleanup(dispatch = bot==null?"unknown":"sent", completion = quiesced?"met":"unknown")`。bot 非 null 且静止判据超时时，一个明确没派发的效果被覆写成"可能已派发"并计入 `unknownEffectsFor()`。修法需要给 goto 加"本次是否真的派发过路径"的标记，属领域重构，本轮不动。
+- `driver/window/session.ts` 的 `catch` 在 `sent=true` 时直接 `return this.unknown(...)`，会吞掉之后 `check()` / `view()` 抛出的 `CONTROL_INVALID` / `BODY_SUSPENDED` 等控制权失败，调用方只看到 `outcome:"unknown"`；`unknown()` 也只记 `receipt(sent, unknown)`，没有终态。两处都是本批之前就存在的行为，与本批改动无关，改动会牵动既有窗口用例，本轮只登记。
 
 ## 附：不要照抄的部分
 

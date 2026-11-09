@@ -27,6 +27,7 @@
 | [decision-implementation.md](decision-implementation.md) | 批 9B · 2026-10-26 | `decide`/`continue`、显式续段、`replace_pending`/`preempt_current`、历史保留与清理、I2 |
 | [feedback-implementation.md](feedback-implementation.md) | 批 10 · 2026-10-27 | `body.feedback`/`body.loop`、250ms 帧与过期撤销、默认自保、Runtime schema v6 |
 | [control-gate-and-effect-intent.md](control-gate-and-effect-intent.md) | 2026-11-09 | 单一 ControlPermit、Effect 写前意图与持久屏障、C02–C05 崩溃矩阵、本轮验收台账与持久等待未完成的源码级施工路径 |
+| [review-2026-11-09-quality.md](review-2026-11-09-quality.md) | 审查轮 · 2026-11-09 | 附件完成度判定、实现质量审查的缺陷清单、五处修复的红→绿证据、未修项的理由与全量门禁 |
 
 ## 早期研究
 
