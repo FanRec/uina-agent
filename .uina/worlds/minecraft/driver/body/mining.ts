@@ -146,6 +146,17 @@ export async function runMining(
 					predictedMs: waitMs,
 				});
 				deps.guard();
+				// 意图等盘期间目标可能已经被挖掉或换掉：不往不存在的方块上发 startDig。
+				if (deps.bot.blockAt(toMineflayerVec3(target.block)) == null) {
+					deps.recorder.closeIntent(effect, operation, "body.dig@1", "NOT_FOUND");
+					throw fail({
+						code: "NOT_FOUND",
+						source: "world",
+						message: "dig target disappeared between the intent and the dispatch",
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
 				dispatch = "unknown";
 				deps.protocol.startDig(target.block, face);
 				dispatch = "sent";

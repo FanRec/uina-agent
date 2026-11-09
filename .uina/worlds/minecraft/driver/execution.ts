@@ -116,6 +116,18 @@ export class EffectRecorder {
 		}
 	}
 
+	/**
+	 * intent 已落盘、这一版又明确决定不派发：补一条终态，恢复侧才不会把"只剩
+	 * intent"当成"可能已经发出"的崩溃窗口，也不会为此永远挂在 unknown。
+	 * 三处写端（工作站提交、丢弃、破坏）共用这一个形状，别各写一份措辞。
+	 */
+	closeIntent(effect: Ref, operation: Ref, contract: ExactRef, reason: string): void {
+		this.record(effect, operation, contract, "cleanup", "not_sent", "not_met", {
+			completionContract: "durable intent closed before dispatch; nothing was written",
+			reason,
+		});
+	}
+
 	record(
 		effect: Ref,
 		operation: Ref,

@@ -7,7 +7,9 @@
  * 2. 意图落不了盘就一次包都不发，失败按 not_sent 收口（不是"挖了但不知道结果"）。
  */
 import { expect, test } from "vitest";
+import type { DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import type { BodyOperationDeps } from "../../.uina/worlds/minecraft/driver/body/operation.js";
+import { EffectRecorder } from "../../.uina/worlds/minecraft/driver/execution.js";
 import { runMining } from "../../.uina/worlds/minecraft/driver/body/mining.js";
 import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { ProtocolNotice } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
@@ -17,8 +19,9 @@ const target = {
 	block: { x: 0, y: 64, z: 0 },
 };
 
-function rig(intent: () => Promise<void>) {
-	const facts: string[] = [];
+function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean } = {}) {
+	// 用真的 EffectRecorder：写前意图与"意图关闭"都是被测对象，替身会把它们一起假掉。
+	const facts: DriverExecutionFact[] = [];
 	const packets: string[] = [];
 	let notify: ((notice: ProtocolNotice) => void) | null = null;
 	const deps = {
@@ -29,13 +32,14 @@ function rig(intent: () => Promise<void>) {
 		canCleanup: () => false,
 		bot: {
 			lookAt: async () => {},
-			blockAt: () => ({ name: "stone" }),
+			blockAt: () => (options.blockGone?.() ? null : { name: "stone" }),
 			digTime: () => 20,
 			swingArm: () => {},
 		},
 		protocol: {
 			startDig: () => {
-				expect(facts[0]).toBe("intent");
+				// 发包瞬间，这条 effect 的第一条事实必须是意图。
+				expect(facts[0]?.kind).toBe("intent");
 				packets.push("startDig");
 			},
 			finishDig: () => packets.push("finishDig"),
@@ -45,23 +49,30 @@ function rig(intent: () => Promise<void>) {
 				return () => {};
 			},
 		},
-		recorder: {
-			beforeWrite: intent,
-			record: (_effect: string, _op: string, _contract: string, phase: string) => {
-				facts.push(phase === "dispatch" ? "dispatch" : phase);
-			},
-		},
 	} as unknown as BodyOperationDeps;
-	return { deps, facts, packets, emit: (notice: ProtocolNotice) => notify?.(notice) };
+	const recorder = new EffectRecorder({
+		record: (fact) => {
+			facts.push(fact);
+			return { instance: "rw:test", sequence: facts.length };
+		},
+		ensureDurable: async () => {},
+	});
+	const beforeWrite = recorder.beforeWrite.bind(recorder);
+	recorder.beforeWrite = async (...args: Parameters<EffectRecorder["beforeWrite"]>) => {
+		await intent();
+		return beforeWrite(...args);
+	};
+	deps.recorder = recorder;
+	const kinds = () => facts.map((fact) => fact.kind);
+	return { deps, facts, kinds, packets, emit: (notice: ProtocolNotice) => notify?.(notice) };
 }
 
 test("the write intent is durable before startDig and the packet confirms it", async () => {
-	const h = rig(async () => {
-		h.facts.push("intent");
-	});
+	const h = rig(async () => {});
 	const digging = runMining(h.deps, target as never, { aim: "preserve" });
-	await Promise.resolve();
-	expect(h.facts).toEqual(["intent", "dispatch"]);
+	// 真的 EffectRecorder 里 beforeWrite 还要等一次屏障：排几个 microtask 再断言。
+	for (let i = 0; i < 10 && h.kinds().length < 2; i++) await Promise.resolve();
+	expect(h.kinds().slice(0, 2)).toEqual(["intent", "dispatch"]);
 	expect(h.packets).toContain("startDig");
 	// 只有服务端方块更新能确认：客户端计时到了也只算 unknown。
 	h.emit({ kind: "block", position: target.block, air: true } as never);
@@ -84,5 +95,24 @@ test("a refused intent sends no packet at all and stays not_sent", async () => {
 		dispatch: "not_sent",
 	});
 	expect(h.packets).toHaveLength(0);
-	expect(h.facts).toEqual([]);
+	expect(h.kinds()).toEqual([]);
+});
+
+test("a target that disappeared during the intent is closed instead of digging air", async () => {
+	let gone = false;
+	// 意图等盘期间方块被挖掉/换了。
+	const h = rig(
+		async () => {
+			gone = true;
+		},
+		{ blockGone: () => gone },
+	);
+	await expect(runMining(h.deps, target as never, { aim: "preserve" })).rejects.toMatchObject({
+		code: "NOT_FOUND",
+		dispatch: "not_sent",
+	});
+	// 没发 startDig，也没有只留一条 intent：意图 + 终态两条。
+	expect(h.packets).toHaveLength(0);
+	expect(h.kinds()).toEqual(["intent", "cleanup"]);
+	expect(h.facts[1]).toMatchObject({ dispatch: "not_sent", completion: "not_met", detail: { reason: "NOT_FOUND" } });
 });

@@ -196,10 +196,7 @@ export async function runToss(deps: InventoryDeps, selector: ItemSelector, count
 	} catch (error) {
 		// 意图已经落盘、这一版又决定不点：必须补终态，否则恢复侧只看到一条 intent，
 		// 会把"什么都没做"当成"可能丢过东西"永远挂在 unknown。
-		deps.recorder.record(effect, operation, "body.toss@1", "cleanup", "not_sent", "not_met", {
-			completionContract: "durable intent closed before dispatch; no click was sent",
-			reason: (error as { code?: string }).code ?? "INTERNAL",
-		});
+		deps.recorder.closeIntent(effect, operation, "body.toss@1", (error as { code?: string }).code ?? "INTERNAL");
 		throw error;
 	}
 	// 意图落盘之后才开始点：在此之前抛错确定没有动过库存。

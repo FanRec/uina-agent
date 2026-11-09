@@ -723,10 +723,7 @@ export class WindowSessionImpl implements WindowSession {
 		} catch (error) {
 			// 意图已经落盘，这一版又决定不派发：必须补一条终态，否则恢复侧只看到
 			// 一条 intent，会把它当成"可能已经发出"的崩溃窗口，永远挂在 unknown。
-			this.deps.recorder.record(effect, operation, contract, "cleanup", "not_sent", "not_met", {
-				completionContract: "durable intent closed before dispatch; no packet was written",
-				reason: (error as { code?: string }).code ?? "INTERNAL",
-			});
+			this.deps.recorder.closeIntent(effect, operation, contract, (error as { code?: string }).code ?? "INTERNAL");
 			throw error;
 		}
 		try {
