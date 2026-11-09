@@ -177,6 +177,12 @@ export class GotoDirector {
 		let bot: MineflayerBot | null = null;
 		let ticks = 0;
 		let dug = 0;
+		/**
+		 * 本次 Operation 是否真派发过路径（G35）：结算的 cleanup 事实不能把
+		 * "压根没发"写成 sent，否则一个在规划前就失败的 goto 会让整条 effect
+		 * 变成未决未知效果，Run 被结算成 unknown 而不是 failed/not_sent。
+		 */
+		let dispatched = false;
 		// 守卫：Operation 失效后每物理步封印写源，直到结算退役（§9.3 隔离）；
 		// 定义在 try 外以便 finally 注销（迟到信号不得透过旧守卫影响后续 Operation）。
 		const onDug = (): void => {
@@ -258,6 +264,7 @@ export class GotoDirector {
 				}),
 			);
 
+			dispatched = true;
 			const outcome = await this.awaitOutcome(bot, request, signal);
 
 			if (outcome === "reached") {
@@ -316,7 +323,7 @@ export class GotoDirector {
 			}
 			throw this.mapOutcomeFailure(outcome, eff, ticks, bot, signal.aborted);
 		} finally {
-			await this.settle(bot, eff, op, signal.aborted ? "aborted" : "finished", permit);
+			await this.settle(bot, eff, op, signal.aborted ? "aborted" : "finished", permit, dispatched);
 			this.state = "done";
 			// 守卫随 Operation 注销：调用结束后本 Operation 的 signal 已 abort，
 			// 陈旧守卫会在后续导航运行期误触发封印并 clearGoal（上游表现为 GoalChanged）。
@@ -623,6 +630,7 @@ export class GotoDirector {
 		op: Ref,
 		reason: string,
 		permit: ControlPermit,
+		dispatched: boolean,
 	): Promise<void> {
 		/**
 		 * 单 active 资格槽：结算任何一步抛错都不能把 permit 留在槽里，否则之后
@@ -646,14 +654,17 @@ export class GotoDirector {
 				op,
 				"body.goto@1",
 				"cleanup",
-				bot == null ? "unknown" : "sent",
-				bot == null || !quiesced ? "unknown" : "met",
+				// 没派发过路径 = 确定没写出去；只有派发过才谈得上"不知道清没清干净"。
+				!dispatched ? "not_sent" : bot == null ? "unknown" : "sent",
+				!dispatched ? "met" : bot == null || !quiesced ? "unknown" : "met",
 				{
 					reason,
 					quiesced,
-					note: quiesced
-						? "navigation write sources sealed (no goal, no path, no digging, keys released)"
-						: "quiescence deadline exceeded; residual writes cannot be excluded",
+					note: !dispatched
+						? "no path was dispatched; there is nothing to quiesce"
+						: quiesced
+							? "navigation write sources sealed (no goal, no path, no digging, keys released)"
+							: "quiescence deadline exceeded; residual writes cannot be excluded",
 				},
 			);
 		} finally {
