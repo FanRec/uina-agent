@@ -78,6 +78,32 @@ function validExpectation(expected: StackExpectation): boolean {
 	return Number.isInteger(expected.count) && expected.count >= 0 && (expected.item !== null || expected.count === 0);
 }
 
+/** 差异描述里的值按短 JSON 输出：排障要"哪一格、期望什么、现在什么"，不要整窗 dump。 */
+function brief(value: JsonValue | null | StackExpectation): string {
+	const text = JSON.stringify(value) ?? "null";
+	return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+/**
+ * 派发前唯一的前态判据：调用方声明的那几格与光标是不是还和现在一样。
+ *
+ * 这里**不看 revision 是否相等**。玩家自带窗口的 revision 每收到一次全量同步就 +1，
+ * 而服务端对上一次点击的回执本身就会再推一次全量——一次 equip/toss/craft 由多次
+ * 点击组成，下一次点击必然"版本过期"。那是时序，不是别人动过窗口（真服实测：
+ * 两次点击之间 2ms 内到达第二次全量，槽位与光标却完全符合预期）。真被别人动过时，
+ * 下面的内容比对会命中，并在消息里指出差在哪一格。
+ */
+function describeDrift(view: SessionView, input: ClickInput): string | null {
+	if (!matches(view.cursor, input.expectedCursor))
+		return `cursor expected ${brief(input.expectedCursor)} but holds ${brief(view.cursor)}`;
+	for (const entry of input.expectedSlots) {
+		const actual = view.slots[entry.slot] ?? null;
+		if (!matches(actual, entry.stack))
+			return `slot ${entry.slot} expected ${brief(entry.stack)} but holds ${brief(actual)}`;
+	}
+	return null;
+}
+
 type Stack = { [key: string]: JsonValue };
 function stack(value: JsonValue | null): Stack | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -466,12 +492,6 @@ export class WindowSessionImpl implements WindowSession {
 			const view = this.view();
 			const native = this.nativeWindow();
 			if (view == null || native === null) throw failure("WRONG_STATE", "window is not ready");
-			if (input.expectedRevision !== view.revision)
-				// 带上两个数值：真服排障时"差了一版"和"差了很多版"是两类问题。
-				throw failure(
-					"CONFLICT",
-					`window revision changed before dispatch (expected ${input.expectedRevision}, actual ${view.revision})`,
-				);
 			if (
 				!Number.isInteger(input.slot) ||
 				(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
@@ -483,24 +503,25 @@ export class WindowSessionImpl implements WindowSession {
 			if (
 				(input.slot !== -999 && !input.expectedSlots.some((entry) => entry.slot === input.slot)) ||
 				!validExpectation(input.expectedCursor) ||
-				input.expectedSlots.some((entry) => !validExpectation(entry.stack))
+				input.expectedSlots.some(
+					(entry) =>
+						!validExpectation(entry.stack) ||
+						!Number.isInteger(entry.slot) ||
+						entry.slot < 0 ||
+						entry.slot >= view.layout.slotCount,
+				)
 			) {
 				throw failure(
 					"INVALID_INPUT",
-					"expectedSlots must cover the clicked slot; stack counts must be nonnegative integers and null stacks must have count zero",
+					"expectedSlots must cover the clicked slot with in-range slots, stack counts must be nonnegative integers and null stacks must have count zero",
 				);
 			}
-			if (
-				!matches(view.cursor, input.expectedCursor) ||
-				input.expectedSlots.some(
-					(entry) =>
-						!Number.isInteger(entry.slot) ||
-						entry.slot < 0 ||
-						entry.slot >= view.layout.slotCount ||
-						!matches(view.slots[entry.slot] ?? null, entry.stack),
-				)
-			)
-				throw failure("CONFLICT", "window revision or stack expectation changed before dispatch");
+			const drift = describeDrift(view, input);
+			if (drift != null)
+				throw failure(
+					"CONFLICT",
+					`window content changed before dispatch (${drift}; revision ${input.expectedRevision} -> ${view.revision})`,
+				);
 			const expected =
 				input.slot === -999
 					? {

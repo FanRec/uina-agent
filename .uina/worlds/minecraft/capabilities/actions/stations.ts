@@ -600,13 +600,41 @@ export const stationsModule: MinecraftCapabilityModule = {
 							await putRegion(window, "input", base, 1);
 							if (material != null) await putRegion(window, "input", material, 1);
 							if (input.operation === "rename" && input.name != null) await window.renameItem(input.name);
-							const ready = await watch(
-								ctx,
-								window,
-								(snapshot) => windowSlot(snapshot, windowRegion(snapshot, "result")[0]) != null,
-								3_000,
-								"the anvil produced no result for this combination",
-							);
+							let ready: WindowSnapshot;
+							try {
+								ready = await watch(
+									ctx,
+									window,
+									(snapshot) => windowSlot(snapshot, windowRegion(snapshot, "result")[0]) != null,
+									3_000,
+									"the anvil produced no result for this combination",
+								);
+							} catch (error) {
+								if ((error as { code?: string }).code !== "TARGET_NOT_MET") throw error;
+								// 排障：没结果时把两个输入槽与服务端报的成本一起带出去。原版在"这一对
+								// 组合没有任何变化"和"花费超过 40 级"时都表现为结果槽为空，两者的处置
+								// 完全不同，只报一句"没有结果"等于让调用方猜。负成本是服务端明确拒绝
+								// （互斥附魔 / 无变化），与"太贵"不是一回事。
+								const at = (await window.snapshot()).value;
+								const inputsAt = windowRegion(at, "input")
+									.map((slot) => `${slot}=${windowSlot(at, slot)?.name ?? "empty"}`)
+									.join(", ");
+								const observed = property(at, 0);
+								fail(
+									"TARGET_NOT_MET",
+									`the anvil produced no result for this combination (inputs ${inputsAt}, cost ${
+										observed ?? "none"
+									}, levels ${levels ?? "unknown"})`,
+									{
+										dispatch: "sent",
+										progress: plain({ operation: input.operation, base }) as never,
+										hint:
+											observed != null && observed < 0
+												? "a negative cost means the server refused the combination: conflicting enchantments (sharpness/smite/bane_of_arthropods) or two items that would not change"
+												: undefined,
+									},
+								);
+							}
 							const cost = property(ready, 0) ?? 0;
 							if (levels != null && cost > levels)
 								fail("MISSING_MATERIAL", `this operation costs ${cost} levels, you have ${levels}`, {

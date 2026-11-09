@@ -224,6 +224,13 @@ export interface WindowSession {
 		slot: number;
 		button: number;
 		mode: number;
+		/**
+		 * 排序/诊断用的窗口版本（快照时的 revision），**不是**派发准入：
+		 * 玩家自带窗口每次全量同步都换版本，服务端对上一击的回执本身就会再推一次，
+		 * 拿它做相等判断会把正常的多次点击序列判成冲突。准入判据是下面声明的
+		 * expectedSlots 与 expectedCursor 内容本身；版本只进冲突消息，用来区分
+		 * "自己的回执晚到"和"别人真的动过窗口"。
+		 */
 		expectedRevision: number;
 		expectedSlots: { slot: number; stack: StackExpectation }[];
 		expectedCursor: StackExpectation;
