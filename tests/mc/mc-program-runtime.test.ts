@@ -11,6 +11,7 @@ import { readCallSource } from "../../.uina/worlds/minecraft/library/origin.js";
 import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
 import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
+import { nativeCallable } from "./mc-native-fixture.js";
 
 test("formal Runtime executes code and named children, preserves snapshots across SQLite reopen", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-program-runtime-"));
@@ -41,25 +42,12 @@ test("formal Runtime executes code and named children, preserves snapshots acros
 			throw new Error("unused");
 		},
 	} satisfies PlayerPort;
-	const callable: NativeCallable<JsonValue, JsonValue> = {
-		descriptor: {
-			ref: "echo@1",
-			summary: "echo",
-			input: {},
-			output: {},
-			access: "act",
-			completion: { scope: "execution", description: "echo" },
-			implementation: "native",
-			errors: [],
-			requires: [],
-			examples: [],
-		},
-		invoke: async (ctx, input) =>
-			ctx.withBody(async (scope) => {
-				await scope.player.lookAt({ x: 0, y: 64, z: 0 });
-				return input;
-			}),
-	};
+	const callable: NativeCallable<JsonValue, JsonValue> = nativeCallable("echo@1", async (ctx, input) => {
+		return await ctx.withBody(async (scope) => {
+			await scope.player.lookAt({ x: 0, y: 64, z: 0 });
+			return input;
+		});
+	}, { summary: "echo", completion: { scope: "execution", description: "echo" } });
 	const options = {
 		dbPath: join(root, "runtime.db"),
 		storageId: "test",
