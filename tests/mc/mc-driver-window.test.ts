@@ -88,7 +88,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 			contents[data.slot] = carried;
 			carried = previous;
 		}
-		if (name === "window_click" && respond) queueMicrotask(() => full());
+		if (name === "window_click" && respond) queueMicrotask(() => full(data.windowId));
 	};
 	let serial = 0;
 	const deps: BodySessionDeps = {
@@ -140,6 +140,17 @@ async function input(window: WindowSession) {
 		expectedSlots: [{ slot: 0, stack: { item: { name: "stone" }, count: 8 } }],
 		expectedCursor: empty,
 	};
+}
+
+/**
+ * 玩家自带窗口（windowId 0）靠协议层的 `window_items` 置位 `playerSynchronized`，
+ * 而协议是**惰性挂接**的：没被任何操作创建之前的包不会被记录。所以先开再关一个容器
+ * 把协议拉起来，再喂一份 window 0 的 full，才有"权威玩家库存"。
+ */
+async function primePlayerInventory(h: ReturnType<typeof harness>): Promise<void> {
+	const window = await h.session.openContainer(target);
+	await window.close();
+	h.full(0);
 }
 
 afterEach(() => vi.useRealTimers());
@@ -697,8 +708,10 @@ describe("G34 write ends record intent before dispatch", () => {
 
 	test("tossing records the intent before the first click and stays not_sent when it is refused", async () => {
 		const h = harness();
+		await primePlayerInventory(h);
 		h.contents[12] = stone(3);
-		h.full();
+		h.full(0);
+		await Promise.resolve();
 		h.deps.sink.record = () => null;
 		const failure = await captureFailure(h.session.toss({ name: "stone" }, 2));
 		expect(failure).toMatchObject({ dispatch: "not_sent" });
@@ -720,5 +733,35 @@ describe("G34 write ends record intent before dispatch", () => {
 		// recorder 已故障：关窗也算写端，会被拒；这里只确认"故障之后不再出去任何包"。
 		await window.close().catch(() => {});
 		await h.session.close().catch(() => {});
+	});
+});
+
+/**
+ * 写前意图把"读快照"和"发包"之间插进了一次等盘。窗口前态检查（§7.7）不会替调用方
+ * 续期——所以意图之后必须重新取快照，否则第一次点击必然拿旧 revision 撞 CONFLICT。
+ * 这两条钉的就是这个缝隙。
+ */
+describe("G34 intent wait must not leave a stale pre-state behind", () => {
+	test("a window that changes during the intent closes the effect instead of leaving only an intent", async () => {
+		const h = harness(true, { type: "minecraft:enchantment" });
+		const record = h.deps.sink.record;
+		h.deps.sink.record = (fact) => {
+			const ticket = record(fact);
+			if (fact.kind === "intent") {
+				// 意图期间窗口被退役：这一版不能再写包。
+				h.bot.currentWindow = null;
+			}
+			return ticket;
+		};
+		const opening = await h.session.openContainer(target);
+		await expect(opening.selectEnchant(1)).rejects.toMatchObject({ code: "REFERENCE_STALE" });
+		const kinds = h.facts.map((fact) => `${fact.kind}:${fact.dispatch}:${fact.completion}`);
+		expect(kinds).toContain("intent:unknown:unknown");
+		expect(kinds.some((entry) => entry.startsWith("cleanup:not_sent:not_met"))).toBe(true);
+		// 这条 effect 没有派发事实：只有 intent + 终态，恢复侧不会把它当"可能已发出"。
+		const dispatchOfEffect = h.facts.filter(
+			(fact) => fact.kind === "dispatch" && fact.contract.includes("selectEnchant"),
+		);
+		expect(dispatchOfEffect).toHaveLength(0);
 	});
 });

@@ -11,7 +11,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
@@ -45,6 +45,8 @@ async function setup(callables: NativeCallable<JsonValue, JsonValue>[]) {
 		world: {} as WorldPort,
 		playerPort,
 		callables,
+		// 段记录里固化的环境：换环境之后"继承"必须被拒，才谈得上验拒绝路径。
+		environment: { serverVersion: "1.21.11", protocol: 774 },
 		// 定时器交给测试显式驱动，避免"等 1 秒"变成隐式时序依赖。
 		durableWakeIntervalMs: 0,
 	};
@@ -75,10 +77,15 @@ async function setup(callables: NativeCallable<JsonValue, JsonValue>[]) {
 		},
 		origin,
 		enable,
-		async reopen() {
+		async reopen(overrides: Partial<typeof options> = {}) {
 			await runtime.close();
 			runtime = (
-				await MinecraftRuntime.open({ ...options, namespace: `reopened-${++reopened}`, oldControlRetired: true })
+				await MinecraftRuntime.open({
+					...options,
+					...overrides,
+					namespace: `reopened-${++reopened}`,
+					oldControlRetired: true,
+				})
 			).runtime;
 			await enable();
 		},
@@ -301,4 +308,116 @@ test("non-parked unfinished rows are still settled conservatively after restart"
 			outcome: "unknown",
 			error: { code: "runtime_restart" },
 		});
+});
+
+/** 从任意记录里找出持久等待的形状（决策报告里嵌在 `request.wait`）。 */
+function findWait(
+	node: unknown,
+): { earliestCheckAt: string; deadlineAt: string; lastProgressAt: string; attempts: number } | null {
+	if (node == null || typeof node !== "object") return null;
+	const record = node as Record<string, unknown>;
+	if (typeof record.earliestCheckAt === "string" && typeof record.deadlineAt === "string")
+		return record as unknown as {
+			earliestCheckAt: string;
+			deadlineAt: string;
+			lastProgressAt: string;
+			attempts: number;
+		};
+	for (const value of Object.values(record)) {
+		const hit = findWait(value);
+		if (hit != null) return hit;
+	}
+	return null;
+}
+
+async function waitOf(f: Awaited<ReturnType<typeof setup>>, completionRef: string) {
+	const record = await f.runtime.readRecord(completionRef);
+	const wait = findWait(record);
+	if (wait == null) throw Error(JSON.stringify(record));
+	return wait;
+}
+
+test("the recheck time never runs past the declared silent budget", async () => {
+	const f = await setup([
+		native("wait@1", async () => {
+			throw createSuspendError({
+				reason: "the furnace needs a long time",
+				checkpoint: { step: "loaded" },
+				recheckAfterMs: 3_600_000,
+				deadlineAfterMs: 1_000,
+			});
+		}),
+	]);
+	const { parked } = await submitWait(f);
+	if (parked.phase !== "awaiting_decision") throw Error(JSON.stringify(parked));
+	const wait = await waitOf(f, parked.completionRef);
+	// 能力想等一小时，预算只剩一秒：复查时刻必须被夹到预算之内。
+	expect(wait.earliestCheckAt <= wait.deadlineAt).toBe(true);
+	expect(Date.parse(wait.earliestCheckAt) - Date.now()).toBeLessThan(5_000);
+});
+
+test("a recheck without progress keeps the silent budget anchored, progress resets it", async () => {
+	const f = await setup([
+		native("wait@1", async (ctx) => {
+			const step = (ctx.checkpoint as { step?: number } | null)?.step ?? 0;
+			throw createSuspendError({
+				reason: `batch ${step}`,
+				checkpoint: { step: step + 1 },
+				recheckAfterMs: 0,
+				deadlineAfterMs: 60_000,
+				// 前两轮都不算推进，第三轮起才算（step 是上一版检查点里的值）。
+				progressed: step >= 2,
+			});
+		}),
+	]);
+	const first = await submitWait(f);
+	if (first.parked.phase !== "awaiting_decision") throw Error("not parked");
+	const firstWait = await waitOf(f, first.parked.completionRef);
+	await f.runtime.recheckDurableWaits();
+	const second = (await f.runtime.wait(first.run, { timeoutMs: 4000 })).snapshot;
+	if (second.phase !== "awaiting_decision") throw Error(JSON.stringify(second));
+	const secondWait = await waitOf(f, second.completionRef);
+	// 第二轮没推进：静默预算的起点不动，截止时刻也不动。
+	expect(secondWait.lastProgressAt).toBe(firstWait.lastProgressAt);
+	expect(secondWait.deadlineAt).toBe(firstWait.deadlineAt);
+	expect(secondWait.attempts).toBe(2);
+	await f.runtime.recheckDurableWaits();
+	const third = (await f.runtime.wait(first.run, { timeoutMs: 4000 })).snapshot;
+	if (third.phase !== "awaiting_decision") throw Error(JSON.stringify(third));
+	const thirdWait = await waitOf(f, third.completionRef);
+	// 第三轮声明推进了：起点前移，预算重新起算。
+	expect(thirdWait.lastProgressAt > firstWait.lastProgressAt).toBe(true);
+	expect(thirdWait.deadlineAt > firstWait.deadlineAt).toBe(true);
+});
+
+test("a wake refused by admission is reported once and not retried every scan", async () => {
+	const logged: string[] = [];
+	const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+		logged.push(args.map(String).join(" "));
+	});
+	try {
+		const f = await setup([
+			native("wait@1", async () => {
+				throw createSuspendError({
+					reason: "waiting",
+					checkpoint: { step: 1 },
+					recheckAfterMs: 0,
+					deadlineAfterMs: 60_000,
+				});
+			}),
+		]);
+		const { run, parked } = await submitWait(f);
+		if (parked.phase !== "awaiting_decision") throw Error("not parked");
+		// 换一个运行环境再打开：继承的环境已经不在了，续段会被 WRONG_STATE 拒掉。
+		await f.reopen({ environment: { serverVersion: "1.20.1", protocol: 763 } });
+		expect(await f.runtime.recheckDurableWaits()).toBe(0);
+		expect(logged.filter((line) => line.includes("durable wake")).length).toBe(1);
+		// 同一版挂起不再重试：不再调受理、也不再刷日志。
+		expect(await f.runtime.recheckDurableWaits()).toBe(0);
+		expect(await f.runtime.recheckDurableWaits()).toBe(0);
+		expect(logged.filter((line) => line.includes("durable wake")).length).toBe(1);
+		expect((await f.runtime.read(run)).phase).toBe("awaiting_decision");
+	} finally {
+		spy.mockRestore();
+	}
 });
