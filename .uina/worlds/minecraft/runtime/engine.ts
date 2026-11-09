@@ -43,13 +43,16 @@ import type {
 import type {
 	CallFailure,
 	CallFailureData,
+	DecisionRequest,
+	DurableSuspendRequest,
+	DurableWait,
 	EffectReceipt,
 	JsonSchema,
 	JsonValue,
 	Progress,
 	Ref,
 } from "../contracts/values.js";
-import { callFailure, plain } from "../contracts/values.js";
+import { callFailure, createSuspendError, getSuspendRequest, plain } from "../contracts/values.js";
 import type { WorldPort } from "../contracts/world.js";
 import { type BodyGrant, BodyLeaseQueue } from "./body-queue.js";
 import { toCallFailure } from "./failure.js";
@@ -119,6 +122,12 @@ const RETIREMENT_HINT: Record<ControlRetirementCause, string> = {
 	unknown: "old writes may still be in flight; wait for the close barrier and re-observe before any new write",
 };
 
+/**
+ * 持久挂起的重入次数上限（§5.9）：能力反复 wake→check→wait 时，Runtime 必须有
+ * 自己的收口预算，否则一个永远观察不到的条件会无限续段。到顶按 unknown 结案。
+ */
+const MAX_DURABLE_WAKE_ATTEMPTS = 16;
+
 function isJsonValue(value: unknown): value is JsonValue {
 	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
 	if (typeof value === "number") return Number.isFinite(value);
@@ -140,6 +149,17 @@ function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailur
 		effects: err.effects,
 		recoverable: err.recoverable,
 	};
+}
+
+/** 落库的 `runs.decision` → 决策 ref 与持久等待；不是持久挂起就返回 null。 */
+function parseWait(decision: string): { decision: Ref; wait: DurableWait } | null {
+	try {
+		const parsed = JSON.parse(decision) as { ref?: unknown; request?: { wait?: unknown } };
+		if (typeof parsed.ref !== "string" || parsed.request?.wait == null) return null;
+		return { decision: parsed.ref, wait: parsed.request.wait as DurableWait };
+	} catch {
+		return null;
+	}
 }
 
 export interface EngineOptions {
@@ -204,6 +224,9 @@ export class RuntimeEngine {
 	private readonly recoveredSegments = new Map<Ref, import("./runtime-db-worker.js").SegmentRow>();
 	private readonly stopBarriers = new Set<Promise<StopReceipt>>();
 	private shutdownPromise: Promise<void> | null = null;
+	private wakeTimer: ReturnType<typeof setInterval> | null = null;
+	private wakeScanning = false;
+	private wakeClosed = false;
 	private isolationFailed = false;
 	private chatGate: Promise<void> = Promise.resolve();
 	readonly safety: RuntimeSafety;
@@ -469,10 +492,16 @@ export class RuntimeEngine {
 			return reject("REQUEST_CANCELLED", "request stopped during preparation");
 		if (old?.stopped || this.read(request.run).phase !== "awaiting_decision")
 			return reject("DECISION_STALE", "decision was stopped during preparation");
-		const decisionRequest = old?.decisionRequest ?? JSON.parse(row!.decision!).request;
+		const decisionRequest = (old?.decisionRequest ?? JSON.parse(row!.decision!).request) as DecisionRequest;
+		const wait = decisionRequest.wait;
+		// 有待恢复的持久挂起时，入口必须是挂起的那一个：换能力等于把它不认识的检查点喂进去
+		// （smelt 的炉位交给 craft 会重新装料），Program 入口同理不能接这份检查点。
+		// 没有 wait 的普通决策不受限——Host 有权决定"不接着写，改做别的"。
+		if (wait != null && callable.kind !== "native")
+			return reject("CHECKPOINT_INVALID", "a durable native wait cannot be resumed by a program entry");
+		if (wait != null && wait.resume.selector !== callable.ref)
+			return reject("CHECKPOINT_INVALID", `the pending durable wait belongs to ${wait.resume.selector}`);
 		const checkpoint = callable.kind === "program" ? decisionRequest.checkpoint : null;
-		if (callable.kind === "native" && decisionRequest.checkpoint?.kind === "domain")
-			return reject("CHECKPOINT_INVALID", "this native entry has no registered domain checkpoint consumer");
 		const segment = this.refs.segment(),
 			abort = new AbortController();
 		const state: RunState = {
@@ -511,6 +540,7 @@ export class RuntimeEngine {
 			awaitingBody: 0,
 			waiters: old?.waiters ?? new Set(),
 			checkpoint,
+			...(wait != null ? { durableWait: wait } : {}),
 			environment: request.environment === "current" ? (this.opts.environment ?? null) : environment,
 		};
 		if (this.opts.program)
@@ -1327,8 +1357,103 @@ export class RuntimeEngine {
 			call?.abort.abort();
 		}
 	}
+	// ---- 持久等待：落库形状与唤醒扫描（§5.9） ----
+	//
+	// 一个持久挂起就是"停在 awaiting_decision 但不等 Host 决策"：decision 列里带
+	// `wait`，Runtime 自己按 earliestCheckAt 重查、按原能力入口续段。死线与次数
+	// 预算都锚在第一次挂起上——反复 wake→check→wait 不重置它们，否则永远到不了头。
+
+	private durableDecisionOf(state: RunState, suspend: DurableSuspendRequest, wait: DurableWait): DecisionRequest {
+		return {
+			code: "NEEDS_DECISION",
+			reason: suspend.reason,
+			checkpoint: null,
+			origin: { call: state.rootCall.call, program: null, digest: state.callable.digest },
+			wait,
+		};
+	}
+
+	private durableWaitFor(state: RunState, suspend: DurableSuspendRequest): DurableWait | null {
+		const previous = state.durableWait;
+		const attempts = (previous?.attempts ?? 0) + 1;
+		if (attempts > MAX_DURABLE_WAKE_ATTEMPTS) return null;
+		const now = Date.now();
+		// 静默预算是从"最后一次世界推进"起算的总预算，不是每次复查都续期。
+		const lastProgressAt = previous?.lastProgressAt ?? new Date(now).toISOString();
+		return {
+			attempts,
+			earliestCheckAt: new Date(now + Math.max(0, suspend.recheckAfterMs)).toISOString(),
+			lastProgressAt,
+			deadlineAt: new Date(Date.parse(lastProgressAt) + Math.max(0, suspend.deadlineAfterMs)).toISOString(),
+			resume: { selector: state.callable.ref, input: plain(state.rootCall.input) },
+			checkpoint: plain(suspend.checkpoint),
+		};
+	}
+
+	/**
+	 * 起唤醒扫描：recover 之后、ready 之前调用一次。定时器 unref 并随 shutdown 清理，
+	 * 不为一个"可能很久才到点"的等待拖住进程退役。扫描只做"到点再看一眼"，
+	 * 单次认领仍由 continue 的受理 CAS 保证。
+	 */
+	startDurableWakes(intervalMs = 1000): void {
+		if (this.wakeTimer != null || this.wakeClosed) return;
+		this.wakeTimer = setInterval(() => void this.recheckDurableWaits(), intervalMs);
+		this.wakeTimer.unref();
+		void this.recheckDurableWaits();
+	}
+
+	/** 复查所有到点的持久等待，各认领一次续段；返回本轮真正受理的唤醒数。 */
+	async recheckDurableWaits(now = new Date()): Promise<number> {
+		if (this.wakeScanning || this.wakeClosed) return 0;
+		this.wakeScanning = true;
+		try {
+			const due = this.dueWaits(now);
+			if (due.length === 0) return 0;
+			// 没有合法绑定就没有可信 Origin：等 Host 重新 attach 并开门，下一轮再试。
+			const owner = this.owner.state();
+			if (owner.activation === "" || owner.gates.length !== 0) return 0;
+			const origin: Origin = { worldOwner: this.opts.worldOwner, activation: owner.activation };
+			let claimed = 0;
+			for (const item of due) {
+				const acceptance = await this.continue(origin, {
+					run: item.run,
+					decision: item.decision,
+					requestId: `${item.run}~wake~${item.revision}`,
+					entry: { kind: "call", selector: item.wait.resume.selector, input: item.wait.resume.input },
+					environment: "inherit",
+				});
+				if (acceptance.kind === "accepted") claimed++;
+				else if (acceptance.kind === "unknown")
+					console.error(`[mc-runtime] durable wake for ${item.run} was not confirmed: ${acceptance.reason}`);
+			}
+			return claimed;
+		} finally {
+			this.wakeScanning = false;
+		}
+	}
+
+	private dueWaits(now: Date): { run: Ref; decision: Ref; revision: number; wait: DurableWait }[] {
+		const at = now.toISOString();
+		const due: { run: Ref; decision: Ref; revision: number; wait: DurableWait }[] = [];
+		for (const state of this.runs.values()) {
+			const wait = state.phase === "awaiting_decision" ? state.decisionRequest?.wait : undefined;
+			if (wait == null || state.decision == null || state.stopped || wait.earliestCheckAt > at) continue;
+			due.push({ run: state.run, decision: state.decision, revision: state.revision, wait });
+		}
+		for (const row of this.recoveredRuns.values()) {
+			if (row.phase !== "awaiting_decision" || row.decision == null) continue;
+			const parsed = parseWait(row.decision);
+			if (parsed == null || parsed.wait.earliestCheckAt > at) continue;
+			due.push({ run: row.run, decision: parsed.decision, revision: row.revision, wait: parsed.wait });
+		}
+		return due;
+	}
+
 	shutdown(): Promise<void> {
 		if (this.shutdownPromise != null) return this.shutdownPromise;
+		this.wakeClosed = true;
+		if (this.wakeTimer != null) clearInterval(this.wakeTimer);
+		this.wakeTimer = null;
 		this.owner.shutdown();
 		this.shutdownPromise = (async () => {
 			let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -1458,13 +1583,15 @@ export class RuntimeEngine {
 			});
 			if (projectSummary(state).phase === "finished") return;
 			let rootThrew: CallFailure | null = null;
-			let decision: import("../contracts/values.js").DecisionRequest | undefined;
+			let decision: DecisionRequest | undefined;
+			let suspend: DurableSuspendRequest | undefined;
 			try {
 				this.startedRuns.add(state.run);
 				await this.executeCallBody(root, state, null);
 			} catch (err) {
 				decision = getDecisionRequest(err);
-				if (!decision) rootThrew = toCallFailure(err);
+				suspend = getSuspendRequest(err);
+				if (!decision && suspend == null) rootThrew = toCallFailure(err);
 			}
 			await state.programScope?.close(state.stopped ? "stop" : decision ? "decide" : rootThrew ? "failed" : "finished");
 			// §5.5 5-6：固定 H → flush → 终结论 → flush → 通知
@@ -1484,13 +1611,26 @@ export class RuntimeEngine {
 						: (root.outcome ?? "unknown");
 			state.completionRef = this.refs.completion();
 			state.revision++;
-			state.phase = decision && !state.stopped ? "awaiting_decision" : "finished";
-			if (decision && !state.stopped) {
-				state.decision = this.refs.record();
-				state.decisionRequest = decision;
-				state.checkpoint = decision.checkpoint;
-				state.outcome = null;
-				state.error = null;
+			const parked = decision != null || suspend != null;
+			state.phase = parked && !state.stopped ? "awaiting_decision" : "finished";
+			if (parked && !state.stopped) {
+				const wait = suspend == null ? undefined : this.durableWaitFor(state, suspend);
+				if (suspend != null && wait == null) {
+					// 挂起次数预算用尽：不再排新的唤醒，按 unknown 如实收口，不假装还在等。
+					state.phase = "finished";
+					state.outcome = "unknown";
+					state.error = {
+						code: "WAIT_BUDGET_EXHAUSTED",
+						message: `durable wait exceeded ${MAX_DURABLE_WAKE_ATTEMPTS} wake attempts; the world condition never became observable`,
+					};
+				} else {
+					state.decision = this.refs.record();
+					state.decisionRequest = decision ?? this.durableDecisionOf(state, suspend!, wait!);
+					state.checkpoint = decision?.checkpoint ?? null;
+					if (wait != null) state.durableWait = wait;
+					state.outcome = null;
+					state.error = null;
+				}
 			}
 			if (state.stopped && state.control !== "unknown") state.control = "stopped";
 			this.queue.enqueueAll([this.segmentMutation(state), this.runMutation(state)]);
@@ -1515,7 +1655,8 @@ export class RuntimeEngine {
 		const ctx = this.buildContext(callState, state, lease);
 		let value: JsonValue | undefined;
 		let threw: CallFailure | null = null;
-		let decision: import("../contracts/values.js").DecisionRequest | undefined;
+		let decision: DecisionRequest | undefined;
+		let suspend: DurableSuspendRequest | undefined;
 		try {
 			this.assertActionAllowed();
 			if (state.stopped || callState.abort.signal.aborted || callState.closed)
@@ -1578,7 +1719,21 @@ export class RuntimeEngine {
 			value = raw as JsonValue;
 		} catch (err) {
 			decision = getDecisionRequest(err);
-			if (!decision) threw = toCallFailure(err);
+			suspend = getSuspendRequest(err);
+			if (!decision && suspend == null) threw = toCallFailure(err);
+			// 挂起只对根原生调用成立：子调用挂起时父帧已经不在，恢复入口对不上，
+			// 静默"续"会把检查点喂给错误的调用栈。如实拒绝，让调用方单独提交一次。
+			if (suspend != null && callState.parent != null) {
+				threw = callFailure({
+					code: "SUSPEND_NOT_ROOT",
+					source: "capability",
+					message: `${callState.callable.ref} asked for a durable wait inside another call; submit it as its own run instead`,
+					dispatch: callState.effects.length > 0 ? "sent" : "not_sent",
+					effects: [...callState.effects],
+					recoverable: false,
+				});
+				suspend = undefined;
+			}
 			// 非 interruptible 路径（例如 stop 让 scopedBody 先抛）也要带上真实撤销起因，
 			// 不能让"谁拿走了身体"在 Call 记录里退化成一句 body scope retired。
 			if (threw != null && (threw.code === "INTERRUPTED" || threw.code === "CANCELLED") && state.retiredBy != null) {
@@ -1600,7 +1755,8 @@ export class RuntimeEngine {
 		// §4.3 关闭：封闭准入 → 取消/等待子 Call → 保存原因
 		callState.closed = true;
 		const cancelled = callState.closedByParent != null || state.stopped;
-		const reason = cancelled ? "cancelled" : decision ? "decision" : threw == null ? "returned" : "threw";
+		const parked = decision != null || suspend != null;
+		const reason = cancelled ? "cancelled" : parked ? "decision" : threw == null ? "returned" : "threw";
 		// closed seals admissions; execution remains running until descendant cleanup settles.
 		const strays = [...callState.children].filter((child) => child.execution === "running");
 		for (const child of strays) {
@@ -1612,13 +1768,13 @@ export class RuntimeEngine {
 		await Promise.all(strays.map((child) => child.settled));
 		// §5.5 step 4：不可变完成截面入队（不逐 Call 等盘）
 		const interrupted = callState.closedByParent != null || state.stopped;
-		callState.execution = interrupted ? "interrupted" : decision ? "threw" : threw == null ? "returned" : "threw";
+		callState.execution = interrupted ? "interrupted" : parked ? "threw" : threw == null ? "returned" : "threw";
 		callState.decisionRequest = decision;
 		callState.effects = this.queue.effectsForCall(callState.call);
 		if (interrupted) {
 			callState.outcome = "cancelled";
 			if (threw != null) callState.error = failureData(threw);
-		} else if (decision) {
+		} else if (parked) {
 			callState.outcome = null;
 		} else if (threw == null) {
 			callState.value = value ?? null;
@@ -1630,6 +1786,7 @@ export class RuntimeEngine {
 		this.queue.enqueue(this.callMutation(callState));
 		callState.settledResolve();
 		if (decision && !interrupted) throw createDecisionError(decision);
+		if (suspend != null && !interrupted) throw createSuspendError(suspend);
 		if (threw != null) throw threw;
 		return value as JsonValue;
 	}
@@ -1739,6 +1896,9 @@ export class RuntimeEngine {
 				}
 			},
 			world: this.opts.world,
+			// 只有根调用可能是持久挂起的重入；子调用拿到 null，避免把别人的检查点
+			// 当成"我上次做到这里"。
+			checkpoint: callState.parent == null ? (state.durableWait?.checkpoint ?? null) : null,
 			call: async (selector: string, input: JsonValue) => this.invokeChild(callState, state, lease, selector, input),
 			withBody: async <T>(work: (scope: BodyCallScope) => Promise<T>) =>
 				this.runWithBody(callState, state, lease, work),

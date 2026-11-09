@@ -98,6 +98,8 @@ export class DeliveryPump {
 			this.timer = null;
 			void this.reconcile().catch(() => {});
 		}, ms);
+		// 纯轮询定时器不拥有进程寿命：停机时没人清理也不会拖住伴生退役。
+		this.timer.unref();
 	}
 	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
 	private emitNotice(notice: EventNotice): void {

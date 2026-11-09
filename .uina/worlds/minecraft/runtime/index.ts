@@ -72,6 +72,11 @@ export interface MinecraftRuntimeOptions {
 	environment?: { serverVersion: string; protocol: number };
 	/** 受控协议写入派发器；Runtime 每次 withBody 据此创建绑定该 Scope 的 scoped port。 */
 	protocol?: import("../contracts/capabilities.js").ProtocolWriteDispatcher;
+	/**
+	 * 持久等待的唤醒扫描间隔（毫秒）。缺省 1000；≤0 表示不装定时器，
+	 * 只由宿主按需调 `recheckDurableWaits()`（确定性测试与宿主自管调度用这个）。
+	 */
+	durableWakeIntervalMs?: number;
 }
 
 export interface MinecraftRuntimeStart {
@@ -243,6 +248,9 @@ export class MinecraftRuntime {
 			await worker.terminate();
 			throw err;
 		}
+		// 恢复截面就绪之后、对外 ready 之前起唤醒扫描：持久挂起的 Run 不能因为
+		// "它的 Watch 随上个进程一起死了"就永远睡着（§5.9 唤醒时序）。
+		if ((opts.durableWakeIntervalMs ?? 1000) > 0) engine.startDurableWakes(opts.durableWakeIntervalMs);
 		runtime = new MinecraftRuntime(worker, queue, engine, flags);
 		return {
 			runtime,
@@ -330,6 +338,13 @@ export class MinecraftRuntime {
 	}
 	programChanged(): void {
 		this.engine.programChanged();
+	}
+	/**
+	 * 按需复查持久等待（§5.9）：Host 拿到"世界可能变了"的信号时可以立刻催一轮，
+	 * 不必等定时器。返回本轮真正受理的唤醒数；重复调用安全（受理 CAS 只认一次）。
+	 */
+	recheckDurableWaits(): Promise<number> {
+		return this.engine.recheckDurableWaits();
 	}
 	intervene(trigger: import("./safety.js").SafetyTrigger, work: import("./safety.js").SafetyWork) {
 		return this.engine.safety.run(trigger, work);

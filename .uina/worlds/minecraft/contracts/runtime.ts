@@ -337,6 +337,11 @@ export type SafetyInterventionRecord = {
 export type OwnerGate = "disabled" | "emergency" | "owner_lost";
 export interface OwnerState {
 	attachment: Ref;
+	/**
+	 * 当前合法绑定代次；没有绑定时为空串。持久等待的唤醒扫描据此构造可信 Origin——
+	 * 重启后 Host 用新 activation，扫描器必须取当前值，不能用旧记录自称合法。
+	 */
+	activation: Ref;
 	gates: OwnerGate[];
 	gateRevision: number;
 	validForMs: number;

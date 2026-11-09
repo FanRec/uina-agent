@@ -21,7 +21,13 @@ const shaped = (properties: object, required: string[] = Object.keys(properties)
 	required,
 });
 const gates = { type: "array", items: { enum: ["disabled", "emergency", "owner_lost"] }, uniqueItems: true };
-const owner = object({ attachment: ref, gates, gateRevision: integer, validForMs: { type: "number", minimum: 0 } });
+const owner = object({
+	attachment: { type: "string" },
+	activation: { type: "string" },
+	gates,
+	gateRevision: integer,
+	validForMs: { type: "number", minimum: 0 },
+});
 // Addon 计划：只传纯值（路径/配置/声明），不传函数、Catalog 实例或裸 Bot。
 const serverRequirement = {
 	type: "object",

@@ -226,6 +226,12 @@ export interface CallContext extends ReadCallContext, CallScope {
 	readonly world: WorldPort;
 	/** 只调用 effect 原要求指定的领域核验者并追加效果判断。 */
 	verify(effect: Ref, verifier: ExactRef, input: JsonValue): Promise<EffectReceipt>;
+	/**
+	 * 持久挂起被唤醒后重入时的检查点（§5.9）：就是上次 `createSuspendError` 交出的
+	 * 那份纯 JSON。首次调用与普通调用为 null——用它区分"没写过"和"已经写过、
+	 * 只差观察收尾"，不要靠扫描世界猜自己上次做到哪一步。
+	 */
+	readonly checkpoint: JsonValue | null;
 	/** 仅在 Runtime 授权的 BodyScope 内存在，且每个 Scope 一份；普通调用为 undefined。 */
 	readonly protocol?: ProtocolWritePort;
 }

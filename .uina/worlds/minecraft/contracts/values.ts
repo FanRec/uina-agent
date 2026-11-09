@@ -142,11 +142,51 @@ export interface DomainCheckpoint {
 
 export type Checkpoint = ProgramCheckpoint | DomainCheckpoint;
 
+/**
+ * 原生能力请求的持久挂起（§5.9）：能力说"我已经做完不能再重放的那一半，接下来
+ * 只能等世界推进"。它只是请求的形状，落库形态是 `DurableWait`——时间、尝试次数、
+ * 恢复入口由 Runtime 填，能力不自报。
+ */
+export interface DurableSuspendRequest {
+	/** 给模型看的等什么；不承诺何时结束。 */
+	reason: string;
+	/** 纯 JSON 检查点，恢复时原样交回同一能力（ctx.checkpoint）。 */
+	checkpoint: JsonValue;
+	/** 多久后允许复查。时间到只表示"应该重查"，不表示世界已推进。 */
+	recheckAfterMs: number;
+	/** 静默预算：到期仍无进展，能力必须如实报告未完成，不能继续挂起。 */
+	deadlineAfterMs: number;
+}
+
+/**
+ * 已持久化的持久等待（§5.9 最小持久状态）。只放纯 JSON；恢复入口是"同一能力 ref
+ * + 原输入"，能力靠 ctx.checkpoint 判断哪一半已经写过。不保存闭包、Watch 或 JS Worker。
+ */
+export interface DurableWait {
+	/** 已挂起过的次数（含本次）；超过 Runtime 预算即不再挂起，按 unknown 收口。 */
+	attempts: number;
+	/** 下一次允许复查的时间（ISO 8601）。 */
+	earliestCheckAt: string;
+	/** 最后一次真实世界推进/目标改善；反复 wake→check→wait 不重置它。 */
+	lastProgressAt: string;
+	/** 静默预算到期时间（ISO 8601）。 */
+	deadlineAt: string;
+	/** 恢复入口：同一个原生能力 ref 与原始输入。 */
+	resume: { selector: Selector; input: JsonValue };
+	/** 能力自己的检查点，恢复时经 ctx.checkpoint 交回。 */
+	checkpoint: JsonValue;
+}
+
 export interface DecisionRequest {
 	code: "NEEDS_DECISION";
 	reason: string;
 	checkpoint: ProgramCheckpoint | null;
 	origin: ProgramOrigin;
+	/**
+	 * 原生能力的持久挂起。带它时 Run 停在 awaiting_decision 不是等 Host 做决定，
+	 * 而是等世界条件：Runtime 自己按 `earliestCheckAt` 重查并按原入口续段。
+	 */
+	wait?: DurableWait;
 }
 
 /** 结构化调用失败。recoverable 不授权重试未知副作用。 */
@@ -191,4 +231,21 @@ export function callFailure(data: CallFailureData): CallFailure {
 	if (data.hint !== undefined) error.hint = data.hint;
 	if (data.progress !== undefined) error.progress = data.progress;
 	return error;
+}
+
+// 挂起请求跨 native/program 调用边界只能由宿主转交，不靠错误对象的可见字段做权威。
+const durableSuspends = new WeakMap<object, DurableSuspendRequest>();
+
+/** 原生能力请求持久挂起：抛它，不要跑完再"假装记得"。 */
+export function createSuspendError(request: DurableSuspendRequest): Error {
+	const captured = plain(request) as unknown as DurableSuspendRequest;
+	const error = new Error(captured.reason);
+	error.name = "DurableSuspend";
+	Object.assign(error, { reason: captured.reason });
+	durableSuspends.set(error, captured);
+	return error;
+}
+
+export function getSuspendRequest(error: unknown): DurableSuspendRequest | undefined {
+	return error !== null && typeof error === "object" ? durableSuspends.get(error) : undefined;
 }

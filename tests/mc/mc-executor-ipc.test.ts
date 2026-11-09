@@ -50,7 +50,7 @@ describe("MC private IPC", () => {
 							reject(new Error("cancelled"));
 						}),
 					);
-				return { attachment: "a", gates: [], gateRevision: 1, validForMs: 5000 };
+				return { attachment: "a", activation: "act", gates: [], gateRevision: 1, validForMs: 5000 };
 			},
 		});
 		const parent = new RpcPeer({ launch: "launch", endpoint: wire.endpoints[0]! });
@@ -154,7 +154,7 @@ describe("MC private IPC", () => {
 		const side = new RpcPeer({
 			launch: "launch",
 			endpoint: wire.endpoints[1]!,
-			handleRequest: async () => ({ attachment: "a", gates: [], gateRevision: 1, validForMs: 5000 }),
+			handleRequest: async () => ({ attachment: "a", activation: "act", gates: [], gateRevision: 1, validForMs: 5000 }),
 		});
 		const parent = new RpcPeer({ launch: "launch", endpoint: wire.endpoints[0]! });
 		try {
@@ -192,7 +192,7 @@ describe("MC private IPC", () => {
 			handleRequest: async (method) =>
 				method === "runtime.readRecord"
 					? { kind: "inline", record: { kind: "run", record: "rec", value: "x".repeat(5000) } }
-					: { attachment: "a", gates: [], gateRevision: 1, validForMs: 5000 },
+					: { attachment: "a", activation: "act", gates: [], gateRevision: 1, validForMs: 5000 },
 		});
 		const parent = new RpcPeer({
 			launch: "launch",

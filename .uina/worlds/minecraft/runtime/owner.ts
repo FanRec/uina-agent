@@ -161,6 +161,7 @@ export class RuntimeOwner {
 		this.expire();
 		return {
 			attachment: this.binding?.attachment ?? "",
+			activation: this.binding?.activation ?? "",
 			gates: [...this.gates],
 			gateRevision: this.revision,
 			validForMs: this.binding == null || this.closed ? 0 : Math.max(0, this.binding.expires - this.now()),
