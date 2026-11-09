@@ -2229,7 +2229,7 @@ export class RuntimeEngine {
 		if (lease.closed) throw this.scopeError("CONTROL_INVALID", "body scope is closed");
 		if (lease.activeCall !== call.call) throw this.scopeError("BODY_SUSPENDED", "body delegated to a descendant call");
 	}
-	sealProgramCalls(calls: string[], _reason: string): void {
+	sealProgramCalls(calls: string[]): void {
 		for (const id of calls) {
 			const call = this.findLiveCall(id);
 			if (call) {

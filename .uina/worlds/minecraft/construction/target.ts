@@ -21,6 +21,7 @@
  */
 
 import type { BlockSpec, BlockStateValue } from "../contracts/body.js";
+import { itemName } from "../contracts/items.js";
 import type { Vec3 } from "../contracts/values.js";
 import type { ConstructionTargetCell, ConstructionTargetKind } from "../contracts/world.js";
 
@@ -57,20 +58,19 @@ export class ConstructionError extends Error {
 }
 
 export function isAirName(name: string): boolean {
-	const bare = stripNamespace(name);
+	const bare = itemName(name);
 	return bare === "air" || bare === "cave_air" || bare === "void_air";
 }
 
 /**
  * 方块/物品名的唯一归一化：去掉 `minecraft:` 前缀。
- * 能力层的 `shared/targets.ts` 从这里再导出，全仓只有这一份实现。
+ * 实现就是 contracts/items 的 itemName（全仓唯一一份）；本名保留给施工域与
+ * 能力层（shared/targets.ts 从这里再导出）。
  */
-export function stripNamespace(name: string): string {
-	return name.replace(/^minecraft:/, "");
-}
+export { itemName as stripNamespace };
 
 export function specBlockName(spec: BlockSpec): string {
-	return stripNamespace(typeof spec === "string" ? spec : spec.name);
+	return itemName(typeof spec === "string" ? spec : spec.name);
 }
 
 /**
@@ -96,7 +96,7 @@ const REPLACEABLE = new Set([
 ]);
 
 export function isReplaceableName(name: string): boolean {
-	return REPLACEABLE.has(stripNamespace(name));
+	return REPLACEABLE.has(itemName(name));
 }
 
 /** 可以充当放置支撑面 / 阻挡施工的实心方块：非空气且不可替换。 */

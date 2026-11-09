@@ -19,6 +19,7 @@ import type {
 	KnowledgeRecipe,
 	RegistryKnowledge,
 } from "../../contracts/knowledge.js";
+import { itemName as stripNamespace } from "../../contracts/items.js";
 import { FUEL_TICKS, SMELTING } from "./smelting.js";
 
 interface ItemData {
@@ -79,10 +80,6 @@ function toolOf(item: ItemData): KnowledgeItem["tool"] {
 	if (type == null) return null;
 	const tier = TOOL_TIERS.find((t) => item.name.startsWith(`${t}_`)) ?? null;
 	return { type, tier, durability: item.maxDurability };
-}
-
-function stripNamespace(name: string): string {
-	return name.replace(/^minecraft:/, "");
 }
 
 /** 普通挖掘（非精准采集）的掉落条目；概率掉落保留在列表里，不折算成概率。 */

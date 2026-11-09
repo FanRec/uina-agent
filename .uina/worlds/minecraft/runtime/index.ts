@@ -333,8 +333,8 @@ export class MinecraftRuntime {
 		this.engine.assertActionAllowed();
 		if (this.queue.faultReason != null) throw new Error(`runtime recorder unavailable: ${this.queue.faultReason}`);
 	}
-	sealProgramCalls(calls: string[], reason: string): void {
-		this.engine.sealProgramCalls(calls, reason);
+	sealProgramCalls(calls: string[]): void {
+		this.engine.sealProgramCalls(calls);
 	}
 	programChanged(): void {
 		this.engine.programChanged();

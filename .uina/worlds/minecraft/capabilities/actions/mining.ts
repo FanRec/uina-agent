@@ -9,7 +9,7 @@
 
 import type { ItemSelector, SelfState } from "../../contracts/body.js";
 import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
-import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
@@ -19,6 +19,7 @@ import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { fail, matchesItem, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { chooseTool } from "../shared/tools.js";
 import { type InventorySnapshot, itemCountOf, readBlockAt, readInventory } from "../shared/views.js";
+import { placeOf } from "./place-cell.js";
 
 /** 服务端拾取结算有 delay；只在这个窗口里看背包增量，等不到就不报 dropped。 */
 const PICKUP_TIMEOUT_MS = 2500;
@@ -91,15 +92,6 @@ function dropDelta(
 		if (delta > 0) return { name: item, count: delta };
 	}
 	return null;
-}
-
-function placeOf(self: SelfState, position: Vec3) {
-	return {
-		world: self.place.world,
-		worldRevision: self.place.worldRevision,
-		dimension: self.place.dimension,
-		position,
-	};
 }
 
 export const miningModule: MinecraftCapabilityModule = {

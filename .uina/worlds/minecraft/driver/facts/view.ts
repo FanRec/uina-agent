@@ -18,6 +18,7 @@ import type {
 	StatusEffectValue,
 	WindowSnapshot,
 } from "../../contracts/body.js";
+import { itemName as stripNamespace } from "../../contracts/items.js";
 import type {
 	ClientBlockSearchRequest,
 	ClientBlockSearchValue,
@@ -678,11 +679,6 @@ function worldFact(ctx: FactViewContext): Fact<ClientWorldValue> {
 }
 
 // ---- searchBlocks（按名字扫方块） ----
-
-/** 名字规范化：注册表名不带命名空间，输入允许带 minecraft: 前缀。 */
-function stripNamespace(name: string): string {
-	return name.replace(/^minecraft:/, "");
-}
 
 function searchBlocksFact(ctx: FactViewContext, request: ClientBlockSearchRequest): Fact<ClientBlockSearchValue> {
 	const { bot, stamp } = ctx;

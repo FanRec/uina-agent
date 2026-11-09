@@ -14,7 +14,7 @@
 
 import type { ControlOwner, EntityRef, SelfState } from "../../contracts/body.js";
 import type { CallableDescriptor, CallContext } from "../../contracts/capabilities.js";
-import type { JsonValue, Vec3 } from "../../contracts/values.js";
+import type { JsonValue } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
@@ -100,11 +100,6 @@ interface GotoInput {
 	placeToReach?: boolean;
 	sprint?: boolean;
 	maxTimeMs?: number;
-}
-
-/** 供 mine/place 复用：目标与当前位置的直线距离。 */
-export function flatDistance(a: Vec3, b: Vec3): number {
-	return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 // ---- follow@1 / flee@1 共用 ----

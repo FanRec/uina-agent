@@ -17,6 +17,7 @@ import { BLOCK_REACH, blockReach, ENTITY_REACH, round2 } from "../shared/reach.j
 import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 import { faceVector, fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
+import { placeOf } from "./place-cell.js";
 
 const SIGN_LINE_LIMIT = 45;
 const EFFECT_WINDOW_MS = 800;
@@ -239,15 +240,6 @@ function diffCounts(before: Record<string, number>, after: Record<string, number
 		if (from !== to) out[stripNamespace(name)] = { from, to };
 	}
 	return out;
-}
-
-function placeOf(self: SelfState, position: Vec3) {
-	return {
-		world: self.place.world,
-		worldRevision: self.place.worldRevision,
-		dimension: self.place.dimension,
-		position,
-	};
 }
 
 export const interactionModule: MinecraftCapabilityModule = {

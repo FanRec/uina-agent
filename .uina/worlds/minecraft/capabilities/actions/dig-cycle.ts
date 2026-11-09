@@ -16,6 +16,7 @@ import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
 import { isLiquidBlock } from "../shared/spatial.js";
 import { canHarvest, chooseTool } from "../shared/tools.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
+import { placeOf } from "./place-cell.js";
 
 export type DigCellResult =
 	| { kind: "dug"; tool: string | null; name: string }
@@ -25,15 +26,6 @@ export type DigCellResult =
 	| { kind: "unbreakable" }
 	| { kind: "unreachable"; distance: number }
 	| { kind: "not_met"; dispatch: EffectReceipt["dispatch"]; effect: Ref };
-
-function placeOf(self: SelfState, position: Vec3) {
-	return {
-		world: self.place.world,
-		worldRevision: self.place.worldRevision,
-		dimension: self.place.dimension,
-		position,
-	};
-}
 
 function heldItemName(inventory: Awaited<ReturnType<typeof readInventory>>): string | null {
 	if (inventory.selectedSlot == null) return null;

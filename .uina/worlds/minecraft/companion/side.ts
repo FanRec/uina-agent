@@ -253,7 +253,7 @@ export async function openExecutionSide(
 				runtime?.programChanged();
 				options.onChanged?.();
 			},
-			onWorkerFault: (calls, reason) => runtime?.sealProgramCalls(calls, reason),
+			onWorkerFault: (calls) => runtime?.sealProgramCalls(calls),
 		});
 		registerClose(() => program!.close());
 		const opened = await MinecraftRuntime.open({

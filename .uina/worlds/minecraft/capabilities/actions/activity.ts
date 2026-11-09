@@ -29,8 +29,9 @@ import {
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
 import { GRID_POS_SCHEMA } from "../shared/schema.js";
-import { fail, resolveGrid } from "../shared/targets.js";
+import { fail, flatDistance, resolveGrid } from "../shared/targets.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
+import { placeOf } from "./place-cell.js";
 
 // ---- 共用小件 ----
 
@@ -51,19 +52,6 @@ function interrupted(progress: Record<string, unknown>): never {
 		progress,
 		recoverable: true,
 	});
-}
-
-function placeOf(self: SelfState, position: Vec3) {
-	return {
-		world: self.place.world,
-		worldRevision: self.place.worldRevision,
-		dimension: self.place.dimension,
-		position,
-	};
-}
-
-function flatDistance(a: Vec3, b: Vec3): number {
-	return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 // ---- sleep@1 ----

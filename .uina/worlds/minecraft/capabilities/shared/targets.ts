@@ -95,6 +95,11 @@ export function distance(a: Vec3, b: Vec3): number {
 	return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
+/** 水平面直线距离：掉落拾取/骑乘牵引/跟踪等只看 xz 的判据共用。 */
+export function flatDistance(a: Vec3, b: Vec3): number {
+	return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
 export function addVec(a: Vec3, b: Vec3): Vec3 {
 	return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
 }

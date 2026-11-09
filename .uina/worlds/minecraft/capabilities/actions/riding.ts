@@ -25,7 +25,7 @@ import { resolveEntity } from "../shared/entities.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, ENTITY_REACH, round2 } from "../shared/reach.js";
 import { POS_SCHEMA } from "../shared/schema.js";
-import { assertSameDimension, distance, fail, resolvePoint } from "../shared/targets.js";
+import { assertSameDimension, distance, fail, flatDistance, resolvePoint } from "../shared/targets.js";
 import { readInventory } from "../shared/views.js";
 
 // ---- 共用小件 ----
@@ -36,10 +36,6 @@ function interrupted(progress: Record<string, unknown>): never {
 		progress,
 		recoverable: true,
 	});
-}
-
-function flatDistance(a: Vec3, b: Vec3): number {
-	return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 interface EntitiesView {

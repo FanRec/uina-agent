@@ -418,7 +418,6 @@ export interface DeliveryRef {
 	segment: Ref;
 	revision: number;
 }
-export type Delivery = DeliveryRef & CompletionReport;
 export type CompletionHeader = DeliveryRef & { recordBytes: number } & (
 		| { reportKind: "terminal"; snapshot: Extract<RunSummary, { phase: "finished" }> }
 		| { reportKind: "decision"; snapshot: Extract<RunSummary, { phase: "awaiting_decision" }> }
