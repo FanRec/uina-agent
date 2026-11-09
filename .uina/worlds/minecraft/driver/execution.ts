@@ -59,6 +59,63 @@ export class EffectRecorder {
 		this.faulted = true;
 	}
 
+	/**
+	 * 写前意图（§5.3）：在不可安全重放的业务写派发之前，先落一条 intent 事实并
+	 * 等它真正提交。崩溃矩阵 (1) 前可判 not_sent；(1) 后、(3) 前只剩 intent 时
+	 * 一律是 unknown，恢复不得盲重放。intent 的 dispatch 用 unknown，绝不能用
+	 * not_sent —— 后者会把"可能已发出"谎报成"确定没发"。
+	 *
+	 * 失败的 dispatch 只有三种可判定情况：recorder 已故障 / sink 拒收（这次没有
+	 * intent，确定没发）；屏障没拿到 ACK（无法证明 intent 是否提交，按 unknown）。
+	 * 派发方据此收口并追加终态事实，这里不做降级重试。
+	 */
+	async beforeWrite(effect: Ref, operation: Ref, contract: ExactRef, detail?: JsonValue): Promise<void> {
+		if (this.faulted)
+			throw fail({
+				code: "INTERNAL",
+				source: "capability",
+				message: "effect recorder is faulted; dispatch is blocked",
+				dispatch: "not_sent",
+				recoverable: false,
+			});
+		const ticket = this.sink.record({
+			effect,
+			operation,
+			contract,
+			observedAt: nowIso(),
+			kind: "intent",
+			dispatch: "unknown",
+			completion: "unknown",
+			evidence: [],
+			detail,
+		});
+		if (ticket == null) {
+			this.faulted = true;
+			throw fail({
+				code: "INTERNAL",
+				source: "capability",
+				message: "effect intent was not accepted; dispatch is blocked",
+				dispatch: "not_sent",
+				recoverable: false,
+			});
+		}
+		try {
+			await this.sink.ensureDurable(ticket);
+		} catch (error) {
+			// ACK 丢失不等于没落盘：intent 可能已经提交，此时宣称 not_sent 会让
+			// 调用方重放一次不可撤销的业务写。封闭 recorder 并按 unknown 上报。
+			this.faulted = true;
+			throw fail({
+				code: "INTERNAL",
+				source: "environment",
+				message: `effect intent durability is unknown: ${error instanceof Error ? error.message : String(error)}`,
+				dispatch: "unknown",
+				effects: [effect],
+				recoverable: false,
+			});
+		}
+	}
+
 	record(
 		effect: Ref,
 		operation: Ref,

@@ -118,7 +118,10 @@ export class BodySessionImpl implements BodySession {
 	}
 	runScoped<T>(scope: { signal: AbortSignal; owner: ControlOwner; guard(): void }, work: () => Promise<T>): Promise<T> {
 		const signal = AbortSignal.any([scope.signal, this.abortController.signal]);
-		const recorder = new EffectRecorder({ record: (fact) => this.deps.sink.record({ ...fact, owner: scope.owner }) });
+		const recorder = new EffectRecorder({
+			record: (fact) => this.deps.sink.record({ ...fact, owner: scope.owner }),
+			ensureDurable: (ticket) => this.deps.sink.ensureDurable(ticket),
+		});
 		return this.scopes.run({ ...scope, signal, recorder }, work);
 	}
 
@@ -149,7 +152,10 @@ export class BodySessionImpl implements BodySession {
 		this.body = body;
 		this.owner = owner;
 		this.deps = deps;
-		this.rootRecorder = new EffectRecorder({ record: (fact) => deps.sink.record({ ...fact, owner: this.owner }) });
+		this.rootRecorder = new EffectRecorder({
+			record: (fact) => deps.sink.record({ ...fact, owner: this.owner }),
+			ensureDurable: (ticket) => deps.sink.ensureDurable(ticket),
+		});
 		const identity = deps.host.identity;
 		if (identity == null) {
 			throw new Error("body session requires a ready connection identity");

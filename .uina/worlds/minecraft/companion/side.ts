@@ -123,6 +123,11 @@ export async function openExecutionSide(
 				if (!runtime) throw new Error("driver effect before runtime initialization");
 				return runtime.sink.record(fact);
 			},
+			// 派发前屏障必须穿过组合根到真实 RecordQueue，不能在包装层假装已持久。
+			ensureDurable: async (ticket) => {
+				if (!runtime) throw new Error("driver effect before runtime initialization");
+				await runtime.sink.ensureDurable(ticket);
+			},
 		};
 		const playerPort = new PlayerPortImpl({
 			host,

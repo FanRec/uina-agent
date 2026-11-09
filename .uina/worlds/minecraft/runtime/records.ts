@@ -128,6 +128,11 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 
 	// ---- RuntimeRecordBarrier ----
 
+	/** 派发前屏障：等真实 SQLite ACK，不把"已入队"当"已持久"（§5.3）。 */
+	async ensureDurable(ticket: RecordTicket): Promise<void> {
+		await this.flushThrough(ticket);
+	}
+
 	capture(): RecordTicket {
 		return { instance: this.instance, sequence: this.seq };
 	}
@@ -173,12 +178,20 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 
 	// ---- 引擎查询 ----
 
-	/** 某 run 名下各效果的最新判断；completion != "met" 即未知效果（§5.6）。 */
+	/**
+	 * 终态是"明确没发出"的效果不可能改变外部世界，不算未知效果（§5.3 写前意图
+	 * 的终态收口）；其余未达到 met 的效果都仍须对账（§5.6）。
+	 */
+	private unresolved(entry: EffectAttribution): boolean {
+		return entry.latest.dispatch !== "not_sent" && entry.latest.completion !== "met";
+	}
+
+	/** 某 run 名下各效果的最新判断；只有可能影响过外部世界的未确认效果才算未知。 */
 	unknownEffectsFor(run: Ref): Ref[] {
 		const out: Ref[] = [];
 		for (const [effect, attribution] of this.effectOwner) {
 			const owner = attribution.owner;
-			if (owner != null && owner.kind === "run" && owner.run === run && attribution.latest.completion !== "met") {
+			if (owner != null && owner.kind === "run" && owner.run === run && this.unresolved(attribution)) {
 				out.push(effect);
 			}
 		}
@@ -201,7 +214,7 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 		for (const [effect, entry] of this.effectOwner)
 			if (entry.owner?.kind === "safety" && entry.owner.intervention === intervention) {
 				effects.push(effect);
-				if (entry.latest.completion !== "met") unknownEffects.push(effect);
+				if (this.unresolved(entry)) unknownEffects.push(effect);
 			}
 		return { effects, unknownEffects };
 	}

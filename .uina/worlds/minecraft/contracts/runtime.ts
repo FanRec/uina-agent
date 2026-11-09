@@ -237,7 +237,11 @@ export interface DriverExecutionFact {
 	operation: Ref;
 	contract: ExactRef;
 	observedAt: string;
-	kind: "dispatch" | "receipt" | "cleanup";
+	/**
+	 * intent = 派发前已持久的写前意图（§5.3）。它证明"本次业务操作可能已经发出"，
+	 * 但不证明服务端已执行；崩溃后只留 intent 时一律按 unknown 对账，不能判 not_sent。
+	 */
+	kind: "intent" | "dispatch" | "receipt" | "cleanup";
 	dispatch: "not_sent" | "sent" | "unknown";
 	completion: "met" | "not_met" | "unknown";
 	evidence: Ref[];
@@ -254,9 +258,15 @@ export interface RecordTicket {
  * Runtime 注入并绑定可信 ControlOwner 的效果接收口。
  * record 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket；
  * 无法接收时返回 null、锁存 recorder fault 并封闭新副作用。
+ *
+ * ensureDurable 是唯一派发前屏障（§5.3）：只有它确认写前 intent 已提交，
+ * 调用方才允许发出不可安全重放的业务写。实现必须真实等待 SQLite ACK，
+ * 不能把"已入队"当"已持久"。ACK 丢失时无法证明 intent 是否落盘，派发方
+ * 必须按 unknown 收口；只有 sink 明确拒收 intent 才允许判 not_sent。
  */
 export interface DriverExecutionSink {
 	record(fact: DriverExecutionFact): RecordTicket | null;
+	ensureDurable(ticket: RecordTicket): Promise<void>;
 }
 
 /** capture 固定已收到前缀 H；flushThrough(H) 保证 ≤H 材料已提交否则明确失败。 */

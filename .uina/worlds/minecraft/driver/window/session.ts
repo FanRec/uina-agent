@@ -442,47 +442,61 @@ export class WindowSessionImpl implements WindowSession {
 				"WINDOW_UNCERTAIN",
 				"previous click is unconfirmed; close the window before further business clicks",
 			);
-		const view = this.view();
-		const native = this.nativeWindow();
-		if (view == null || native === null) throw failure("WRONG_STATE", "window is not ready");
-		if (input.expectedRevision !== view.revision) throw failure("CONFLICT", "window revision changed before dispatch");
-		if (
-			!Number.isInteger(input.slot) ||
-			(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
-			input.slot >= view.layout.slotCount ||
-			input.mode !== 0 ||
-			![0, 1].includes(input.button)
-		)
-			throw failure("INVALID_INPUT", "only in-window mode 0 left/right clicks are supported");
-		if (
-			(input.slot !== -999 && !input.expectedSlots.some((entry) => entry.slot === input.slot)) ||
-			!validExpectation(input.expectedCursor) ||
-			input.expectedSlots.some((entry) => !validExpectation(entry.stack))
-		) {
-			throw failure(
-				"INVALID_INPUT",
-				"expectedSlots must cover the clicked slot; stack counts must be nonnegative integers and null stacks must have count zero",
-			);
-		}
-		if (
-			!matches(view.cursor, input.expectedCursor) ||
-			input.expectedSlots.some(
-				(entry) =>
-					!Number.isInteger(entry.slot) ||
-					entry.slot < 0 ||
-					entry.slot >= view.layout.slotCount ||
-					!matches(view.slots[entry.slot] ?? null, entry.stack),
-			)
-		)
-			throw failure("CONFLICT", "window revision or stack expectation changed before dispatch");
-		this.busy = true;
-		this.deps.enterOp();
 		const operation = this.deps.mintOp();
 		const effect = this.deps.mintEff();
+		this.busy = true;
+		this.deps.enterOp();
 		let sent = false;
 		let writing = false;
+		let intentDurable = false;
 		try {
+			/**
+			 * 写前意图（§5.3）：窗口点击可能扣料/支付且无通用撤销，先让 intent 落盘。
+			 * 它必须排在冻结窗口前态**之前**：否则 intent 等待期间到达的同步包会让
+			 * expectedRevision / before / stateId 与真正派发时的窗口状态错开（§7.7）。
+			 * 此后到 wire.click 全部同步，前态与派发之间不再夹异步缝隙。
+			 */
+			await this.deps.recorder.beforeWrite(effect, operation, "body.window.click@1", {
+				window: `window:${this.deps.operation}`,
+				slot: input.slot,
+				button: input.button,
+			});
+			intentDurable = true;
 			this.check();
+			const view = this.view();
+			const native = this.nativeWindow();
+			if (view == null || native === null) throw failure("WRONG_STATE", "window is not ready");
+			if (input.expectedRevision !== view.revision)
+				throw failure("CONFLICT", "window revision changed before dispatch");
+			if (
+				!Number.isInteger(input.slot) ||
+				(input.slot < 0 && !(this.deps.player && input.slot === -999)) ||
+				input.slot >= view.layout.slotCount ||
+				input.mode !== 0 ||
+				![0, 1].includes(input.button)
+			)
+				throw failure("INVALID_INPUT", "only in-window mode 0 left/right clicks are supported");
+			if (
+				(input.slot !== -999 && !input.expectedSlots.some((entry) => entry.slot === input.slot)) ||
+				!validExpectation(input.expectedCursor) ||
+				input.expectedSlots.some((entry) => !validExpectation(entry.stack))
+			) {
+				throw failure(
+					"INVALID_INPUT",
+					"expectedSlots must cover the clicked slot; stack counts must be nonnegative integers and null stacks must have count zero",
+				);
+			}
+			if (
+				!matches(view.cursor, input.expectedCursor) ||
+				input.expectedSlots.some(
+					(entry) =>
+						!Number.isInteger(entry.slot) ||
+						entry.slot < 0 ||
+						entry.slot >= view.layout.slotCount ||
+						!matches(view.slots[entry.slot] ?? null, entry.stack),
+				)
+			)
+				throw failure("CONFLICT", "window revision or stack expectation changed before dispatch");
 			const expected =
 				input.slot === -999
 					? {
@@ -592,17 +606,28 @@ export class WindowSessionImpl implements WindowSession {
 		} catch (error) {
 			if (sent) return this.unknown(effect, operation);
 			const failure = error as import("../../contracts/values.js").CallFailure;
-			const dispatch =
-				failure?.name === "CallFailure" && failure.dispatch === "not_sent"
-					? "not_sent"
-					: writing
-						? "unknown"
-						: "not_sent";
+			const knownFailure = failure?.name === "CallFailure";
+			// dispatch 以失败对象自带的事实为准：写前 intent 已提交却没拿到 ACK 时，
+			// 它必须是 unknown，不能因为"本进程没走到 wire.click"就改写成 not_sent。
+			const dispatch = knownFailure ? failure.dispatch : writing ? "unknown" : "not_sent";
+			if (intentDurable && dispatch === "not_sent") {
+				/**
+				 * intent 已落盘、但这一步明确决定不派发（撤销 / 版本冲突 / 输入非法）。
+				 * 追加终态事实，恢复侧才知道"只剩 intent"是明确取消而不是崩溃窗口，
+				 * 不会把这次点击永久挂在 unknown 上，也不会误去重放。若连终态都写不进去，
+				 * recorder 已故障，同进程新写一律被拒；重启后只剩 intent 仍按 unknown
+				 * 保守对账——两条路都不会盲重放。
+				 */
+				this.deps.recorder.record(effect, operation, "body.window.click@1", "cleanup", "not_sent", "not_met", {
+					completionContract: "durable intent closed before dispatch; no click packet was written",
+					reason: knownFailure ? failure.code : "INTERNAL",
+				});
+			}
 			if (dispatch !== "not_sent") {
 				this.uncertain = true;
 				this.deps.recorder.record(effect, operation, "body.window.click@1", "receipt", dispatch, "unknown");
 			}
-			if (failure?.name === "CallFailure") throw failure;
+			if (knownFailure) throw failure;
 			throw fail({
 				code: "INTERNAL",
 				source: "environment",
