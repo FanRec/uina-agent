@@ -333,18 +333,27 @@
 - `driver/window/session.ts`：包已发出后 `check()` / `view()` 抛 `CONTROL_INVALID` / `BODY_SUSPENDED` / `INTERRUPTED` 时，照旧留 `unknown` 事实，但把失败原样透传并标成已派发，调用方才知道身体已经不在。
 - **证据**：`tests/mc/mc-goto-settle-not-sent.test.ts` 2 项。
 
-### G36 · 任务级场景的窗口确认竞态（2026-11-09 真服登记，**未解决**）
+### G36 · 任务级场景的窗口确认竞态（✅ 已于 2026-11-09 关闭）
 
-- **现象**：真服复跑 `dev:mc:task --task shelter` 与 `--task night`、`dev:mc:build` 的房屋两步时，稳定出现 `CONFLICT: window revision changed before dispatch`。`dev:mc:stations` 14/14、`dev:mc:build` 的 11-wall  vantage 步骤、`dev:mc:spatial` 7/8 都通过——所以不是窗口整体不可用。
-- **已排除**：这是既有行为，不是本轮改动引入。同一台服务器、同一世界状态下，把 `.uina/worlds/minecraft` 整体回退到会话基线 `cba81d5f` 复跑，`task shelter` 同样在第一批 craft 的第二次点击就撞 `CONFLICT`；`dev:mc:build` 的失败步骤也与 HEAD 一致。
-- **已排除的猜测**：不是我的写端 intent 拖慢（探针实测 `beforeWrite` 2ms）；不是扫描定时器（回退 `runtime/index.ts` 仍复现）；不是 executor（回退 `executor/` 仍复现）。
-- **形态**：失败前一步的点击以 `completion: "unknown"` 结束（`unknownEffectCount ≥ 1`），下一个点击拿着旧 revision 比对就冲突；`build` 另有一处 `CURSOR_NOT_EMPTY`。也就是"这一步的服务器确认没在窗口内到达"，后续点击按严格前态检查被判冲突——严格检查本身是有意的（§7.7），缺的是调用侧在 `unknown` 之后的重新取快照与重试。
-- **复现**：`node .uina/worlds/minecraft/dev-env/reset-server.ps1 -Confirm`（或旧脚本删 `server/bench*`）→ 起服 → `pnpm dev:mc:task --task shelter`。
-- **登记原因**：修它要动 `craft` / `build` 的点击重试语义，需要自己的红测试与真服证据；本轮只做登记，不冒充已修。
+- **现象**：真服复跑 `dev:mc:task --task shelter` 与 `--task night`、`dev:mc:build` 的房屋两步时，稳定出现 `CONFLICT: window revision changed before dispatch`。`dev:mc:stations` 14/14、`dev:mc:build` 的 11-wall vantage 步骤、`dev:mc:spatial` 7/8 都通过——所以不是窗口整体不可用。
+- **已排除**：这是既有行为，不是本轮改动引入。同一台服务器、同一世界状态下，把 `.uina/worlds/minecraft` 整体回退到会话基线 `cba81d5f` 复跑，`task shelter` 同样在第一批 craft 的第二次点击就撞 `CONFLICT`；`dev:mc:build` 的失败步骤也与 HEAD 一致。写端意图（探针实测 `beforeWrite` 2ms）、唤醒扫描定时器、executor 各自回退后都能复现，逐个排除。
+- **根因**：`click()` 的派发准入拿 `expectedRevision === view.revision` 当条件，而两个窗口族的 revision 语义根本不同。工作台/容器窗口的 `ConnectionWindowState.contentRevision` 只在内容真变时 +1；**玩家自带窗口（windowId=0）每次收到 `window_items` 全量同步都 `revision = previous + 1`**（`driver/mineflayer/protocol.ts:478`），而服务端对上一击的回执本身就会再推一次全量。于是一次 `equip`/`toss`/`craft` 由多次点击组成时，第二击起必然"版本过期"——那是自己的回执还没到齐，不是别人动过窗口。窗口不是不可用，是这个判据把时序当成了冲突。
+- **关闭方式**：准入判据改成**内容**——调用方在点击里声明的 `expectedSlots`（覆盖点击槽、槽号在范围内、计数非负）与 `expectedCursor` 与当前窗口逐格比对（`describeDrift`）。`INVALID_INPUT` 的形状校验与内容比对分开：形状不对是调用方写错，内容不对才是冲突。`expectedRevision` 保留，但只进冲突消息，用来区分"自己的回执晚到（差一版）"和"别人真动过窗口（且内容必然也对不上）"。合同注释（`contracts/body.ts`）与 `modules/driver.md` / `public-api.md` 同步改成同一口径。
+- **证据**：`tests/mc/mc-driver-window.test.ts` 新增 4 条（内容相同、revision 前进 → 放行；内容不同 → `CONFLICT` 且消息指出差在哪一格；光标漂移 → `CONFLICT`；槽号越界/未覆盖点击槽 → `INVALID_INPUT`）。真服：`dev:mc:task --task night` 与 `--task shelter` 由红转绿（shelter 24/24 格），`dev:mc:build` 13/13 步全过。
+- **同族遗留**：`dev:mc:stations` 的 `anvil 合并` 步骤偶发 `TARGET_NOT_MET ... cost -1`，见 G38——那是服务端真没给结果，与本条无关，修复前后都出现过。
 
 ### G37 · §5.11 effect footprint 与 §8.5 跨任务物料预留（本轮不做）
 
 - 两条互为消费者：footprint（`read/writeFootprint` 与未决集相交判定）唯一的真实用途是让"另一个 Run 尚未对账的库存写"进入候选预算；没有 §8.5 的预留记录，footprint 就只是一张没人读的表。按"不造无消费者框架"处理，两条一起留到有真实消费场景时再做。
+
+### G38 · `anvil@1 combine` 的"两把附魔剑必有变化"假设不成立（✅ 已于 2026-11-09 关闭：不是竞态，是互斥附魔）
+
+- **现象**：`dev:mc:stations` 的 `anvil 合并` 步骤偶发 `TARGET_NOT_MET: the anvil produced no result for this combination (inputs 0=diamond_sword, 1=diamond_sword, cost -1, levels 30)`。当天 9 轮真服样本里 2 次，G36 修复前后都出现过。
+- **已排除**：不是窗口点击被拒（失败记录 `unknownEffectCount: 0`，两个输入槽都确认有货）；不是等级不足（30 级，实际成本个位数）；不是 G36 同族竞态（本条在 G36 修复后又复现过一次，且失败步骤的前一步没有 `unknown` 收尾）。
+- **根因**：验收步骤原来"附魔台附两次、再合并"。真服抓到现场的两把剑**都带附魔**，分别是注册表 id 35 与 id 1——按 1.21.11 附魔注册表顺序即 `smite`（亡灵杀手）与 `bane_of_arthropods`（节肢杀手），两者与 `sharpness` 同属**互斥组**。原版铁砧把互斥附魔叠在一起等于"没有任何变化"，结果槽为空、成本回 `-1`；步骤注释里"两把各带附魔必有变化"的假设从一开始就是错的，附魔台出什么是随机的。
+- **关闭方式**：合并步骤的材料改成 `/give` 指名组件的两把 `sharpness I`（同等级同附魔在原版必升一级），断言结果为 `sharpness 2`、背包只剩一把；互斥情形单独做成**负例步骤**（`smite I` + `bane_of_arthropods I` → 必须 `TARGET_NOT_MET`，且两把都退回背包），每轮真服都验一次，规则退化会被立刻发现。`anvil@1` 没结果时的诊断补 `hint`：负成本 = 服务端直接拒绝（互斥附魔或无变化），与"花费太高"分开。
+- **证据**：`pnpm dev:mc:stations` 连续 3 轮 15/15；失败现场样本（两把剑的逐槽组件、`cost -1`、`unknownEffectCount: 0`）留在本机 `dev/stations-run-5.log`。
+- **顺带登记**：1.21.11 的 `/give` 附魔组件是**扁平映射** `[enchantments={"minecraft:sharpness":1}]`；写成 1.20.5～1.21.4 的 `[enchantments={levels:{...}}]` 会被服务端判 `Malformed 'minecraft:enchantments' component`，而且**指令静默失败**（steering 回执只在聊天里，服务端日志只留 `issued server command` 没有 `Gave`）。五种写法实测记录见 `dev/FACTS.md`。
 
 ## 附：不要照抄的部分
 
@@ -352,17 +361,17 @@
 
 ## 附：证据边界
 
-本轮（2026-11-09 重构收尾）跑了 `pnpm typecheck`、`tests/mc` 全量 128 文件 1037 项，并起了 Paper 1.21.11 build132 真服跑过 `dev:mc:task --task mine|shelter|night`、`dev:mc:build`、`dev:mc:stations`、`dev:mc:spatial`、连接冒烟。真服结果逐条在下面，失败项都有基线对拍结论：
+本轮（2026-11-09 重构收尾 + G36 关闭）跑了 `pnpm typecheck`、`tests/mc` 全量 138 文件 1168 项，并起了 Paper 1.21.11 build132 真服跑过 `dev:mc:task --task mine|shelter|night`、`dev:mc:build`、`dev:mc:stations`（多轮）、`dev:mc:spatial`、连接冒烟。真服结果逐条在下面；G36 修复前的失败项都做过基线对拍（`cba81d5f` 同样失败），修复后重跑：
 
 | 场景 | 结果 | 说明 |
 |---|---|---|
 | 连接冒烟 | PASS | 1.21.11 / protocol 774 / 出生点在地面 |
 | `dev:mc:task --task mine` | **ALL PASS**（48.8s） | 服务端返回坐标精确、`raw_iron=4`/`cobblestone=22`、4 格矿全成空气、no_death |
-| `dev:mc:task --task shelter` | FAIL | 第一批 craft 的第二次点击撞 `CONFLICT`；基线 `cba81d5f` 同样失败，见 G36 |
-| `dev:mc:task --task night` | FAIL | setup 阶段 `equip` 同款 `CONFLICT`；基线在 14:43 曾通过一次、之后同样失败，见 G36 |
-| `dev:mc:build` | 5/13 | 通过与失败两半都有价值：plan / 缺料 / 513 格拒绝 / 11 墙 vantage 全 PASS；房屋两步与预算超时步撞 `CONFLICT`（G36） |
-| `dev:mc:stations` | **STATIONS PASS**（14/14） | 附魔/命名/选交易/酿造/交易全绿，正是 `commit()` 三处写端 |
-| `dev:mc:spatial` | 7/8 | 唯一失败是 G31 登记过的下行阶梯第一段走位（`stuck at 9517.32,199`），与批 37 同族 |
+| `dev:mc:task --task shelter` | **PASS** | G36 修复前第一批 craft 的第二次点击撞 `CONFLICT`（基线 `cba81d5f` 同样失败）；修复后 24/24 格 |
+| `dev:mc:task --task night` | **PASS** | 修复前 setup 阶段 `equip` 同款 `CONFLICT`；修复后全绿 |
+| `dev:mc:build` | **13/13** | 修复前 5/13（房屋两步与预算超时步撞 `CONFLICT`）；修复后 13 步全过 |
+| `dev:mc:stations` | **15/15 ×3** | 附魔/命名/选交易/酿造/交易 + 新增的 anvil 互斥负例；`commit()` 三处写端也在这里 |
+| `dev:mc:spatial` | 7/8 | 唯一失败是 G31 登记过的下行阶梯第一段走位（`stuck at 9517.32,199`），与批 37 同族，本轮未动该路径 |
 
 未跑：durable smelt 真服端到端（无专用炉子场景）、30 分钟真模型窗口（T3，用户决定暂缓）、`dev:mc:ui|combat|climb|terrain-nav|upstream-nav|window-probe`。
 

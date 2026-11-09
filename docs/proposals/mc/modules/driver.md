@@ -828,7 +828,7 @@ PVP 内部依赖 Pathfinder 的事实不必为了形式解耦而重写。由两�
 
 实现说明（批24，2026-11-04）：持续控制的机械层从 BodySession 分离——`driver/input/vehicle.ts` 拥有载具运动学递推、50ms 节拍包序与输入中和（`driveVehicle`/`neutralizeVehicle`），`driver/input/walking.ts` 拥有步行键位安装/撤销与 physicsTick 消费（`applyWalkingKeys`/`revokeKeys`/`consumeWalkingTicks`，`DRIVE_STALL_MS` 同时是容器物理边界的停滞预算真源）。会话以窄依赖注入（signal/recorder/sampleSelf/resolveLookTarget），效果合同名（body.drive@1）与取消语义逐字保留；版本差异仍只在 DriverProtocol 内部，BodySession 无版本字符串分支。drive 的编排、use/attack 会话、窗口协调（withInventoryScope/openContainer——资格屏障作用于窗口的职责）留在 BodySession。
 
-不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、旧 revision、失效窗口在发送前拒绝。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
+不调用上游异步 clickWindow/acceptClick 预测链，每个 mode-0 点击仅发一个 stateId=-1 的实际业务包，等待服务端完整槽位/光标，并对照本次前态确认；没有可归属变化时保留 unknown。缺槽位预期、失效窗口在发送前拒绝；**派发前态判据是"调用方声明的那几格 + 光标内容"，不是 revision 相等**（玩家库存的 revision 每次全量同步都前进，服务端对上一击的回执本身就会再推一次，拿它做准入会把正常的多次点击序列判成冲突；真服 G36）。revision 只进冲突消息，用来区分"自己的回执晚到"和"别人真动过窗口"。常规 close 要求空光标；失败清理显式 force，取消由身体退役强制清理。已派发打开但未绑定窗口时退役会使停止屏障不明，沿既有 PlayerPort 机制封闭该连接的再次身体授予。
 
 块容器在强制看向目标后等待一个真实 physicsTick，继续时复验资格再派发。它既让视角越过实际物理/发包边界，也避免真服 Paper 已观察到的连续 block-use 静默突发丢包；不另建基于服务器配置的速率管理器。真实窗口当前值与历史同源，publishWindow 只移交服务端观察，关闭清当前值而保留旧证据。
 
@@ -1200,7 +1200,7 @@ click 返回共享 WindowClickReceipt，confirmed 携带确认时的服务端 Wi
 
 回执新增可选 `outcome:"confirmed"|"diverged"|"unknown"` 与有界 `diagnostics`（stateBefore/After、clicked slot、elapsedMs、slotChanged/cursorChanged、recovery）。`confirmed` 只表示"与客户端预测的 mode-0 结果精确一致"；`diverged` 表示服务端状态确实变了但与预测不符，不推断成功也不抹掉已派发事实。
 
-相关后态无法完整确认时 needsSnapshot=true，下次点击要求显式 snapshot。严格前态、潜在目标槽、光标与版本验证仍执行，不允许 expect:null 关闭检查；多次点击不构成服务端事务。此回执与 Program 参照推进属于待实现接线，不能由既有 fake bot 验收推定已经完成。
+相关后态无法完整确认时 needsSnapshot=true，下次点击要求显式 snapshot。严格前态（声明槽 + 光标内容）、潜在目标槽验证仍执行，不允许 expect:null 关闭检查；多次点击不构成服务端事务。此回执与 Program 参照推进属于待实现接线，不能由既有 fake bot 验收推定已经完成。
 
 当前槽位符合预期，不必然证明某次历史交易完成。
 

@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-09 · 批39 关 G36（窗口前态按内容比）与 G38（铁砧互斥附魔）
+
+批38 把 G36 猜成"调用侧在 `unknown` 之后重新取快照并重试"。查下来**判据本身就是错的**，不需要任何重试。
+
+- **G36 根因**：`click()` 的派发准入要求 `expectedRevision === view.revision`，而两个窗口族的 revision 语义不同——容器窗口的 `contentRevision` 只在内容真变时 +1，玩家自带窗口（windowId=0）**每次全量同步都 +1**（`driver/mineflayer/protocol.ts:478`），服务端对上一击的回执本身就是一次全量。一次 `equip`/`toss`/`craft` 由多次点击组成，第二击必然"版本过期"，那是自己的回执还没到齐，不是别人动过窗口。
+- **改法**：准入判据只比**内容**——调用方声明的 `expectedSlots`（必须覆盖点击槽、槽号在范围内、计数非负）与 `expectedCursor` 逐格比对（`describeDrift`）；`expectedRevision` 保留但只进冲突消息，用来区分"回执晚到（差一版）"与"别人真动过（内容必然也对不上）"。形状错误（`INVALID_INPUT`）与内容冲突（`CONFLICT`）分成两类。合同注释、`modules/driver.md`、`public-api.md` 同步改成同一口径。
+- **G38（新发现，同轮关闭）**：`dev:mc:stations` 的 `anvil 合并` 步骤 9 轮里红了 2 次 `TARGET_NOT_MET ... cost -1`。加"逐槽读附魔 + 全组件转储"后抓到现场：两把剑都带附魔，是 `smite I` 与 `bane_of_arthropods I`——与 `sharpness` 同属互斥组，原版铁砧叠互斥附魔等于"没有变化"，结果槽为空、成本回 `-1`。**"两把各带附魔必有变化"这个假设从一开始就不成立**（附魔台出什么是随机的）。验收步骤改为 `/give` 两把 `sharpness I`（必升 `sharpness II`），互斥情形单独做负例步骤（必须 `TARGET_NOT_MET` 且两把退回背包）；`anvil@1` 的失败诊断补 `hint`：负成本 = 服务端直接拒绝（互斥/无变化），与"太贵"分开。
+- **证据**：`tests/mc/mc-driver-window.test.ts` 增 4 条（内容相同、revision 前进 → 放行；内容不同 → `CONFLICT` 且指出差在哪一格；光标漂移 → `CONFLICT`；槽号越界/未覆盖点击槽 → `INVALID_INPUT`）；`pnpm typecheck` 全绿（889 文件 + 10 条边界 + 双 tsc）；`tests/mc` 138 文件 1168 项全绿；真服 `task night`/`task shelter`（24/24 格）/`build`（13/13 步）由红转绿，`stations` 连续 3 轮 15/15，`spatial` 仍 7/8（G31 同族，本轮未动）。
+- **顺带**：`anvil@1` 没结果时原先只报"没有结果"，现在把两个输入槽与服务端成本一起带出。1.21.11 的 `/give` 附魔组件是扁平映射（`[enchantments={...}]`），旧的 `{levels:{...}}` 形状会被判 `Malformed` 且指令静默失败——这条与窗口 revision 语义一起记进 `dev/FACTS.md`。
+
 ## 2026-11-09 · 批38 复审：把"缺的字段真有用"补上
 
 对上一批自己交的代码做常规审查，四处"写进了合同但没人读/写得不对"的地方：
