@@ -537,6 +537,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		signal: new AbortController().signal,
 		progress: async () => undefined,
 		world,
+		checkpoint: null,
 		call: async (ref: string, input: JsonValue) => {
 			const found = callableTable.find((entry) => entry.descriptor.ref === ref);
 			if (found == null) throw new Error(`no callable ${ref}`);
