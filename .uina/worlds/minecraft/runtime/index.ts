@@ -68,6 +68,8 @@ export interface MinecraftRuntimeOptions {
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
 	programs?: ProgramCallable[];
+	recoveryIdentity?: () => import("../contracts/protocol.js").RecoveryIdentity | null;
+	recoveryAssets?: string;
 	program?: import("../contracts/program.js").ProgramPort;
 	queryRefs?: string[];
 	environment?: { serverVersion: string; protocol: number };
@@ -220,6 +222,8 @@ export class MinecraftRuntime {
 			playerPort: opts.playerPort,
 			callables: opts.callables,
 			programs: opts.programs,
+			recoveryIdentity: opts.recoveryIdentity,
+			recoveryAssets: opts.recoveryAssets,
 			program: opts.program,
 			queryRefs: opts.queryRefs,
 			worldOwner: opts.worldOwner,

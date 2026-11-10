@@ -14,7 +14,13 @@
  * play 阶段偷偷追加注册。
  */
 
-import type { ConnectionRegistry, PhaseContext, ProtocolBootstrap, ProtocolExtension, ProtocolPhase } from "../contracts/protocol.js";
+import type {
+	ConnectionRegistry,
+	PhaseContext,
+	ProtocolBootstrap,
+	ProtocolExtension,
+	ProtocolPhase,
+} from "../contracts/protocol.js";
 import { callFailure, type Ref } from "../contracts/values.js";
 import type { PendingProtocolClient } from "./mineflayer/pending-client.js";
 import type { DriverProtocol } from "./mineflayer/protocol.js";

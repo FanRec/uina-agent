@@ -140,6 +140,7 @@ export type QueryReader =
 export interface ProgramCallable {
 	descriptor: CallableDescriptor;
 	program: import("./program.js").ResolvedProgram;
+	recoveryCheck?: ExactRef;
 }
 
 export interface NativeCallable<I, O> {

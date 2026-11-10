@@ -27,12 +27,13 @@ import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contr
 import type { ExactRef, JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/world.js";
+import { buildResumeProgram } from "../../program/build-resume.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, EYE_HEIGHT } from "../shared/reach.js";
-import { buildTargetSchema, GOAL_SUMMARY_SCHEMA } from "../shared/schema.js";
+import { BLOCK_SPEC_SCHEMA, buildTargetSchema, GOAL_SUMMARY_SCHEMA, GRID_POS_SCHEMA } from "../shared/schema.js";
 import { fail } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
 import { digCell, reachHint, stepTo, walkLeg } from "./dig-cycle.js";
@@ -324,6 +325,52 @@ async function walkToward(
 export const buildModule: MinecraftCapabilityModule = {
 	id: "build",
 	definitions: [
+		{
+			kind: "program",
+			recoveryCheck: BUILD_PLAN_REF,
+			source: buildResumeProgram,
+			descriptor: {
+				ref: "build.resume@1",
+				implementation: "program",
+				summary:
+					"Place and verify a small fixed set of cells. On a supported server, an interrupted task can resume in the same save and dimension.",
+				tags: ["body", "building", "construction"],
+				access: "act",
+				requires: ["connection", "body"],
+				input: {
+					type: "object",
+					properties: {
+						cells: {
+							type: "array",
+							minItems: 1,
+							maxItems: 512,
+							items: {
+								type: "object",
+								properties: { at: GRID_POS_SCHEMA, block: BLOCK_SPEC_SCHEMA },
+								required: ["at", "block"],
+								additionalProperties: false,
+							},
+						},
+					},
+					required: ["cells"],
+					additionalProperties: false,
+				},
+				output: {
+					type: "object",
+					properties: { verified: { type: "integer" }, remaining: { type: "array" } },
+					required: ["verified", "remaining"],
+					additionalProperties: false,
+				},
+				completion: { scope: "capability", description: "Every declared placement matches the world on final read." },
+				errors: [{ code: "WORLD_IDENTITY_UNAVAILABLE", meaning: "The connection has no verified save identity." }],
+				examples: [
+					{
+						input: { cells: [{ at: { x: 10, y: 100, z: 8 }, block: "oak_planks" }] },
+						output: { verified: 1, remaining: [] },
+					},
+				],
+			},
+		},
 		{
 			kind: "action",
 			descriptor,

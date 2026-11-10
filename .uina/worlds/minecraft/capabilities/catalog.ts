@@ -30,7 +30,7 @@ export type CapabilityInvoke = NativeCallable<JsonValue, JsonValue>["invoke"];
 export type CapabilityDefinition =
 	| { kind: "query"; descriptor: QueryDescriptor; bind(deps: CapabilityDeps): QueryReader | null }
 	| { kind: "action"; descriptor: CallableDescriptor; bind(deps: CapabilityDeps): CapabilityInvoke }
-	| { kind: "program"; descriptor: CallableDescriptor; source: string };
+	| { kind: "program"; descriptor: CallableDescriptor; source: string; recoveryCheck?: ExactRef };
 
 export interface MinecraftCapabilityModule {
 	id: string;
@@ -130,6 +130,14 @@ export class CapabilityCatalog {
 				defs.push(definition);
 			}
 		}
+		for (const definition of defs) {
+			if (
+				definition.kind === "program" &&
+				definition.recoveryCheck &&
+				byRef.get(definition.recoveryCheck)?.kind !== "query"
+			)
+				throw new Error(`program ${definition.descriptor.ref} requires recovery query ${definition.recoveryCheck}`);
+		}
 		this.defs = defs;
 		this.descriptors = Object.freeze(defs.map((definition) => definition.descriptor));
 		this.queryValidators = validators;
@@ -162,6 +170,7 @@ export class CapabilityCatalog {
 					programs.push({
 						descriptor: definition.descriptor,
 						program: freezeContract(parseProgramSource(definition.source, null)),
+						recoveryCheck: definition.recoveryCheck,
 					});
 				else callables.push({ descriptor: definition.descriptor, invoke: definition.bind(deps) });
 			}

@@ -167,7 +167,18 @@ export interface DurableSuspendRequest {
  * 已持久化的持久等待（§5.9 最小持久状态）。只放纯 JSON；恢复入口是"同一能力 ref
  * + 原输入"，能力靠 ctx.checkpoint 判断哪一半已经写过。不保存闭包、Watch 或 JS Worker。
  */
+/** Verified connection-scoped identity, including the dimension of the frozen input. */
+export interface ProgramRecovery {
+	identity: import("./protocol.js").RecoveryIdentity;
+	selector: ExactRef;
+	digest: string;
+	contract: string;
+	assets: string;
+	check: ExactRef;
+}
+
 export interface DurableWait {
+	recovery?: ProgramRecovery;
 	/** 已挂起过的次数（含本次）；超过 Runtime 预算即不再挂起，按 unknown 收口。 */
 	attempts: number;
 	/** 下一次允许复查的时间（ISO 8601）。 */

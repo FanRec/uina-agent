@@ -292,6 +292,8 @@ export async function openExecutionSide(
 			onChanged: options.onChanged,
 			unclean: init.unclean,
 			oldControlRetired: init.oldControlRetired,
+			recoveryIdentity: () => host.recoveryIdentity(),
+			recoveryAssets: init.addons?.digest,
 			requireRetirement,
 		});
 		runtime = opened.runtime;

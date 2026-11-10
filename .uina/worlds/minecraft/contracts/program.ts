@@ -94,6 +94,7 @@ export interface ProgramHostApi {
 
 	sleep(input: { ms: number }): Promise<null>;
 	progress(input: { value: import("./values.js").Progress }): Promise<null>;
+	saveCheckpoint?(input: { value: JsonValue }): Promise<null>;
 	acquireBody(input: Record<string, never>): Promise<HandleRef>;
 	releaseBody(input: { handle: string }): Promise<null>;
 	handleOp(input: { handle: string; op: string; args: JsonValue }): Promise<JsonValue | HandleRef>;

@@ -21,12 +21,26 @@ export function installConnectionRegistry(bot: MineflayerBot, evidence: Connecti
 		itemsArray.push(item);
 	}
 	for (const { name, id, stateId, hardness } of evidence.solidBlocks) {
-		if (!customName.test(name) || !idValid(id) || !idValid(stateId) || !Number.isFinite(hardness) ||
-			blocks[id] || blocksByName[name] || blocksByStateId[stateId])
+		if (
+			!customName.test(name) ||
+			!idValid(id) ||
+			!idValid(stateId) ||
+			!Number.isFinite(hardness) ||
+			blocks[id] ||
+			blocksByName[name] ||
+			blocksByStateId[stateId]
+		)
 			throw new Error(`invalid or conflicting block registry entry ${name}=${id}/${stateId}`);
 		const block = {
-			...registry.blocksByName.stone, name, id, displayName: name, hardness,
-			minStateId: stateId, maxStateId: stateId, defaultState: stateId, states: [],
+			...registry.blocksByName.stone,
+			name,
+			id,
+			displayName: name,
+			hardness,
+			minStateId: stateId,
+			maxStateId: stateId,
+			defaultState: stateId,
+			states: [],
 		};
 		blocks[id] = blocksByName[name] = blocksByStateId[stateId] = block;
 		blocksArray.push(block);
@@ -36,11 +50,13 @@ export function installConnectionRegistry(bot: MineflayerBot, evidence: Connecti
 		if (!entries) throw new Error(`unsupported synchronized registry ${kind}`);
 		for (const [name, id] of Object.entries(ids)) {
 			const localName = name.startsWith("minecraft:") ? name.slice("minecraft:".length) : name;
-			if (entries[localName]?.id !== id)
-				throw new Error(`unsupported registry mapping ${kind}:${name}=${id}`);
+			if (entries[localName]?.id !== id) throw new Error(`unsupported registry mapping ${kind}:${name}=${id}`);
 		}
 	}
-	for (const [kind, entries] of [["minecraft:item", evidence.items], ["minecraft:block", evidence.solidBlocks]] as const) {
+	for (const [kind, entries] of [
+		["minecraft:item", evidence.items],
+		["minecraft:block", evidence.solidBlocks],
+	] as const) {
 		for (const entry of entries)
 			if (evidence.synchronizedIds[kind]?.[entry.name] !== entry.id)
 				throw new Error(`missing registry mapping ${kind}:${entry.name}`);

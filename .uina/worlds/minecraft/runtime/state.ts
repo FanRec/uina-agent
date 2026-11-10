@@ -25,6 +25,7 @@ export type ResolvedInvocation = {
 			program: ResolvedProgram;
 			snapshot: string;
 			descriptor?: CallableDescriptor;
+			recoveryCheck?: import("../contracts/values.js").ExactRef;
 	  }
 );
 
@@ -94,6 +95,7 @@ export interface RunState {
 	everStarted?: boolean;
 	priorityRelease?: () => void;
 	checkpoint?: import("../contracts/values.js").Checkpoint | null;
+	recovery?: import("../contracts/values.js").ProgramRecovery;
 	/** 本段是持久挂起的重入：上次落库的等待记录（ctx.checkpoint 与尝试次数来源）。 */
 	durableWait?: import("../contracts/values.js").DurableWait;
 	decisionRequest?: import("../contracts/values.js").DecisionRequest;

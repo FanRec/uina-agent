@@ -172,6 +172,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 					"read",
 					"watch",
 					"sleep",
+					"saveCheckpoint",
 					"acquireBody",
 					"releaseBody",
 					"handleOp",

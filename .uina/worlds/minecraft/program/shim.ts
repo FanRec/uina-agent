@@ -165,6 +165,7 @@ export const SHIM = String.raw`(() => {
       decisionSet(e,'{"kind":"local","reason":'+stringify(reason)+(encoded===undefined?'':',"checkpoint":'+encoded)+'}');
       throw e;
     },
+    saveCheckpoint: value => rpc("saveCheckpoint",{value}).then(() => undefined),
     get checkpoint() { return checkpoint; },
   });
   const console = {};

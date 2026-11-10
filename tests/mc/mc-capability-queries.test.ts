@@ -433,11 +433,12 @@ describe("目录完整性", () => {
 		expect(capabilities.readers.has("map@1")).toBe(false);
 	});
 
-	test("36 个动作齐备，ref 不重复", () => {
+	test("37 个动作齐备，ref 不重复", () => {
 		expect(capabilities.refs.sort()).toEqual([
 			"anvil@1",
 			"attack@1",
 			"brew@1",
+			"build.resume@1",
 			"build@1",
 			"chat@1",
 			"collect@1",

@@ -255,6 +255,7 @@ export function segmentRowOf(state: RunState, environment: RunEnvironment | null
 							origin: root.callable.program.origin,
 							digest: root.callable.digest,
 							snapshot: root.callable.snapshot,
+							recovery: state.recovery,
 						},
 			),
 		),

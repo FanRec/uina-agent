@@ -66,6 +66,8 @@ export async function openHarness(
 	options: {
 		binding?: { world: Ref; worldRevision: Ref };
 		callables?: NativeCallable<JsonValue, JsonValue>[];
+		addons?: import("../contracts/addons.js").AssemblyPlan;
+		unclean?: boolean;
 		dataRoot?: string;
 		/** 重开同一数据根时复用上次的 ns：runtime.db 的 world_owner 与历史库身份都绑定它。 */
 		ns?: string;
@@ -93,7 +95,8 @@ export async function openHarness(
 				connection: { ...DEV_SERVER, authMode: "offline" },
 				binding: options.binding ?? { world: `world:${ns}`, worldRevision: `revision:${ns}` },
 			},
-			unclean: false,
+			addons: options.addons,
+			unclean: options.unclean ?? false,
 			oldControlRetired: true,
 			ownerLifetimeMs: 5000,
 			localGates: [],
@@ -107,13 +110,23 @@ export async function openHarness(
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	try {
 		const owner = await side.attach();
-		await side.runtime.setOwnerGate({
+		const enabled = await side.runtime.setOwnerGate({
 			requestId: randomUUID(),
 			attachment: owner.attachment,
 			gate: "disabled",
 			closed: false,
 			expectedRevision: owner.gateRevision,
 		});
+		if (options.unclean) {
+			// The caller must have waited for the killed writer's process exit.
+			await side.runtime.setOwnerGate({
+				requestId: randomUUID(),
+				attachment: owner.attachment,
+				gate: "owner_lost",
+				closed: false,
+				expectedRevision: enabled.state.gateRevision,
+			});
+		}
 		heartbeat = setInterval(() => {
 			void side.runtime.heartbeat(owner.attachment).catch((error: unknown) => log(`heartbeat: ${String(error)}`));
 		}, 1000);

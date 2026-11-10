@@ -22,6 +22,7 @@ import type {
 	ProtocolWriteBinding,
 	ProtocolWritePort,
 } from "../contracts/capabilities.js";
+import type { RecoveryIdentity } from "../contracts/protocol.js";
 import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
 import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
 import type {
@@ -47,7 +48,10 @@ import type {
 	DecisionRequest,
 	DurableSuspendRequest,
 	DurableWait,
+	ProgramCheckpoint,
+	ProgramRecovery,
 	EffectReceipt,
+	ExactRef,
 	JsonSchema,
 	JsonValue,
 	Progress,
@@ -161,6 +165,10 @@ function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailur
 }
 
 /** 落库的 `runs.decision` → 决策 ref 与持久等待；不是持久挂起就返回 null。 */
+function sameRecoveryWorld(left: RecoveryIdentity, right: RecoveryIdentity): boolean {
+	return left.world === right.world && left.dimension === right.dimension;
+}
+
 function parseWait(decision: string): { decision: Ref; wait: DurableWait } | null {
 	try {
 		const parsed = JSON.parse(decision) as { ref?: unknown; request?: { wait?: unknown } };
@@ -186,6 +194,8 @@ export interface EngineOptions {
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
 	programs?: ProgramCallable[];
+	recoveryIdentity?: () => RecoveryIdentity | null;
+	recoveryAssets?: string;
 	program?: ProgramPort;
 	queryRefs?: string[];
 	worldOwner: Ref;
@@ -362,6 +372,12 @@ export class RuntimeEngine {
 							(target.request !== undefined && this.byRequestId.get(target.request)?.run === row.run)))
 				);
 			});
+			const recovery = !stoppedByIntent && row.started === 1 ? this.parkRecoveredProgram(row) : null;
+			if (recovery) {
+				this.queue.enqueue({ kind: "run", row: recovery });
+				this.recoveredRuns.set(row.run, recovery);
+				continue;
+			}
 			const next: RunRow = {
 				...row,
 				revision: row.revision + 1,
@@ -387,6 +403,60 @@ export class RuntimeEngine {
 			this.queue.enqueue({ kind: "run", row: next });
 			this.recoveredRuns.set(row.run, next);
 		}
+	}
+
+	private parkRecoveredProgram(row: RunRow): RunRow | null {
+		const segment = row.segment == null ? undefined : this.recoveredSegments.get(row.segment);
+		if (!segment?.checkpoint) return null;
+		const entry = JSON.parse(segment.entry) as { kind: string; recovery?: ProgramRecovery; digest?: string };
+		const checkpoint = JSON.parse(segment.checkpoint) as ProgramCheckpoint;
+		const recovery = entry.recovery;
+		if (
+			entry.kind !== "program" ||
+			recovery == null ||
+			checkpoint.kind !== "program" ||
+			checkpoint.origin.digest !== recovery.digest ||
+			entry.digest !== recovery.digest
+		)
+			return null;
+		const unknownEffects = this.queue.unknownEffectsFor(row.run);
+		const now = new Date().toISOString();
+		const eligible = this.opts.oldControlRetired === true;
+		const wait: DurableWait | undefined = eligible
+			? {
+					attempts: 0,
+					earliestCheckAt: now,
+					lastProgressAt: now,
+					deadlineAt: now,
+					resume: { selector: recovery.selector, input: JSON.parse(segment.input) as JsonValue },
+					checkpoint: checkpoint.value,
+					recovery,
+				}
+			: undefined;
+		const request: DecisionRequest = {
+			code: "NEEDS_DECISION",
+			checkpoint,
+			origin: checkpoint.origin,
+			reason:
+				eligible && unknownEffects.length === 0
+					? "waiting to resume construction on the original world and dimension"
+					: "construction interrupted with unconfirmed writes or an unretired writer; verify the world before starting more writes",
+			...(wait ? { wait } : {}),
+		};
+		return {
+			...row,
+			phase: "awaiting_decision",
+			revision: row.revision + 1,
+			record: this.refs.record(),
+			completion_ref: this.refs.completion(),
+			decision: JSON.stringify({ ref: this.refs.record(), request }),
+			waiting: null,
+			outcome: null,
+			error: null,
+			value: null,
+			unknown_effects: JSON.stringify(unknownEffects),
+			control: this.opts.oldControlRetired === true ? "stopped" : "unknown",
+		};
 	}
 
 	// ---- 受理（§2.1，I1 子集） ----
@@ -488,6 +558,47 @@ export class RuntimeEngine {
 			canonicalJson(plain(environment)) !== canonicalJson(plain(this.opts.environment ?? null))
 		)
 			return reject("WRONG_STATE", "inherited environment is no longer available; explicitly choose current");
+		const decisionRequest = (old?.decisionRequest ?? JSON.parse(row!.decision!).request) as DecisionRequest;
+		const wait = decisionRequest.wait;
+		const recovery =
+			wait?.recovery ??
+			old?.recovery ??
+			(previousSegment == null
+				? undefined
+				: (JSON.parse(previousSegment.entry) as { recovery?: ProgramRecovery }).recovery);
+		if (recovery) {
+			if (recovery.assets !== (this.opts.recoveryAssets ?? ""))
+				return reject("CHECKPOINT_INVALID", "construction assets changed since admission");
+			if (!old && this.opts.oldControlRetired !== true)
+				return reject("RECOVERY_WRITER_UNKNOWN", "the previous writer has not been verified retired");
+			const identity = this.opts.recoveryIdentity?.();
+			if (!identity) return reject("RECOVERY_IDENTITY_PENDING", "server world identity is unavailable");
+			if (!sameRecoveryWorld(identity, recovery.identity))
+				return reject("WORLD_IDENTITY_CHANGED", "construction belongs to a different world or dimension");
+			const frozenInput =
+				old?.rootCall.input ?? (previousSegment ? (JSON.parse(previousSegment.input) as JsonValue) : null);
+			if (
+				request.entry.kind !== "call" ||
+				request.entry.selector !== recovery.selector ||
+				canonicalJson(request.entry.input) !== canonicalJson(frozenInput)
+			)
+				return reject("CHECKPOINT_INVALID", "construction recovery requires the frozen selector and input");
+			if (this.queue.unknownEffectsFor(request.run).length > 0) {
+				const scene = await this.opts.world.read({ ref: recovery.check, input: frozenInput }).catch(() => null);
+				return reject(
+					"RECOVERY_EFFECT_UNKNOWN",
+					scene?.value != null
+						? "the target was re-read, but current blocks cannot attribute an unconfirmed write to the old segment"
+						: "the target could not be re-read and the old segment has unconfirmed writes",
+				);
+			}
+			try {
+				const snapshot = await this.requireProgram().readSnapshot({ run: request.run, digest: recovery.digest });
+				if (!snapshot) return reject("CHECKPOINT_INVALID", "the frozen construction source is missing");
+			} catch {
+				return reject("CHECKPOINT_INVALID", "the frozen construction source cannot be verified");
+			}
+		}
 		let callable: ResolvedInvocation;
 		try {
 			callable =
@@ -504,13 +615,25 @@ export class RuntimeEngine {
 			return reject("REQUEST_CANCELLED", "request stopped during preparation");
 		if (old?.stopped || this.read(request.run).phase !== "awaiting_decision")
 			return reject("DECISION_STALE", "decision was stopped during preparation");
-		const decisionRequest = (old?.decisionRequest ?? JSON.parse(row!.decision!).request) as DecisionRequest;
-		const wait = decisionRequest.wait;
 		// 有待恢复的持久挂起时，入口必须是挂起的那一个：换能力等于把它不认识的检查点喂进去
 		// （smelt 的炉位交给 craft 会重新装料），Program 入口同理不能接这份检查点。
 		// 没有 wait 的普通决策不受限——Host 有权决定"不接着写，改做别的"。
-		if (wait != null && callable.kind !== "native")
+		if (recovery) {
+			const identity = this.opts.recoveryIdentity?.();
+			if (!identity || !sameRecoveryWorld(identity, recovery.identity))
+				return reject("WORLD_IDENTITY_CHANGED", "construction belongs to a different world or dimension");
+			if (
+				callable.kind !== "program" ||
+				callable.recoveryCheck !== recovery.check ||
+				callable.digest !== recovery.digest ||
+				sha256Hex(canonicalJson(plain(callable.descriptor))) !== recovery.contract
+			)
+				return reject("CHECKPOINT_INVALID", "the active construction binding differs from the frozen source");
+		} else if (callable.kind === "program" && callable.recoveryCheck) {
+			return reject("CHECKPOINT_INVALID", "start resumable construction in a new task");
+		} else if (wait != null && callable.kind !== "native") {
 			return reject("CHECKPOINT_INVALID", "a durable native wait cannot be resumed by a program entry");
+		}
 		if (wait != null && wait.resume.selector !== callable.ref)
 			return reject("CHECKPOINT_INVALID", `the pending durable wait belongs to ${wait.resume.selector}`);
 		const checkpoint = callable.kind === "program" ? decisionRequest.checkpoint : null;
@@ -552,7 +675,8 @@ export class RuntimeEngine {
 			awaitingBody: 0,
 			waiters: old?.waiters ?? new Set(),
 			checkpoint,
-			...(wait != null ? { durableWait: wait } : {}),
+			recovery,
+			...(wait != null && !wait.recovery ? { durableWait: wait } : {}),
 			environment: request.environment === "current" ? (this.opts.environment ?? null) : environment,
 		};
 		if (this.opts.program)
@@ -729,12 +853,30 @@ export class RuntimeEngine {
 			return this.rejectSubmission(owner, request, intentJson, { code: failure.code, message: failure.message });
 		}
 		// 唯一受理映射 + 初始记录
+		let recovery: ProgramRecovery | undefined;
+		if (callable.kind === "program" && callable.recoveryCheck) {
+			const identity = this.opts.recoveryIdentity?.();
+			if (!identity)
+				return this.rejectSubmission(owner, request, intentJson, {
+					code: "WORLD_IDENTITY_UNAVAILABLE",
+					message: "resumable construction requires a verified world identity",
+				});
+			recovery = {
+				identity,
+				selector: callable.ref as ExactRef,
+				digest: callable.digest,
+				contract: sha256Hex(canonicalJson(plain(callable.descriptor))),
+				assets: this.opts.recoveryAssets ?? "",
+				check: callable.recoveryCheck,
+			};
+		}
 		const segment = this.refs.segment();
 		const call = this.refs.call();
 		const runRecord = this.refs.record();
 		const segmentRecord = this.refs.record();
 		const callRecord = this.refs.record();
 		const state: RunState = {
+			recovery,
 			run,
 			owner,
 			caller: origin.caller,
@@ -1450,7 +1592,7 @@ export class RuntimeEngine {
 				}
 				// 明确拒绝里只有"资格没到位"是瞬时的；其余（入口解析不到、输入不合法、
 				// 环境已换）在这一版挂起上是确定结论，每秒重试只是空转加噪声。
-				if (TRANSIENT_WAKE_REFUSALS.has(acceptance.code)) continue;
+				if (acceptance.code === "RECOVERY_IDENTITY_PENDING" || TRANSIENT_WAKE_REFUSALS.has(acceptance.code)) continue;
 				if (this.wakeRefusals.get(item.run) === item.revision) continue;
 				this.wakeRefusals.set(item.run, item.revision);
 				console.error(
@@ -1693,6 +1835,7 @@ export class RuntimeEngine {
 		let suspend: DurableSuspendRequest | undefined;
 		try {
 			this.assertActionAllowed();
+			if (state.recovery) this.assertRecoveryIdentity(state.recovery);
 			if (state.stopped || callState.abort.signal.aborted || callState.closed)
 				throw callFailure({
 					code: "INTERRUPTED",
@@ -1710,6 +1853,21 @@ export class RuntimeEngine {
 				const host = createProgramHost(ctx, callState.resources, (selector) =>
 					this.byRef.has(selector) ? "act" : this.opts.queryRefs?.includes(selector) ? "read" : undefined,
 				);
+				host.saveCheckpoint = async ({ value }) => {
+					if (callState.parent != null || !state.recovery || !invocation.recoveryCheck)
+						throw this.scopeError("CHECKPOINT_UNSUPPORTED", "only a resumable root program can save a checkpoint");
+					if (callState.abort.signal.aborted || state.stopped)
+						throw this.scopeError("PROGRAM_RETIRED", "call is retired");
+					this.assertRecoveryIdentity(state.recovery);
+					if (!isJsonValue(value)) throw this.scopeError("INVALID_INPUT", "checkpoint must be JSON");
+					state.checkpoint = {
+						kind: "program",
+						value: plain(value),
+						origin: { call: callState.call, program: invocation.ref, digest: invocation.digest },
+					};
+					await this.queue.flushThrough(this.queue.enqueue(this.segmentMutation(state)));
+					return null;
+				};
 				for (const method of ["watch", "sleep"] as const) {
 					const invoke = host[method];
 					Object.assign(host, {
@@ -2241,6 +2399,12 @@ export class RuntimeEngine {
 		});
 	}
 
+	private assertRecoveryIdentity(recovery: ProgramRecovery): void {
+		const identity = this.opts.recoveryIdentity?.();
+		if (!identity || !sameRecoveryWorld(identity, recovery.identity))
+			throw this.scopeError("WORLD_IDENTITY_CHANGED", "construction belongs to a different world or dimension");
+	}
+
 	private scopeError(code: string, message: string): CallFailure {
 		return callFailure({ code, message, source: "capability", dispatch: "not_sent", effects: [], recoverable: true });
 	}
@@ -2394,6 +2558,7 @@ export class RuntimeEngine {
 			ref: descriptor?.ref ?? program.name ?? `code:${program.digest.slice(0, 8)}`,
 			digest: program.digest,
 			descriptor,
+			recoveryCheck: binding?.recoveryCheck,
 			completion: descriptor?.completion ?? {
 				scope: "execution",
 				description: "program returned; world goals depend on its actions and observations",

@@ -290,7 +290,7 @@ export function makeScenario(h: DevHarness, label: string): Scenario {
 	};
 
 	const serverBlock = async (at: Vec3, name: string): Promise<boolean> => {
-		const block = name.startsWith("minecraft:") ? name : `minecraft:${name}`;
+		const block = name.includes(":") ? name : `minecraft:${name}`;
 		return await serverProbe(`/execute if block ${Math.floor(at.x)} ${Math.floor(at.y)} ${Math.floor(at.z)} ${block}`);
 	};
 
