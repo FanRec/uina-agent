@@ -112,5 +112,5 @@ export function createCapabilityCatalog(extra: readonly MinecraftCapabilityModul
  * 只覆盖内置模块：第三方能力只能来自活动 Companion 的目录快照，
  * 宿主不会为了离线展示去 import 未知扩展。
  */
-export const builtinDescriptors: readonly (QueryDescriptor | CallableDescriptor)[] =
-	CapabilityCatalog.create(builtinModules).allDescriptors();
+export const builtinCatalog = CapabilityCatalog.create(builtinModules);
+export const builtinDescriptors: readonly (QueryDescriptor | CallableDescriptor)[] = builtinCatalog.allDescriptors();

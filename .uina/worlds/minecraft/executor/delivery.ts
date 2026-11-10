@@ -85,10 +85,7 @@ export class DeliveryPump {
 					...(urgentEvent(event.payload) ? { delivery: "urgent" as const } : {}),
 					text: JSON.stringify({
 						...event,
-						nextCall:
-							(event.payload as { kind?: string })?.kind === "safety_changed"
-								? { action: "runs", params: { op: "record", ref: event.ref } }
-								: { action: "observe", params: { selector: "events@1" } },
+						nextCall: { action: "observe", params: { selector: "events@1" } },
 					}),
 				});
 			}

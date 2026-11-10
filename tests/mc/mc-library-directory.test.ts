@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
-import { createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
+import { builtinCatalog, createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { describeDirectory } from "../../.uina/worlds/minecraft/companion/directory.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 
@@ -88,4 +88,34 @@ test.each([
 		name,
 		nextCall: { action, params: { selector: name } },
 	});
+});
+
+test("exact discovery advertises published Programs and only includes source on request", async () => {
+	const library = { list: async () => [], get: async () => null } as never;
+	const descriptors = builtinCatalog.allDescriptors();
+	const publishedPrograms = builtinCatalog.publishedPrograms();
+	expect(publishedPrograms).toEqual(expect.arrayContaining(["collect@1", "build.resume@1"]));
+	for (const selector of publishedPrograms) {
+		const programSource = builtinCatalog.publishedSource(selector);
+		expect(programSource).toMatchObject({
+			source: expect.stringContaining("async function main"),
+			digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+		});
+		const metadata = await describeDirectory(descriptors, library, { selector }, [], {
+			publishedPrograms,
+			programSource: null,
+		});
+		expect(metadata).toMatchObject({
+			sourceAvailable: true,
+			sourceCall: { action: "describe", params: { selector, includeSource: true } },
+		});
+		expect(metadata).not.toHaveProperty("programSource");
+		expect(
+			await describeDirectory(descriptors, library, { selector, includeSource: true }, [], {
+				publishedPrograms,
+				programSource,
+			}),
+		).toMatchObject({ programSource });
+	}
+	expect(builtinCatalog.publishedSource("goto@1")).toBeNull();
 });

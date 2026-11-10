@@ -61,5 +61,5 @@ const descriptor: CallableDescriptor = {
 
 export const collectModule: MinecraftCapabilityModule = {
 	id: "collect",
-	definitions: [{ kind: "program", descriptor, source: collectProgram }],
+	definitions: [{ kind: "program", descriptor, source: collectProgram, publishSource: true }],
 };

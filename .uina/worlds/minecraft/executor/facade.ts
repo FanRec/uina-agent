@@ -7,7 +7,7 @@ import type { JsonValue } from "../contracts/values.js";
 import { DeliveryPump } from "./delivery.js";
 import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
-import { submitsTask, taskHandle, taskIdentity, taskView } from "../contracts/task.js";
+import { constructionDecisionEvidence, submitsTask, taskHandle, taskIdentity, taskView } from "../contracts/task.js";
 import type { RequestIntent } from "./ledger-worker.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
@@ -403,7 +403,8 @@ export class MinecraftFacade {
 						"unknown",
 					);
 			}
-			if (snapshot.phase === "finished") {
+			const construction = entry?.kind === "call" && entry.selector === "build.resume@1";
+			if (snapshot.phase === "finished" || (snapshot.phase === "awaiting_decision" && construction)) {
 				const report = await this.executor
 					.rpc<import("../contracts/runtime.js").DeliveryState>(
 						"runtime.readDelivery",
@@ -412,6 +413,16 @@ export class MinecraftFacade {
 					)
 					.then((state) => this.delivery.view(state))
 					.catch(() => null);
+				if (snapshot.phase === "awaiting_decision") {
+					const checkpoint =
+						report?.content.kind === "inline" && report.content.report.reportKind === "decision"
+							? report.content.report.snapshot.checkpoint
+							: null;
+					return response({
+						...project(snapshot),
+						...constructionDecisionEvidence(task, snapshot, checkpoint?.kind === "program" ? checkpoint : null),
+					});
+				}
 				if (report?.content.kind === "inline" && report.content.report.reportKind === "terminal")
 					return response({ ...project(snapshot), value: report.content.report.snapshot.value });
 				return response({ ...project(snapshot), detail: report?.content.kind ?? "unavailable" });

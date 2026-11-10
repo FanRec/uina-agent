@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { installedAddonStatuses } from "../addons/plan.js";
-import { builtinDescriptors } from "../capabilities/index.js";
+import { builtinCatalog, builtinDescriptors } from "../capabilities/index.js";
 import { describeDirectory } from "../companion/directory.js";
 import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
 import type { LibraryKind, ProgramOrigin } from "../contracts/library.js";
@@ -137,13 +137,14 @@ export function createMinecraftWorld(
 				}
 			}
 			case "describe": {
+				const sourceFor = params.includeSource === true ? (params.selector as string) : undefined;
 				// 活动会话：目录来自真实 Companion 装配快照（与 Runtime/World 同一份 descriptor）。
 				// 拿不到快照就明确失败——不把过期目录或"内置全集"冒充当前可执行能力。
 				const session = controller?.session;
 				if (session) {
 					let snapshot: Awaited<ReturnType<typeof session.executor.snapshot>>;
 					try {
-						snapshot = await session.executor.snapshot();
+						snapshot = await session.executor.snapshot(sourceFor);
 					} catch (error) {
 						throw new RpcError(
 							"EXECUTOR_UNAVAILABLE",
@@ -156,12 +157,18 @@ export function createMinecraftWorld(
 							library!,
 							params as never,
 							snapshot.addons,
+							snapshot,
 						),
 					);
 				}
 				// 离线：只给内置目录 + 安装包摘要（只读 Manifest，不执行第三方代码）。
 				const installed = minecraftRoot ? await installedAddonStatuses(minecraftRoot) : [];
-				return ok(await describeDirectory(builtinDescriptors, library!, params as never, installed));
+				return ok(
+					await describeDirectory(builtinDescriptors, library!, params as never, installed, {
+						publishedPrograms: builtinCatalog.publishedPrograms(),
+						programSource: sourceFor === undefined ? null : builtinCatalog.publishedSource(sourceFor),
+					}),
+				);
 			}
 			case "library":
 				return await libraryAction(params);

@@ -52,7 +52,7 @@ async function main(mc, input) {
 
 ## 可复制采集 Program
 
-要修改正式采集策略，先运行 `collect@1`。用 `tasks.trace` 查任务里的采集 Call，再用 `library.save` 的 `from: { run, segment, call }` 保存已执行的源码。用 `library.update` 修改副本后，以 Library 裸名提交。例如把默认半径从 32 改为 8，超出范围的原木就会留在原处。副本的领域失败按 `PROGRAM_ERROR` 报告，消息保留原诊断，派发和实际进度仍以 Runtime 证据为准。
+想调整采集策略，用 `describe {selector:"collect@1",includeSource:true}` 读取当前发布版本，再把 `programSource.source` 传给 `library.save`。例如把默认半径从 32 改为 8，以 Library 裸名执行副本，用背包增量核对结果。要复制某一次实际执行用过的版本，用 `tasks.trace` 找采集 Call，再用 `library.save` 的 `from: { run, segment, call }` 保存。副本的领域失败按 `PROGRAM_ERROR` 报告，消息保留原诊断。
 
 将下方源码传给 run.code 或保存到 Library。默认寻找 16 格内的原木来源，修改 input.radius 可改变搜索策略。普通返回表示脚本执行结束，实际完成量以 acquired 和背包读数为准。
 

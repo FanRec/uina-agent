@@ -801,6 +801,8 @@ describe("directory.snapshot：IPC 输出契约", () => {
 			launch: "launch:t:1",
 			connection: "ready",
 			descriptors: [{ ref: "world@1", access: "read" }],
+			publishedPrograms: ["collect@1"],
+			programSource: null,
 			addons: [
 				{
 					id: "example-mod",
@@ -825,9 +827,10 @@ describe("directory.snapshot：IPC 输出契约", () => {
 		expect(schema?.output({ ...value, addons: [{ ...value.addons[0], evidence: undefined }] })).toBe(false);
 	});
 
-	test("input 只接受空对象（快照没有参数）", () => {
+	test("input accepts only the optional exact source selector", () => {
 		const schema = methods.get("directory.snapshot");
 		expect(schema?.input({})).toBe(true);
+		expect(schema?.input({ sourceFor: "collect@1" })).toBe(true);
 		expect(schema?.input({ profile: "x" })).toBe(false);
 	});
 });

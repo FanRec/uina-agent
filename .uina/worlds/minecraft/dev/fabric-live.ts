@@ -9,6 +9,8 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { enableAddon, installAddon } from "../addons/manage.js";
 import { resolveAddonPlan } from "../addons/plan.js";
+import type { CompletionReport, RunSummary } from "../contracts/runtime.js";
+import { constructionDecisionEvidence } from "../contracts/task.js";
 import { DEV_SERVER, type DevHarness, openHarness, sleep } from "./harness.js";
 import { makeScenario } from "./scenario.js";
 
@@ -140,6 +142,36 @@ const cells = [
 	{ at: { x: 10, y: 100, z: 8 }, block: "oak_log" },
 	{ at: { x: 10, y: 100, z: 9 }, block: "oak_log" },
 ];
+
+async function readConstructionEvidence(h: DevHarness, snapshot: Extract<RunSummary, { phase: "awaiting_decision" }>) {
+	const reply = await h.runtime.readRecord(snapshot.completionRef, { format: "inline" });
+	assert(reply.kind === "inline" && reply.record.kind === "completion", JSON.stringify(reply));
+	const report = reply.record.value as unknown as CompletionReport;
+	assert(report.reportKind === "decision");
+	const checkpoint = report.snapshot.checkpoint;
+	assert(checkpoint?.kind === "program");
+	return constructionDecisionEvidence("task:fixture", snapshot, checkpoint);
+}
+
+async function verifyMissingMaterials(h: DevHarness) {
+	const s = await reset(h);
+	await s.command(`/gamemode survival ${h.bot.username}`);
+	const result = await s.spawn("build.resume@1", { cells });
+	const reply = await h.runtime.wait(result.run, { timeoutMs: 10000 });
+	assert(reply.kind === "result" && reply.snapshot.phase === "awaiting_decision", JSON.stringify(reply));
+	const evidence = await readConstructionEvidence(h, reply.snapshot);
+	assert.deepEqual(evidence.construction, {
+		verifiedAtCheckpoint: 0,
+		cellsToRecheck: cells.map(({ at }) => at),
+		cellsToRecheckCount: cells.length,
+	});
+	assert.deepEqual(evidence.nextCall, {
+		action: "observe",
+		params: { selector: "block@1", input: { at: cells[0]!.at } },
+	});
+	for (const { at } of cells) assert(await s.serverBlock(at, "air"));
+	console.log("FABRIC recovery evidence: no materials, zero verified, both cells remained air");
+}
 
 async function interruptConstruction(h: DevHarness) {
 	const s = await reset(h);
@@ -302,6 +334,14 @@ async function verifyRestart(mode: "resume" | "unknown" | "assets" | "save" | "w
 					assert(Date.now() < deadline, `task did not surface the recovery refusal: ${parked.reason}`);
 					await sleep(100);
 				}
+				if (mode === "unknown") {
+					const parked = await h.runtime.read(first.run);
+					assert(parked.phase === "awaiting_decision");
+					const evidence = await readConstructionEvidence(h, parked);
+					assert.equal(evidence.nextCall?.action, "tasks");
+					const effect = await h.runtime.readRecord(parked.unknownEffects[0]!, { format: "inline" });
+					assert(effect.kind === "inline" && effect.record.kind === "effect", JSON.stringify(effect));
+				}
 				const stopped = await h.runtime.stop({ requestId: "stop-recovery", target: { run: first.run } });
 				assert.equal(stopped.snapshot?.phase, "finished");
 				assert.equal(stopped.control, "stopped");
@@ -355,6 +395,7 @@ else {
 		assert(h.host.recoveryIdentity(), "Fabric save identity unavailable");
 		if (crashRoot) await interruptConstruction(h);
 		else if (process.argv[2] === "--spectator") await spectator(h);
+		else if (scenario === "--recovery-evidence") await verifyMissingMaterials(h);
 		else contentIds = await content(h);
 	} finally {
 		await h.close();

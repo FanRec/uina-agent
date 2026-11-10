@@ -9,7 +9,7 @@
  */
 
 import type { CallableDescriptor, QueryDescriptor } from "./capabilities.js";
-import type { JsonValue } from "./values.js";
+import type { ExactRef, JsonValue } from "./values.js";
 
 export interface AddonServerRequirement {
 	/** 环境类型：服务器插件、服务器 Mod，或两者皆可。 */
@@ -97,6 +97,8 @@ export interface DirectorySnapshot {
 	connection: "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 	/** 活动会话的 descriptor 快照（与 Runtime/World 使用同一份装配结果）。 */
 	descriptors: (QueryDescriptor | CallableDescriptor)[];
+	publishedPrograms: ExactRef[];
+	programSource: { source: string; digest: string } | null;
 	addons: AddonStatus[];
 	selection: { digest: string | null };
 }

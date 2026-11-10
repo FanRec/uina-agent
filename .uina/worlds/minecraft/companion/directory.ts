@@ -1,5 +1,5 @@
 /** Discovery projects descriptors and live Library metadata; it owns no file index. */
-import type { AddonStatus } from "../contracts/addons.js";
+import type { AddonStatus, DirectorySnapshot } from "../contracts/addons.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { RpcError } from "../executor/ipc.js";
@@ -9,6 +9,7 @@ export interface DescribeParams {
 	query?: string;
 	cursor?: string;
 	selector?: string;
+	includeSource?: boolean;
 	kind?: "capability" | "guide" | "addon" | LibraryKind;
 	name?: string;
 }
@@ -47,6 +48,7 @@ export async function describeDirectory(
 	library: LibraryPort,
 	params: DescribeParams,
 	addons: readonly AddonStatus[] = [],
+	publication?: Pick<DirectorySnapshot, "publishedPrograms" | "programSource">,
 ) {
 	const capability = (d: CallableDescriptor | QueryDescriptor) => ({
 		kind: "capability",
@@ -57,10 +59,20 @@ export async function describeDirectory(
 	const exact = params.selector ?? params.name;
 	if (exact !== undefined) {
 		const kind = params.kind ?? (exact.includes("@") ? "capability" : "program");
+		if (params.includeSource && kind !== "capability")
+			throw new RpcError("INVALID_INPUT", "use library.get to read a personal Program");
 		if (kind === "capability") {
 			const d = descriptors.find((d) => d.ref === exact);
 			if (!d) throw new RpcError("NOT_FOUND", `capability ${exact} not found`);
-			return capability(d);
+			const sourceAvailable = publication?.publishedPrograms.some((ref) => ref === exact) === true;
+			return {
+				...capability(d),
+				...(sourceAvailable || params.includeSource ? { sourceAvailable } : {}),
+				...(sourceAvailable && !params.includeSource
+					? { sourceCall: { action: "describe", params: { selector: exact, includeSource: true } } }
+					: {}),
+				...(params.includeSource && sourceAvailable ? { programSource: publication?.programSource } : {}),
+			};
 		}
 		if (kind === "addon") {
 			const status = addons.find((addon) => addon.id === exact);

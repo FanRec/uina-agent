@@ -501,8 +501,11 @@ export class MinecraftExecutor {
 	 * 活动会话的只读目录快照：descriptor / addon 状态 / 选择摘要。
 	 * 连接不健康时明确失败——宿主不得把过期目录当成当前可执行能力。
 	 */
-	async snapshot(): Promise<DirectorySnapshot> {
-		return (await this.current().peer.call("directory.snapshot", {})) as unknown as DirectorySnapshot;
+	async snapshot(sourceFor?: string): Promise<DirectorySnapshot> {
+		return (await this.current().peer.call(
+			"directory.snapshot",
+			sourceFor === undefined ? {} : { sourceFor },
+		)) as unknown as DirectorySnapshot;
 	}
 	async setOwnerGate(
 		gate: "disabled" | "emergency" | "owner_lost",

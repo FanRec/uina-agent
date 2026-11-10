@@ -1,4 +1,5 @@
 import type { Entry, RunSummary } from "./runtime.js";
+import type { JsonValue, ProgramCheckpoint, Vec3 } from "./values.js";
 
 export const taskHandle = (profileId: string, rootRequestId: string): string => `task:${profileId}:${rootRequestId}`;
 
@@ -69,5 +70,48 @@ export function taskView(task: string, snapshot: RunSummary, entry?: Entry) {
 		...(snapshot.phase === "waiting" ? { waiting: snapshot.waiting } : {}),
 		...(snapshot.phase === "awaiting_decision" ? { decision: snapshot.decision, reason: snapshot.reason } : {}),
 		...(snapshot.phase === "finished" ? { outcome: snapshot.outcome, error: snapshot.error } : {}),
+	};
+}
+
+export function constructionDecisionEvidence(
+	task: string,
+	snapshot: Pick<RunSummary, "unknownEffects">,
+	checkpoint?: ProgramCheckpoint | null,
+) {
+	const value = checkpoint?.value;
+	const state = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+	const verifiedAtCheckpoint =
+		typeof state.verified === "number" && Number.isInteger(state.verified) && state.verified >= 0
+			? state.verified
+			: undefined;
+	// These cells did not match at the last check, which may have been incomplete.
+	const cells = (Array.isArray(state.remaining) ? state.remaining : []).filter(
+		(at): at is Vec3 & JsonValue =>
+			at !== null &&
+			typeof at === "object" &&
+			!Array.isArray(at) &&
+			typeof at.x === "number" &&
+			Number.isInteger(at.x) &&
+			typeof at.y === "number" &&
+			Number.isInteger(at.y) &&
+			typeof at.z === "number" &&
+			Number.isInteger(at.z),
+	);
+	const [effect] = snapshot.unknownEffects ?? [];
+	const nextCall = effect
+		? { action: "tasks", params: { op: "trace", task, record: effect } }
+		: cells[0]
+			? { action: "observe", params: { selector: "block@1", input: { at: cells[0] } } }
+			: undefined;
+	return {
+		...(verifiedAtCheckpoint !== undefined || cells.length
+			? {
+					construction: {
+						verifiedAtCheckpoint,
+						...(cells.length ? { cellsToRecheck: cells.slice(0, 8), cellsToRecheckCount: cells.length } : {}),
+					},
+				}
+			: {}),
+		...(nextCall ? { nextCall } : {}),
 	};
 }

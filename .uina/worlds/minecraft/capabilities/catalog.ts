@@ -30,7 +30,7 @@ export type CapabilityInvoke = NativeCallable<JsonValue, JsonValue>["invoke"];
 export type CapabilityDefinition =
 	| { kind: "query"; descriptor: QueryDescriptor; bind(deps: CapabilityDeps): QueryReader | null }
 	| { kind: "action"; descriptor: CallableDescriptor; bind(deps: CapabilityDeps): CapabilityInvoke }
-	| { kind: "program"; descriptor: CallableDescriptor; source: string; recoveryCheck?: ExactRef };
+	| { kind: "program"; descriptor: CallableDescriptor; source: string; recoveryCheck?: ExactRef; publishSource?: true };
 
 export interface MinecraftCapabilityModule {
 	id: string;
@@ -150,6 +150,19 @@ export class CapabilityCatalog {
 	/** 静态目录：不依赖 deps、不触发 bind，无连接即可发现。 */
 	allDescriptors(): readonly (QueryDescriptor | CallableDescriptor)[] {
 		return this.descriptors;
+	}
+
+	publishedPrograms(): ExactRef[] {
+		return this.defs.flatMap((definition) =>
+			definition.kind === "program" && definition.publishSource ? [definition.descriptor.ref] : [],
+		);
+	}
+
+	publishedSource(selector: string): { source: string; digest: string } | null {
+		const definition = this.defs.find((candidate) => candidate.descriptor.ref === selector);
+		if (definition?.kind !== "program" || !definition.publishSource) return null;
+		const { source, digest } = parseProgramSource(definition.source, null);
+		return { source, digest };
 	}
 
 	/** 产生读写实现（仅 Companion 初始化调用；deps 为惰性注入，不做任何探测）。 */

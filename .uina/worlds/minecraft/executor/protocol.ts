@@ -146,11 +146,13 @@ const definitions = {
 	shutdown: { input: object({}), output: { type: "null" } },
 	// 只读目录快照：活动会话的 descriptor、addon 状态与选择摘要（纯 JSON，无函数/实例）。
 	"directory.snapshot": {
-		input: object({}),
+		input: object({ sourceFor: ref }, []),
 		output: shaped({
 			launch: ref,
 			connection: { enum: ["connecting", "syncing", "ready", "disconnected", "faulted"] },
 			descriptors: { type: "array", items: { type: "object" } },
+			publishedPrograms: { type: "array", items: ref },
+			programSource: { anyOf: [{ type: "null" }, object({ source: { type: "string" }, digest: ref })] },
 			addons: { type: "array", items: addonStatus },
 			selection: shaped({ digest: { type: ["string", "null"] } }),
 		}),

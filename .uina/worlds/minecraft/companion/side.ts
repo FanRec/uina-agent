@@ -425,10 +425,12 @@ export async function openExecutionSide(
 			retirement,
 		});
 		/** 目录快照：唯一真值来自本次装配（Runtime/World/describe 共用同一份 descriptor）。 */
-		const directorySnapshot = (): DirectorySnapshot => ({
+		const directorySnapshot = (sourceFor?: string): DirectorySnapshot => ({
 			launch: init.launch,
 			connection: host.state,
 			descriptors: [...catalog.allDescriptors()],
+			publishedPrograms: catalog.publishedPrograms(),
+			programSource: sourceFor === undefined ? null : catalog.publishedSource(sourceFor),
 			addons: addons.statuses,
 			selection: { digest: init.addons?.digest ?? null },
 		});
@@ -480,7 +482,7 @@ export async function openExecutionSide(
 					break;
 				// 只读目录快照：活动会话的 descriptor / addon 状态 / 选择摘要，纯 JSON。
 				case "directory.snapshot":
-					value = directorySnapshot();
+					value = directorySnapshot(p.sourceFor as string | undefined);
 					break;
 				case "shutdown":
 					await close();

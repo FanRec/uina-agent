@@ -130,7 +130,8 @@ parentPort!.on("message", (request: LedgerRequest) => {
 				value = db
 					.prepare(`SELECT request_id AS id, json_extract(credential, '$.request.entry') AS entry
 					FROM requests WHERE request_id IN (SELECT value FROM json_each(?))
-					AND json_extract(credential, '$.operation') = 'submit'`)
+					AND json_extract(credential, '$.operation') = 'submit'
+					AND json_type(credential, '$.request.entry') = 'object'`)
 					.all(JSON.stringify(request.ids))
 					.map(({ id, entry }) => [id, JSON.parse(String(entry))]);
 			} else if (request.op === "request_list") {

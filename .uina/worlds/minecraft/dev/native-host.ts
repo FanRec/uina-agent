@@ -246,6 +246,9 @@ try {
 
 async function runScenarios() {
 	const observe = (selector: string, input: JsonValue = {}) => direct("observe", { selector, input });
+	const offlineSource = programMode
+		? await direct("describe", { selector: "collect@1", includeSource: true })
+		: undefined;
 	// 批25：World 不再自动入服——经 session 工具显式连接（settings 种子来自旧 config.json）。
 	await step("session connect", async () => {
 		const reply = (await direct("session", { op: "connect", target: { server: "default" } })) as {
@@ -672,20 +675,31 @@ async function runScenarios() {
 				"MISSING_MATERIAL",
 			);
 		});
-		await step("copy the published collect Call and change its search policy through Library", async () => {
+		await step("copy collect from the directory and verify its policy through Library", async () => {
 			const trace = await direct("tasks", { op: "trace", task: collectTask });
-			const call = (trace.calls as { items: { ref: string; run: string; segment: string; call: string }[] }).items.find(
+			const call = (trace.calls as { items: { ref: string; record: string }[] }).items.find(
 				({ ref }) => ref === "collect@1",
 			);
 			assert(call);
+			const summary = await direct("describe", { selector: "collect@1" });
+			assert.equal(summary.sourceAvailable, true);
+			assert.equal(summary.programSource, undefined);
+			const published = (await direct("describe", { selector: "collect@1", includeSource: true })).programSource as {
+				source: string;
+				digest: string;
+			};
+			assert.deepEqual(published, offlineSource?.programSource);
+			const callEvidence = await direct("tasks", { op: "trace", task: collectTask, record: call.record });
+			assert.equal(published.digest, (callEvidence.record as { value: { digest: string } }).value.digest);
 			const name = "collect_copy";
 			await direct("library", {
 				op: "save",
 				name,
 				summary: "Editable copy of the published collect Program",
-				from: { run: call.run, segment: call.segment, call: call.call },
+				source: published.source,
 			});
 			const saved = await direct("library", { op: "get", name });
+			assert((saved.source as string).trimEnd().endsWith(published.source.trimEnd()));
 			assert.match(saved.source as string, /radius = 32/);
 			await command("/fill 16002 200 16000 16002 204 16000 minecraft:air");
 			await command("/tp UinaDev 16000.5 200 16000.5");
@@ -694,6 +708,9 @@ async function runScenarios() {
 			const block = async () =>
 				((await observe("block@1", { at })).value as { block: { name: string } | null }).block?.name;
 			await until(block, (name) => name === "oak_log");
+			const count = async () =>
+				((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_log ?? 0;
+			const before = await count();
 			for (const radius of [4, 8]) {
 				const copy = await direct("library", { op: "get", name });
 				await direct("library", {
@@ -709,6 +726,7 @@ async function runScenarios() {
 				} else {
 					succeeded(result);
 					assert.equal(await block(), "air");
+					assert.equal(await count(), before + 1);
 				}
 			}
 		});

@@ -418,8 +418,8 @@ test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest �
 		await until(() => events.length === 1);
 		expect(events[0]!.type).toBe("minecraft_event");
 		expect(JSON.parse(events[0]!.text!).nextCall).toEqual({
-			action: "runs",
-			params: { op: "record", ref: "ev:n:2" },
+			action: "observe",
+			params: { selector: "events@1" },
 		});
 		// 世界状态不再作为独立消息上行：只可能是事实事件（历史可查的那几种）。
 		send("ev:n:3", { kind: "digest", self: { dimension: "overworld" } });

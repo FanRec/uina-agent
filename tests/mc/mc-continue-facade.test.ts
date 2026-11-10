@@ -88,7 +88,7 @@ function fixture() {
 			retire: async () => ({ kind: "retired" }),
 		},
 	});
-	return { executor, facade, credentials, submissions, continuations, found, attempts, stops, accept };
+	return { executor, facade, credentials, submissions, continuations, found, attempts, stops, accept, snapshot };
 }
 const continuation = {
 	op: "continue",
@@ -97,6 +97,58 @@ const continuation = {
 	entry: { code: "async function main(mc){return mc.checkpoint;}" },
 	environment: "inherit",
 };
+
+test.each([false, true])("construction decisions give read-only evidence (unconfirmed write: %s)", async (unknown) => {
+	const f = fixture();
+	const at = { x: 10, y: 100, z: 8 };
+	const task = "task:local:root";
+	const reason = unknown ? "the old segment has unconfirmed writes" : "Construction has unsatisfied target cells";
+	const snapshot = {
+		...f.snapshot,
+		reason,
+		completionRef: "completion:one",
+		unknownEffects: unknown ? ["effect:one"] : [],
+		unknownEffectCount: unknown ? 1 : 0,
+	};
+	f.credentials.set("root", {
+		operation: "submit",
+		requestId: "root",
+		activation: "launch",
+		createdAt: "now",
+		request: {
+			requestId: "root",
+			entry: { kind: "call", selector: "build.resume@1", input: { cells: [{ at, block: "oak_log" }] } },
+			schedule: { kind: "enqueue" },
+		},
+	});
+	Object.assign(f.executor, {
+		lookup: async () => ({ kind: "found", snapshot }),
+		rpc: async () => ({ delivery: { completionRef: snapshot.completionRef, recordBytes: 500 } }),
+		readRecord: async () => ({
+			kind: "inline",
+			record: {
+				kind: "completion",
+				value: {
+					reportKind: "decision",
+					snapshot: { ...snapshot, checkpoint: { kind: "program", value: { verified: 0, remaining: [at] } } },
+				},
+			},
+		}),
+	});
+	const reply = await f.facade.execute("tasks", { op: "get", task }, new AbortController().signal);
+	expect(reply.status).toBe("succeeded");
+	expect(reply.details).toMatchObject({
+		task,
+		phase: "needs_input",
+		reason,
+		unknownEffectCount: unknown ? 1 : 0,
+		construction: { verifiedAtCheckpoint: 0, cellsToRecheck: [at], cellsToRecheckCount: 1 },
+		nextCall: unknown
+			? { action: "tasks", params: { op: "trace", task, record: "effect:one" } }
+			: { action: "observe", params: { selector: "block@1", input: { at } } },
+	});
+	expect(f.continuations).toEqual([]);
+});
 
 test("continue saves its operation and exact request before dispatch", async () => {
 	const f = fixture();

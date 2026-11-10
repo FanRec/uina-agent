@@ -48,7 +48,7 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
 		oneOf: [
 			object({ cursor: text }, []),
 			object({ query: { type: "string" }, cursor: text }, ["query"]),
-			object({ selector: text }),
+			object({ selector: text, includeSource: { type: "boolean" } }, ["selector"]),
 			object({ kind: { enum: ["capability", "guide", "addon", "program", "blueprint", "experience"] }, name: text }),
 		],
 	},

@@ -328,6 +328,7 @@ export const buildModule: MinecraftCapabilityModule = {
 		{
 			kind: "program",
 			recoveryCheck: BUILD_PLAN_REF,
+			publishSource: true,
 			source: buildResumeProgram,
 			descriptor: {
 				ref: "build.resume@1",
