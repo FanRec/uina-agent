@@ -13,6 +13,8 @@
 - `tasks.trace {task}` 按需展开当前执行摘要和调用页。可传该摘要里的 `record` 或 `completionRef` 读取当前任务的完整记录。程序源码另经 Library 读取和保存。
 - `minecraft_completion` 的用户正文使用相同任务句柄及修订，旧通知以 `tasks.get` 的当前状态为准。完成只按能力声明和世界证据解释，Program 普通返回仅证明脚本运行结束。
 - 用户调度仍用 `run.schedule`。其中 `replace_pending.targets` 和 `preempt_current.expectedRun` 接收 Task 句柄。内部 Runtime 与 IPC 保持原有 Run 合同。
+- 版本化能力以 Catalog 冻结的合同与实现为准。`collect@1` 的成功要求本次库存净增达到目标，`build.resume@1` 的成功要求显式放置目标逐格复读满足。个人 Program 仍用裸名解析，其成功表示脚本结束。
+- `build.resume@1` 只接受显式目标格。它把检查点持久提交到当前 Segment。同一存档与维度、固定源码与合同、固定 Addon 装配和已退休的旧 Writer 是自动续段的条件。无法归因的 Effect 保留为未知，任务停在 `needs_input`。
 
 本文后续章节的 `Run`、`Acceptance` 与 `runs` 描述内部执行、记录及开发诊断口径。正式工具 schema 只暴露上述用户入口。
 

@@ -103,6 +103,10 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 ## Minecraft World
 
+V2 当前目录有 18 个查询和 37 个动作。54 个既有 selector 各有唯一绑定，新动作 `build.resume@1` 用于可恢复的小型施工。`describe`、顶层 `run` 与 `mc.call` 共用 Catalog。用户通过 `tasks` 查询、停止、续段及查证，开发验收通过 Executor 读内部记录。采集策略由发布的 `collect@1` Program 承载，移动、挖掘、拾取和窗口事务由 Native 完成。
+
+`build.resume@1` 冻结显式目标格、存档身份、维度、源码和 Addon 装配摘要。符合恢复资格的任务重连后通过既有认领事务创建新 Segment。无法确认的写入保留在 Effect 记录中，现场读数作为续段决策的证据。Fabric 支持范围以验收中的注册表和 SpectatorPlus 组合为准。 [V2 验收记录](proposals/mc/archive/world-refactor-v2.md)
+
 当前 MC 在 `.uina/worlds/minecraft/`，实现 I1 原生闭环、K1 基础能力、采集、窗口容器与合成/熔炼，共 **10 查询 + 15 动作（25 项）**；以实际目录装配为准，此前 12 查询的记载有误。连接级 DriverProtocol 当前实现 Java 1.21.11；未来版本沿同一窄端口接入，未支持版本的相关操作明确失败。玩家库存与容器共用 mode-0 的服务端槽位/光标确认，装备、移槽、丢弃不进入上游异步预测写入链；ItemValue 与选择器保留有效组件、堆叠上限和剩余耐久。采矿只认实际服务端方块更新，Runtime 保留直接/嵌套未知效果；查询先执行统一 schema 校验。World 沿既有 SQLite 证据链保留最后容器观察，历史不代表当前库存。
 
 实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`、`dev:mc:k3`、`dev:mc:production-repair`。`dev:mc:repair` 与 `dev:mc:production-repair` 默认使用独立 Temp 数据根；前者覆盖工具/物品实例选择、取消、导航与历史重开，后者覆盖满背包制作、组件匹配、弱燃料分批、等待期间并发身体动作及取消后取货。

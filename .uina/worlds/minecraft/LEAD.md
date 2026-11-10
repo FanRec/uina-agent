@@ -1,10 +1,10 @@
 # Minecraft 实现入口
 
-当前正式工具使用 `tasks` 查证、停止和续段，内部 Run 和开发诊断保留。用 `pnpm dev:mc:tasks` 验证 Host/Paper 用户链路，`pnpm dev:mc:tasks --model` 验证真实模型。用隔离 Paper 跑 `pnpm dev:mc:refactor-bench 10` 对照采集与施工，也可选择 `--faults`、`--disconnect-native`、`--disconnect-program`。这些脚本会修改测试地图和测试玩家背包。
+公开工具以 `tasks.get/list/stop/continue/trace` 查证和控制任务。Catalog 为 54 个既有 selector 和新增 `build.resume@1` 分别装配一个绑定。`collect@1` 由发布的 Program 实现，`build@1` 仍负责通用原生施工。`build.resume@1` 在带已核验存档身份的连接上恢复明确坐标格的施工。
 
-本轮隔离 Paper 1.21.11 对照各 10 轮，均由服务端确认从 0 到 16 个原木。Native 的中位数和 P90 为 29.70 秒和 33.32 秒，Program 为 22.20 秒和 23.66 秒。Program 通过耗时预算，但满包、缺工具与不可达时进入待决策，Native 以已有错误合同结算。地上已有掉落物时，Program 先拾取并保留原木格，Native 按当前采集策略挖除该格。断线探针中两边各发出一次完成挖掘的包，任务因中断失败，记录均保留一条未确认 Effect。由于行为不等价，`collect@1` 仍唯一绑定 Native，Guide 的脚本作为可复制的公开 Program。
+用隔离 Paper 跑 `pnpm dev:mc:tasks`、`pnpm dev:mc:tasks --model` 和 `pnpm dev:mc:refactor-bench 10`。后者也支持 `--faults`、`--partial` 和 `--disconnect`。用 `pnpm dev:mc:fabric` 及其场景选项验收 Fabric。场景会修改测试存档和测试玩家库存。 [V2 验收记录](../../../docs/proposals/mc/archive/world-refactor-v2.md)
 
-本轮验证通过 `pnpm typecheck`、`pnpm build`、源码与构建产物的 Task 场景、真实模型的发现与停止场景，以及 Program、空间、建造和工作站真服回归。全量测试 3622 通过、1 项预期失败、2 项失败。两处失败均涉及本机 Windows 目录联接访问，Library 的 `realpath` 返回 UNKNOWN，Executor 目录别名打开返回 Windows 448。独立临时目录联接可复现 `realpath` UNKNOWN。
+历史批次记录
 
 更新时间：2026-11-08。基线 `codex/phase0-baseline`。批 0–19 已实现，**能力面 18 查询 + 36 动作 = 54/54 全部落地**（批19 关闭 G21 并接 `transit@1`）；批20（2026-11-03）关闭横向缺口 G6（节流 digest 推送，`world/digest.ts`，独立事件类型 `minecraft_digest` + 忙时只保最新）与 G7（`inventory@1 {since}` 增量游标，协议槽位变更标记）。**批41 已移除 `run {wait}` 短窗与旧同步等待**：顶层 `run/chat/runs.continue` 只回受理，完成由 `minecraft_completion` 独立投递，`runs.wait` 仅作状态查询。
 

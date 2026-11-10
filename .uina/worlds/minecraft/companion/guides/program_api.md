@@ -4,6 +4,8 @@ Program 是普通 JavaScript：`async function main(mc, input) { ... }`。不能
 一个明确目标能由单个 Capability 完成时直接调那个能力；只有需要循环、条件判断、跨阶段持续观察时才写 Program。
 能力/程序/蓝图的确切入参、completion 与示例用 `describe {selector:'collect@1'}` 或 `describe {query:'...'}` 查，本文件不复制 schema。
 
+版本化 selector 始终从同一份能力目录解析。`collect@1` 是发布的 Program，仍以实际入包增量为完成判据。个人 Library 程序用裸名调用，成功表示脚本返回。发布的可恢复施工能力 `build.resume@1` 可以用 `mc.saveCheckpoint(state)` 等待进度提交落盘，续段仍会重新读取现场。
+
 ## 五个事实
 
 1. `mc.call(selector, input)` **直接返回该动作的业务结果**，不是 `{value:...}` 包装。例如 `collect@1` 返回 `{mined, acquired, collected, remaining, toolsUsed}`。

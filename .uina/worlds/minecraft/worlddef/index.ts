@@ -7,7 +7,8 @@ import { builtinDescriptors } from "../capabilities/index.js";
 import { describeDirectory } from "../companion/directory.js";
 import type { CallableDescriptor, QueryDescriptor } from "../contracts/capabilities.js";
 import type { LibraryKind, ProgramOrigin } from "../contracts/library.js";
-import type { ExecutorPolicy } from "../executor/index.js";
+import { submitsTask } from "../contracts/task.js";
+import type { ExecutorPolicy, MinecraftExecutor } from "../executor/index.js";
 import { RpcError } from "../executor/ipc.js";
 import { createLibrary, type FileLibrary } from "../library/index.js";
 import { readCallSource } from "../library/origin.js";
@@ -16,15 +17,15 @@ import { createProgramValidator, type ProgramValidator } from "../program/valida
 import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { SessionController, sessionResponse } from "./session-controller.js";
-import { actionSchemas, diagnosticSchemas, nativeGuide } from "./schema.js";
+import { actionSchemas, nativeGuide } from "./schema.js";
 import { MC_PROTOCOL_VERSION } from "./session-identity.js";
 
 export function createMinecraftWorld(
 	options: {
 		executorPolicy?: Partial<ExecutorPolicy>;
 		deliveryPolicy?: { pollMs?: number };
-		/** Only the isolated development fixtures expose raw run diagnostics. */
-		diagnostics?: boolean;
+		/** Trusted integration fixtures can use the active Executor diagnostic port. */
+		onExecutorAccess?: (get: () => MinecraftExecutor | null) => void;
 		/** 旧 config.json 路径（迁移与 settings 种子输入）；默认世界包内 config.json。 */
 		legacyConfigPath?: string;
 	} = {},
@@ -61,8 +62,15 @@ export function createMinecraftWorld(
 	const invalidInput = (message: string): RpcError => new RpcError("INVALID_INPUT", message);
 	const ok = (value: unknown): ToolExecutionResult => sessionResponse(value);
 	/** activation 关闭后（onStop 与下一次 onStart 之间）任何动作都只是世界未启用，不冒充会话语义。 */
-	const disabled = (): ToolExecutionResult =>
-		sessionResponse({ code: "WORLD_DISABLED", message: "Minecraft activation is not running" }, "not_started");
+	const disabled = (submission = false): ToolExecutionResult =>
+		sessionResponse(
+			{
+				...(submission ? { kind: "rejected" } : {}),
+				code: "WORLD_DISABLED",
+				message: "Minecraft activation is not running",
+			},
+			"not_started",
+		);
 
 	/** save.from 的来源核验：活动会话走 Runtime RPC + Profile 根的固定快照；离线明确失败。 */
 	const readSource = async (origin: ProgramOrigin) => {
@@ -104,7 +112,7 @@ export function createMinecraftWorld(
 		params: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<ToolExecutionResult> => {
-		if (!controller && name !== "session") return disabled();
+		if (!controller && name !== "session") return disabled(submitsTask(name, params));
 		switch (name) {
 			case "session": {
 				switch (params.op) {
@@ -157,7 +165,7 @@ export function createMinecraftWorld(
 			case "library":
 				return await libraryAction(params);
 			default:
-				// observe/run/chat/runs 只作用于当前会话；无连接或切换中 NOT_CONNECTED。
+				// observe/run/chat/tasks 只作用于当前会话；无连接或切换中 NOT_CONNECTED。
 				return await controller!.execute(name, params, signal);
 		}
 	};
@@ -186,29 +194,27 @@ export function createMinecraftWorld(
 		 */
 		environmentGuide: () => (controller?.session ? environmentText : null),
 		actions: Object.fromEntries(
-			Object.entries(options.diagnostics ? { ...actionSchemas, ...diagnosticSchemas } : actionSchemas).map(
-				([name, parameters]) => [
-					name,
-					{
-						description:
-							name === "run"
-								? "Run an exact capability, named program or JavaScript code; accepted may continue in background"
-								: name,
-						parameters,
-						run: async (params: Record<string, unknown>, ctx: { signal: AbortSignal }) => {
-							try {
-								return await route(name, params, ctx.signal);
-							} catch (error) {
-								const e = error as { code?: string; message?: string };
-								return sessionResponse(
-									{ code: e.code ?? "INTERNAL", message: e.message ?? String(error) },
-									e.code === "REQUEST_CANCELLED" ? "cancelled" : "failed",
-								);
-							}
-						},
+			Object.entries(actionSchemas).map(([name, parameters]) => [
+				name,
+				{
+					description:
+						name === "run"
+							? "Run an exact capability, named program or JavaScript code; accepted may continue in background"
+							: name,
+					parameters,
+					run: async (params: Record<string, unknown>, ctx: { signal: AbortSignal }) => {
+						try {
+							return await route(name, params, ctx.signal);
+						} catch (error) {
+							const e = error as { code?: string; message?: string };
+							return sessionResponse(
+								{ code: e.code ?? "INTERNAL", message: e.message ?? String(error) },
+								e.code === "REQUEST_CANCELLED" ? "cancelled" : "failed",
+							);
+						}
 					},
-				],
-			),
+				},
+			]),
 		),
 		async onStart(ctx) {
 			if (controller) throw new Error("Minecraft activation already running");
@@ -257,9 +263,9 @@ export function createMinecraftWorld(
 					expose: ctx.expose,
 					executorPolicy: options.executorPolicy,
 					deliveryPolicy: options.deliveryPolicy,
-					diagnostics: options.diagnostics,
 					legacyConfig,
 				});
+				options.onExecutorAccess?.(() => controller?.session?.executor ?? null);
 			} catch (error) {
 				await close();
 				throw error;

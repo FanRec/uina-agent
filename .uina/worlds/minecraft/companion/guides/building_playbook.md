@@ -33,6 +33,8 @@ async function main(mc, input) {
 
 ## 可复制小型施工 Program
 
+需要在执行进程重启后续建时，可用 `build.resume@1` 提交少量显式绝对坐标格。它在支持存档身份的服务器上保存已确认进度，重新连接原 Profile 后读取现场再补剩余格。存档、维度、源码、合同和 Addon 资产版本须匹配。存在无法归因的写入时任务进入 `needs_input`，用 `tasks.trace` 查证并用 `tasks.stop` 停止。
+
 传入 input.cells（与 build.plan@1 的 cells 同形）。示例只放置当前站位能触及的格子，保留其他方块，施工后重新核验显式的方块属性。
 
 ```js

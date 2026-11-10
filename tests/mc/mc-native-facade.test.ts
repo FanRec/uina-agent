@@ -71,6 +71,15 @@ try {
  const task=await facade.execute('tasks',{op:'get',task:reply.task},signal);assert.equal(task.status,'succeeded');assert.equal(task.details.task,reply.task);
  const unknownCapability=await facade.execute('run',{selector:'no-such@1',input:{}},signal);assert.equal(unknownCapability.status,'failed');assert.equal(unknownCapability.continuation,undefined);
  const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');assert.equal(code.continuation,'yield');
+ const codeTask=JSON.parse(code.result).task;
+ const trace=await facade.execute('tasks',{op:'trace',task:codeTask},signal);
+ assert.equal(trace.status,'succeeded');
+ const call=trace.details.calls.items[0];
+ const sameTask=await facade.execute('tasks',{op:'trace',task:codeTask,record:call.record},signal);
+ assert.equal(sameTask.status,'succeeded');
+ const anotherTask=await facade.execute('tasks',{op:'trace',task:reply.task,record:call.record},signal);
+ assert.equal(anotherTask.status,'failed');
+ const retiredAction=await facade.execute('runs',{op:'status'},signal);assert.equal(retiredAction.status,'failed');
  const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,2);
  await facade.close();await executor.close();
  executor=await MinecraftExecutor.open({ownershipDir: root, sessionDataDir: root, sharedDataDir: root,config:{connection:{host:'127.0.0.1',port:1,username:'FacadeTest',authMode:'offline',version:'1.21.11'},binding:null},policy:{autoRecover:false,closeGraceMs:3000}});

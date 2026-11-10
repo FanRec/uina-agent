@@ -71,29 +71,6 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
 	},
 };
 
-export const diagnosticSchemas = {
-	runs: {
-		oneOf: [
-			op("status", { run: text }, []),
-			op("list", { activeOnly: { type: "boolean" }, cursor: text }, []),
-			op(
-				"wait",
-				{ run: text, afterRevision: { type: "integer", minimum: 0 }, timeoutMs: { type: "number", minimum: 0 } },
-				["run"],
-			),
-			op("record", { ref: text, format: { enum: ["auto", "inline", "file"] } }, ["ref"]),
-			op("calls", { run: text, parent: text, cursor: text }, ["run"]),
-			op("stop", { run: text }),
-			op("stop", { request: text }),
-			op("continue", { run: text, decision: text, entry: entry(), environment: { enum: ["inherit", "current"] } }, [
-				"run",
-				"decision",
-				"entry",
-			]),
-		],
-	},
-};
-
 /**
  * 工具 description 只负责"入口在哪、什么时候用"，不再承载 API 长文。
  *

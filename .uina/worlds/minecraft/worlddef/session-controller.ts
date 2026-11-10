@@ -11,6 +11,7 @@ import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { resolveAddonPlan } from "../addons/plan.js";
 import type { AssemblyPlan } from "../contracts/addons.js";
 import type { ExecutorCloseResult } from "../contracts/executor.js";
+import { submitsTask } from "../contracts/task.js";
 import { MinecraftFacade } from "../executor/facade.js";
 import { MinecraftExecutor, type ExecutorPolicy } from "../executor/index.js";
 import { RpcError } from "../executor/ipc.js";
@@ -81,7 +82,6 @@ export interface SessionControllerOptions {
 	expose: NonNullable<ServiceCompanionContext["expose"]>;
 	executorPolicy?: Partial<ExecutorPolicy>;
 	deliveryPolicy?: { pollMs?: number };
-	diagnostics?: boolean;
 	/** 旧布局迁移读取的世界包 config.json；可缺席。 */
 	legacyConfig?: unknown;
 	connectTimeoutMs?: number;
@@ -91,9 +91,10 @@ function response(value: unknown, status: ToolExecutionResult["status"] = "succe
 	return { status, result: JSON.stringify(value), details: value };
 }
 
-function notConnected(action: string): ToolExecutionResult {
+function notConnected(action: string, params: Record<string, unknown>): ToolExecutionResult {
 	return response(
 		{
+			...(submitsTask(action, params) ? { kind: "rejected" } : {}),
 			code: "NOT_CONNECTED",
 			message: `Minecraft action ${action} needs an active session; use session {op:"connect"} first`,
 			nextCall: { action: "session", params: { op: "status" } },
@@ -255,7 +256,7 @@ export class SessionController {
 
 	/** 游戏动作只作用于当前会话；无活动会话或管理切换中一律 NOT_CONNECTED。 */
 	async execute(action: string, params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
-		if (!this.active || this.transition) return notConnected(action);
+		if (!this.active || this.transition) return notConnected(action, params);
 		return await this.active.facade.execute(action, params, signal);
 	}
 
@@ -392,7 +393,6 @@ export class SessionController {
 			const facade = new MinecraftFacade(candidate, this.options.ctx, {
 				...this.options.deliveryPolicy,
 				profileId: profile,
-				diagnostics: this.options.diagnostics,
 			});
 			const body = createBodyEndpoint(candidate, `minecraft:${visitId}`);
 			const detachBody = this.options.expose(`${BODY_ENDPOINT_EXPOSED_PREFIX}${body.bodyId}`, body);

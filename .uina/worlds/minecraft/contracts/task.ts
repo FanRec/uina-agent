@@ -2,6 +2,10 @@ import type { RunSummary } from "./runtime.js";
 
 export const taskHandle = (profileId: string, rootRequestId: string): string => `task:${profileId}:${rootRequestId}`;
 
+export function submitsTask(action: string, params: Record<string, unknown>): boolean {
+	return action === "run" || action === "chat" || (action === "tasks" && params.op === "continue");
+}
+
 export function taskView(task: string, snapshot: RunSummary) {
 	return {
 		task,

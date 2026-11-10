@@ -7,7 +7,7 @@ import type { JsonValue } from "../contracts/values.js";
 import { DeliveryPump } from "./delivery.js";
 import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
-import { taskHandle, taskView } from "../contracts/task.js";
+import { submitsTask, taskHandle, taskView } from "../contracts/task.js";
 import type { RequestIntent } from "./ledger-worker.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
@@ -44,7 +44,7 @@ export class MinecraftFacade {
 	constructor(
 		readonly executor: MinecraftExecutor,
 		private readonly ctx: ServiceCompanionContext,
-		private readonly policy: { pollMs?: number; profileId?: string; diagnostics?: boolean } = {},
+		private readonly policy: { pollMs?: number; profileId?: string } = {},
 	) {
 		this.delivery = new DeliveryPump(executor, ctx, policy.pollMs, policy.profileId);
 	}
@@ -59,10 +59,17 @@ export class MinecraftFacade {
 		await this.delivery.close();
 	}
 	async execute(action: string, params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+		const submission = submitsTask(action, params) ? { kind: "rejected" } : {};
 		if (this.closing || this.ctx.signal.aborted)
-			return response({ code: "WORLD_DISABLED", message: "Minecraft activation is closing" }, "not_started");
+			return response(
+				{ ...submission, code: "WORLD_DISABLED", message: "Minecraft activation is closing" },
+				"not_started",
+			);
 		if (signal.aborted)
-			return response({ code: "REQUEST_CANCELLED", message: "query cancelled before dispatch" }, "not_started");
+			return response(
+				{ ...submission, code: "REQUEST_CANCELLED", message: "query cancelled before dispatch" },
+				"not_started",
+			);
 		try {
 			switch (action) {
 				case "observe":
@@ -76,27 +83,20 @@ export class MinecraftFacade {
 					return await this.run(params, signal);
 				case "tasks":
 					return await this.tasks(params, signal);
-				case "runs":
-					if (this.policy.diagnostics) return await this.runs(params, signal);
-					throw new RpcError("INVALID_INPUT", "use tasks to manage Minecraft tasks");
 				default:
 					throw new RpcError("INVALID_INPUT", `unknown Minecraft action ${action}`);
 			}
 		} catch (error) {
 			const e = error as { code?: string; message?: string; dispatch?: string };
-			const submitting = action === "run" || action === "chat" || (action === "tasks" && params.op === "continue");
 			return response(
 				{
-					...(submitting ? { kind: "rejected" } : {}),
+					...submission,
 					code: e.code ?? "INTERNAL",
 					message: e.message ?? String(error),
-					...(this.policy.diagnostics && e.code === "RECORD_TOO_LARGE"
-						? { nextCall: { action: "runs", params: { op: "record", ref: params.ref, format: "file" } } }
-						: {}),
 				},
 				e.code === "REQUEST_CANCELLED"
 					? "cancelled"
-					: (action === "tasks" || action === "runs") && params.op === "stop" && e.dispatch === "unknown"
+					: action === "tasks" && params.op === "stop" && e.dispatch === "unknown"
 						? "unknown"
 						: "failed",
 			);
@@ -237,7 +237,6 @@ export class MinecraftFacade {
 			...response({
 				kind: "accepted",
 				task,
-				...(this.policy.diagnostics ? { requestId, run: accepted.snapshot.run, segment: accepted.segment } : {}),
 			}),
 			continuation: "yield",
 		};
@@ -273,7 +272,6 @@ export class MinecraftFacade {
 	}
 
 	private async taskRun(task: string): Promise<string> {
-		if (this.policy.diagnostics && !task.startsWith("task:")) return task;
 		const found = await this.executor.lookup(this.taskRequest(task));
 		if (found.kind !== "found") throw new RpcError("TASK_UNAVAILABLE", "this task has no readable execution");
 		return found.snapshot.run;
@@ -397,9 +395,17 @@ export class MinecraftFacade {
 		if (p.op === "trace") {
 			const { snapshot } = found;
 			if (p.record) {
-				if (p.record !== snapshot.record && !("completionRef" in snapshot && p.record === snapshot.completionRef))
-					throw new RpcError("INVALID_INPUT", "record must be the current task record or report");
-				return response(await this.executor.readRecord(p.record as string, { format: "inline" }));
+				const current =
+					p.record === snapshot.record || ("completionRef" in snapshot && p.record === snapshot.completionRef);
+				const record = await this.executor.readRecord(p.record as string, { format: "inline" });
+				if (current) return response(record);
+				if (
+					record.kind === "inline" &&
+					record.record.kind === "call" &&
+					(record.record.value as { run?: string } | null)?.run === snapshot.run
+				)
+					return response(record);
+				throw new RpcError("INVALID_INPUT", "record must be a Call or current report for this task");
 			}
 			const calls = await this.executor.rpc(
 				"runtime.calls",
@@ -435,84 +441,5 @@ export class MinecraftFacade {
 			);
 		}
 		throw new RpcError("INVALID_INPUT", "unknown tasks operation");
-	}
-
-	/**
-	 * `runs.status`（无 run）的模型出口：内部 status 带最多 64KB 执行侧日志尾，
-	 * 只有排障时才需要。ready 且无 fault 时省略 tail；否则只给末 2000 字符。
-	 */
-	private async platformStatus(): Promise<Record<string, unknown>> {
-		const status = this.executor.status();
-		const full = status.phase === "ready" ? await this.executor.inspect() : status;
-		const { tail, ...diagnostics } = full.diagnostics;
-		const delivery = this.delivery.diagnostics();
-		return {
-			...full,
-			diagnostics:
-				full.phase === "ready" && full.fault == null ? diagnostics : { ...diagnostics, tail: tail.slice(-2000) },
-			delivery: { pendingCount: delivery.pendingCount, error: delivery.error },
-		};
-	}
-	private async runs(p: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
-		switch (p.op) {
-			case "status":
-				return response(p.run ? await this.executor.read(p.run as string) : await this.platformStatus());
-			case "list":
-				return response(
-					await this.executor.rpc(
-						"runtime.list",
-						{ activeOnly: p.activeOnly ?? true, ...(p.cursor ? { cursor: p.cursor } : {}) },
-						signal,
-					),
-				);
-			case "calls":
-				return response(
-					await this.executor.rpc(
-						"runtime.calls",
-						{ run: p.run, ...(p.parent ? { parent: p.parent } : {}), ...(p.cursor ? { cursor: p.cursor } : {}) },
-						signal,
-					),
-				);
-			case "record":
-				return response(
-					await this.executor.readRecord(p.ref as string, {
-						...(p.format ? { format: p.format as "auto" | "inline" | "file" } : {}),
-					}),
-				);
-			case "wait":
-				return response(
-					await this.executor.wait(
-						p.run as string,
-						{
-							...(p.afterRevision === undefined ? {} : { afterRevision: p.afterRevision as number }),
-							...(p.timeoutMs === undefined ? {} : { timeoutMs: p.timeoutMs as number }),
-						},
-						signal,
-					),
-				);
-			case "stop": {
-				const receipt = await this.executor.stop({
-					requestId: randomUUID(),
-					target: p.run ? { run: p.run as string } : { request: p.request as string },
-				});
-				return response(receipt, receipt.intent === "unknown" ? "unknown" : "succeeded");
-			}
-			case "continue":
-				return this.submitRequest(
-					{
-						operation: "continue",
-						request: {
-							requestId: randomUUID(),
-							run: p.run as string,
-							decision: p.decision as string,
-							entry: this.entry(p.entry as Record<string, unknown>),
-							...(p.environment === undefined ? {} : { environment: p.environment as "inherit" | "current" }),
-						},
-					},
-					signal,
-				);
-			default:
-				throw new RpcError("INVALID_INPUT", `unknown runs operation ${p.op}`);
-		}
 	}
 }

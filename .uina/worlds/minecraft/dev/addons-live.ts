@@ -23,6 +23,7 @@ import { createMinecraftWorld } from "../worlddef/index.js";
 import type { SessionStatus } from "../worlddef/session-controller.js";
 import type { ServiceCompanionContext, WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
+import { executionProbe } from "./execution-probe.js";
 import type { HostDeliveryPort } from "../../../../src/core/types.js";
 
 const PORT = 25565;
@@ -31,17 +32,6 @@ const EXAMPLES = fileURLToPath(new URL("../examples/addons", import.meta.url));
 function assert(value: unknown, message: string): asserts value {
 	if (!value) throw new Error(message);
 }
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, timeoutMs = 30_000): Promise<T> {
-	const deadline = Date.now() + timeoutMs;
-	while (true) {
-		const value = await read();
-		if (check(value)) return value;
-		if (Date.now() > deadline) throw new Error(`condition timed out: ${JSON.stringify(value)?.slice(0, 400)}`);
-		await sleep(250);
-	}
-}
-
 function stubContext(root: string): { ctx: ServiceCompanionContext; exposed: Map<string, unknown> } {
 	const exposed = new Map<string, unknown>();
 	const delivery = {
@@ -91,13 +81,13 @@ async function main(): Promise<void> {
 	);
 	console.log(`[mc-addons] data root: ${root}`);
 
-	const world = createMinecraftWorld({ diagnostics: true, legacyConfigPath: legacyPath });
+	const probe = executionProbe();
+	const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: legacyPath });
 	const { ctx } = stubContext(root);
 	const session = act(world, "session");
 	const describe = act(world, "describe") as (params: Record<string, unknown>) => Promise<Reply>;
 	const observe = act(world, "observe") as (params: Record<string, unknown>) => Promise<Reply>;
 	const run = act(world, "run") as (params: Record<string, unknown>) => Promise<Reply>;
-	const runs = act(world, "runs") as (params: Record<string, unknown>) => Promise<Reply>;
 	let passed = 0;
 	const step = async (name: string, execute: () => Promise<void>) => {
 		await execute();
@@ -110,29 +100,23 @@ async function main(): Promise<void> {
 		const all: CallRecord[] = [];
 		let cursor: string | undefined;
 		do {
-			const page = (await runs({ op: "calls", run: runRef, ...(cursor ? { cursor } : {}) })).details;
-			all.push(...(page.items as CallRecord[]));
+			const page = await probe.calls(runRef, cursor);
+			all.push(...(page.items as unknown as CallRecord[]));
 			cursor = page.next as string | undefined;
 		} while (cursor);
 		return all;
 	};
 	const readCall = async (recordRef: string): Promise<CallRecord> => {
-		const reply = await runs({ op: "record", ref: recordRef, format: "inline" });
-		const record = (reply.details as { record?: { value?: CallRecord } }).record;
-		assert(record?.value != null, `call record unavailable: ${JSON.stringify(reply.details).slice(0, 200)}`);
-		return record.value;
+		const { record } = await probe.record(recordRef);
+		return record.value as CallRecord;
 	};
 	const finish = async (reply: Reply): Promise<{ run: string; phase: string; outcome?: string }> => {
-		const accepted = reply.details as { kind?: string; run?: string };
+		const accepted = reply.details as { kind?: string; task?: string };
 		assert(accepted.kind === "accepted", JSON.stringify(reply.details).slice(0, 300));
-		const runRef = accepted.run;
-		assert(typeof runRef === "string", `no run ref: ${JSON.stringify(reply.details).slice(0, 300)}`);
-		const result = await until(
-			async () => (await runs({ op: "wait", run: runRef, timeoutMs: 2000 })).details,
-			(value) => value.kind === "result",
-			90_000,
-		);
-		return result.snapshot as { run: string; phase: string; outcome?: string };
+		const runRef = await probe.resolve(accepted.task);
+		const result = await probe.executor().wait(runRef, { timeoutMs: 90_000 });
+		assert(result.kind === "result", JSON.stringify(result));
+		return result.snapshot;
 	};
 
 	try {

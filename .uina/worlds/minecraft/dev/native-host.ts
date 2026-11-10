@@ -13,6 +13,7 @@ import { UinaHost } from "../../../../src/host/host.js";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import type { JsonValue } from "../contracts/values.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
+import { executionProbe } from "./execution-probe.js";
 import { feedbackScenario, prepareFeedbackModelScene } from "./feedback-scenario.js";
 import { libraryScenario } from "./library-scenario.js";
 import { waitScenario } from "./wait-scenario.js";
@@ -113,7 +114,8 @@ host.subscribe((event) => {
 	if (event.type === "usage_update" || event.type === "error" || event.type === "output_end") transcript.push(event);
 });
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
-const world = createMinecraftWorld({ diagnostics: !tasksMode, legacyConfigPath: configPath });
+const probe = executionProbe();
+const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: configPath });
 const start = world.onStart!;
 world.onStart = async (ctx) => {
 	context = ctx;
@@ -137,7 +139,10 @@ const runtimeItems = async (op: "list" | "calls", params: Record<string, unknown
 	const items: Record<string, unknown>[] = [];
 	let cursor: string | undefined;
 	do {
-		const page = await direct("runs", { op, ...params, ...(cursor ? { cursor } : {}) });
+		const page =
+			op === "list"
+				? await probe.list({ ...params, ...(cursor ? { cursor } : {}) })
+				: await probe.calls(params.run, cursor);
 		items.push(...(page.items as Record<string, unknown>[]));
 		cursor = page.next as string | undefined;
 	} while (cursor);
@@ -153,10 +158,12 @@ const ask = async (action: string, params: Record<string, unknown>) => {
 	return reply;
 };
 const finish = async (reply: ToolResultEvent) => {
-	const details = reply.details as { kind: string; run: string; requestId: string };
+	const details = reply.details as { kind: string; task: string };
 	assert.equal(details.kind, "accepted", reply.result);
-	const result = await ask("runs", { op: "wait", run: details.run, timeoutMs: 90000 });
-	return result.details as { kind: string; snapshot: { run: string; outcome?: string; completionRef?: string } };
+	const run = await probe.resolve(details.task);
+	const result = await probe.executor().wait(run, { timeoutMs: 90000 });
+	assert(result.kind === "result", JSON.stringify(result));
+	return result;
 };
 try {
 	await host.start();
@@ -185,7 +192,7 @@ try {
 	await step("formal Host current connection", async () => {
 		if (!tasksMode)
 			await until(
-				() => direct("runs", { op: "status" }),
+				() => probe.executor().inspect(),
 				(s) => (s.side as { connection: string })?.connection === "ready",
 			);
 		await observe("self@1");
@@ -338,6 +345,7 @@ try {
 		}
 	} else if (feedbackMode) {
 		await feedbackScenario({
+			probe,
 			direct,
 			step,
 			safeStop: async () => {
@@ -357,7 +365,7 @@ try {
 				});
 				await activation.start();
 				await until(
-					() => direct("runs", { op: "status" }),
+					() => probe.executor().inspect(),
 					(r) => (r.side as { connection?: string })?.connection === "ready",
 				);
 			},
@@ -390,17 +398,17 @@ try {
 			: waitMode
 				? [
 						"仅使用 minecraft 工具和它的短指南，按需 describe。实际编写并运行一个普通 JS 程序：先读 events@1 的 chat 最近窗口取得 after，再用 mc.call 的 chat@1 发送 input.text，然后用 mc.waitUntil 等固定 after 之后收到含该文本的事件，timeoutMs 为10000。main 必须声明 (mc,input)，text 从 input.text 读取，run 的 code 和 input 都放 params 内。返回 waitUntil 结果，必须实际得到 kind=met。这次 input.text 使用 uina-wait-model-first。不要使用服务器指令或其他工具。",
-						"通过 runs.calls 找到刚才确切成功的程序 Call，使用 library.save 的 from:{run,segment,call} 保存为 wait_echo，summary 简短说明用途。然后用 run.selector='wait_echo'，input.text='uina-wait-model-reused' 再运行一次，读取记录核实等待结果 kind=met。不要重写源码保存，不使用服务器指令。",
+						"通过 tasks.trace 找到刚才确切成功的程序 Call，使用 library.save 的 from:{run,segment,call} 保存为 wait_echo，summary 简短说明用途。然后用 run.selector='wait_echo'，input.text='uina-wait-model-reused' 再运行一次，读取记录核实等待结果 kind=met。不要重写源码保存，不使用服务器指令。",
 					]
 				: libraryMode
 					? [
 							"仅使用 minecraft 工具。先 describe 所需能力，用 run.code 实际提交普通 JS：尝试制作铁镐并捕获缺料，改为采集一根附近橡木原木、制作四块木板，读库存核验。不要使用服务器指令、补料或其他工具。",
-							"将刚才成功执行的程序保存为 plank_batch：查询 runs.calls，使用 library.save 的 from:{run,segment,call} 保存确切程序 Call，不能手抄源码保存。随后用 describe 搜索并描述这个程序，用 library.get 读取源码，将脚本通过 library.update 的 source 完整替换，作一个小改动（例如在返回值增加 revision:'v2'，保留已有逻辑）。然后用 run.selector='plank_batch' 实际复用它，再采集一根原木、制作四块木板并核验。最后保存一条名为 wood_notes 的 experience，说明适用条件，describe 找到它并 library.get 读回。只使用 minecraft，不使用服务器指令。",
+							"将刚才成功执行的程序保存为 plank_batch：查询 tasks.trace，使用 library.save 的 from:{run,segment,call} 保存确切程序 Call，不能手抄源码保存。随后用 describe 搜索并描述这个程序，用 library.get 读取源码，将脚本通过 library.update 的 source 完整替换，作一个小改动（例如在返回值增加 revision:'v2'，保留已有逻辑）。然后用 run.selector='plank_batch' 实际复用它，再采集一根原木、制作四块木板并核验。最后保存一条名为 wood_notes 的 experience，说明适用条件，describe 找到它并 library.get 读回。只使用 minecraft，不使用服务器指令。",
 						]
 					: programMode
 						? [
 								"仅使用 minecraft 工具，通过 run 的 code 提交一个普通 JS 程序：读库存，先尝试制作一把铁镐并捕获缺料错误，随后采集两根橡木原木并制作至少八块橡木木板，最后读取库存核验。自行 describe 所需能力，不使用服务器指令、补料或其他工具。必须实际提交程序，不能只逐条调用原生动作。",
-								"仅使用 minecraft，通过 run 的 code 提交一个会持续等待的程序，使用 mc.sleep 和 mc.progress。获得 accepted 后显式 runs.stop，再查询终态并读取调用记录。不要把取消工具等待当成停止，不使用服务器指令。",
+								"仅使用 minecraft，通过 run 的 code 提交一个会持续等待的程序，使用 mc.sleep 和 mc.progress。获得 accepted 后显式 tasks.stop，再查询终态并读取调用记录。不要把取消工具等待当成停止，不使用服务器指令。",
 							]
 						: [
 								"你在独立 Minecraft 生存验收区，附近有原木。仅使用 minecraft 工具和它的指南，自行发现需要的能力，采集两根原木并制作至少八块橡木木板。不要使用服务器指令、其他工具或管理员补料。完成后核对库存。",
@@ -424,7 +432,7 @@ try {
 				for (const r of runs) {
 					const calls = await runtimeItems("calls", { run: r.run });
 					if (!calls.some((c) => c.ref === "wait_echo" && c.outcome === "succeeded")) continue;
-					const record = await direct("runs", { op: "record", ref: r.run });
+					const record = await probe.record(r.run);
 					const value = (record.record as { value: { value: unknown } }).value.value;
 					const observed = (v: unknown): boolean => {
 						if (v === null || typeof v !== "object") return false;
@@ -467,7 +475,7 @@ try {
 				}) as ToolResultEvent | undefined;
 				assert.ok(savedTool, "model must save from an actual program Call");
 				const from = (savedTool.args.params as { from: { run: string; segment: string; call: string } }).from;
-				const sourceRecord = await direct("runs", { op: "record", ref: from.call });
+				const sourceRecord = await probe.record(from.call);
 				const sourceCall = (
 					sourceRecord.record as { value: { run: string; segment: string; program: { digest: string } } }
 				).value;
@@ -479,7 +487,7 @@ try {
 					const calls = await runtimeItems("calls", { run: r.run });
 					for (const c of calls)
 						if (c.ref === "plank_batch") {
-							const record = await direct("runs", { op: "record", ref: c.record });
+							const record = await probe.record(c.record);
 							const call = (record.record as { value: { program: { digest: string }; outcome: string } }).value;
 							reused ||=
 								call.outcome === "succeeded" &&
@@ -517,13 +525,13 @@ try {
 					((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8,
 					"model program must produce real planks",
 				);
-				const list = await direct("runs", { op: "list", activeOnly: false });
+				const list = await probe.list({ activeOnly: false });
 				const cancelled = (list.items as { run: string; phase: string; outcome?: string }[]).filter(
 					(r) => r.phase === "finished" && r.outcome === "cancelled",
 				);
 				let stoppedProgram = false;
 				for (const r of cancelled) {
-					const calls = await direct("runs", { op: "calls", run: r.run });
+					const calls = await probe.calls(r.run);
 					if ((calls.items as { implementation: string }[]).some((c) => c.implementation === "program"))
 						stoppedProgram = true;
 				}
@@ -531,7 +539,7 @@ try {
 			}
 		});
 	} else if (waitMode) {
-		await waitScenario({ direct, ask, finish, step });
+		await waitScenario({ probe, direct, ask, finish, step });
 	} else if (mapMode) {
 		// G11 出口的真实 wire：observe map@1 经正式 WorldTool/Host 路径必须带 images 附件。
 		await step("activate the blank map via the formal use@1 port", async () => {
@@ -557,7 +565,7 @@ try {
 			assert.match(reply.images[0].mimeType, /^image\/png$/);
 		});
 	} else if (libraryMode) {
-		await libraryScenario({ dataRoot: context.worldDataDir!, direct, ask, finish, step });
+		await libraryScenario({ probe, dataRoot: context.worldDataDir!, direct, ask, finish, step });
 	} else if (programMode) {
 		const runCode = async (code: string, input: JsonValue = {}) => finish(await ask("run", { code, input }));
 		const succeeded = (r: unknown) =>
@@ -573,7 +581,7 @@ try {
       }`);
 			succeeded(r);
 			assert.ok(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8);
-			const record = await direct("runs", { op: "record", ref: r.snapshot.run });
+			const record = await probe.record(r.snapshot.run);
 			assert.equal(
 				(record.record as { value: { value: { missing: string } } }).value.value.missing,
 				"MISSING_MATERIAL",
@@ -590,10 +598,10 @@ try {
 			succeeded(await runCode(`async function main(mc,input){return mc.call('pose',input);}`, input));
 			const r = await runCode(`async function main(mc,input){return mc.withBody(b=>b.call('pose',input));}`, input);
 			succeeded(r);
-			const calls = await direct("runs", { op: "calls", run: r.snapshot.run });
+			const calls = await probe.calls(r.snapshot.run);
 			const child = (calls.items as { ref: string; record: string }[]).find((c) => c.ref === "pose")!;
 			assert.ok(child);
-			const record = await direct("runs", { op: "record", ref: child.record });
+			const record = await probe.record(child.record);
 			const material = (record.record as { value: { program: { snapshot: string; digest: string } } }).value.program;
 			assert.equal(await readFile(material.snapshot, "utf8"), source);
 		});
@@ -609,7 +617,7 @@ try {
         return {first,second,refused,item:after.value.slots[0].item,cursor:after.value.cursor};
       });}`);
 			succeeded(r);
-			const record = await direct("runs", { op: "record", ref: r.snapshot.run });
+			const record = await probe.record(r.snapshot.run);
 			assert.deepEqual(
 				(record.record as { value: { value: { cursor: unknown; item: { count: number } } } }).value.value.cursor,
 				null,
@@ -646,14 +654,14 @@ try {
 			const timer = setTimeout(() => abort.abort(), 300);
 			const reply = await pending;
 			clearTimeout(timer);
-			const accepted = reply.details as { kind: string; run: string; requestId: string };
+			const accepted = reply.details as { kind: string; task: string };
 			assert.equal(accepted.kind, "accepted", JSON.stringify(reply));
-			assert.notEqual((await direct("runs", { op: "status", run: accepted.run })).phase, "finished");
-			await direct("runs", { op: "stop", request: accepted.requestId });
-			const stopped = await direct("runs", { op: "wait", run: accepted.run, timeoutMs: 10000 });
+			assert.notEqual((await direct("tasks", { op: "get", task: accepted.task })).phase, "finished");
+			await direct("tasks", { op: "stop", task: accepted.task });
+			const stopped = await probe.executor().wait(await probe.resolve(accepted.task), { timeoutMs: 10000 });
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 			await until(
-				() => direct("runs", { op: "status" }),
+				() => probe.executor().inspect(),
 				(s) => (s.side as { program: { residentGuests: number } }).program.residentGuests === 0,
 			);
 		});
@@ -688,15 +696,15 @@ try {
 				() => context.delivery!.inspect(ref),
 				(s) => s.kind === "committed",
 			);
-			assert.equal((await ask("runs", { op: "record", ref })).status, "succeeded");
+			assert.equal((await probe.record(ref)).kind, "inline");
 		});
 		await step("explicit request stop and body emergency", async () => {
 			const r = await ask("run", {
 				selector: "goto@1",
 				input: { at: { x: 16080, y: 200, z: 16000 }, tolerance: 1, maxTimeMs: 30000 },
 			});
-			const request = (r.details as { requestId: string }).requestId;
-			await ask("runs", { op: "stop", request });
+			const task = (r.details as { task: string }).task;
+			await ask("tasks", { op: "stop", task });
 			const final = await finish(r);
 			assert.equal((final.snapshot as { outcome?: string }).outcome, "cancelled");
 			const body = [...activation!.exposed.values()][0] as BodyEndpoint;
@@ -718,11 +726,11 @@ try {
 			const timer = setTimeout(() => abort.abort(), 150);
 			const reply = await waiting;
 			clearTimeout(timer);
-			const accepted = reply.details as { kind: string; run: string; requestId: string };
+			const accepted = reply.details as { kind: string; task: string };
 			assert.equal(accepted.kind, "accepted", JSON.stringify(reply));
-			assert.notEqual((await direct("runs", { op: "status", run: accepted.run })).phase, "finished");
-			await direct("runs", { op: "stop", request: accepted.requestId });
-			const stopped = await direct("runs", { op: "wait", run: accepted.run, timeoutMs: 10000 });
+			assert.notEqual((await direct("tasks", { op: "get", task: accepted.task })).phase, "finished");
+			await direct("tasks", { op: "stop", task: accepted.task });
+			const stopped = await probe.executor().wait(await probe.resolve(accepted.task), { timeoutMs: 10000 });
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 		});
 	}

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 
+import type { ExecutionProbe } from "./execution-probe.js";
+
 interface Scenario {
+	probe: ExecutionProbe;
 	direct(action: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
 	ask(action: string, params: Record<string, unknown>): Promise<ToolResultEvent>;
 	finish(reply: ToolResultEvent): Promise<{ snapshot: { run: string; outcome?: string } }>;
@@ -14,7 +17,7 @@ export async function waitScenario(s: Scenario): Promise<void> {
 		return r.snapshot.run;
 	};
 	const value = async (run: string) =>
-		(await s.direct("runs", { op: "record", ref: run })).record as { value: { value: Record<string, unknown> } };
+		(await s.probe.record(run)).record as { value: { value: Record<string, unknown> } };
 	let eventRun = "";
 	await s.step("events baseline -> chat -> committed incremental wait", async () => {
 		eventRun = await completed(
@@ -35,10 +38,7 @@ export async function waitScenario(s: Scenario): Promise<void> {
 			code: "async function main(mc){return mc.waitUntil({inv:{ref:'inventory@1'}},s=>(s.inv?.counts.oak_planks??0)>=4,{timeoutMs:30000});}",
 		});
 		assert.equal((waiting.details as { kind: string }).kind, "accepted");
-		const status = await s.direct("runs", {
-			op: "status",
-			run: (waiting.details as { run: string }).run,
-		});
+		const status = await s.probe.executor().read(await s.probe.resolve((waiting.details as { task: string }).task));
 		assert.equal(status.phase, "waiting");
 		assert.equal((status.waiting as { kind: string }).kind, "world_change");
 		await completed(
@@ -54,21 +54,21 @@ export async function waitScenario(s: Scenario): Promise<void> {
 			code: "async function main(mc){return mc.withBody(()=>mc.waitUntil({inv:{ref:'inventory@1'}},s=>(s.inv?.counts.diamond??0)>=64));}",
 		});
 		assert.equal((held.details as { kind: string }).kind, "accepted");
-		const run = (held.details as { run: string }).run;
-		const status = await s.direct("runs", { op: "status", run });
+		const task = (held.details as { task: string }).task;
+		const status = await s.probe.executor().read(await s.probe.resolve(task));
 		assert.equal(status.control, "active");
 		assert.equal(status.phase, "waiting");
 		const next = await s.ask("run", {
 			code: "async function main(mc){return mc.withBody(b=>b.lookAt({x:16002,y:201,z:16000}));}",
 		});
 		assert.equal((next.details as { kind: string }).kind, "accepted");
-		await s.direct("runs", { op: "stop", run });
+		await s.direct("tasks", { op: "stop", task });
 		const result = await s.finish(held);
 		assert.equal(result.snapshot.outcome, "cancelled");
 		await completed(next);
 	});
 	await s.step("save the exact waiting program and execute its named material", async () => {
-		const calls = await s.direct("runs", { op: "calls", run: eventRun });
+		const calls = await s.probe.calls(eventRun);
 		const root = (calls.items as { run: string; segment: string; call: string; parent: string | null }[]).find(
 			(c) => c.parent === null,
 		)!;

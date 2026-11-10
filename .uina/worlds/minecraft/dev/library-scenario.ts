@@ -3,7 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 
+import type { ExecutionProbe } from "./execution-probe.js";
+
 interface Scenario {
+	probe: ExecutionProbe;
 	dataRoot: string;
 	direct(action: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
 	ask(action: string, params: Record<string, unknown>): Promise<ToolResultEvent>;
@@ -28,7 +31,7 @@ export async function libraryScenario(s: Scenario): Promise<void> {
     }`,
 			input: { logs: 1 },
 		});
-		const calls = await s.direct("runs", { op: "calls", run: ref });
+		const calls = await s.probe.calls(ref);
 		const call = (
 			calls.items as { run: string; segment: string; call: string; parent: string | null; implementation: string }[]
 		).find((c) => c.parent === null && c.implementation === "program")!;
@@ -43,7 +46,7 @@ export async function libraryScenario(s: Scenario): Promise<void> {
 		originalDigest = saved.digest as string;
 		const material = await s.direct("library", { op: "get", name: "plank_batch" });
 		assert.equal((material.savedFrom as { call: string }).call, origin.call);
-		const record = await s.direct("runs", { op: "record", ref });
+		const record = await s.probe.record(ref);
 		assert.equal((record.record as { value: { value: { missing: string } } }).value.value.missing, "MISSING_MATERIAL");
 	});
 	await s.step("unified discovery, source replacement and new real production", async () => {
@@ -64,7 +67,7 @@ export async function libraryScenario(s: Scenario): Promise<void> {
 			),
 		});
 		const ref = await run({ selector: "plank_batch", input: { logs: 1 } });
-		const record = await s.direct("runs", { op: "record", ref });
+		const record = await s.probe.record(ref);
 		assert.equal((record.record as { value: { value: { revision: string } } }).value.value.revision, "v2");
 		const inventory = await s.direct("observe", { selector: "inventory@1" });
 		assert.ok((inventory.value as { counts: Record<string, number> }).counts.oak_planks >= 8);
@@ -83,10 +86,10 @@ export async function libraryScenario(s: Scenario): Promise<void> {
 		assert.equal((reply.details as { kind: string }).kind, "accepted", reply.result);
 		await s.direct("library", { op: "update", name: "echo_fixed", source: "async function main(){return 'new';}" });
 		const completed = await s.finish(reply);
-		const record = await s.direct("runs", { op: "record", ref: completed.snapshot.run });
+		const record = await s.probe.record(completed.snapshot.run);
 		assert.deepEqual((record.record as { value: { value: string[] } }).value.value, ["old", "old"]);
 		const next = await run({ selector: "echo_fixed" });
-		const nextRecord = await s.direct("runs", { op: "record", ref: next });
+		const nextRecord = await s.probe.record(next);
 		assert.equal((nextRecord.record as { value: { value: string } }).value.value, "new");
 	});
 	await s.step("experience and raw blueprint use the same formal Library", async () => {

@@ -1,32 +1,35 @@
 import assert from "node:assert/strict";
 import type { CallRecord, RunSnapshot } from "../contracts/runtime.js";
 
+import type { ExecutionProbe } from "./execution-probe.js";
+
 export interface I2Scenario {
+	probe: ExecutionProbe;
 	direct(action: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
 	step(name: string, work: () => Promise<void>): Promise<void>;
 	reopen(): Promise<void>;
 	until<T>(read: () => Promise<T>, check: (value: T) => boolean, timeoutMs?: number): Promise<T>;
 }
 export async function i2Scenario(s: I2Scenario): Promise<void> {
-	const status = (run: string) => s.direct("runs", { op: "status", run });
+	const status = (run: string) => s.probe.executor().read(run);
 	const finish = async (reply: Record<string, unknown>) => {
 		assert.ok(reply.kind === "accepted", JSON.stringify(reply));
-		const run = reply.run as string;
+		const run = await s.probe.resolve(reply.task);
 		const result = await s.until(
-			() => s.direct("runs", { op: "wait", run, timeoutMs: 1000 }),
+			() => s.probe.executor().wait(run, { timeoutMs: 1000 }),
 			(r) => r.kind === "result",
 			90000,
 		);
-		return result.snapshot as unknown as RunSnapshot;
+		assert(result.kind === "result");
+		return result.snapshot;
 	};
-	const record = async (ref: string) =>
-		(await s.direct("runs", { op: "record", ref, format: "inline" })).record as { value: RunSnapshot };
+	const record = async (ref: string) => (await s.probe.record(ref)).record as { value: RunSnapshot };
 	const calls = async (run: string) => {
 		const all: CallRecord[] = [];
 		let cursor: string | undefined;
 		do {
-			const page = await s.direct("runs", { op: "calls", run, ...(cursor ? { cursor } : {}) });
-			all.push(...(page.items as CallRecord[]));
+			const page = await s.probe.calls(run, cursor);
+			all.push(...(page.items as unknown as CallRecord[]));
 			cursor = page.next as string | undefined;
 		} while (cursor);
 		return all;
@@ -40,6 +43,7 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 		return snapshot.run;
 	};
 	let waitingRun = "",
+		waitingTask = "",
 		oldDigest = "",
 		sourceCall: CallRecord;
 	const before = (await inventory()).counts.oak_planks ?? 0;
@@ -54,7 +58,8 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 }`,
 		});
 		assert.equal(start.kind, "accepted", JSON.stringify(start));
-		waitingRun = (start.snapshot as { run: string }).run;
+		waitingTask = start.task as string;
+		waitingRun = await s.probe.resolve(waitingTask);
 		await s.until(
 			() => status(waitingRun),
 			(r) => r.phase === "waiting" && (r.waiting as { kind: string }).kind === "world_change",
@@ -101,9 +106,10 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 }`,
 		});
 		const decision = await status(waitingRun);
-		const resumed = await s.direct("runs", {
+		assert(decision.phase === "awaiting_decision");
+		const resumed = await s.direct("tasks", {
 			op: "continue",
-			run: waitingRun,
+			task: waitingTask,
 			decision: decision.decision,
 			entry: { selector: "i2_planks" },
 		});
@@ -118,7 +124,7 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 		const reused = roots.find((c) => c.ref === "i2_planks")!;
 		assert.ok(reused, "named continuation Call missing");
 		const current = await s.direct("library", { op: "get", name: "i2_planks" });
-		const reusedRecord = (await s.direct("runs", { op: "record", ref: reused.call, format: "inline" })).record as {
+		const reusedRecord = (await s.probe.record(reused.call)).record as {
 			value: CallRecord;
 		};
 		assert.equal(reusedRecord.value.program?.digest, current.digest);
@@ -131,7 +137,7 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 	let stoppedRun = "";
 	await s.step("explicit preempt retires the current body holder before its replacement", async () => {
 		const held = await s.direct("run", { code: hold });
-		const run = (held.snapshot as { run: string }).run;
+		const run = await s.probe.resolve(held.task);
 		await s.until(
 			() => status(run),
 			(r) => r.phase === "waiting" && r.control === "active",
@@ -139,7 +145,7 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 		await completed(
 			await s.direct("run", {
 				code: "async function main(mc){return mc.withBody(b=>b.lookAt({x:16001,y:201,z:16000}));}",
-				schedule: { kind: "preempt_current", expectedRun: run },
+				schedule: { kind: "preempt_current", expectedRun: held.task },
 			}),
 		);
 		const result = await finish(held);
@@ -147,21 +153,21 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 	});
 	await s.step("explicit stop settles the guest and releases body ownership", async () => {
 		const held = await s.direct("run", { code: hold });
-		stoppedRun = (held.snapshot as { run: string }).run;
+		stoppedRun = await s.probe.resolve(held.task);
 		await s.until(
 			() => status(stoppedRun),
 			(r) => r.phase === "waiting" && r.control === "active",
 		);
-		await s.direct("runs", { op: "stop", run: stoppedRun });
+		await s.direct("tasks", { op: "stop", task: held.task });
 		assert.equal(((await finish(held)) as { outcome?: string }).outcome, "cancelled");
 		await s.until(
-			() => s.direct("runs", { op: "status" }),
+			() => s.probe.executor().inspect(),
 			(r) => (r.side as { program?: { residentGuests: number } })?.program?.residentGuests === 0,
 		);
 	});
 	await s.step("real navigation queues behind Body and completes after explicit preemption", async () => {
 		const held = await s.direct("run", { code: hold });
-		const run = (held.snapshot as { run: string }).run;
+		const run = await s.probe.resolve(held.task);
 		await s.until(
 			() => status(run),
 			(r) => r.phase === "waiting" && r.control === "active",
@@ -171,38 +177,40 @@ export async function i2Scenario(s: I2Scenario): Promise<void> {
 			input: { at: { x: 16000, y: 200, z: 16003 }, tolerance: 1, maxTimeMs: 30000 },
 		});
 		assert.equal(navigation.kind, "accepted", JSON.stringify(navigation));
-		assert.equal((await status((navigation.snapshot as { run: string }).run)).control, "none");
+		assert.equal((await status(await s.probe.resolve(navigation.task))).control, "none");
 		await completed(
 			await s.direct("run", {
 				code: "async function main(mc){return mc.withBody(b=>b.lookAt({x:16001,y:201,z:16000}));}",
-				schedule: { kind: "preempt_current", expectedRun: run },
+				schedule: { kind: "preempt_current", expectedRun: held.task },
 			}),
 		);
 		await completed(navigation);
 		assert.equal(((await finish(held)) as { outcome?: string }).outcome, "cancelled");
 	});
 	await s.step("full activation reopen preserves pending decision and fixed records without replay", async () => {
-		const pending = await finish(
-			await s.direct("run", { code: "async function main(mc){mc.decide('I2 reopen checkpoint',{tag:'reopen'});}" }),
-		);
+		const parked = await s.direct("run", {
+			code: "async function main(mc){mc.decide('I2 reopen checkpoint',{tag:'reopen'});}",
+		});
+		const pending = await finish(parked);
 		assert.equal(pending.phase, "awaiting_decision");
 		if (pending.phase !== "awaiting_decision") throw new Error("pending decision missing");
 		const priorCalls = (await calls(waitingRun)).map((c) => c.call).sort();
 		const priorInventory = (await inventory()).counts;
 		await s.reopen();
 		const restored = await status(pending.run);
-		assert.equal(restored.phase, "awaiting_decision", JSON.stringify(restored));
+		assert(restored.phase === "awaiting_decision", JSON.stringify(restored));
 		assert.equal(restored.decision, pending.decision);
 		assert.deepEqual((await calls(waitingRun)).map((c) => c.call).sort(), priorCalls);
-		assert.equal((await status(stoppedRun)).phase, "finished");
-		assert.equal((await status(stoppedRun)).outcome, "cancelled");
+		const stopped = await status(stoppedRun);
+		assert(stopped.phase === "finished");
+		assert.equal(stopped.outcome, "cancelled");
 		assert.deepEqual((await inventory()).counts, priorInventory);
-		const platform = await s.direct("runs", { op: "status" });
+		const platform = await s.probe.executor().inspect();
 		assert.equal((platform.side as { program: { residentGuests: number } }).program.residentGuests, 0);
 		await completed(
-			await s.direct("runs", {
+			await s.direct("tasks", {
 				op: "continue",
-				run: pending.run,
+				task: parked.task,
 				decision: restored.decision,
 				entry: { code: "async function main(mc){return {checkpoint:mc.checkpoint};}" },
 			}),

@@ -13,6 +13,7 @@ import { UinaHost } from "../../../../src/host/host.js";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import type { CallRecord } from "../contracts/runtime.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
+import { executionProbe } from "./execution-probe.js";
 import { i2Scenario } from "./i2-scenario.js";
 
 const modelMode = process.argv.includes("--model");
@@ -25,7 +26,7 @@ const budgetIndex = process.argv.indexOf("--max-requests");
 const maxRequests = budgetIndex < 0 ? 500 : Number(process.argv[budgetIndex + 1]);
 assert.ok(Number.isFinite(maxRequests) && maxRequests > 0, "--max-requests needs a positive number");
 // G14 扰动演练：窗口 60% 处 SIGKILL 伴生执行进程（unclean 重建 → owner_lost 关闭 →
-// 模型须自行 runs recover）。批9B 的"门关闭后不恢复"复验开关。
+// 验证旧执行进程退休后，Owner 门能自动重新打开。
 const chaos = process.argv.includes("--chaos");
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-i2-model-" : "uina-mc-i2-"));
 const configPath = join(root, "config.json");
@@ -154,8 +155,9 @@ const step = async (name: string, work: () => Promise<void>) => {
 	passed++;
 	console.log(`[mc-i2] PASS ${name}`);
 };
+const probe = executionProbe();
 async function startWorld() {
-	const world = createMinecraftWorld({ diagnostics: true, legacyConfigPath: configPath });
+	const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: configPath });
 	const start = world.onStart!;
 	world.onStart = async (ctx) => {
 		context = ctx;
@@ -171,7 +173,7 @@ async function startWorld() {
 	// 批25：World 不再自动入服——startWorld 先经 session 工具显式连接（settings 种子来自旧 config.json）。
 	await direct("session", { op: "connect", target: { server: "default" } });
 	await until(
-		() => direct("runs", { op: "status" }),
+		() => probe.executor().inspect(),
 		(s) => (s.side as { connection?: string })?.connection === "ready",
 		45000,
 	);
@@ -227,7 +229,10 @@ async function allItems(op: "list" | "calls", params: Record<string, unknown>) {
 	const items: Record<string, unknown>[] = [];
 	let cursor: string | undefined;
 	do {
-		const page = await direct("runs", { op, ...params, ...(cursor ? { cursor } : {}) });
+		const page =
+			op === "list"
+				? await probe.list({ ...params, ...(cursor ? { cursor } : {}) })
+				: await probe.calls(params.run, cursor);
 		items.push(...(page.items as Record<string, unknown>[]));
 		cursor = page.next as string | undefined;
 	} while (cursor);
@@ -269,8 +274,8 @@ async function modelScenario() {
 		host.submitText(
 			`仅使用 minecraft 工具完成真实 I2，先阅读短指南，按需 describe。不要服务器指令、管理员补料、其他工具。留在16000附近的围栏测试区，附近原木足够本次生产；本次先完成I2，不另开探险目标。
 在附近原木生存区，用普通 JS 程序建立 inventory@1 的 mc.waitUntil，等待木板比当前至少多4；让另一个程序实际采集原木、制作木板供料，不能在持有身体时等待供料。等待成功后调用 mc.decide('需要检查并续段',{tag:'i2-model',target:${baseline + 4}})，确实形成 awaiting_decision。
-读取固定记录和 runs.calls；用 library.save 的 from:{run,segment,call} 保存确切程序 Call 为 i2_model_planks。library.get 读回，再用 library.update 完整 source 修改程序，支持只读 mc.checkpoint；续段时必须核对检查点和当前库存，返回 {revision:'v2',checkpoint:mc.checkpoint,inventory:实际库存}。通过 runs.continue {run,decision,entry:{selector:'i2_model_planks'}} 在同一 Run 建新段，核实 named Call 使用修改后的材料，并保留原检查点。不要用新 run 替代 continue。
-随后提交一个持有身体、持续 waitUntil 等待的程序。持有身体的最小形状是 async function main(mc){return mc.withBody(async()=>mc.waitUntil({inv:{ref:'inventory@1'}},()=>false));}；先用 runs.status 确认 control=active。普通 withBody 外的 waitUntil 是 control=none，不能抢占它。确认 accepted 和等待后，显式 runs.stop 并核实 cancelled。再提交一个身体持有等待者，用 run.schedule={kind:'preempt_current',expectedRun:等待者Run} 提交替代程序，核实旧者取消且替代程序成功。完成后核实真实库存比初始至少多8块木板（初始${baseline}），可以再采集制作，不要只复述计划。
+读取固定记录和 tasks.trace；用 library.save 的 from:{run,segment,call} 保存确切程序 Call 为 i2_model_planks。library.get 读回，再用 library.update 完整 source 修改程序，支持只读 mc.checkpoint；续段时必须核对检查点和当前库存，返回 {revision:'v2',checkpoint:mc.checkpoint,inventory:实际库存}。通过 tasks.continue {task,decision,entry:{selector:'i2_model_planks'}} 在同一 Run 建新段，核实 named Call 使用修改后的材料，并保留原检查点。不要用新 run 替代 continue。
+随后提交一个持有身体、持续 waitUntil 等待的程序。持有身体的最小形状是 async function main(mc){return mc.withBody(async()=>mc.waitUntil({inv:{ref:'inventory@1'}},()=>false));}；先用 tasks.get 确认 control=active。普通 withBody 外的 waitUntil 是 control=none，不能抢占它。确认 accepted 和等待后，显式 tasks.stop 并核实 cancelled。再提交一个身体持有等待者，用 run.schedule={kind:'preempt_current',expectedRun:等待者的 task} 提交替代程序，核实旧者取消且替代程序成功。完成后核实真实库存比初始至少多8块木板（初始${baseline}），可以再采集制作，不要只复述计划。
 ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOString()}。核心I2完成后，自主选择当前现场能完成的后续生存目标，利用实际观察与通知推进；需要判断时用decide和continue，不做空转、重复探测或虚构工作。可保存有条件的经验。` : "完成后简短报告实际结果与记录引用。"}`,
 			"direct",
 		);
@@ -293,10 +298,10 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 					);
 					assert.ok(pending, "model stage1 did not create a pending decision");
 					await modelGoal(`I2第二阶段：当前真实持久事实是 Run ${pending.run}、Segment ${pending.segment}、Decision ${pending.decision} 待处理。
-用runs.calls找该Run确切程序Call，然后library.save通过from:{run,segment,call}保存为i2_model_planks。library.get读回，再library.update完整source修改该文件：新main必须读取只读mc.checkpoint和实际inventory，返回{revision:'v2',checkpoint:mc.checkpoint,inventory:实际库存}。
-必须用runs.continue在原Run消费上述decision，entry:{selector:'i2_model_planks'}，不另开run代替续段。核实新段成功且保留tag='i2-model'检查点。只做这一阶段，完成后报告并停止。`);
+用tasks.trace找该Run确切程序Call，然后library.save通过from:{run,segment,call}保存为i2_model_planks。library.get读回，再library.update完整source修改该文件：新main必须读取只读mc.checkpoint和实际inventory，返回{revision:'v2',checkpoint:mc.checkpoint,inventory:实际库存}。
+必须用tasks.continue在原Run消费上述decision，entry:{selector:'i2_model_planks'}，不另开run代替续段。核实新段成功且保留tag='i2-model'检查点。只做这一阶段，完成后报告并停止。`);
 					await modelGoal(`I2第三阶段：只用minecraft，在围栏内核实库存至少${baseline + 8}木板，不足则正常collect/craft补足，不用管理员命令。
-然后验证身体停止与抢占。持有身体的已知API形状是 async function main(mc){return mc.withBody(async()=>{await mc.sleep(600000);});}。先提交这样的持有者，runs.status确认control=active，再runs.stop并核实cancelled。
+然后验证身体停止与抢占。持有身体的已知API形状是 async function main(mc){return mc.withBody(async()=>{await mc.sleep(600000);});}。先提交这样的持有者，tasks.get确认control=active，再tasks.stop并核实cancelled。
 再提交同样的身体持有者，确认control=active，用run.schedule={kind:'preempt_current',expectedRun:该持有者run}提交一个读取inventory并返回的替代程序，核实旧者cancelled、替代者succeeded。普通withBody外的waitUntil是control=none，不可抢占它。任务结束后停止剩余活动程序，简短报告事实并结束，不做探险或额外等待。`);
 				})();
 
@@ -337,7 +342,10 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 		);
 		deathCount += deathPage.items?.length ?? 0;
 		if (deathPage.after) deathCursor = deathPage.after;
-		const platform = await safe(() => direct("runs", { op: "status" }), null as unknown as Record<string, unknown>);
+		const platform = await safe(
+			() => probe.executor().inspect(),
+			null as Awaited<ReturnType<ReturnType<typeof probe.executor>["inspect"]>> | null,
+		);
 		const current = {
 			at: new Date().toISOString(),
 			inventory: await safe(() => observe("inventory@1").then((r) => r.value), null),
@@ -369,7 +377,7 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 		assert.ok(saved, "model did not save exact material");
 		const from = (saved.args.params as { from?: { run: string; segment: string; call: string } }).from;
 		assert.ok(from, "model material must use save-from");
-		const original = (await direct("runs", { op: "record", ref: from.call, format: "inline" })).record as {
+		const original = (await probe.record(from.call)).record as {
 			value: CallRecord;
 		};
 		assert.equal(original.value.run, from.run);
@@ -379,7 +387,7 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 		assert.ok(
 			tools.some(
 				(t) =>
-					t.args.action === "runs" && (t.args.params as { op?: string }).op === "continue" && t.status === "succeeded",
+					t.args.action === "tasks" && (t.args.params as { op?: string }).op === "continue" && t.status === "succeeded",
 			),
 			"model did not continue",
 		);
@@ -392,7 +400,7 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 			cancelled ||= run.outcome === "cancelled" && calls.some((c) => c.implementation === "program");
 			for (const call of calls) {
 				if (call.implementation !== "program") continue;
-				const fixed = (await direct("runs", { op: "record", ref: call.call, format: "inline" })).record as {
+				const fixed = (await probe.record(call.call)).record as {
 					value: CallRecord;
 				};
 				decision ||= fixed.value.decisionRequest?.code === "NEEDS_DECISION";
@@ -414,7 +422,8 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 		assert.ok(cancelled, "model did not cancel a real Program");
 		assert.ok(
 			tools.some(
-				(t) => t.args.action === "runs" && (t.args.params as { op?: string }).op === "stop" && t.status === "succeeded",
+				(t) =>
+					t.args.action === "tasks" && (t.args.params as { op?: string }).op === "stop" && t.status === "succeeded",
 			),
 			"model did not explicitly stop",
 		);
@@ -433,15 +442,15 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 				(t.args.params as { schedule?: { kind?: string } }).schedule?.kind === "preempt_current" &&
 				t.status === "succeeded",
 		)!;
-		const previousRun = (preemption.args.params as { schedule: { expectedRun: string } }).schedule.expectedRun;
-		const replacementRun = (preemption.details as { run: string }).run;
-		assert.equal((await direct("runs", { op: "status", run: previousRun })).outcome, "cancelled");
+		const previousTask = (preemption.args.params as { schedule: { expectedRun: string } }).schedule.expectedRun;
+		const replacementTask = (preemption.details as { task: string }).task;
+		assert.equal((await direct("tasks", { op: "get", task: previousTask })).outcome, "cancelled");
 		await until(
-			() => direct("runs", { op: "status", run: replacementRun }),
+			() => direct("tasks", { op: "get", task: replacementTask }),
 			(r) => r.phase === "finished",
 			90000,
 		);
-		assert.equal((await direct("runs", { op: "status", run: replacementRun })).outcome, "succeeded");
+		assert.equal((await direct("tasks", { op: "get", task: replacementTask })).outcome, "succeeded");
 		const finalPlanks =
 			((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks ?? 0;
 		const observedPlanks = observations.map(
@@ -456,9 +465,9 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 	await step("real model records survive full managed reopen without execution replay", async () => {
 		for (const run of await allItems("list", { activeOnly: true })) {
 			if (run.phase !== "awaiting_decision") {
-				await direct("runs", { op: "stop", run: run.run });
+				await probe.executor().stop({ requestId: randomUUID(), target: { run: run.run as string } });
 				await until(
-					() => direct("runs", { op: "status", run: run.run }),
+					() => probe.executor().read(run.run as string),
 					(r) => r.phase === "finished",
 				);
 			}
@@ -475,27 +484,22 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 				(await allItems("calls", { run: run.run })).map((c) => c.call as string).sort(),
 				before.get(run.run as string),
 			);
-			const restored = await direct("runs", { op: "status", run: run.run });
+			const restored = await probe.executor().read(run.run as string);
 			assert.equal(restored.phase, run.phase);
-			if (run.phase === "awaiting_decision") assert.equal(restored.decision, run.decision);
+			if (restored.phase === "awaiting_decision") assert.equal(restored.decision, run.decision);
 		}
 		assert.deepEqual(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts, inventory);
 	});
 	if (chaosAt > 0 && chaosDone) {
 		await step("owner_lost gate recovered through the model after the scripted companion kill", async () => {
-			const tools = transcript.filter((e): e is ToolResultEvent => (e as { type?: string }).type === "tool_result");
-			const recoverOp = tools.some(
-				(t) =>
-					t.status === "succeeded" && t.args.action === "runs" && (t.args.params as { op?: string }).op === "recover",
-			);
 			const gates = observations.map((sample) => (sample as { gates?: string[] }).gates ?? []);
 			const closedIndex = gates.findIndex((g) => g.includes("owner_lost"));
 			const reopenedBySample = closedIndex >= 0 && gates.slice(closedIndex + 1).some((g) => !g.includes("owner_lost"));
 			console.log(
-				`[mc-i2] chaos evidence: killed pid=${chaosPid} at ${chaosKilledAt}; recoverOp=${recoverOp}, gateReopened=${reopenedBySample}, sawClosed=${closedIndex >= 0}, deaths=${deathCount}`,
+				`[mc-i2] chaos evidence: killed pid=${chaosPid} at ${chaosKilledAt}; gateReopened=${reopenedBySample}, sawClosed=${closedIndex >= 0}, deaths=${deathCount}`,
 			);
 			assert.ok(
-				recoverOp || reopenedBySample,
+				reopenedBySample,
 				"owner_lost gate was never reopened after the chaos kill (batch9B failure not recovered)",
 			);
 		});
@@ -518,6 +522,7 @@ try {
 	if (modelMode) await modelScenario();
 	else
 		await i2Scenario({
+			probe,
 			direct: ask,
 			step,
 			until,

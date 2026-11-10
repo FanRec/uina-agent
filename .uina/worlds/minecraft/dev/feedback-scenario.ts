@@ -6,7 +6,10 @@ import type { SelfState } from "../contracts/body.js";
 import type { SafetyInterventionRecord } from "../contracts/runtime.js";
 import { openHarness } from "./harness.js";
 
+import type { ExecutionProbe } from "./execution-probe.js";
+
 interface Scenario {
+	probe: ExecutionProbe;
 	direct(action: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
 	step(name: string, work: () => Promise<void>): Promise<void>;
 	reopen(): Promise<void>;
@@ -30,18 +33,17 @@ export async function feedbackScenario(s: Scenario) {
 		await s.direct("chat", { text });
 		await sleep(200);
 	};
-	const record = async (ref: string) =>
-		(await s.direct("runs", { op: "record", ref, format: "inline" })).record as { value: Record<string, unknown> };
+	const record = async (ref: string) => (await s.probe.record(ref)).record as { value: Record<string, unknown> };
 	const state = async () =>
-		(await s.direct("runs", { op: "status" })).side as { safety: { active: string | null; last: string | null } };
+		(await s.probe.executor().inspect()).side as { safety: { active: string | null; last: string | null } };
 	const run = async (code: string) => {
 		const reply = await s.direct("run", { code });
 		assert.ok(reply.kind === "accepted", JSON.stringify(reply));
-		return reply.run as string;
+		return s.probe.resolve(reply.task);
 	};
 	const finish = async (id: string) => {
 		await until(
-			() => s.direct("runs", { op: "status", run: id }),
+			() => s.probe.executor().read(id),
 			(r) => r.phase === "finished",
 		);
 		return (await record(id)).value;
@@ -77,7 +79,7 @@ export async function feedbackScenario(s: Scenario) {
 			await until(
 				async () => {
 					if (calibrationError) throw calibrationError;
-					return (await s.direct("runs", { op: "list", activeOnly: true })).items as {
+					return (await s.probe.list({ activeOnly: true })).items as {
 						run: string;
 						control: string;
 						progress?: { summary?: string };
@@ -90,10 +92,10 @@ export async function feedbackScenario(s: Scenario) {
 			await calibration;
 			const end = (await self()).place.position;
 			assert.ok(end.x - initial.x >= 1.5 && end.x - initial.x <= 5, JSON.stringify({ initial, end }));
-			const runs = await s.direct("runs", { op: "list", activeOnly: false });
+			const runs = await s.probe.list({ activeOnly: false });
 			let found = false;
 			for (const item of runs.items as { run: string; outcome: string }[]) {
-				const calls = await s.direct("runs", { op: "calls", run: item.run });
+				const calls = await s.probe.calls(item.run);
 				for (const c of calls.items as { call: string; implementation: string }[])
 					if (c.implementation === "program") {
 						const call = (await record(c.call)).value;
@@ -117,7 +119,7 @@ export async function feedbackScenario(s: Scenario) {
 		const values = result.value as { sample: number; applied: number }[];
 		assert.equal(values.length, 12);
 		assert.ok(values.every((r) => r.applied > r.sample));
-		const calls = await s.direct("runs", { op: "calls", run: id });
+		const calls = await s.probe.calls(id);
 		const root = (await record((calls.items as { call: string }[])[0]!.call)).value;
 		const latencies: number[] = [];
 		for (const ref of root.effects as string[]) {
@@ -166,7 +168,7 @@ export async function feedbackScenario(s: Scenario) {
 		const id = during ? await run(during) : null;
 		if (id)
 			await until(
-				() => s.direct("runs", { op: "status", run: id }),
+				() => s.probe.executor().read(id),
 				(r) => r.control === "active",
 			);
 		await setup();
