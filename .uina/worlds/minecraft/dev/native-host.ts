@@ -570,15 +570,20 @@ try {
 		const runCode = async (code: string, input: JsonValue = {}) => finish(await ask("run", { code, input }));
 		const succeeded = (r: unknown) =>
 			assert.equal((r as { snapshot: { outcome: string } }).snapshot.outcome, "succeeded", JSON.stringify(r));
+		let collectTask: string;
 		await step("Program read/call, domain correction and real collect/craft", async () => {
-			const r = await runCode(`async function main(mc){
+			const accepted = await ask("run", {
+				code: `async function main(mc){
         const before=await mc.read('inventory@1');
         let missing=null;try{await mc.call('craft@1',{item:'iron_pickaxe',count:1});}catch(e){missing=e.code;}
         await mc.call('collect@1',{item:'oak_log',count:2,radius:8});
         await mc.call('craft@1',{item:'oak_planks',count:8});
         const after=await mc.read('inventory@1');mc.progress({summary:'crafted',count:after.value.counts.oak_planks});
         return {missing,before:before.value.counts,after:after.value.counts};
-      }`);
+      }`,
+			});
+			collectTask = (accepted.details as { task: string }).task;
+			const r = await finish(accepted);
 			succeeded(r);
 			assert.ok(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8);
 			const record = await probe.record(r.snapshot.run);
@@ -586,6 +591,46 @@ try {
 				(record.record as { value: { value: { missing: string } } }).value.value.missing,
 				"MISSING_MATERIAL",
 			);
+		});
+		await step("copy the published collect Call and change its search policy through Library", async () => {
+			const trace = await direct("tasks", { op: "trace", task: collectTask });
+			const call = (trace.calls as { items: { ref: string; run: string; segment: string; call: string }[] }).items.find(
+				({ ref }) => ref === "collect@1",
+			);
+			assert(call);
+			const name = "collect_copy";
+			await direct("library", {
+				op: "save",
+				name,
+				summary: "Editable copy of the published collect Program",
+				from: { run: call.run, segment: call.segment, call: call.call },
+			});
+			const saved = await direct("library", { op: "get", name });
+			assert.match(saved.source as string, /radius = 32/);
+			await command("/fill 16002 200 16000 16002 204 16000 minecraft:air");
+			await command("/tp UinaDev 16000.5 200 16000.5");
+			await command("/setblock 16006 200 16000 minecraft:oak_log");
+			const at = { x: 16006, y: 200, z: 16000 };
+			const block = async () =>
+				((await observe("block@1", { at })).value as { block: { name: string } | null }).block?.name;
+			await until(block, (name) => name === "oak_log");
+			for (const radius of [4, 8]) {
+				const copy = await direct("library", { op: "get", name });
+				await direct("library", {
+					op: "update",
+					name,
+					expectedDigest: copy.digest,
+					source: (saved.source as string).replace("radius = 32", `radius = ${radius}`),
+				});
+				const result = await finish(await ask("run", { selector: name, input: { item: "oak_log" } }));
+				if (radius === 4) {
+					assert.match(JSON.stringify(result.snapshot), /NOT_FOUND: no oak_log/);
+					assert.equal(await block(), "oak_log");
+				} else {
+					succeeded(result);
+					assert.equal(await block(), "air");
+				}
+			}
 		});
 		await step("one named program runs independently, nested and body-delegated", async () => {
 			const dir = join(context.worldDataDir!, "programs");

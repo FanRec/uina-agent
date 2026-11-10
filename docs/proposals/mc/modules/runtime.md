@@ -304,7 +304,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 场景 | 必须成立 |
 | --- | --- |
-| 任意 `run`/`chat`/`runs.continue` | 只返回受理（accepted/not_accepted/unknown），不阻塞等终态；Run 继续 |
+| 任意 `run`、`chat` 或 `tasks.continue` | 只返回受理（accepted/rejected/confirming），不阻塞等终态；Run 继续 |
 | 工具取消后完成 | Run 继续；后台交付相同结论 |
 | 根部 Promise.all 两个 Body 调用 | FIFO 依次执行，取消只删对应项，不段级报错 |
 | preempt_current 校验失败或事务回滚 | 不因此取消旧 Run；独立 stop/emergency 仍立即撤销 |

@@ -75,8 +75,8 @@ export class ExecutorLedger {
 	async getRequest(requestId: string): Promise<RequestCredential | null> {
 		return (await this.request({ op: "request_get", requestId })) as RequestCredential | null;
 	}
-	async requests(selection?: TaskRequestSelection): Promise<RequestCredential[]> {
-		return (await this.request({ op: "request_list", ...(selection ? { selection } : {}) })) as RequestCredential[];
+	async requests(selection: TaskRequestSelection): Promise<RequestCredential[]> {
+		return (await this.request({ op: "request_list", selection })) as RequestCredential[];
 	}
 	async refuse(requestId: string, refusal: NonNullable<RequestCredential["refusal"]>): Promise<void> {
 		await this.request({ op: "request_refused", requestId, refusal });

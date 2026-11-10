@@ -575,7 +575,13 @@ export class MinecraftExecutor {
 		}
 	}
 	async lookup(requestId: string): Promise<SubmissionLookup> {
-		return (await this.current().peer.call("runtime.lookup", { requestId })) as unknown as SubmissionLookup;
+		try {
+			return (await this.current().peer.call("runtime.lookup", { requestId })) as unknown as SubmissionLookup;
+		} catch (error) {
+			if (error instanceof RpcError && ["EXECUTOR_UNAVAILABLE", "RPC_TIMEOUT", "TRANSPORT_BUSY"].includes(error.code))
+				return { kind: "unavailable", reason: error.message };
+			throw error;
+		}
 	}
 	async read(run: string): Promise<RunSummary> {
 		return (await this.current().peer.call("runtime.read", { run })) as unknown as RunSummary;

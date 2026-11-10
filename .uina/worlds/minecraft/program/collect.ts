@@ -34,6 +34,7 @@ export const collectProgram = `async function main(mc, input) {
   const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
   const center = ({ x, y, z }) => ({ x: x + 0.5, y, z: z + 0.5 });
   const countOf = (value) => value.counts[item] ?? 0;
+  const initialCount = countOf(bag);
   const tried = new Map();
   const toolsUsed = new Set();
   let frontier = [];
@@ -63,8 +64,8 @@ export const collectProgram = `async function main(mc, input) {
   };
   const refresh = async () => {
     const after = await inventory();
-    const gained = Math.max(0, countOf(after) - countOf(bag));
-    acquired += gained;
+    const gained = countOf(after) > countOf(bag);
+    acquired = Math.max(0, countOf(after) - initialCount);
     bag = after;
     if (gained) {
       for (const [id, attempt] of tried) if (attempt.kind === "transient") tried.delete(id);
@@ -119,7 +120,9 @@ export const collectProgram = `async function main(mc, input) {
         await mc.call("goto@1", { at: center(at), tolerance: 1, digThrough,
           maxTimeMs: Math.max(1000, Math.min(15000, deadline - Date.now())) });
       } catch (error) {
-        if (!["NOT_FOUND", "TIMEOUT", "UNREACHABLE"].includes(error.code)) {
+        if (error.dispatch === "unknown" ||
+            (digThrough && error.dispatch !== "not_sent") ||
+            !["NOT_FOUND", "TIMEOUT", "UNREACHABLE"].includes(error.code)) {
           mc.progress(progress());
           throw error;
         }

@@ -274,6 +274,7 @@ export class MinecraftFacade {
 	private async taskRun(task: string): Promise<string> {
 		const found = await this.executor.lookup(this.taskRequest(task));
 		if (found.kind !== "found") throw new RpcError("TASK_UNAVAILABLE", "this task has no readable execution");
+		if (found.operation === "continue") throw new RpcError("TASK_NOT_FOUND", "use the original task handle");
 		return found.snapshot.run;
 	}
 
@@ -353,10 +354,19 @@ export class MinecraftFacade {
 					...(receipt.snapshot ? { state: project(receipt.snapshot) } : {}),
 					...(receipt.error ? { error: receipt.error } : {}),
 				},
-				receipt.intent === "unknown" ? "unknown" : "succeeded",
+				receipt.intent === "unknown" || receipt.control === "unknown" ? "unknown" : "succeeded",
 			);
 		}
 		if (p.op === "get") {
+			if (found.kind !== "found" && (credential?.run || !credential))
+				return response(
+					{
+						task,
+						code: "TASK_UNAVAILABLE",
+						reason: found.kind === "unavailable" ? found.reason : "execution state is not readable",
+					},
+					"unknown",
+				);
 			if (found.kind !== "found")
 				return response(
 					{
@@ -366,10 +376,10 @@ export class MinecraftFacade {
 					},
 					"unknown",
 				);
-			const { snapshot } = found;
+			let { snapshot } = found;
 			if (snapshot.phase === "awaiting_decision") {
 				const latest = await this.pendingContinuation(snapshot);
-				if (latest?.kind === "found") return response(project(latest.snapshot));
+				if (latest?.kind === "found") snapshot = latest.snapshot;
 				if (latest?.kind === "not_found" || latest?.kind === "unavailable")
 					return response(
 						{ ...project(snapshot), phase: "confirming", reason: "continuation acceptance is not yet confirmed" },
@@ -401,11 +411,15 @@ export class MinecraftFacade {
 				if (current) return response(record);
 				if (
 					record.kind === "inline" &&
-					record.record.kind === "call" &&
+					(record.record.kind === "call" || record.record.kind === "segment") &&
 					(record.record.value as { run?: string } | null)?.run === snapshot.run
 				)
 					return response(record);
-				throw new RpcError("INVALID_INPUT", "record must be a Call or current report for this task");
+				if (record.kind === "inline" && record.record.kind === "effect") {
+					const owner = (record.record.value as { owner?: { kind?: string; run?: string } } | null)?.owner;
+					if (owner?.kind === "run" && owner.run === snapshot.run) return response(record);
+				}
+				throw new RpcError("INVALID_INPUT", "record must belong to this task");
 			}
 			const calls = await this.executor.rpc(
 				"runtime.calls",

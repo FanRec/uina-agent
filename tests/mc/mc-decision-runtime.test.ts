@@ -237,6 +237,13 @@ test("decision survives reopen, explicit continuation makes a new segment and pr
 		kind: "not_accepted",
 		code: "DECISION_STALE",
 	});
+	await f.reopen();
+	expect(f.runtime.lookup("stale")).toMatchObject({ kind: "rejected", code: "DECISION_STALE" });
+	expect(await f.runtime.stop({ requestId: "stop-refusal", target: { request: "stale" } })).toMatchObject({
+		intent: "durable",
+		snapshot: null,
+	});
+	expect(f.runtime.lookup("stale")).toMatchObject({ kind: "rejected", code: "DECISION_STALE" });
 });
 test("concurrent continuations consume a decision once, request stop before admission does not consume", async () => {
 	const f = await setup(),

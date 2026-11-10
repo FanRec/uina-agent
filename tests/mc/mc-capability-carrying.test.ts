@@ -90,6 +90,25 @@ function collect(harness: ReturnType<typeof makeHarness>, input: JsonValue, stat
 }
 
 describe("collect@1", () => {
+	test("counts the final inventory gain when stock falls between pickups", async () => {
+		const state: HarnessState = {
+			blocks: new Map([11, 12, 13].map((z) => [`10,64,${z}`, { name: "dirt", properties: {} }])),
+			inventory: { slots: [], counts: {} },
+		};
+		let digCount = 0;
+		const harness = makeHarness(state, {
+			onDig: (target) => {
+				state.blocks.delete(`${target.block.x},${target.block.y},${target.block.z}`);
+				state.inventory.slots = [];
+				state.inventory.counts.dirt = 0;
+				give(state, "dirt", [2, 1, 2][digCount++]!);
+			},
+		});
+		const failure = await failureOf(collect(harness, { item: "dirt", count: 3 }));
+		expect(failure.code).toBe("NOT_FOUND");
+		expect(failure.progress).toMatchObject({ acquired: 2, goal: { completed: 2, remaining: 1 } });
+	});
+
 	test("挖够数量即停；acquired 只算本次新增入包", async () => {
 		const state: HarnessState = {
 			blocks: new Map([
@@ -459,41 +478,55 @@ describe("drop@1", () => {
 	});
 });
 
-test.each(["sent", "unknown"] as const)("collect stops after a mine with %s dispatch", async (dispatch) => {
-	const calls: string[] = [];
-	const failure = callFailure({
-		code: "TIMEOUT",
-		source: "capability",
-		message: "mine timed out",
-		dispatch,
-		effects: [],
-		recoverable: true,
-	});
-	await expect(
-		main(
-			{
-				async read(ref: string) {
-					switch (ref) {
-						case "item@1":
-							return { value: { name: "dirt", sources: [{ kind: "block", block: "dirt", harvest: { kind: "any" } }] } };
-						case "inventory@1":
-							return { value: { counts: {}, slots: [] } };
-						case "self@1":
-							return { value: { place: { position: { x: 10, y: 64, z: 10 } } } };
-						case "blocks@1":
-							return { value: { blocks: [11, 12].map((z) => ({ position: { x: 10, y: 64, z } })) } };
-						default:
-							throw new Error(ref);
-					}
+test.each([
+	{ ref: "mine@1", dispatch: "sent", digThrough: false },
+	{ ref: "mine@1", dispatch: "unknown", digThrough: false },
+	{ ref: "goto@1", dispatch: "unknown", digThrough: false },
+	{ ref: "goto@1", dispatch: "sent", digThrough: true },
+] as const)(
+	"collect stops after $ref with $dispatch dispatch and digThrough=$digThrough",
+	async ({ ref, dispatch, digThrough }) => {
+		const calls: string[] = [];
+		const failure = callFailure({
+			code: "TIMEOUT",
+			source: "capability",
+			message: "operation timed out",
+			dispatch,
+			effects: [],
+			recoverable: true,
+		});
+		await expect(
+			main(
+				{
+					async read(query: string) {
+						switch (query) {
+							case "item@1":
+								return {
+									value: { name: "dirt", sources: [{ kind: "block", block: "dirt", harvest: { kind: "any" } }] },
+								};
+							case "inventory@1":
+								return { value: { counts: {}, slots: [] } };
+							case "self@1":
+								return { value: { place: { position: { x: 10, y: 64, z: 10 } } } };
+							case "blocks@1":
+								return {
+									value: {
+										blocks: (ref === "goto@1" ? [16, 17] : [11, 12]).map((z) => ({ position: { x: 10, y: 64, z } })),
+									},
+								};
+							default:
+								throw new Error(query);
+						}
+					},
+					call(ref: string) {
+						calls.push(ref);
+						throw failure;
+					},
+					progress() {},
 				},
-				call(ref: string) {
-					calls.push(ref);
-					throw failure;
-				},
-				progress() {},
-			},
-			{ item: "dirt", count: 2 },
-		),
-	).rejects.toBe(failure);
-	expect(calls).toEqual(["mine@1"]);
-});
+				{ item: "dirt", count: 2, digThrough },
+			),
+		).rejects.toBe(failure);
+		expect(calls).toEqual([ref]);
+	},
+);

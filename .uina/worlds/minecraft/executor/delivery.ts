@@ -206,7 +206,7 @@ export class DeliveryPump {
 	}
 	/** 恢复只查原始意图，绝不重发动作。 */
 	private async recoverRequests(): Promise<void> {
-		for (const c of await this.executor.ledger.requests())
+		for (const c of await this.executor.ledger.requests({ kind: "unconfirmed" }))
 			if (!c.run && !c.refusal) {
 				const found = await this.executor.lookup(c.requestId);
 				if (found.kind === "found") await this.executor.ledger.found(c.requestId, found);

@@ -31,8 +31,8 @@ const addonPlan = () =>
 	});
 const addons = await addonPlan();
 assert.deepEqual(addons.roots, ["fabric-fixture", "spectatorplus"]);
-const open = (unclean = false, plan = addons) =>
-	openHarness("fabric-live", { dataRoot, addons: plan, ns: profileId, unclean });
+const open = (unclean = false, plan = addons, oldControlRetired = true) =>
+	openHarness("fabric-live", { dataRoot, addons: plan, ns: profileId, unclean, oldControlRetired });
 
 async function reset(h: DevHarness) {
 	const s = makeScenario(h, "fabric-live");
@@ -198,7 +198,7 @@ async function interruptConstruction(h: DevHarness) {
 	}
 }
 
-async function verifyRestart(mode: "resume" | "unknown" | "assets" | "save") {
+async function verifyRestart(mode: "resume" | "unknown" | "assets" | "save" | "writer") {
 	let targetPort = DEV_SERVER.port;
 	const relay =
 		mode === "save"
@@ -250,6 +250,20 @@ async function verifyRestart(mode: "resume" | "unknown" | "assets" | "save") {
 			assert(Number.isInteger(alternate) && alternate > 0 && alternate !== targetPort, "set MC_FABRIC_ALTERNATE_PORT");
 			targetPort = alternate;
 		}
+		if (mode === "writer") {
+			await assert.rejects(
+				open(true, plan, false),
+				/unclean recovery requires proof that the old control domain retired/,
+			);
+			const db = new DatabaseSync(join(dataRoot, "runtime.db"), { readOnly: true });
+			try {
+				assert.equal(db.prepare("SELECT COUNT(*) AS count FROM segments WHERE run=?").get(first.run)?.count, 1);
+			} finally {
+				db.close();
+			}
+			console.log("FABRIC recovery writer: startup refused without retirement proof; no new Segment");
+			return;
+		}
 		const h = await open(true, plan);
 		try {
 			if (mode !== "resume") {
@@ -274,8 +288,23 @@ async function verifyRestart(mode: "resume" | "unknown" | "assets" | "save") {
 						save: "WORLD_IDENTITY_CHANGED",
 					}[mode],
 				);
+				assert.deepEqual(h.runtime.lookup("explicit-recovery"), {
+					kind: "rejected",
+					requestId: "explicit-recovery",
+					code: attempted.code,
+					message: attempted.message,
+				});
+				const deadline = Date.now() + 5000;
+				for (;;) {
+					const parked = await h.runtime.read(first.run);
+					assert(parked.phase === "awaiting_decision", JSON.stringify(parked));
+					if (parked.reason === attempted.message) break;
+					assert(Date.now() < deadline, `task did not surface the recovery refusal: ${parked.reason}`);
+					await sleep(100);
+				}
 				const stopped = await h.runtime.stop({ requestId: "stop-recovery", target: { run: first.run } });
 				assert.equal(stopped.snapshot?.phase, "finished");
+				assert.equal(stopped.control, "stopped");
 				const settled = await h.runtime.read(first.run);
 				assert(settled.phase === "finished" && settled.outcome === "cancelled", JSON.stringify(settled));
 				assert.equal(settled.segment, first.segment);
@@ -318,6 +347,7 @@ if (scenario === "--restart") await verifyRestart("resume");
 else if (scenario === "--restart-unknown") await verifyRestart("unknown");
 else if (scenario === "--restart-assets") await verifyRestart("assets");
 else if (scenario === "--restart-save") await verifyRestart("save");
+else if (scenario === "--restart-writer") await verifyRestart("writer");
 else {
 	const h = await open();
 	let contentIds: Awaited<ReturnType<typeof content>> | undefined;

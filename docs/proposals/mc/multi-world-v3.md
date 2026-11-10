@@ -173,7 +173,7 @@ type SessionAction =
 // describe：任意时刻可用；从静态 catalog 取得
 // library：任意时刻可用；普通文件管理 + 从旧 Profile Run 存入程序
 // observe：无 profile 时当前 Session；带 profile 时仅历史查询
-// runs：写操作始终只作用当前 Session；list/record/calls/request 可显式查询旧 Profile
+// tasks：操作归属当前活动 Profile，历史任务需重连原 Profile 查证
 ```
 
 具体样例：
@@ -183,7 +183,7 @@ type SessionAction =
 {"action":"session","params":{"op":"connect","target":{"server":"home"}}}
 {"action":"session","params":{"op":"list"}}
 {"action":"session","params":{"op":"disconnect"}}
-{"action":"runs","params":{"op":"record","profile":"<profileId>","ref":"<completionRef>"}}
+{"action":"tasks","params":{"op":"trace","task":"<task>","record":"<recordRef>"}}
 {"action":"observe","params":{"selector":"places@1","profile":"<profileId>","input":{}}}
 ```
 
@@ -191,8 +191,8 @@ type SessionAction =
 - connect 已包含切换。与当前目标相同且客户端 ready，幂等返回；同一 visit 正处于重生 syncing，也直接返回当前状态，不把正常重生误作重连。同 Profile 已真正掉线才关闭旧 Executor 并创建新 visit。Owner Gate 关闭但客户端在线时不重新连接、不清 gate。
 - version 暂不开放自由字符串或 auto；初版唯一合同为 offline+1.21.11。以后协议能力矩阵验收完成，再扩展 ConnectInput 版本字段。登录凭证不出现在 settings、LLM 参数或 Program。
 - observe 离线带 profile 只允许 events@1、`places@1`，不允许会话当前值、`near`（没有实时玩家位置）、`route.plan` 等。复用当前事件 token/过滤逻辑，并把 profile 的真实 binding/worldRevision 用作 scope；默认不跨玩家合并聊天。Library/Archive 不制造"当前游戏观察值"。
-- runs 的 stop/continue/wait/retry/recover 等执行相关操作只能针对当前活动 Profile；`list/record/calls/request` 可对 Profile 的 runtime.db 使用只读 Archive 查询。`nextCall` 必须包含 profile，避免在 B 服务器查询 A 的完成记录时误路由到 B。
-- run/observe(current)/chat 在无活动连接时返回 NOT_CONNECTED。`runs.status` 在没有活动 Executor 时返回 NOT_CONNECTED；过去的执行状态通过带 profile 的只读接口查询。
+- 已交付的 `tasks` 只查证当前活动 Profile。原任务句柄自带归属。跨 Profile Archive 查询仍是后续设计。
+- run/observe(current)/chat 在无活动连接时返回 NOT_CONNECTED。`tasks` 在无活动会话时返回 NOT_CONNECTED；重连原 Profile 后可查询过去的任务。
 
 ### 5.1 Status 不混淆状态层
 
@@ -451,7 +451,7 @@ settings.json 为普通文件，每次 session.connect 重新读取；不用监�
 1. onStart 不再读取固定连接并开 Executor；创建 Controller + Catalog/SharedLibrary。World 启用默认不入服；`world_store` 仍负责启停，用户选择保持原有 enabled 偏好。
 2. session.status/list/connect/disconnect，区分客户端 ready、Executor ready、Owner Gate、History ready。
 3. connection.wait、身份文件、Profile 与 visitId；切换时安全退役并注册新 Body Endpoint；连接失败无自动旧服回滚。
-4. ExecutorPolicy.autoRecover=false 用于本 Controller 创建的会话，避免伴生错误自动重入原服务器；如果 Uina 要恢复，调用 session.connect/runs.recover 走显式路径。
+4. ExecutorPolicy.autoRecover=false 用于本 Controller 创建的会话，避免伴生错误自动重入原服务器；如果 Uina 要恢复，调用 session.connect 走显式路径。
 
 放行：A → B → A、同服务器不同 offline username、离线/失败连接、正在 Build/Goto 时切换、启动/停用并发、两次 connect 并发的真实测试。
 
@@ -489,7 +489,7 @@ settings.json 为普通文件，每次 session.connect 重新读取；不用监�
 | T10 | Bot 踢出/协议不符/超时、Executor IPC 仍正常 | 状态区分客户端掉线和 IPC；连接失败不自动连回旧服 |
 | T11 | OwnerLost/emergency Gate 关闭且 Bot 仍在线 | state 仍 connected，actionsAllowed=false；connect 同 profile 不绕 Gate |
 | T12 | Body endpoint 切换、旧事件/通知延迟到达 | 旧 endpoint 失效；旧通知的 profile/visit 保留，不能进入 B 的当前状态 |
-| T13 | 离线对旧 Profile 执行 runs.list/record/events/places | SQLite read-only，无建 Bot、无 Run 恢复/写库；游标按原 partition 校验 |
+| T13 | 通过未来独立的归档入口离线查询旧 Profile 的任务、记录、事件和地点 | SQLite read-only，无建 Bot、无 Run 恢复/写库；游标按原 partition 校验 |
 | T14 | 旧 Profile 的 Completion 未取得 Host Receipt 后切服 | 保留未确认事实；重访正确 reconcile；不伪造已通知/不重复物理动作 |
 | T15 | 离线 library.saveFromRun(A) 再在 B 执行 | Call 身份与 SHA 校验通过，Program 新 Run 用已确认内容，旧 Run snapshot 不变 |
 | T16 | 同一 world 不同域名、同域名不同真实存档 | 只有显式关联决定记录是否共享；默认仅是 endpoint 约定，不做"自动识别" |

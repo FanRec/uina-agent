@@ -2,7 +2,7 @@
 
 日期：2026-10-25。状态：终态详细设计，批 4 的平台/传输与受管执行侧已实现；批 6 已接通工具投影、请求凭证、可靠通知及 WorldDef，见 [实施记录](../archive/native-host-implementation.md)。目标部署为本机 Windows 10+，当前真实验收仅 Windows 11 x64。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
 
-批 4 状态与实际证据见 [平台实施记录](../archive/executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Program 执行与批 8 Library 文件/发现已接通；Microsoft、等待/决策续段仍明确不可用。后续按同一装配继续，不另建桥。
+批 4 状态与实际证据见 [平台实施记录](../archive/executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Program 执行与批 8 Library 文件/发现已接通；连接配置当前只支持 offline。后续按同一装配继续，不另建桥。
 
 ## 1. Uina 得到什么
 
@@ -16,29 +16,29 @@
 {"action":"run","params":{"selector":"collect@1","input":{"item":"oak_log","count":8}}}
 ```
 
-`run`/`chat`/`runs.continue` 只回答**受理**：`accepted` 表示已交给运行时（任务在后台跑，结算由 `minecraft_completion` 通知投递），`not_accepted` 表示没有派发，`unknown` 表示受理结果未知、必须用原 `request` 查证而不是重发。受理回执给 `requestId/run/segment`，不给 phase，也不给完成快照——模型要看当前进度就读状态帧，要结果就等通知，更久的显式等待用 `runs.wait {run,timeoutMs}`。等待工具回复被取消不停止已受理任务。失败和未知回执给出可直接复制的查询，不让模型猜是否应该重新执行。
+`run`、`chat` 和 `tasks.continue` 只回答受理，返回 `accepted`、`rejected` 或 `confirming`。有原始凭据时给 Profile 所属的 `task` 句柄。用 `tasks.get` 查当前状态，用 `tasks.stop` 撤销游戏任务。工具等待被取消后，已受理任务继续运行。终态与需要决策的报告由 `minecraft_completion` 投递。
 
 **批 41 起**：默认 3 秒等待窗与公开 `wait` 参数整体删除。原因是同一个结果曾同时存在两条通道——窗口内完成就把终态当工具结果返回，超时就把 `accepted` 返回、终态再从完成通知来一次；模型无法从返回值判断自己拿到的是终态还是受理态，宿主也无法保证两处措辞一致。删除后工具层只有一个语义，任务快慢只决定通知什么时候到。
 
 **批37 起**：世界状态不再推送。`state.snapshot` 是窄的只读 RPC，一次采样给三段的有界文本（见 [world §9.5](world.md)），由 `WorldDef.requestContext` 在每次模型请求前调用、宿主附在投影尾部；空闲世界零输入。事件只承载"发生了什么"：`minecraft_event` 按种类分流——死亡、断线、玩家私聊、本地安全响应没脱险（`blocked`/`timeout`）走 `urgent`（steer，当前执行前提已失效或有人在等回应），其余走 `queued`（等下一次决策一起处理）。已脱险的安全干预带 `interruptedRun` 上报。**批39 起**终止态的上报判据改看起因而非终态值：世界自己关门（`cancelled`）不上报，连接身份变了导致的失效不上报（`connection`/`death` 事实已经说了同一件事），其余一律上报——包括没有连接事实承担的失效（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录），它们意味着"危险触发过、脱险没跑成"，没有任何别的事实替它说。同一世界的后续输入（外部事件与自身完成）在宿主侧合成一次决策。
 
 ```json
-{"action":"runs","params":{"op":"request","request":"q17"}}
+{"action":"tasks","params":{"op":"get","task":"<task>"}}
 ```
 
-要撤销它可直接使用原引用；不必先等到 run：
+用原任务句柄即可请求停止，即使仍在确认受理。
 
 ```json
-{"action":"runs","params":{"op":"stop","request":"q17"}}
+{"action":"tasks","params":{"op":"stop","task":"<task>"}}
 ```
 
-旧段的固定报告和记录通过同一入口展开：
+按需查看同一任务的调用或效果证据。
 
 ```json
-{"action":"runs","params":{"op":"record","ref":"completion-s1"}}
+{"action":"tasks","params":{"op":"trace","task":"<task>","record":"<effectRef>"}}
 ```
 
-正常使用只需记住：查事实用 observe，找能力用 describe，执行用 run，查进度或停止用 runs，保存用 library，聊天和服务器指令用 chat。进程恢复是故障时按返回的 `nextCall` 操作。
+正常使用只需记住：查事实用 observe，找能力用 describe，执行用 run，查进度或停止用 tasks，保存用 library，聊天和服务器指令用 chat。进程恢复是故障时按返回的 `nextCall` 操作。
 
 ```json
 {"action":"chat","params":{"text":"我回来了"}}
@@ -122,7 +122,7 @@ type MinecraftRunsParams =
 - request({request}) → SubmissionLookup；found 提供原 segment、当前小投影和原 completionRef，历史报告用该 completionRef 读取。cancelled 表示从未受理且已持久撤销；unavailable 保持未知。retry 复用原键和原请求，见 §6.2。
 - stop 支持 run 或 request 二选一，模型不生成停止命令 ID。只有 requestId 时也能撤销该意图；停止不关闭其他 Run 的门，见 §6.3。
 - recover 不带 expected 只重建/核对；带完整 {attachment,gateRevision} 才显式解除 owner_lost，且本次不能再重建实例。两项缺一拒绝；不能解除 emergency，见 §7.3。
-- **机械对账在激活时自动完成**（2026-11-09 起）：`launch` 只有在旧执行树被证明退役后才开始，所以新域 attach 成功即证明旧控制不可能再写世界。此时 `disabled` 与 `owner_lost` 由 Executor 自动解除，`status().recovery` 如实报告 `{clearedGates, blocked}`；`emergency` 永不自动解除，且它关着时 `owner_lost` 一并保持关闭。`runs recover` 仍保留给显式重连与人工干预。
+- **机械对账在激活时自动完成**（2026-11-09 起）：`launch` 只有在旧执行树被证明退役后才开始，所以新域 attach 成功即证明旧控制不可能再写世界。此时 `disabled` 与 `owner_lost` 由 Executor 自动解除，`status().recovery` 如实报告 `{clearedGates, blocked}`；`emergency` 永不自动解除，且它关着时 `owner_lost` 一并保持关闭。用户通过 `session.connect` 显式重连。
 
 <a id="observation-images"></a>
 
@@ -458,7 +458,7 @@ library 的写入直接在执行侧完成；取消或断线后写入程度不明
 
 **批25 退役三事实（v3 §6.2）**：`close()` 返回 `ExecutorCloseResult { process: "retired"|"unknown", ownership: "released"|"held", runtime: "clean"|"unclean"|"unknown" }`，不再以抛 `EXECUTION_DOMAIN_UNRETIRED` 表达脏关闭（该码保留给 Runtime 发起的 retire_required 请求路径）。只允许新执行域的必要条件是 `process=retired && ownership=released`；`runtime=unclean` 只影响旧 Run 的恢复结算，不阻止切服。已证实的结论幂等复用；未证实的结论允许重试——再次 close 就是人工恢复渠道，SessionController 据此把未证实执行域保留为 blocked 引用并以 `SESSION_BLOCKED` 拒绝新连接，不设时间兜底。**批25 入服回执**：`connection.wait` RPC（`Executor.waitGameConnection`）等 ClientHost 首个终态并返回 `{state, username, uuid, reason}`；`open()` 成功只代表 IPC/Runtime ready，不代表入服成功（I4）。
 
-默认：握手 10 秒、普通 RPC 回复 5 秒、短结果窗口 3 秒、关闭宽限 400ms、强杀确认另给 1 秒。显式 runs.wait 不套普通 RPC 时限；submit/continue 的受理 RPC 和结果窗口分别计时。CLI 当前可能更早硬退出，因此 Job 的父退出保证不可被优雅宽限替代。时限均为初始策略，非实时保证；超时只能说明该事实未取得。
+默认：握手 10 秒、普通 RPC 回复 5 秒、关闭宽限 400ms、强杀确认另给 1 秒。开发诊断可通过 Executor 的 wait 方法读取结果。CLI 当前可能更早硬退出，因此 Job 的父退出保证不可被优雅宽限替代。时限均为初始策略，非实时保证；超时只能说明该事实未取得。
 
 ### 7.2 故障影响范围
 
@@ -475,7 +475,7 @@ library 的写入直接在执行侧完成；取消或断线后写入程度不明
 
 ### 7.3 恢复与重新开放
 
-故障退役确认后，当前 activation 最多自动尝试一次基础设施重建；失败保持 unavailable/faulted，不无限重启。后续 runs.recover 或重新启用可再试一次。重建先恢复库与记录，动作门保持关闭；不因“新进程 ready”启动旧任务。
+故障退役确认后，当前 activation 最多自动尝试一次基础设施重建；失败保持 unavailable/faulted，不无限重启。可通过会话重连重建执行域。重建先恢复库与记录，动作门保持关闭；不因“新进程 ready”启动旧任务。
 
 非 clean 启动由 Runtime 记录 owner_lost，即使故障前尚未来得及持久该门；已有 disabled/emergency/stop 意图一并优先恢复。本地和远端任一已确认关闭的 emergency 都保持关闭，状态不明不得推断已解除。原停止意图两侧均未确认持久时，不承诺断电后能恢复它；未清理启动仍阻止自动准入并要求核对。
 
@@ -489,7 +489,7 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 - resume：在当前有效绑定、状态已核对且 expectedRevision 匹配时，明确解除 emergency；本地已存停止意图也须确认清除。其他门继续生效。无活动 Run 复活，不把 faulted 状态恢复工作当作身体 resume 的副作用。
 - interrupt：显式空操作；Minecraft 无本回合瞬时表现。必须实现，避免具身扩展回退 safeStop。focus 变化、turn_aborted、聊天切换均不取消已受理任务。
 
-模型不能通过能力参数、runs.recover 或自己伪造 BodyEndpoint 调用解除操作者急停；解除仍走现有可信具身路由。
+模型不能通过能力参数 或自己伪造 BodyEndpoint 调用解除操作者急停；解除仍走现有可信具身路由。
 
 ## 8. 受理出口、后台通知和摘要
 
@@ -504,7 +504,7 @@ Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 
 ### 8.2 受理屏障、集中投递与恢复
 
 1. 派出受理 RPC 前按 `requestId` 登记本地暂缓（`heldRequests`），受理回执到手、或请求仍在不明地飞时解除。这段窗口里对账跳过同一 requestId 的待投递项：工具结果还没进 canonical 历史，完成通知不能抢在它前面被消费。它是因果屏障，不是等结果的时间窗。
-2. 工具只把受理回执（`accepted`/`not_accepted`/`unknown`）交回模型，不读 Completion、不创建 tool attempt、不带 `completionRef` receipt；`unknown` 保留原 requestId 与 `runs.request` 查证入口。Runtime 的交付处置此时仍是 pending。
+2. 工具只把受理回执（`accepted`、`rejected` 或 `confirming`）交回模型，不读 Completion、不创建 tool attempt、不带 `completionRef` receipt；`confirming` 用原任务句柄经 `tasks.get` 查证。Runtime 的交付处置此时仍是 pending。
 3. 结算只有一条通道：后台按 `completionRef` 独立 `inspect(key)`，逐份准备 input attempt，经批量入口持久入队；Host 形成 committed 回执后才 `settleDelivery`。受理窗口里被跳过的项下一轮对账自然补上，不因"工具已返回"丢失，也不因重复投递重跑世界动作。
 4. 后台分页读 eligible pending 引用并先 inspect(key)。committed 直接 ACK；pending 不重复入队；absent 才准备同一 CompletionView，持久登记新 input attempt 后集中交付（带 receipt）。一轮对账把所有可交付的 key 收进一个有界批次（最多 8 个）、一次 `emitEvents` 交出：多份完成通知互不占位，宿主还在处理的那份不挡别的。没交出去的那条不推进状态，下一轮换新 attempt 重投；全被拒不再立即重排，避免忙等。宿主少回一条回执与明确拒收同样按未交出算：清掉在途记录、记 `DELIVERY_UNCONFIRMED`，不留一个永远退不了的输入。宿主没有批量入口时本轮对账直接失败并在诊断报出原因，既不静默把完成通知当成已交出，也不退回逐条投递（那会让第一条独占模型回合）。批量受理只等到逐条持久入队，模型回合由宿主随后统一调度，不在对账串行区内等待。
 5. 发出前、deferred render 前以小型 readDelivery 复查 eligibility；当前 decision 过时则 null，不写 ACK；不可核实则暂缓并继续查询。正文是已准备好的固定 View，材料不可读也可交付真实 header。Host input_settled 后查询 receipt，committed 才 ACK。渲染后的最后 decision 展示竞态仍由 continue CAS 阻止重复行动。

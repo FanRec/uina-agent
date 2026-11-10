@@ -36,7 +36,8 @@ export interface LedgerSnapshot {
 }
 export type TaskRequestSelection =
 	| { kind: "roots"; activeOnly: boolean }
-	| { kind: "continuation"; run: string; decision: string };
+	| { kind: "continuation"; run: string; decision: string }
+	| { kind: "unconfirmed" };
 
 export type LedgerRequest =
 	| { id: number; op: "open"; path: string; worldOwner: string; storageId: string }
@@ -46,7 +47,7 @@ export type LedgerRequest =
 	| { id: number; op: "clean"; launch: string }
 	| { id: number; op: "request_put"; credential: RequestCredential }
 	| { id: number; op: "request_get"; requestId: string }
-	| { id: number; op: "request_list"; selection?: TaskRequestSelection }
+	| { id: number; op: "request_list"; selection: TaskRequestSelection }
 	| { id: number; op: "request_found"; requestId: string; lookup: Extract<SubmissionLookup, { kind: "found" }> }
 	| { id: number; op: "request_refused"; requestId: string; refusal: NonNullable<RequestCredential["refusal"]> }
 	| { id: number; op: "attempt_put"; attempt: DeliveryAttempt }
@@ -127,21 +128,25 @@ parentPort!.on("message", (request: LedgerRequest) => {
 			} else if (request.op === "request_list") {
 				const selection = request.selection;
 				const rows =
-					selection?.kind === "roots"
+					selection.kind === "roots"
 						? db
 								.prepare(`SELECT credential FROM requests WHERE json_extract(credential, '$.operation')='submit'
 						AND json_extract(credential, '$.run') IS NULL
 						AND (?=0 OR json_extract(credential, '$.refusal') IS NULL) ORDER BY rowid DESC LIMIT 20`)
 								.all(selection.activeOnly ? 1 : 0)
 								.reverse()
-						: selection?.kind === "continuation"
+						: selection.kind === "continuation"
 							? db
 									.prepare(`SELECT credential FROM requests WHERE json_extract(credential, '$.operation')='continue'
 							AND json_extract(credential, '$.request.run')=? AND json_extract(credential, '$.request.decision')=?
 							AND json_extract(credential, '$.run') IS NULL AND json_extract(credential, '$.refusal') IS NULL
 							ORDER BY rowid DESC LIMIT 1`)
 									.all(selection.run, selection.decision)
-							: db.prepare("SELECT credential FROM requests ORDER BY rowid").all();
+							: db
+									.prepare(`SELECT credential FROM requests
+									WHERE json_extract(credential, '$.run') IS NULL AND json_extract(credential, '$.refusal') IS NULL
+									ORDER BY rowid`)
+									.all();
 				value = rows.map((row) => JSON.parse(String(row.credential)));
 			} else if (request.op === "request_found") {
 				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);

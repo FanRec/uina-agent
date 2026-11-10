@@ -3,9 +3,9 @@ async function main(mc, input) {
   const request = { cells: input.cells, replace: false };
   const plan = (await mc.read("build.plan@1", request)).value;
   if (!plan) mc.decide("Construction plan is unavailable");
-  if (plan.targets.some((target) => target.kind !== "set"))
+  const { targets } = plan;
+  if (targets.some((target) => target.kind !== "set"))
     mc.decide("Resumable construction requires explicit placements");
-  const targets = plan.targets.filter((target) => target.kind === "set");
   const matches = async (target) => {
     const block = (await mc.read("block@1", { at: target.at })).value?.block;
     const name = typeof target.block === "string" ? target.block : target.block.name;
@@ -30,7 +30,8 @@ async function main(mc, input) {
   for (const target of targets) {
     if (!await matches(target)) remaining.push(target.at);
   }
-  if (remaining.length) mc.decide("Construction has unsatisfied target cells", { verified, remaining });
-  return { verified, remaining };
+  const result = { verified: targets.length - remaining.length, remaining };
+  if (remaining.length) mc.decide("Construction has unsatisfied target cells", result);
+  return result;
 }
 `;

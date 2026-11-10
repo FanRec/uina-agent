@@ -68,6 +68,7 @@ export async function openHarness(
 		callables?: NativeCallable<JsonValue, JsonValue>[];
 		addons?: import("../contracts/addons.js").AssemblyPlan;
 		unclean?: boolean;
+		oldControlRetired?: boolean;
 		dataRoot?: string;
 		/** 重开同一数据根时复用上次的 ns：runtime.db 的 world_owner 与历史库身份都绑定它。 */
 		ns?: string;
@@ -97,7 +98,7 @@ export async function openHarness(
 			},
 			addons: options.addons,
 			unclean: options.unclean ?? false,
-			oldControlRetired: true,
+			oldControlRetired: options.oldControlRetired ?? true,
 			ownerLifetimeMs: 5000,
 			localGates: [],
 		},

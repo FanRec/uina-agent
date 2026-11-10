@@ -172,7 +172,7 @@ Client 的协议底座（隐含 `claim("preconnect", name)`），不成为 Play 
 
 `ProtocolBootstrap` 目前**不提供** `registerCodec`：需要扩展 codec 的加载器基础包走
 `installLowLevel`（受信任、只在预连接阶段、隐含 `claim("preconnect", name)`），
-不在普通 SDK 里放一套半成品 codec 注册。等真实 Fabric/NeoForge 服证明必须有时再加窄口。
+配置阶段的 `installRegistry` 接受已核验的连接级注册表映射，填入同一个客户端的解码表。当前范围为夹具实测的物品与单状态实心方块。
 
 ### 8.1 通道注册（必须）
 
@@ -336,8 +336,7 @@ npx vitest run tests/mc/mc-addons.test.ts tests/mc/mc-addon-graph.test.ts \
 `mc-protocol-bootstrap` / `mc-pending-client` 覆盖首包前挂载、claim 冲突、阶段回复、
 未连接 Client 构造与放行/回滚；`mc-scoped-protocol*` 覆盖过期写端口与 Effect Ledger 派发。
 
-**观察者画面验收没有自动化**：需要真服 + 真实 Fabric 客户端 + SpectatorPlus 客户端 Mod，
-按 §11 的包配置人工确认。单测只证明"事件成对、字节正确"，不能替代肉眼/录屏。
+Fabric 真服的 `pnpm dev:mc:fabric --spectator` 分开核对出站的开关字节和真实 Java 客户端记录的界面。另有注册表握手、自定义物品与方块及切服失效的真服场景。 [组合版本与验收](archive/world-refactor-v2.md)
 
 真服（先启动 dev-env Paper，含 `uina-example-plugin`）：
 
@@ -351,10 +350,7 @@ pnpm dev:mc:addons
 ## 13. 限制与未完成项
 
 - **未做**：Addon 热重载/热替换（设计上不支持，重连才生效）；运行时卸载已加载包；
-- **未做**：真实 Fabric / Forge / NeoForge 模组服的协商 → 注册表 → 操作纵向验证。当前只有
-  Paper 1.21.11 原版服；`dev/probe-first-packet.mjs` 只证明"全部协议贡献挂载后才放行连接"
-  没有首包竞态，正式 `ClientHost` 的真服连接回归（`dev-env/smoke-connection.mts`）也只覆盖
-  原版登录，两者都不能当作模组兼容证据；
+- **已验证**：固定 Fabric 组合的协商、注册表解码、公开动作和服务端复核。Forge 和 NeoForge 尚无纵向证据。
 - **未做**：`serverRequirement` 的服务端探测（只做声明；`Compatible` 需要具体能力自己验证）；
 - **已否决**：`/spectate` 方向的 SpectatorPlus 集成。这里有两个同名项目：Nahu 的 Spigot 插件提供
   `/spectate`；yzxoi 的 `SpectatorPlus`（1.21.11 分支）是 **Fabric 客户端 mod + Paper 插件**，只做
@@ -365,8 +361,6 @@ pnpm dev:mc:addons
   所以 Uina 只需要在窗口事务起止各发一个字节。见 §8.5 与 §11。
 - **未覆盖**：Paper 端不支持。同一通道在 Paper 插件里读 0 字节、只当"打开"，没有关闭分支；
   支持它必须改服务端插件（上游范围），本仓库不改、也不发对端会误解的字节。
-- **未验证**：真实 Fabric 观察者客户端的画面验收。自动化只覆盖到"事件成对 + 字节正确"，
-  "观察者真的看到了界面"必须在真服 + 真客户端上肉眼确认，不能用单测代替。
 - **未覆盖**：非 1.21.11 协议（`registerChannels` 与 custom_payload 编解码按 1.21.11 窄口）；
 - **已知**：Addon 事实的**当前值**不跨连接继承（连接级内存表，断线清空；`connection` 域
   保留到断线，`incarnation` 域换代即失效）。每次发布产生的 `addon.fact@1` 采集证据会进

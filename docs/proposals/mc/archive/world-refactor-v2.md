@@ -43,7 +43,7 @@ Paper Java 1.21.11，隔离存档与临时 Profile。每轮重置库存与场景
 | 同地址换存档 | 同一 TCP 地址转接到另一份 Fabric 存档，存档 UUID 不同。续段被拒绝，显式停止后保持取消。 |
 | 数据回退 | 复制 SQLite 数据，当前 Runtime 读取旧 Run 并写入 Owner 门。基线 Runtime 也能打开新数据副本并执行同样操作，历史 Run 读值保持一致。 |
 
-重现入口为 `pnpm dev:mc:fabric`。设置 `MC_DEV_PORT=25566` 并连接隔离 Fabric。模式包括 `--registry-switch`、`--spectator`、`--restart`、`--restart-unknown`、`--restart-assets`、`--restart-save`。观察场景用夹具的 Gradle `runClient`，将 `UINA_FABRIC_SPECTATOR_JAR` 指向指定 JAR，并将客户端日志传给 `MC_FABRIC_OBSERVER_LOG`。同地址换档场景还需设置 `MC_FABRIC_ALTERNATE_PORT`，指向带独立存档的第二个 Fabric 服务端。
+重现入口为 `pnpm dev:mc:fabric`。设置 `MC_DEV_PORT=25566` 并连接隔离 Fabric。模式包括 `--registry-switch`、`--spectator`、`--restart`、`--restart-unknown`、`--restart-assets`、`--restart-save`、`--restart-writer`。观察场景用夹具的 Gradle `runClient`，将 `UINA_FABRIC_SPECTATOR_JAR` 指向指定 JAR，并将客户端日志传给 `MC_FABRIC_OBSERVER_LOG`。运行前让观察者连接测试服并关闭自己的背包和菜单。换档场景还需设置 `MC_FABRIC_ALTERNATE_PORT`，指向带独立存档的第二个 Fabric 服务端。
 
 自动续段的验证范围为同存档、同维度的显式绝对坐标格。进度由已提交检查点记录，现场差异由新 Segment 复读。Addon 装配摘要变化后保留原任务供查证。当前注册表适配验证了该组合中的单状态实心方块和物品。
 
@@ -54,3 +54,11 @@ Paper Java 1.21.11，隔离存档与临时 Profile。每轮重置库存与场景
 - `pnpm typecheck` 与 `pnpm build` 通过。全量 `pnpm test --maxWorkers=4` 有 3621 项通过、1 项预期失败，两项 Windows 联接测试失败。Library 收到 `realpath UNKNOWN`，Executor 打开别名收到 Windows 448。C、E 两卷独立联接探针均出现 `UNKNOWN`，待在能通过联接探针的 Windows 主机上复验原断言。
 
 回退按 Git 切片恢复唯一生产绑定。运行库保留已有动作和 Effect 事实，现场动作以服务端重新对账。
+
+## 收尾审查
+
+- 逐项核对 V2 方案所列 54 项能力与实际 Catalog。原有能力中只有 `collect@1` 绑定 Program。通用 `build@1`、`excavate@1`、`explore@1`、`transit@1` 和 `tunnel@1` 保留原生绑定。新增 `build.resume@1` 专用于可恢复的绝对坐标施工。
+- 通过正式 Host 在真实 Paper 上，从任务证据复制已冻结的采集源码。只改默认半径，在同一场景验证短半径报告 `NOT_FOUND` 并保留源块，较长半径成功采集。另复跑 0 到 16 个原木的正式绑定单轮及部分完成、满包、缺工具和派发后断线。切换预算仍以原始 20 轮结果为准。
+- 真实 Fabric 复跑恢复、未知写入、换存档及资产变化。待决策任务可查询具体拒绝原因，显式续段的拒绝可用原提交身份从持久记录查证。另在终止旧进程后特意省略 Writer 退休证明，确认新 Runtime 拒绝启动，数据库仍只有原 Segment。
+- 复跑 Fabric 注册表及 SpectatorPlus。服务端重新确认自定义物品和方块，换到 Paper 后旧数字 ID 仍为未知。实机观察端复验两次制作各收到打开和关闭，且只在跟随目标时显示同步背包。
+- 源码和构建产物的公开任务和 Program 验收通过。真实模型重新通过发现、拒绝后调整、采集和停止。类型检查和构建通过。全量测试复跑为 3624 项通过、1 项预期失败、2 项 Windows 联接失败。两项安全断言原样保留，Windows 联接复验仍是发布门的未完成项。

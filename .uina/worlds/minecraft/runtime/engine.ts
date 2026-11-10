@@ -486,7 +486,7 @@ export class RuntimeEngine {
 			await this.queue.flushThrough(this.queue.capture());
 		}
 	}
-	continue(origin: Origin, request: ContinueRequest): Promise<Acceptance> {
+	continue(origin: Origin, request: ContinueRequest, wake = false): Promise<Acceptance> {
 		const key = submissionKey(origin.worldOwner, request.requestId);
 		const captured = {
 			...(plain(request) as unknown as ContinueRequest),
@@ -503,7 +503,7 @@ export class RuntimeEngine {
 						code: "REQUEST_CONFLICT",
 						message: "requestId is preparing another intent",
 					});
-		const promise = this.serializeAdmission(() => this.continuePrepared(origin, captured, intent)).catch(
+		const promise = this.serializeAdmission(() => this.continuePrepared(origin, captured, intent, wake)).catch(
 			(error): Acceptance => {
 				this.uncertainSubmissions.add(key);
 				return { kind: "unknown", requestId: request.requestId, reason: String(error) };
@@ -513,8 +513,13 @@ export class RuntimeEngine {
 		void promise.finally(() => this.pendingSubmissions.delete(key));
 		return promise;
 	}
-	private async continuePrepared(origin: Origin, request: ContinueRequest, intent: string): Promise<Acceptance> {
-		const reject = (code: string, message: string): Acceptance => ({
+	private async continuePrepared(
+		origin: Origin,
+		request: ContinueRequest,
+		intent: string,
+		wake: boolean,
+	): Promise<Acceptance> {
+		const refusal = (code: string, message: string): Acceptance => ({
 			kind: "not_accepted",
 			requestId: request.requestId,
 			code,
@@ -523,10 +528,10 @@ export class RuntimeEngine {
 		const key = submissionKey(origin.worldOwner, request.requestId),
 			prior = this.submissions.get(key) ?? this.byRequestId.get(request.requestId);
 		if (this.submissionBarriers.has(request.requestId) || prior?.status === "cancelled")
-			return reject("REQUEST_CANCELLED", "request was stopped before admission");
+			return refusal("REQUEST_CANCELLED", "request was stopped before admission");
 		if (prior) {
 			if (prior.requestJson !== intent || prior.operation !== "continue")
-				return reject("REQUEST_CONFLICT", "requestId already has another intent");
+				return refusal("REQUEST_CONFLICT", "requestId already has another intent");
 			if (prior.run && prior.segment)
 				return {
 					kind: "accepted",
@@ -534,15 +539,19 @@ export class RuntimeEngine {
 					segment: prior.segment,
 					snapshot: this.read(prior.run),
 				};
-			return reject(prior.error?.code ?? "REQUEST_CONFLICT", prior.error?.message ?? "request unavailable");
+			return refusal(prior.error?.code ?? "REQUEST_CONFLICT", prior.error?.message ?? "request unavailable");
 		}
+		const reject = (code: string, message: string) =>
+			wake
+				? refusal(code, message)
+				: this.rejectSubmission(origin.worldOwner, request, intent, { code, message }, "continue");
 		let generation: number;
 		try {
 			this.assertActionAllowed();
 			generation = this.owner.capture(origin);
 		} catch (error) {
 			const f = toCallFailure(error);
-			return reject(f.code, f.message);
+			return refusal(f.code, f.message);
 		}
 		const old = this.runs.get(request.run),
 			row = this.recoveredRuns.get(request.run);
@@ -727,7 +736,7 @@ export class RuntimeEngine {
 		} catch (error) {
 			await state.programScope?.close("failed");
 			const e = error as { code?: string; message: string; acknowledged?: boolean };
-			if (e.acknowledged && e.code) return reject(e.code, e.message);
+			if (e.acknowledged && e.code && e.code !== "REQUEST_CONFLICT") return reject(e.code, e.message);
 			throw error;
 		}
 		this.runs.set(state.run, state);
@@ -1091,14 +1100,23 @@ export class RuntimeEngine {
 		return { kind: "accepted", requestId: request.requestId, segment, snapshot: projectSummary(state) };
 	}
 
-	private rejectSubmission(
+	private async rejectSubmission(
 		owner: Ref,
-		request: RunRequest,
+		request: RunRequest | ContinueRequest,
 		intentJson: string,
 		error: { code: string; message: string },
-	): Acceptance {
+		operation: "submit" | "continue" = "submit",
+	): Promise<Acceptance> {
+		if (this.submissionBarriers.has(request.requestId))
+			return {
+				kind: "not_accepted",
+				requestId: request.requestId,
+				code: "REQUEST_CANCELLED",
+				message: "request was stopped before admission",
+			};
 		const record = this.refs.record();
 		const submission: SubmissionState = {
+			operation,
 			owner,
 			requestId: request.requestId,
 			status: "rejected",
@@ -1110,13 +1128,13 @@ export class RuntimeEngine {
 		};
 		this.submissions.set(submissionKey(owner, request.requestId), submission);
 		this.byRequestId.set(request.requestId, submission);
-		this.queue.enqueue({
+		const ticket = this.queue.enqueue({
 			kind: "submission",
 			row: {
 				owner,
 				request_id: request.requestId,
 				status: "rejected",
-				operation: null,
+				operation,
 				segment: null,
 				run: null,
 				request: JSON.stringify(plain(request)),
@@ -1125,6 +1143,7 @@ export class RuntimeEngine {
 				error: JSON.stringify(error),
 			},
 		});
+		await this.queue.flushThrough(ticket);
 		return { kind: "not_accepted", requestId: request.requestId, ...error };
 	}
 
@@ -1257,7 +1276,8 @@ export class RuntimeEngine {
 		if (state == null && requestTarget != null) {
 			const submission = this.byRequestId.get(requestTarget);
 			if (submission != null) {
-				if (submission.status === "cancelled") {
+				if (submission.status === "cancelled" || submission.status === "rejected") {
+					await this.queue.flushThrough(this.queue.capture());
 					return {
 						requestId: command.requestId,
 						target,
@@ -1330,20 +1350,21 @@ export class RuntimeEngine {
 			const recovered = this.recoveredRuns.get(runRef);
 			if (recovered != null) {
 				if (recovered.phase === "awaiting_decision") {
+					const control = recovered.control === "unknown" ? "unknown" : "stopped";
 					const intent: StopIntentRow = {
 						record: this.refs.stopIntent(),
 						stop_request_id: command.requestId,
 						owner: this.opts.worldOwner,
 						target: JSON.stringify(target),
-						control: "stopped",
+						control,
 						created_at: nowIso(),
 					};
 					const next = {
 						...recovered,
 						phase: "finished",
-						outcome: "cancelled",
+						outcome: control === "unknown" ? "unknown" : "cancelled",
 						completion_ref: this.refs.completion(),
-						control: "stopped",
+						control,
 						revision: recovered.revision + 1,
 						record: this.refs.record(),
 					};
@@ -1358,7 +1379,7 @@ export class RuntimeEngine {
 						target,
 						record: next.record,
 						intent: "durable",
-						control: "stopped",
+						control,
 						snapshot: summaryFromRow(next),
 					};
 				}
@@ -1367,7 +1388,7 @@ export class RuntimeEngine {
 					target,
 					record: recovered.record,
 					intent: "durable",
-					control: "stopped",
+					control: recovered.control === "unknown" ? "unknown" : "stopped",
 					snapshot: summaryFromRow(recovered),
 				};
 			}
@@ -1574,13 +1595,17 @@ export class RuntimeEngine {
 			const origin: Origin = { worldOwner: this.opts.worldOwner, activation: owner.activation };
 			let claimed = 0;
 			for (const item of due) {
-				const acceptance = await this.continue(origin, {
-					run: item.run,
-					decision: item.decision,
-					requestId: `${item.run}~wake~${item.revision}`,
-					entry: { kind: "call", selector: item.wait.resume.selector, input: item.wait.resume.input },
-					environment: "inherit",
-				});
+				const acceptance = await this.continue(
+					origin,
+					{
+						run: item.run,
+						decision: item.decision,
+						requestId: `${item.run}~wake~${item.revision}`,
+						entry: { kind: "call", selector: item.wait.resume.selector, input: item.wait.resume.input },
+						environment: "inherit",
+					},
+					true,
+				);
 				if (acceptance.kind === "accepted") {
 					claimed++;
 					this.wakeRefusals.delete(item.run);
@@ -1594,7 +1619,24 @@ export class RuntimeEngine {
 				// 环境已换）在这一版挂起上是确定结论，每秒重试只是空转加噪声。
 				if (acceptance.code === "RECOVERY_IDENTITY_PENDING" || TRANSIENT_WAKE_REFUSALS.has(acceptance.code)) continue;
 				if (this.wakeRefusals.get(item.run) === item.revision) continue;
-				this.wakeRefusals.set(item.run, item.revision);
+				const parked = item.wait.recovery ? this.recoveredRuns.get(item.run) : undefined;
+				let revision = item.revision;
+				if (parked?.phase === "awaiting_decision" && parked.revision === revision && parked.decision) {
+					const decision = JSON.parse(parked.decision) as { ref: Ref; request: DecisionRequest };
+					if (decision.request.reason !== acceptance.message) {
+						decision.request.reason = acceptance.message;
+						const row = {
+							...parked,
+							revision: ++revision,
+							record: this.refs.record(),
+							completion_ref: this.refs.completion(),
+							decision: JSON.stringify(decision),
+						};
+						this.queue.enqueue({ kind: "run", row });
+						this.recoveredRuns.set(item.run, row);
+					}
+				}
+				this.wakeRefusals.set(item.run, revision);
 				console.error(
 					`[mc-runtime] durable wake for ${item.run} refused (${acceptance.code}): ${acceptance.message}; ` +
 						"the run stays parked until a host decision or stop",
@@ -1891,8 +1933,7 @@ export class RuntimeEngine {
 				if ("scope" in result.failure) callState.diagnostic = result.failure;
 				const f = result.failure;
 				if ("declared" in f && f.declared) {
-					const allowed = invocation.descriptor?.errors?.some((error) => error.code === f.code);
-					if (!allowed) throw this.scopeError("PROGRAM_ERROR", "program failure code is not declared: " + f.code);
+					const declared = invocation.descriptor?.errors.some((error) => error.code === f.code) === true;
 					const effects = this.callEffects(callState);
 					const dispatch = effects.some((ref) => this.queue.effectRecord(ref)?.latest.dispatch === "unknown")
 						? "unknown"
@@ -1900,10 +1941,10 @@ export class RuntimeEngine {
 							? "sent"
 							: "not_sent";
 					throw callFailure({
-						code: f.code,
-						message: f.message,
+						code: declared ? f.code : "PROGRAM_ERROR",
+						message: declared ? f.message : `${f.code}: ${f.message}`,
 						hint: f.hint,
-						source: "capability",
+						source: declared ? "capability" : "program",
 						dispatch,
 						effects,
 						progress: callState.progress,

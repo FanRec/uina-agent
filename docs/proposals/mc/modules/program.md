@@ -520,7 +520,7 @@ Program 通过注入的只读库入口解析名字，拥有执行快照、逻辑
 物品转移：transfer@1 的 from/to 恰一，另一端为自身库存；容器可填 "nearest"。drop@1 可 toward 玩家，只证明丢出。
 @major 是能力引用；裸名是保存程序。签名不确定先用工具 describe，包含完整可复制示例。
 工具 observe 查事实，run 执行，runs 查进度/停止/继续，library 管文件，chat 发消息或 /指令。
-accepted 尚未完成；unknown 先按返回的 request 查证；工具取消只结束等待，要停游戏任务用 runs.stop。
+accepted 表示已受理。confirming 用原任务句柄调用 tasks.get 查证。工具取消只结束等待，停止游戏任务用 tasks.stop。
 unknown 表示没看清；找不到只说明查询覆盖内没找到。动作不足/失败看 e.code/e.progress/effects。
 mc.progress({summary:"正在采集", acquired:6}) 报告结构化进度；Runtime 不替程序累计数量。
 需要精细操作：mc.withBody(async body => ...)，body.call 委托，子程序普通 call 继承；回调等待也保留身体。

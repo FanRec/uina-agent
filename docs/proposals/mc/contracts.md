@@ -1,6 +1,6 @@
 # Minecraft World：所有权与协作
 
-日期：2026-10-18（2026-11-06 批25 同步）。状态：设计导航；原生能力与批 4–6 已接通；Program 执行、批 8 Library、等待/决策与完整 I2 已实现（批 9A/9B），能力面 54/54（批19 收口时为 51/51，其后随能力增补到 18 查询 + 36 动作；权威口径见 `mc-capability-catalog.test.ts`），会话层/双根数据目录/宿主 Library（批25，设计合同 [multi-world-v3](multi-world-v3.md)）。
+日期：2026-10-18（2026-11-06 批25 同步）。状态：设计导航；原生能力与批 4–6 已接通；Program 执行、批 8 Library、等待/决策与完整 I2 已实现（批 9A/9B），能力面 18 查询与 37 动作，既有 54 个 selector 和新增 `build.resume@1` 各有唯一绑定，会话层/双根数据目录/宿主 Library（批25，设计合同 [multi-world-v3](multi-world-v3.md)）。
 
 本文只列模块边界和跨模块流程。行为合同由所属模块唯一维护，跨模块类型见 [public-api](public-api.md)；本文件不另定义受理、停止、等待或结算算法。
 
@@ -44,7 +44,7 @@ Runtime 的事务不覆盖 Library 文件或 World 存储。工作文件、执�
 
 ## 3. 接入与受理
 
-接入生成/保存请求凭证由 [Executor §6](modules/executor.md#6-接入账本与受理查证) 定义；唯一受理、请求撤销与抢占事务由 [Runtime §2/§4.4](modules/runtime.md) 定义。`runs.wait` 的等待、Run 停止和整个 World 停用的不同取消范围见 [Executor §2/§7](modules/executor.md)。
+接入生成/保存请求凭证由 [Executor §6](modules/executor.md#6-接入账本与受理查证) 定义；唯一受理、请求撤销与抢占事务由 [Runtime §2/§4.4](modules/runtime.md) 定义。`tasks.stop`、Executor 诊断等待和 World 停用的不同取消范围见 [Executor §2/§7](modules/executor.md)。
 
 <a id="delivery"></a>
 
