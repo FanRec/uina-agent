@@ -18,7 +18,7 @@
 ## Checkpoint
 
 只保存下一段所必需的：**目标、阶段、已确认效果、候选与已知障碍及其来源**。不携带 Body / Window handle，不保存"世界当前事实"（下段必须重读）。
-`mc.decide` 结束当前段；`runs.continue {run, decision, entry, environment}` 建新段，续段用只读 `mc.checkpoint` 取回检查点，重新读现场，不恢复旧 JS 调用栈。
+`mc.decide` 结束当前段；`tasks.continue {task, decision, entry, environment}` 建新段，续段用只读 `mc.checkpoint` 取回检查点，重新读现场，不恢复旧 JS 调用栈。
 
 ```js
 async function main(mc, input) {
@@ -36,7 +36,7 @@ async function main(mc, input) {
 
 ## 长任务与 Completion
 
-顶层 `run` 受理代表后台执行已开始，不等于完成；完成事件 `minecraft_completion` 与 `runs.status/record` 反映当前真实终态。
+顶层 `run` 受理表示后台已接单，实际阶段以任务查询为准；完成事件 `minecraft_completion` 与 `tasks.get/trace` 反映当前真实终态。
 不要因为几秒没收到 Completion 就重复下单。当前 `runs`、`run.schedule` 及等待相关字段以 `describe` 的最新工具 schema 为准；旧的同步 `wait` / 短窗等待说明已由异步 Run 改造删除。
 
 ## 写经验

@@ -37,7 +37,7 @@ export async function waitScenario(s: Scenario): Promise<void> {
 		assert.equal((waiting.details as { kind: string }).kind, "accepted");
 		const status = await s.direct("runs", {
 			op: "status",
-			run: (waiting.details as { snapshot: { run: string } }).snapshot.run,
+			run: (waiting.details as { run: string }).run,
 		});
 		assert.equal(status.phase, "waiting");
 		assert.equal((status.waiting as { kind: string }).kind, "world_change");
@@ -54,7 +54,7 @@ export async function waitScenario(s: Scenario): Promise<void> {
 			code: "async function main(mc){return mc.withBody(()=>mc.waitUntil({inv:{ref:'inventory@1'}},s=>(s.inv?.counts.diamond??0)>=64));}",
 		});
 		assert.equal((held.details as { kind: string }).kind, "accepted");
-		const run = (held.details as { snapshot: { run: string } }).snapshot.run;
+		const run = (held.details as { run: string }).run;
 		const status = await s.direct("runs", { op: "status", run });
 		assert.equal(status.control, "active");
 		assert.equal(status.phase, "waiting");

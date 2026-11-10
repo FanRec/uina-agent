@@ -16,7 +16,7 @@ import type { MinecraftWorld } from "../world/index.js";
 
 export const DEV_SERVER = {
 	host: "127.0.0.1",
-	port: 25565,
+	port: Number(process.env.MC_DEV_PORT ?? "25565"),
 	username: process.env.MC_DEV_USER ?? "UinaDev",
 	version: "1.21.11",
 };

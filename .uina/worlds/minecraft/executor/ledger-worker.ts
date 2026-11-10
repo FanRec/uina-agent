@@ -12,6 +12,7 @@ export type RequestCredential = RequestIntent & {
 	createdAt: string;
 	run?: string;
 	segment?: string;
+	refusal?: { kind: "rejected" | "cancelled"; code: string; message: string };
 };
 export interface DeliveryAttempt {
 	key: string;
@@ -33,6 +34,10 @@ export interface LedgerSnapshot {
 	previous: { launch: string; activation: string; clean: boolean } | null;
 	gates: ("disabled" | "emergency" | "owner_lost")[];
 }
+export type TaskRequestSelection =
+	| { kind: "roots"; activeOnly: boolean }
+	| { kind: "continuation"; run: string; decision: string };
+
 export type LedgerRequest =
 	| { id: number; op: "open"; path: string; worldOwner: string; storageId: string }
 	| { id: number; op: "launch"; launch: string; activation: string }
@@ -41,8 +46,9 @@ export type LedgerRequest =
 	| { id: number; op: "clean"; launch: string }
 	| { id: number; op: "request_put"; credential: RequestCredential }
 	| { id: number; op: "request_get"; requestId: string }
-	| { id: number; op: "request_list" }
+	| { id: number; op: "request_list"; selection?: TaskRequestSelection }
 	| { id: number; op: "request_found"; requestId: string; lookup: Extract<SubmissionLookup, { kind: "found" }> }
+	| { id: number; op: "request_refused"; requestId: string; refusal: NonNullable<RequestCredential["refusal"]> }
 	| { id: number; op: "attempt_put"; attempt: DeliveryAttempt }
 	| { id: number; op: "attempt_list" }
 	| { id: number; op: "close" };
@@ -119,17 +125,41 @@ parentPort!.on("message", (request: LedgerRequest) => {
 				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
 				value = row ? JSON.parse(String(row.credential)) : null;
 			} else if (request.op === "request_list") {
-				value = db
-					.prepare("SELECT credential FROM requests ORDER BY rowid")
-					.all()
-					.map((r) => JSON.parse(String(r.credential)));
+				const selection = request.selection;
+				const rows =
+					selection?.kind === "roots"
+						? db
+								.prepare(`SELECT credential FROM requests WHERE json_extract(credential, '$.operation')='submit'
+						AND json_extract(credential, '$.run') IS NULL
+						AND (?=0 OR json_extract(credential, '$.refusal') IS NULL) ORDER BY rowid DESC LIMIT 20`)
+								.all(selection.activeOnly ? 1 : 0)
+								.reverse()
+						: selection?.kind === "continuation"
+							? db
+									.prepare(`SELECT credential FROM requests WHERE json_extract(credential, '$.operation')='continue'
+							AND json_extract(credential, '$.request.run')=? AND json_extract(credential, '$.request.decision')=?
+							AND json_extract(credential, '$.run') IS NULL AND json_extract(credential, '$.refusal') IS NULL
+							ORDER BY rowid DESC LIMIT 1`)
+									.all(selection.run, selection.decision)
+							: db.prepare("SELECT credential FROM requests ORDER BY rowid").all();
+				value = rows.map((row) => JSON.parse(String(row.credential)));
 			} else if (request.op === "request_found") {
 				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
 				if (row) {
 					const c = JSON.parse(String(row.credential));
 					c.run = request.lookup.snapshot.run;
 					c.segment = request.lookup.segment;
+					delete c.refusal;
 					db.prepare("UPDATE requests SET credential=? WHERE request_id=?").run(JSON.stringify(c), request.requestId);
+				}
+			} else if (request.op === "request_refused") {
+				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
+				if (row) {
+					const c = JSON.parse(String(row.credential)) as RequestCredential;
+					if (!c.run) {
+						c.refusal = request.refusal;
+						db.prepare("UPDATE requests SET credential=? WHERE request_id=?").run(JSON.stringify(c), request.requestId);
+					}
 				}
 			} else if (request.op === "attempt_put") {
 				db.prepare(

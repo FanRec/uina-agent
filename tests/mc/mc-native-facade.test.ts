@@ -16,6 +16,7 @@ test("a submit rejected before IPC dispatch retains its credential and reports n
 	const executor = {
 		status: () => ({ actionsAllowed: true, side: { launch: "launch" } }),
 		ledger: {
+			refuse: async () => {},
 			putRequest: async () => {
 				credentials++;
 			},
@@ -32,8 +33,8 @@ test("a submit rejected before IPC dispatch retains its credential and reports n
 	);
 	try {
 		expect(credentials).toBe(1);
-		expect(result.status).toBe("failed");
-		expect(result.details).toMatchObject({ kind: "not_accepted", code: "REQUEST_TOO_LARGE" });
+		expect(result.status).toBe("not_started");
+		expect(result.details).toMatchObject({ kind: "rejected", code: "REQUEST_TOO_LARGE" });
 	} finally {
 		await facade.close();
 	}
@@ -63,11 +64,11 @@ try {
  const accepted=await facade.execute('chat',{text:'no connection'},signal);
  assert.equal(accepted.status,'succeeded');assert.equal(accepted.continuation,'yield');
  const reply=JSON.parse(accepted.result);
- assert.equal(reply.kind,'accepted');assert.equal(typeof reply.run,'string');request=reply.requestId;
+ assert.equal(reply.kind,'accepted');assert.equal(typeof reply.task,'string');request=reply.task.slice('task:local:'.length);
  // 受理结果只给句柄：进度看状态帧，结果看 minecraft_completion。
  assert.equal(reply.snapshot,undefined);assert.equal(reply.phase,undefined);
  assert.equal((await executor.ledger.getRequest(request)).requestId,request);
- const retry=await facade.execute('runs',{op:'retry',request},signal);assert.equal(retry.status,'succeeded');assert.equal(retry.details.kind,'found');
+ const task=await facade.execute('tasks',{op:'get',task:reply.task},signal);assert.equal(task.status,'succeeded');assert.equal(task.details.task,reply.task);
  const unknownCapability=await facade.execute('run',{selector:'no-such@1',input:{}},signal);assert.equal(unknownCapability.status,'failed');assert.equal(unknownCapability.continuation,undefined);
  const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');assert.equal(code.continuation,'yield');
  const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,2);
@@ -129,7 +130,7 @@ test("顶层动作只返回受理：没有 wait 覆盖，也不再等短窗", as
 		for (const reply of [plain, legacy]) {
 			expect(reply.status).toBe("succeeded");
 			expect(reply.continuation).toBe("yield");
-			expect(JSON.parse(reply.result)).toMatchObject({ kind: "accepted", run: "run-1", segment: "s" });
+			expect(JSON.parse(reply.result)).toEqual({ kind: "accepted", task: expect.stringMatching(/^task:local:/) });
 		}
 		// 短窗那条路径已经不存在：一次都不该去问 executor.wait。
 		expect(waits).toEqual([]);

@@ -36,8 +36,8 @@ export async function feedbackScenario(s: Scenario) {
 		(await s.direct("runs", { op: "status" })).side as { safety: { active: string | null; last: string | null } };
 	const run = async (code: string) => {
 		const reply = await s.direct("run", { code });
-		assert.ok(reply.kind === "accepted" || reply.kind === "result", JSON.stringify(reply));
-		return (reply.snapshot as { run: string }).run;
+		assert.ok(reply.kind === "accepted", JSON.stringify(reply));
+		return reply.run as string;
 	};
 	const finish = async (id: string) => {
 		await until(

@@ -140,7 +140,7 @@ let runtime=(await MinecraftRuntime.open({...options,callables:[{descriptor:desc
 await enable(runtime);
 sql(db=>db.exec("CREATE TRIGGER fail_accept BEFORE INSERT ON submissions BEGIN SELECT RAISE(ABORT,'accept rejected'); END"));
 const rejected=await runtime.submit(origin,request());assert.equal(rejected.kind,"not_accepted");assert.equal(invoked,0);
-assert.equal(runtime.lookup("req:test").kind,"not_found");
+assert.equal(runtime.lookup("req:test").kind,"rejected");
 assert.equal((await runtime.submit(origin,{...request(),entry:{...request().entry,input:{conflict:true}}})).code,"REQUEST_CONFLICT");
 runtime.assertActionAllowed();await runtime.close();
 assert.equal(sql(db=>db.prepare("SELECT COUNT(*) AS n FROM submissions").get().n),0);

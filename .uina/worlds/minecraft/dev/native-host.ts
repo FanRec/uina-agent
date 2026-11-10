@@ -27,8 +27,11 @@ async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms
 		await sleep(100);
 	}
 }
+const port = Number(process.env.MC_DEV_PORT ?? "25565");
+assert(Number.isInteger(port) && port > 0 && port < 65536, "invalid MC_DEV_PORT");
 const modelMode = process.argv.includes("--model");
 const programMode = process.argv.includes("--program");
+const tasksMode = process.argv.includes("--tasks");
 const waitMode = process.argv.includes("--wait");
 const libraryMode = process.argv.includes("--library");
 const feedbackMode = process.argv.includes("--feedback");
@@ -40,7 +43,7 @@ const configPath = join(root, "config.json");
 await writeFile(
 	configPath,
 	JSON.stringify({
-		connection: { host: "127.0.0.1", port: 25565, username: "UinaDev", authMode: "offline", version: "1.21.11" },
+		connection: { host: "127.0.0.1", port, username: "UinaDev", authMode: "offline", version: "1.21.11" },
 		binding: { world: "dev-native-world", worldRevision: "native-host-2026-10-25" },
 	}),
 );
@@ -110,7 +113,7 @@ host.subscribe((event) => {
 	if (event.type === "usage_update" || event.type === "error" || event.type === "output_end") transcript.push(event);
 });
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
-const world = createMinecraftWorld({ legacyConfigPath: configPath });
+const world = createMinecraftWorld({ diagnostics: !tasksMode, legacyConfigPath: configPath });
 const start = world.onStart!;
 world.onStart = async (ctx) => {
 	context = ctx;
@@ -150,17 +153,16 @@ const ask = async (action: string, params: Record<string, unknown>) => {
 	return reply;
 };
 const finish = async (reply: ToolResultEvent) => {
-	const details = reply.details as { kind: string; snapshot: { run: string }; requestId: string };
-	if (details.kind === "result") return details;
+	const details = reply.details as { kind: string; run: string; requestId: string };
 	assert.equal(details.kind, "accepted", reply.result);
-	const result = await ask("runs", { op: "wait", run: details.snapshot.run, timeoutMs: 90000 });
+	const result = await ask("runs", { op: "wait", run: details.run, timeoutMs: 90000 });
 	return result.details as { kind: string; snapshot: { run: string; outcome?: string; completionRef?: string } };
 };
 try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
-		if (modelMode && feedbackMode)
+		if (modelMode && (feedbackMode || tasksMode))
 			api.onHook("turn.transformContext", (projection) => ({
 				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
 			}));
@@ -181,10 +183,11 @@ try {
 		assert.ok(reply.state === "connected", `session connect failed: ${JSON.stringify(reply).slice(0, 300)}`);
 	});
 	await step("formal Host current connection", async () => {
-		await until(
-			() => direct("runs", { op: "status" }),
-			(s) => (s.side as { connection: string })?.connection === "ready",
-		);
+		if (!tasksMode)
+			await until(
+				() => direct("runs", { op: "status" }),
+				(s) => (s.side as { connection: string })?.connection === "ready",
+			);
 		await observe("self@1");
 	});
 	const command = async (text: string) => {
@@ -244,7 +247,96 @@ try {
 				Math.abs((o.value as { place: { position: { y: number } } }).place.position.y - 200) < 0.1,
 		);
 	});
-	if (feedbackMode) {
+	if (tasksMode) {
+		const get = (task: string) => direct("tasks", { op: "get", task });
+		const acceptedTask = (reply: { details?: unknown }) => {
+			const details = reply.details as { kind?: string; task?: string; run?: string };
+			assert.equal(details.kind, "accepted", JSON.stringify(details));
+			assert.equal(details.run, undefined);
+			assert(typeof details.task === "string");
+			return details.task;
+		};
+		if (modelMode) {
+			await step("model discovers, recovers from a rejected selector, collects and stops", async () => {
+				const timer = setTimeout(() => host.interrupt(), 120000);
+				try {
+					await host.submitText(
+						"只用 Minecraft 正常工具。先试运行不存在的 selector missing_play@1，确认拒绝后用 describe 找采集能力，获得至少一根新原木并核实。再用 Program 持有身体等待，查询任务并用 tasks.stop 停止，确认取消后结束。",
+						"direct",
+					);
+					await host.waitForIdle();
+				} finally {
+					clearTimeout(timer);
+				}
+				const calls = [...results.values()];
+				assert(calls.some((r) => r.args.action === "describe"));
+				assert(
+					calls.some(
+						(r) =>
+							r.args.action === "tasks" && (r.args.params as { op?: string }).op === "stop" && r.status === "succeeded",
+					),
+				);
+				const inventory = await observe("inventory@1");
+				assert(((inventory.value as { counts: Record<string, number> }).counts.oak_log ?? 0) >= 1);
+			});
+		} else {
+			await step("public Task discovery, collection and completion", async () => {
+				assert.equal((await ask("describe", { selector: "collect@1" })).status, "succeeded");
+				const rejected = await ask("run", { selector: "missing_play@1" });
+				assert.equal((rejected.details as { kind: string }).kind, "rejected");
+				const rejectedTask = (rejected.details as { task: string }).task;
+				assert.equal((await get(rejectedTask)).outcome, "not_started");
+				const task = acceptedTask(
+					await ask("run", { selector: "collect@1", input: { item: "oak_log", count: 1, radius: 8 } }),
+				);
+				const finished = await until(
+					() => get(task),
+					(view) => view.phase === "finished",
+				);
+				assert.equal(finished.outcome, "succeeded", JSON.stringify(finished));
+				const inventory = await observe("inventory@1");
+				assert.equal((inventory.value as { counts: Record<string, number> }).counts.oak_log, 1);
+				const trace = await direct("tasks", { op: "trace", task });
+				const completionRef = (trace.snapshot as { completionRef: string }).completionRef;
+				await until(
+					() => context.delivery!.inspect(completionRef),
+					(state) => state.kind === "committed",
+				);
+			});
+			await step("continue and stop preserve the same Task identity", async () => {
+				const task = acceptedTask(
+					await ask("run", { code: "async function main(mc){mc.decide('next', {value:42});}" }),
+				);
+				const decision = await until(
+					() => get(task),
+					(view) => view.phase === "needs_input",
+				);
+				const entry = {
+					code: "async function main(mc){await mc.withBody(async()=>mc.sleep(60000));return mc.checkpoint;}",
+				};
+				const args = { op: "continue", task, decision: decision.decision, entry };
+				assert.equal(acceptedTask(await ask("tasks", args)), task);
+				assert.equal((await ask("tasks", args)).status, "failed");
+				await until(
+					() => get(task),
+					(view) => view.control === "active",
+				);
+				const listed = await direct("tasks", { op: "list" });
+				assert((listed.items as { task: string }[]).some((item) => item.task === task));
+				await direct("tasks", { op: "stop", task });
+				const stopped = await until(
+					() => get(task),
+					(view) => view.phase === "finished",
+				);
+				assert.equal(stopped.outcome, "cancelled");
+				await direct("session", { op: "connect", target: { server: "default", slot: "task-probe-other" } });
+				const wrongProfile = await ask("tasks", { op: "get", task });
+				assert.equal((wrongProfile.details as { code: string }).code, "TASK_PROFILE_MISMATCH");
+				await direct("session", { op: "connect", target: { server: "default" } });
+				assert.equal((await get(task)).outcome, "cancelled");
+			});
+		}
+	} else if (feedbackMode) {
 		await feedbackScenario({
 			direct,
 			step,
@@ -554,11 +646,11 @@ try {
 			const timer = setTimeout(() => abort.abort(), 300);
 			const reply = await pending;
 			clearTimeout(timer);
-			const accepted = reply.details as { kind: string; snapshot: { run: string }; requestId: string };
+			const accepted = reply.details as { kind: string; run: string; requestId: string };
 			assert.equal(accepted.kind, "accepted", JSON.stringify(reply));
-			assert.notEqual((await direct("runs", { op: "status", run: accepted.snapshot.run })).phase, "finished");
+			assert.notEqual((await direct("runs", { op: "status", run: accepted.run })).phase, "finished");
 			await direct("runs", { op: "stop", request: accepted.requestId });
-			const stopped = await direct("runs", { op: "wait", run: accepted.snapshot.run, timeoutMs: 10000 });
+			const stopped = await direct("runs", { op: "wait", run: accepted.run, timeoutMs: 10000 });
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 			await until(
 				() => direct("runs", { op: "status" }),
@@ -626,11 +718,11 @@ try {
 			const timer = setTimeout(() => abort.abort(), 150);
 			const reply = await waiting;
 			clearTimeout(timer);
-			const accepted = reply.details as { kind: string; snapshot: { run: string }; requestId: string };
+			const accepted = reply.details as { kind: string; run: string; requestId: string };
 			assert.equal(accepted.kind, "accepted", JSON.stringify(reply));
-			assert.notEqual((await direct("runs", { op: "status", run: accepted.snapshot.run })).phase, "finished");
+			assert.notEqual((await direct("runs", { op: "status", run: accepted.run })).phase, "finished");
 			await direct("runs", { op: "stop", request: accepted.requestId });
-			const stopped = await direct("runs", { op: "wait", run: accepted.snapshot.run, timeoutMs: 10000 });
+			const stopped = await direct("runs", { op: "wait", run: accepted.run, timeoutMs: 10000 });
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 		});
 	}

@@ -570,7 +570,11 @@ export async function openExecutionSide(
 					} catch {
 						// 保留 null：查询失败不是"零条"，由 formatActiveRuns 如实写出。
 					}
-					const digest = formatActiveRuns(activeRuns, new Date().toISOString());
+					const digest = formatActiveRuns(
+						activeRuns,
+						new Date().toISOString(),
+						(payload as { profileId?: string }).profileId,
+					);
 					value = digest ? { ...frame, text: `${frame.text}\n${digest}` } : frame;
 					break;
 				}

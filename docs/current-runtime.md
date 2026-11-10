@@ -135,6 +135,8 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批42（2026-11-08）教学与闭环：`WorldDef` 新增可选只读 `environmentGuide`，`WorldActivation` 在 `turn.prepare` 把活动世界的 ENV 追加到 systemPrompt（多世界依次追加、停用摘除、不写 Session）；Minecraft 的 ENV 在 `onStart` 预载、无活动会话时返回 null。`describe` 增 `kind:'guide'`，六份官方只读 Guide 随包发布并按需读正文，`nativeGuide` 压成入口。`goto@1`/`route.plan@1` 默认 `placeToReach:false`。Body 撤销在真实发起点写不可变 `retiredBy`，`interruptible()` 从 Effect 账本现算 `dispatch/effects`，`user_stop` 不自动续跑。Window 保留 `window_items.stateId` 做迟到包防护，回执增 `outcome/diagnostics`；真服探针证明工作台会先回"仅同步"的 full，因此内容未变仍按 unknown，不设 rejected。`excavate` 的 `remainingCount` 计入未访问格；`collect` 候选分 permanent/transient/unknown，已派发 TIMEOUT 不换候选，候选耗尽先清扫地面掉落；`craft` 暴露 `station` 来源。MINE Program 以最新 `self/inventory` 终验，不满足即 `mc.decide`。真服 `dev:mc:task` MINE/SHELTER/NIGHT 全 PASS；`pnpm typecheck` 全绿；tests/mc 808 passed（唯一失败为既有 `node_api.h` 环境项）。
 
+Minecraft Task 重构（2026-11-10）将正式用户工具的 `runs` 换为 `tasks.get/list/stop/continue/trace`。任务句柄来自原 Profile 和根提交，普通用户与模型通过同一入口查证受理、停止和继续。完成通知与请求前任务简报用同一任务身份。Runtime、Executor Ledger 和 Host 回执仍各持原有事实，受理拒绝和派发前停止可查，查不到记录时保留不确定。采集和施工 Guide 提供可复制的单文件 Program，见 [当前公开合同](proposals/mc/public-api.md#用户任务入口)。
+
 ## QQ World
 
 

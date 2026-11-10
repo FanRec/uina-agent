@@ -191,7 +191,7 @@ const definitions = {
 	},
 	"runtime.lookup": {
 		input: object({ requestId: ref }),
-		output: shaped({ kind: { enum: ["found", "cancelled", "not_found", "unavailable"] } }),
+		output: shaped({ kind: { enum: ["found", "cancelled", "rejected", "not_found", "unavailable"] } }),
 		cancellable: true,
 	},
 	"runtime.read": { input: object({ run: ref }), output: summary, cancellable: true },
@@ -285,7 +285,7 @@ const definitions = {
 	// 请求前状态帧（批37）：一次 facts.sample 同一提交边界，返回有界正文与可用性事实。
 	// 只读、不消费消息、不推进任何水位——transformContext 也可能被上下文检视触发。
 	"state.snapshot": {
-		input: object({}),
+		input: object({ profileId: ref }, []),
 		output: shaped({
 			text: { type: "string" },
 			sampledAt: ref,

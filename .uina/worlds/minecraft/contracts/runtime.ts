@@ -151,6 +151,7 @@ export type SubmissionLookup =
 			completionRef?: Ref;
 	  }
 	| { kind: "cancelled"; requestId: Ref; record: Ref }
+	| { kind: "rejected"; requestId: Ref; code: string; message: string }
 	| { kind: "not_found"; requestId: Ref }
 	| { kind: "unavailable"; reason: string };
 

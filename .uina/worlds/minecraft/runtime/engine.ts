@@ -995,10 +995,10 @@ export class RuntimeEngine {
 		if (submission.status === "cancelled") {
 			return { kind: "cancelled", requestId, record: submission.record ?? requestId };
 		}
-		if (submission.status === "rejected" || submission.run == null || submission.segment == null) {
-			// 被拒准备无 Run 可寻；重放同键 submit 可得原拒绝（§2.1 幂等）。
-			return { kind: "not_found", requestId };
-		}
+		if (submission.status === "rejected" && submission.error)
+			return { kind: "rejected", requestId, ...submission.error };
+		if (submission.run == null || submission.segment == null)
+			return { kind: "unavailable", reason: "submission has no readable run" };
 		const live = this.runs.get(submission.run);
 		const snapshot = live != null ? projectSummary(live) : this.summaryFromRecovered(submission.run);
 		if (snapshot == null) return { kind: "unavailable", reason: `run ${submission.run} record not readable` };

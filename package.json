@@ -26,6 +26,8 @@
     "dev:mc:native": "tsx .uina/worlds/minecraft/dev/native-host.ts",
     "dev:mc:model": "tsx .uina/worlds/minecraft/dev/native-host.ts --model",
     "dev:mc:program": "tsx .uina/worlds/minecraft/dev/program.ts",
+    "dev:mc:tasks": "tsx .uina/worlds/minecraft/dev/native-host.ts --tasks",
+    "dev:mc:refactor-bench": "tsx .uina/worlds/minecraft/dev/refactor-bench.ts",
     "dev:mc:places": "tsx .uina/worlds/minecraft/dev/places.ts",
     "dev:mc:mobility": "tsx .uina/worlds/minecraft/dev/mobility.ts",
     "dev:mc:combat": "tsx .uina/worlds/minecraft/dev/combat.ts",

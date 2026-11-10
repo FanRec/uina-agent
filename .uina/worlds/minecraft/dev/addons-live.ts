@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 	);
 	console.log(`[mc-addons] data root: ${root}`);
 
-	const world = createMinecraftWorld({ legacyConfigPath: legacyPath });
+	const world = createMinecraftWorld({ diagnostics: true, legacyConfigPath: legacyPath });
 	const { ctx } = stubContext(root);
 	const session = act(world, "session");
 	const describe = act(world, "describe") as (params: Record<string, unknown>) => Promise<Reply>;
@@ -123,9 +123,9 @@ async function main(): Promise<void> {
 		return record.value;
 	};
 	const finish = async (reply: Reply): Promise<{ run: string; phase: string; outcome?: string }> => {
-		const accepted = reply.details as { kind?: string; run?: string; snapshot?: { run?: string } };
-		assert(accepted.kind === "accepted" || accepted.kind === "result", JSON.stringify(reply.details).slice(0, 300));
-		const runRef = typeof accepted.run === "string" ? accepted.run : accepted.snapshot?.run;
+		const accepted = reply.details as { kind?: string; run?: string };
+		assert(accepted.kind === "accepted", JSON.stringify(reply.details).slice(0, 300));
+		const runRef = accepted.run;
 		assert(typeof runRef === "string", `no run ref: ${JSON.stringify(reply.details).slice(0, 300)}`);
 		const result = await until(
 			async () => (await runs({ op: "wait", run: runRef, timeoutMs: 2000 })).details,

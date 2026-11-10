@@ -81,6 +81,7 @@ export interface SessionControllerOptions {
 	expose: NonNullable<ServiceCompanionContext["expose"]>;
 	executorPolicy?: Partial<ExecutorPolicy>;
 	deliveryPolicy?: { pollMs?: number };
+	diagnostics?: boolean;
 	/** 旧布局迁移读取的世界包 config.json；可缺席。 */
 	legacyConfig?: unknown;
 	connectTimeoutMs?: number;
@@ -388,7 +389,11 @@ export class SessionController {
 			});
 			// 心跳可能尚未刷新 side 缓存：发布前拉一次实时状态，避免把 ready 报成 connecting。
 			await candidate.inspect();
-			const facade = new MinecraftFacade(candidate, this.options.ctx, this.options.deliveryPolicy);
+			const facade = new MinecraftFacade(candidate, this.options.ctx, {
+				...this.options.deliveryPolicy,
+				profileId: profile,
+				diagnostics: this.options.diagnostics,
+			});
 			const body = createBodyEndpoint(candidate, `minecraft:${visitId}`);
 			const detachBody = this.options.expose(`${BODY_ENDPOINT_EXPOSED_PREFIX}${body.bodyId}`, body);
 			facade.start();

@@ -155,7 +155,7 @@ const step = async (name: string, work: () => Promise<void>) => {
 	console.log(`[mc-i2] PASS ${name}`);
 };
 async function startWorld() {
-	const world = createMinecraftWorld({ legacyConfigPath: configPath });
+	const world = createMinecraftWorld({ diagnostics: true, legacyConfigPath: configPath });
 	const start = world.onStart!;
 	world.onStart = async (ctx) => {
 		context = ctx;
@@ -434,7 +434,7 @@ ${durationMinutes > 0 ? `本次观察窗口截至 ${new Date(deadline).toISOStri
 				t.status === "succeeded",
 		)!;
 		const previousRun = (preemption.args.params as { schedule: { expectedRun: string } }).schedule.expectedRun;
-		const replacementRun = (preemption.details as { snapshot: { run: string } }).snapshot.run;
+		const replacementRun = (preemption.details as { run: string }).run;
 		assert.equal((await direct("runs", { op: "status", run: previousRun })).outcome, "cancelled");
 		await until(
 			() => direct("runs", { op: "status", run: replacementRun }),

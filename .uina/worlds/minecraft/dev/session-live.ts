@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 	await startServer();
 	console.log("[mc-session] server up");
 
-	const world = createMinecraftWorld({ legacyConfigPath: legacyPath });
+	const world = createMinecraftWorld({ diagnostics: true, legacyConfigPath: legacyPath });
 	const { ctx, exposed } = stubContext(root);
 	const session = act(world, "session");
 	const describe = act(world, "describe");

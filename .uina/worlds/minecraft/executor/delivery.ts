@@ -2,6 +2,7 @@
  * 完成通知只走一条路：Runtime 的 completion 报告 → Host 批量持久入队 → 模型回合消费。
  * Host 的 Canonical 回执才 ACK Runtime；工具层只回受理，不带报告正文。
  */
+import { taskHandle, taskView } from "../contracts/task.js";
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
@@ -69,6 +70,7 @@ export class DeliveryPump {
 		private readonly executor: MinecraftExecutor,
 		private readonly ctx: ServiceCompanionContext,
 		private readonly pollMs = 5000,
+		private readonly profileId?: string,
 	) {}
 	start(): void {
 		this.unsubscribeSide = this.executor.subscribe((events) => {
@@ -205,9 +207,21 @@ export class DeliveryPump {
 	/** 恢复只查原始意图，绝不重发动作。 */
 	private async recoverRequests(): Promise<void> {
 		for (const c of await this.executor.ledger.requests())
-			if (!c.run) {
+			if (!c.run && !c.refusal) {
 				const found = await this.executor.lookup(c.requestId);
 				if (found.kind === "found") await this.executor.ledger.found(c.requestId, found);
+				if (found.kind === "rejected")
+					await this.executor.ledger.refuse(c.requestId, {
+						kind: "rejected",
+						code: found.code,
+						message: found.message,
+					});
+				if (found.kind === "cancelled")
+					await this.executor.ledger.refuse(c.requestId, {
+						kind: "cancelled",
+						code: "REQUEST_CANCELLED",
+						message: "stopped before acceptance",
+					});
 			}
 	}
 	/**
@@ -320,7 +334,7 @@ export class DeliveryPump {
 			render: async () => {
 				if (this.stopped) return null;
 				const latest = await this.executor.rpc<DeliveryState>("runtime.readDelivery", { ref: ref.completionRef });
-				return latest.eligible ? formatCompletion(view) : null;
+				return latest.eligible ? formatCompletion(view, this.profileId) : null;
 			},
 			data: view,
 		}));
@@ -440,82 +454,19 @@ function urgentEvent(payload: unknown): boolean {
 	}
 }
 
-/**
- * 模型展示投影：只保留该 phase 决策所需字段，每个事实只出现一次。
- *
- * 这不是 CompletionView 的序列化——结构化原件留在完成通知的 event.data，
- * 供前端与 effect 读取；工具层只回受理，不带这份正文。
- * `awaiting_decision` 必须带 decision：runs.continue 只能用它续段。
- */
-export function formatCompletion(view: CompletionView): string {
-	const base = { kind: "result" as const, run: view.run };
-	if (view.content.kind !== "inline") {
-		// 正文读不到或太大：只能用有界 summary，被截断处必须留标志。
-		const snapshot = view.snapshot;
-		return JSON.stringify({
-			...base,
-			phase: snapshot.phase,
-			progress: snapshot.progress,
-			...(snapshot.progressComplete ? {} : { progressComplete: false }),
-			...(snapshot.phase === "awaiting_decision"
-				? {
-						decision: snapshot.decision,
-						reason: snapshot.reason,
-						...(snapshot.reasonComplete ? {} : { reasonComplete: false }),
-					}
-				: {
-						outcome: snapshot.outcome,
-						...(snapshot.error != null
-							? {
-									error: {
-										code: snapshot.error.code,
-										message: snapshot.error.message,
-										...(snapshot.error.messageComplete ? {} : { messageComplete: false }),
-									},
-								}
-							: {}),
-					}),
-			detail: view.content.kind,
-			unknownEffectCount: snapshot.unknownEffectCount,
-			unknownEffectsComplete: snapshot.unknownEffectsComplete,
-			completionRef: view.completionRef,
-			// 正文读不到时 record 同样读不到，不指一条注定失败的下一步。
-			...(view.content.kind === "record"
-				? { nextCall: { action: "runs", params: { op: "record", ref: view.completionRef } } }
-				: {}),
-		});
-	}
-	const snapshot = view.content.report.snapshot;
-	if (snapshot.phase === "awaiting_decision")
-		return JSON.stringify({
-			...base,
-			phase: snapshot.phase,
-			progress: snapshot.progress,
-			decision: snapshot.decision,
-			reason: snapshot.reason,
-			completionRef: view.completionRef,
-		});
+/** User text is projected from the fixed report. The structured receipt remains internal. */
+export function formatCompletion(view: CompletionView, profileId = "local"): string {
+	const task = taskHandle(profileId, view.snapshot.rootRequestId);
+	const report = view.content.kind === "inline" ? view.content.report : undefined;
 	return JSON.stringify({
-		...base,
-		phase: snapshot.phase,
-		outcome: snapshot.outcome,
-		progress: snapshot.progress,
-		...(snapshot.value !== undefined ? { value: snapshot.value } : {}),
-		...(snapshot.error != null ? { error: { code: snapshot.error.code, message: snapshot.error.message } } : {}),
-		...(snapshot.unknownEffects.length > 0 ? { unknownEffects: snapshot.unknownEffects } : {}),
-		...(snapshot.interruptedChildren != null && snapshot.interruptedChildren.length > 0
-			? { interruptedChildren: snapshot.interruptedChildren }
-			: {}),
-		completionRef: view.completionRef,
-		nextCall: { action: "runs", params: { op: "record", ref: view.completionRef } },
+		kind: "result",
+		...taskView(task, view.snapshot),
+		...(report?.reportKind === "terminal" ? { value: report.snapshot.value } : {}),
+		...(view.content.kind !== "inline" ? { detail: view.content.kind } : {}),
+		nextCall: { action: "tasks", params: { op: "get", task } },
 	});
 }
 
-/**
- * 持久层存的是 JSON；恢复时先按 `reportKind` 与 `phase` 判别，再取两个字段构造，
- * 不把整块任意 JSON 直接当成 CompletionReport。剩余的一次类型断言是 JSON 反序列化
- * 边界的必要成本——没有 schema 解码器时无法完全消除。
- */
 function completionReportOf(value: JsonValue): import("../contracts/runtime.js").CompletionReport {
 	if (value == null || typeof value !== "object" || Array.isArray(value))
 		throw new Error("completion record value is not an object");

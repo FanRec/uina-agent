@@ -262,7 +262,9 @@ test("one unavailable report does not block other headers; unavailable content r
 			unknownEffectCount: 1,
 		});
 		// 正文读不到时不再指一条注定失败的 record 读取。
-		expect(JSON.parse((await events[0]!.render!())!)).not.toHaveProperty("nextCall");
+		expect(JSON.parse((await events[0]!.render!())!)).toMatchObject({
+			nextCall: { action: "tasks", params: { op: "get" } },
+		});
 		// 展示投影不变改细节通道：事件 data 仍是完整 CompletionView。
 		expect((events[0]!.data as { content: { kind: string } }).content.kind).toBe("unavailable");
 		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
@@ -637,10 +639,10 @@ test("inline completion projects one layer and stays within the model budget", (
 		kind: "result",
 		phase: "finished",
 		outcome: "succeeded",
-		completionRef: "comp:proj:1",
+		task: expect.stringMatching(/^task:local:/),
 	});
 	// 同一事实只写一次：三层包装与内部簿记都不出现在模型文本里。
-	for (const key of ["content", "snapshot", "requestId", "segment", "revision", "recordBytes", "reportKind"])
+	for (const key of ["content", "snapshot", "requestId", "segment", "completionRef", "recordBytes", "reportKind"])
 		expect(parsed).not.toHaveProperty(key);
 });
 
@@ -687,7 +689,7 @@ test("degraded completion keeps truncation marks and the run's own error", () =>
 	const lost = JSON.parse(formatCompletion(unavailable)) as Record<string, unknown>;
 	// 正文读不到由 detail 表达，不覆盖 run 自己的错误，也不再指 record。
 	expect(lost).toMatchObject({ detail: "unavailable", error: { code: "TIMEOUT" } });
-	expect(lost).not.toHaveProperty("nextCall");
+	expect(lost.nextCall).toMatchObject({ action: "tasks", params: { op: "get", task: "task:local:req-proj" } });
 });
 
 test("awaiting_decision hands out the decision, never a record pointer", () => {
@@ -719,12 +721,12 @@ test("awaiting_decision hands out the decision, never a record pointer", () => {
 	} as unknown as CompletionView;
 	const projected = JSON.parse(formatCompletion(inline)) as Record<string, unknown>;
 	expect(projected).toMatchObject({
-		phase: "awaiting_decision",
+		phase: "needs_input",
 		decision: "rec:decision:1",
 		reason: "need a plan",
 	});
 	// 唯一能推进的是 runs.continue，而 entry 不能预填，因此不给 nextCall。
-	expect(projected).not.toHaveProperty("nextCall");
+	expect(projected.nextCall).toMatchObject({ action: "tasks", params: { op: "get" } });
 	expect(projected).not.toHaveProperty("outcome");
 });
 

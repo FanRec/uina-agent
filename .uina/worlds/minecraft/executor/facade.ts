@@ -2,11 +2,12 @@
 import { randomUUID } from "node:crypto";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
-import type { Acceptance, DeliveryState, Entry, Schedule } from "../contracts/runtime.js";
+import type { Acceptance, Entry, RunSummary, Schedule } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
 import { DeliveryPump } from "./delivery.js";
 import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
+import { taskHandle, taskView } from "../contracts/task.js";
 import type { RequestIntent } from "./ledger-worker.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
@@ -43,9 +44,9 @@ export class MinecraftFacade {
 	constructor(
 		readonly executor: MinecraftExecutor,
 		private readonly ctx: ServiceCompanionContext,
-		policy: { pollMs?: number } = {},
+		private readonly policy: { pollMs?: number; profileId?: string; diagnostics?: boolean } = {},
 	) {
-		this.delivery = new DeliveryPump(executor, ctx, policy.pollMs);
+		this.delivery = new DeliveryPump(executor, ctx, policy.pollMs, policy.profileId);
 	}
 	start() {
 		this.delivery.start();
@@ -73,24 +74,29 @@ export class MinecraftFacade {
 					return await this.run({ selector: "chat@1", input: { text: params.text } }, signal);
 				case "run":
 					return await this.run(params, signal);
+				case "tasks":
+					return await this.tasks(params, signal);
 				case "runs":
-					return await this.runs(params, signal);
+					if (this.policy.diagnostics) return await this.runs(params, signal);
+					throw new RpcError("INVALID_INPUT", "use tasks to manage Minecraft tasks");
 				default:
 					throw new RpcError("INVALID_INPUT", `unknown Minecraft action ${action}`);
 			}
 		} catch (error) {
 			const e = error as { code?: string; message?: string; dispatch?: string };
+			const submitting = action === "run" || action === "chat" || (action === "tasks" && params.op === "continue");
 			return response(
 				{
+					...(submitting ? { kind: "rejected" } : {}),
 					code: e.code ?? "INTERNAL",
 					message: e.message ?? String(error),
-					...(e.code === "RECORD_TOO_LARGE"
+					...(this.policy.diagnostics && e.code === "RECORD_TOO_LARGE"
 						? { nextCall: { action: "runs", params: { op: "record", ref: params.ref, format: "file" } } }
 						: {}),
 				},
 				e.code === "REQUEST_CANCELLED"
 					? "cancelled"
-					: action === "runs" && params.op === "stop" && e.dispatch === "unknown"
+					: (action === "tasks" || action === "runs") && params.op === "stop" && e.dispatch === "unknown"
 						? "unknown"
 						: "failed",
 			);
@@ -146,14 +152,21 @@ export class MinecraftFacade {
 						input: (params.input ?? {}) as JsonValue,
 					};
 	}
-	private run(params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+	private async run(params: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+		const schedule = (params.schedule ?? { kind: "enqueue" }) as Schedule;
+		const resolvedSchedule: Schedule =
+			schedule.kind === "preempt_current"
+				? { ...schedule, expectedRun: await this.taskRun(schedule.expectedRun) }
+				: schedule.kind === "replace_pending" && schedule.targets
+					? { ...schedule, targets: await Promise.all(schedule.targets.map((task) => this.taskRun(task))) }
+					: schedule;
 		return this.submitRequest(
 			{
 				operation: "submit",
 				request: {
 					requestId: randomUUID(),
 					entry: this.entry(params),
-					schedule: (params.schedule ?? { kind: "enqueue" }) as Schedule,
+					schedule: resolvedSchedule,
 				},
 			},
 			signal,
@@ -164,9 +177,16 @@ export class MinecraftFacade {
 	 * 之后的结算由 Completion 走 Host 投递，这里不捎带终态——等一个"短窗"只会让模型
 	 * 猜服务器时间，并让同一份结果出现工具与投递两条通道。
 	 */
-	private async submitRequest(intent: RequestIntent, signal: AbortSignal): Promise<ToolExecutionResult> {
+	private async submitRequest(
+		intent: RequestIntent,
+		signal: AbortSignal,
+		task = this.handle(intent.request.requestId),
+	): Promise<ToolExecutionResult> {
 		if (!this.executor.status().actionsAllowed)
-			return response({ code: "OWNER_GATE_CLOSED", message: "owner action gate is closed" }, "not_started");
+			return response(
+				{ kind: "rejected", code: "OWNER_GATE_CLOSED", message: "Minecraft is not accepting actions" },
+				"not_started",
+			);
 		const { requestId } = intent.request;
 		await this.executor.ledger.putRequest({
 			...intent,
@@ -174,82 +194,249 @@ export class MinecraftFacade {
 			activation: this.executor.status().side!.launch,
 			createdAt: new Date().toISOString(),
 		});
-		if (signal.aborted)
-			return response(
-				{
-					kind: "not_accepted",
-					requestId,
-					code: "REQUEST_CANCELLED",
-					message: "cancelled before dispatch; original credential retained",
-				},
-				"not_started",
-			);
+		const reject = async (code: string, message: string, status: ToolExecutionResult["status"] = "failed") => {
+			await this.executor.ledger.refuse(requestId, { kind: "rejected", code, message });
+			return response({ kind: "rejected", task, code, message }, status);
+		};
+		if (signal.aborted) return reject("REQUEST_CANCELLED", "cancelled before dispatch", "not_started");
 		this.delivery.heldRequests.add(requestId);
-		const submission =
-			intent.operation === "submit" ? this.executor.submit(intent.request) : this.executor.continue(intent.request);
-		// The shared acceptance has its own lifetime, independent of this tool wait.
-		void submission
-			.then(async (accepted) => {
-				if (accepted.kind === "accepted")
-					await this.executor.ledger.found(requestId, {
-						kind: "found",
-						requestId,
-						operation: intent.operation,
-						segment: accepted.segment,
-						snapshot: accepted.snapshot,
-					});
-			})
-			.catch(() => {});
+		const submission = (
+			intent.operation === "submit" ? this.executor.submit(intent.request) : this.executor.continue(intent.request)
+		).then(async (accepted) => {
+			if (accepted.kind === "accepted")
+				await this.executor.ledger.found(requestId, {
+					kind: "found",
+					requestId,
+					operation: intent.operation,
+					segment: accepted.segment,
+					snapshot: accepted.snapshot,
+				});
+			if (accepted.kind === "not_accepted")
+				await this.executor.ledger.refuse(requestId, {
+					kind: "rejected",
+					code: accepted.code,
+					message: accepted.message,
+				});
+			return accepted;
+		});
+
 		let accepted: Acceptance;
 		try {
 			accepted = await cancelled(submission, signal);
 		} catch (error) {
-			void submission.finally(() => this.delivery.heldRequests.delete(requestId)).catch(() => {});
 			if (error instanceof RpcError && error.dispatch === "not_sent")
-				return response(
-					{
-						kind: "not_accepted",
-						requestId,
-						code: error.code,
-						message: error.message,
-						nextCall: { action: "runs", params: { op: "retry", request: requestId } },
-					},
-					["EXECUTOR_UNAVAILABLE", "TRANSPORT_BUSY"].includes(error.code) ? "not_started" : "failed",
-				);
-			return response(
-				{
-					kind: "unknown",
-					requestId,
-					reason: String(error),
-					nextCall: { action: "runs", params: { op: "request", request: requestId } },
-				},
-				"unknown",
-			);
+				return reject(error.code, error.message, "not_started");
+			return this.confirming(task, String(error));
+		} finally {
+			void submission.finally(() => this.delivery.heldRequests.delete(requestId)).catch(() => {});
 		}
-		// 可靠受理（或确定的拒绝）已经到手，这把锁的使命就到头了；
-		// 请求还在飞的那条路径由上面的 finally 负责解锁。
-		this.delivery.heldRequests.delete(requestId);
-		if (accepted.kind !== "accepted")
-			return response(
-				{
-					...accepted,
-					...(accepted.kind === "unknown"
-						? { nextCall: { action: "runs", params: { op: "request", request: requestId } } }
-						: {}),
-				},
-				accepted.kind === "unknown" ? "unknown" : "failed",
-			);
-		// 受理即结果。完整 snapshot 只描述受理那一刻的相，模型的下一步判断要看新的状态帧。
+		if (accepted.kind === "unknown") return this.confirming(task, accepted.reason);
+		if (accepted.kind === "not_accepted")
+			return response({ kind: "rejected", task, code: accepted.code, message: accepted.message }, "failed");
 		return {
 			...response({
 				kind: "accepted",
-				requestId,
-				run: accepted.snapshot.run,
-				segment: accepted.segment,
+				task,
+				...(this.policy.diagnostics ? { requestId, run: accepted.snapshot.run, segment: accepted.segment } : {}),
 			}),
 			continuation: "yield",
 		};
 	}
+
+	private confirming(task: string, reason: string): ToolExecutionResult {
+		return response(
+			{ kind: "confirming", task, reason, nextCall: { action: "tasks", params: { op: "get", task } } },
+			"unknown",
+		);
+	}
+
+	private async pendingContinuation(snapshot: Extract<RunSummary, { phase: "awaiting_decision" }>) {
+		const [pending] = await this.executor.ledger.requests({
+			kind: "continuation",
+			run: snapshot.run,
+			decision: snapshot.decision,
+		});
+		return pending ? this.executor.lookup(pending.requestId) : null;
+	}
+
+	private handle(requestId: string): string {
+		return taskHandle(this.policy.profileId ?? "local", requestId);
+	}
+
+	private taskRequest(task: string): string {
+		const prefix = this.handle("");
+		if (!task.startsWith(prefix))
+			throw new RpcError("TASK_PROFILE_MISMATCH", "reconnect the Profile that owns this task");
+		const requestId = task.slice(prefix.length);
+		if (!requestId) throw new RpcError("INVALID_INPUT", "missing task identity");
+		return requestId;
+	}
+
+	private async taskRun(task: string): Promise<string> {
+		if (this.policy.diagnostics && !task.startsWith("task:")) return task;
+		const found = await this.executor.lookup(this.taskRequest(task));
+		if (found.kind !== "found") throw new RpcError("TASK_UNAVAILABLE", "this task has no readable execution");
+		return found.snapshot.run;
+	}
+
+	private async tasks(p: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
+		const project = (snapshot: RunSummary) => taskView(this.handle(snapshot.rootRequestId), snapshot);
+		if (p.op === "list") {
+			const page = await this.executor.rpc<{ items: RunSummary[]; next?: string }>(
+				"runtime.list",
+				{ activeOnly: p.activeOnly ?? true, ...(p.cursor ? { cursor: p.cursor } : {}) },
+				signal,
+			);
+			const seen = new Set(page.items.map((item) => item.rootRequestId));
+			const additional = p.cursor
+				? []
+				: (await this.executor.ledger.requests({ kind: "roots", activeOnly: p.activeOnly !== false }))
+						.filter(
+							(item) =>
+								item.operation === "submit" &&
+								!item.run &&
+								!seen.has(item.requestId) &&
+								(p.activeOnly === false || !item.refusal),
+						)
+						.slice(-20)
+						.reverse()
+						.map((item) => {
+							const task = this.handle(item.requestId);
+							if (!item.refusal) return { task, phase: "confirming" };
+							const { kind, code, message } = item.refusal;
+							return {
+								task,
+								phase: "finished",
+								outcome: kind === "cancelled" ? "cancelled" : "not_started",
+								error: { code, message },
+							};
+						});
+			return response({ ...page, items: [...additional, ...page.items.map(project)] });
+		}
+		const task = p.task as string;
+		const requestId = this.taskRequest(task);
+		const credential = await this.executor.ledger.getRequest(requestId);
+		if (credential?.operation === "continue") throw new RpcError("TASK_NOT_FOUND", "use the original task handle");
+		if (credential?.refusal) {
+			const { kind, code, message } = credential.refusal;
+			const terminal = {
+				task,
+				phase: "finished",
+				outcome: kind === "cancelled" ? "cancelled" : "not_started",
+				error: { code, message },
+			};
+			if (p.op === "get" || p.op === "stop") return response(terminal);
+			throw new RpcError("TASK_UNAVAILABLE", "this task has no accepted execution");
+		}
+		const found = await this.executor.lookup(requestId);
+		if (found.kind === "not_found" && !credential) throw new RpcError("TASK_NOT_FOUND", "unknown task");
+		if (found.kind === "rejected" || found.kind === "cancelled") {
+			if (p.op === "get" || p.op === "stop")
+				return response({
+					task,
+					phase: "finished",
+					outcome: found.kind === "cancelled" ? "cancelled" : "not_started",
+					...(found.kind === "rejected" ? { error: { code: found.code, message: found.message } } : {}),
+				});
+			throw new RpcError("TASK_UNAVAILABLE", "this task has no accepted execution");
+		}
+		if (p.op === "stop") {
+			if (!credential && found.kind !== "found")
+				throw new RpcError("TASK_UNAVAILABLE", "task identity cannot be confirmed");
+			const receipt = await this.executor.stop({
+				requestId: randomUUID(),
+				target: found.kind === "found" ? { run: found.snapshot.run } : { request: requestId },
+			});
+			return response(
+				{
+					task,
+					intent: receipt.intent,
+					control: receipt.control,
+					...(receipt.snapshot ? { state: project(receipt.snapshot) } : {}),
+					...(receipt.error ? { error: receipt.error } : {}),
+				},
+				receipt.intent === "unknown" ? "unknown" : "succeeded",
+			);
+		}
+		if (p.op === "get") {
+			if (found.kind !== "found")
+				return response(
+					{
+						task,
+						phase: "confirming",
+						reason: found.kind === "unavailable" ? found.reason : "acceptance is not yet confirmed",
+					},
+					"unknown",
+				);
+			const { snapshot } = found;
+			if (snapshot.phase === "awaiting_decision") {
+				const latest = await this.pendingContinuation(snapshot);
+				if (latest?.kind === "found") return response(project(latest.snapshot));
+				if (latest?.kind === "not_found" || latest?.kind === "unavailable")
+					return response(
+						{ ...project(snapshot), phase: "confirming", reason: "continuation acceptance is not yet confirmed" },
+						"unknown",
+					);
+			}
+			if (snapshot.phase === "finished") {
+				const report = await this.executor
+					.rpc<import("../contracts/runtime.js").DeliveryState>(
+						"runtime.readDelivery",
+						{ ref: snapshot.completionRef },
+						signal,
+					)
+					.then((state) => this.delivery.view(state))
+					.catch(() => null);
+				if (report?.content.kind === "inline" && report.content.report.reportKind === "terminal")
+					return response({ ...project(snapshot), value: report.content.report.snapshot.value });
+				return response({ ...project(snapshot), detail: report?.content.kind ?? "unavailable" });
+			}
+			return response(project(snapshot));
+		}
+		if (found.kind !== "found") throw new RpcError("TASK_UNAVAILABLE", "this task has no readable execution");
+		if (p.op === "trace") {
+			const { snapshot } = found;
+			if (p.record) {
+				if (p.record !== snapshot.record && !("completionRef" in snapshot && p.record === snapshot.completionRef))
+					throw new RpcError("INVALID_INPUT", "record must be the current task record or report");
+				return response(await this.executor.readRecord(p.record as string, { format: "inline" }));
+			}
+			const calls = await this.executor.rpc(
+				"runtime.calls",
+				{
+					run: snapshot.run,
+					...(p.parent ? { parent: p.parent } : {}),
+					...(p.cursor ? { cursor: p.cursor } : {}),
+				},
+				signal,
+			);
+			return response({ snapshot, calls });
+		}
+		if (p.op === "continue") {
+			if (found.snapshot.phase !== "awaiting_decision" || p.decision !== found.snapshot.decision)
+				throw new RpcError("DECISION_STALE", "read the current task decision before continuing");
+			const pending = await this.pendingContinuation(found.snapshot);
+			if (pending?.kind === "not_found" || pending?.kind === "unavailable")
+				return this.confirming(task, "continuation acceptance is not yet confirmed");
+			if (pending?.kind === "found") throw new RpcError("DECISION_STALE", "this decision was already accepted");
+			return this.submitRequest(
+				{
+					operation: "continue",
+					request: {
+						requestId: randomUUID(),
+						run: found.snapshot.run,
+						decision: found.snapshot.decision,
+						entry: this.entry(p.entry as Record<string, unknown>),
+						...(p.environment === undefined ? {} : { environment: p.environment as "inherit" | "current" }),
+					},
+				},
+				signal,
+				task,
+			);
+		}
+		throw new RpcError("INVALID_INPUT", "unknown tasks operation");
+	}
+
 	/**
 	 * `runs.status`（无 run）的模型出口：内部 status 带最多 64KB 执行侧日志尾，
 	 * 只有排障时才需要。ready 且无 fault 时省略 tail；否则只给末 2000 字符。
@@ -303,56 +490,12 @@ export class MinecraftFacade {
 						signal,
 					),
 				);
-			case "request":
-				return response(await this.executor.lookup(p.request as string));
-			case "retry": {
-				const credential = await this.executor.ledger.getRequest(p.request as string);
-				if (!credential) throw new RpcError("NOT_FOUND", "original request credential is unavailable");
-				const found = await this.executor.lookup(credential.requestId);
-				if (found.kind === "found" || found.kind === "cancelled" || found.kind === "unavailable")
-					return response(found);
-				const accepted =
-					credential.operation === "continue"
-						? await this.executor.continue(credential.request)
-						: await this.executor.submit(credential.request);
-				return response(
-					accepted,
-					accepted.kind === "unknown" ? "unknown" : accepted.kind === "not_accepted" ? "failed" : "succeeded",
-				);
-			}
 			case "stop": {
 				const receipt = await this.executor.stop({
 					requestId: randomUUID(),
 					target: p.run ? { run: p.run as string } : { request: p.request as string },
 				});
 				return response(receipt, receipt.intent === "unknown" ? "unknown" : "succeeded");
-			}
-			case "recover": {
-				const state = await this.executor.recover(
-					p.expected as { attachment: string; gateRevision: number } | undefined,
-				);
-				return response({
-					...state,
-					...(state.side?.owner?.gates.includes("owner_lost")
-						? {
-								nextCall: {
-									action: "runs",
-									params: {
-										op: "recover",
-										expected: { attachment: state.side.owner.attachment, gateRevision: state.side.owner.gateRevision },
-									},
-								},
-							}
-						: {}),
-				});
-			}
-			case "delivery": {
-				const item = p.ref ? await this.executor.rpc<DeliveryState>("runtime.readDelivery", { ref: p.ref }) : undefined;
-				if (p.retry === true) return response(await this.delivery.retry(p.ref as string, p.expectedAttempt as string));
-				return response({
-					...this.delivery.diagnostics(),
-					...(item ? { item: { key: p.ref, ...item, host: await this.ctx.delivery!.inspect(p.ref as string) } } : {}),
-				});
 			}
 			case "continue":
 				return this.submitRequest(

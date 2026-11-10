@@ -37,7 +37,7 @@ function facadeOf(status: unknown): MinecraftFacade {
 		status: () => status,
 		inspect: async () => status,
 	} as unknown as MinecraftExecutor;
-	return new MinecraftFacade(executor, ctx);
+	return new MinecraftFacade(executor, ctx, { diagnostics: true });
 }
 
 async function statusOf(facade: MinecraftFacade): Promise<Record<string, unknown>> {

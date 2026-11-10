@@ -4,11 +4,16 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import type { Acceptance, ContinueRequest, RunRequest } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type {
+	Acceptance,
+	ContinueRequest,
+	RunRequest,
+	StopCommand,
+} from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { MinecraftFacade } from "../../.uina/worlds/minecraft/executor/facade.js";
 import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import { ExecutorLedger } from "../../.uina/worlds/minecraft/executor/ledger.js";
-import type { RequestCredential } from "../../.uina/worlds/minecraft/executor/ledger-worker.js";
+import type { RequestCredential, TaskRequestSelection } from "../../.uina/worlds/minecraft/executor/ledger-worker.js";
 import { methods } from "../../.uina/worlds/minecraft/executor/protocol.js";
 import { actionSchemas } from "../../.uina/worlds/minecraft/worlddef/schema.js";
 
@@ -16,9 +21,18 @@ function fixture() {
 	const credentials = new Map<string, RequestCredential>();
 	const submissions: RunRequest[] = [];
 	const continuations: ContinueRequest[] = [];
+	const stops: StopCommand[] = [];
 	const found: unknown[] = [];
 	const attempts: unknown[] = [];
-	const snapshot = { run: "run:one", phase: "running", revision: 2, record: "record:one" };
+	const snapshot = {
+		run: "run:one",
+		rootRequestId: "root",
+		completion: { scope: "execution" },
+		phase: "awaiting_decision",
+		decision: "decision:one",
+		revision: 2,
+		record: "record:one",
+	};
 	const accept = (requestId: string) =>
 		({ kind: "accepted", requestId, segment: "segment:two", snapshot }) as Acceptance;
 	const executor = {
@@ -28,6 +42,20 @@ function fixture() {
 				credentials.set(credential.requestId, credential);
 			},
 			getRequest: async (id: string) => credentials.get(id) ?? null,
+			requests: async (selection?: TaskRequestSelection) =>
+				[...credentials.values()].filter(
+					(item) =>
+						selection?.kind !== "continuation" ||
+						(item.operation === "continue" &&
+							item.request.run === selection.run &&
+							item.request.decision === selection.decision &&
+							!item.run &&
+							!item.refusal),
+				),
+
+			refuse: async (id: string, refusal: RequestCredential["refusal"]) => {
+				credentials.get(id)!.refusal = refusal;
+			},
 			found: async (_id: string, lookup: unknown) => {
 				found.push(lookup);
 			},
@@ -43,7 +71,11 @@ function fixture() {
 			continuations.push(request);
 			return accept(request.requestId);
 		},
-		lookup: async (requestId: string) => ({ kind: "not_found", requestId }),
+		stop: async (command: StopCommand) => {
+			stops.push(command);
+			return { intent: "durable", control: "stopped", snapshot: null };
+		},
+		lookup: async (requestId: string) => ({ kind: requestId === "root" ? "found" : "not_found", requestId, snapshot }),
 		wait: async () => ({ kind: "timeout", snapshot }),
 	};
 	const facade = new MinecraftFacade(executor as unknown as MinecraftExecutor, {
@@ -56,20 +88,20 @@ function fixture() {
 			retire: async () => ({ kind: "retired" }),
 		},
 	});
-	return { executor, facade, credentials, submissions, continuations, found, attempts, accept };
+	return { executor, facade, credentials, submissions, continuations, found, attempts, stops, accept };
 }
 const continuation = {
 	op: "continue",
-	run: "run:one",
+	task: "task:local:root",
 	decision: "decision:one",
 	entry: { code: "async function main(mc){return mc.checkpoint;}" },
 	environment: "inherit",
 };
 
-test("continue saves its operation and exact request before dispatch; retry reuses it", async () => {
+test("continue saves its operation and exact request before dispatch", async () => {
 	const f = fixture();
 	try {
-		const result = await f.facade.execute("runs", continuation, new AbortController().signal);
+		const result = await f.facade.execute("tasks", continuation, new AbortController().signal);
 		expect(result.status).toBe("succeeded");
 		const credential = [...f.credentials.values()][0]!;
 		expect(credential).toMatchObject({
@@ -84,9 +116,6 @@ test("continue saves its operation and exact request before dispatch; retry reus
 		expect(f.continuations).toEqual([credential.request]);
 		expect(f.submissions).toEqual([]);
 		expect(f.found).toMatchObject([{ operation: "continue" }]);
-		await f.facade.execute("runs", { op: "retry", request: credential.requestId }, new AbortController().signal);
-		expect(f.continuations).toEqual([credential.request, credential.request]);
-		expect(f.submissions).toEqual([]);
 	} finally {
 		await f.facade.close();
 	}
@@ -101,10 +130,10 @@ test("cancellation after storing a continuation retains the credential without d
 		abort.abort();
 	};
 	try {
-		const result = await f.facade.execute("runs", continuation, abort.signal);
+		const result = await f.facade.execute("tasks", continuation, abort.signal);
 		expect(result).toMatchObject({
 			status: "not_started",
-			details: { kind: "not_accepted", code: "REQUEST_CANCELLED" },
+			details: { kind: "rejected", code: "REQUEST_CANCELLED" },
 		});
 		expect(f.credentials.size).toBe(1);
 		expect(f.continuations).toEqual([]);
@@ -124,7 +153,7 @@ test("cancelling a continuation wait preserves late acceptance and offers origin
 		});
 	};
 	try {
-		const pending = f.facade.execute("runs", continuation, abort.signal);
+		const pending = f.facade.execute("tasks", continuation, abort.signal);
 		await expect.poll(() => f.continuations.length).toBe(1);
 		abort.abort();
 		const result = await pending;
@@ -132,13 +161,51 @@ test("cancelling a continuation wait preserves late acceptance and offers origin
 		expect(result).toMatchObject({
 			status: "unknown",
 			details: {
-				kind: "unknown",
-				requestId,
-				nextCall: { action: "runs", params: { op: "request", request: requestId } },
+				kind: "confirming",
+				task: continuation.task,
+				nextCall: { action: "tasks", params: { op: "get", task: continuation.task } },
 			},
 		});
+		const repeat = await f.facade.execute("tasks", continuation, new AbortController().signal);
+		expect(repeat).toMatchObject({ details: { kind: "confirming", task: continuation.task } });
+		expect(f.continuations).toHaveLength(1);
 		finish(f.accept(requestId));
 		await expect.poll(() => f.found.length).toBe(1);
+	} finally {
+		await f.facade.close();
+	}
+});
+
+test("a lost submit acknowledgement uses the original task for lookup and stop", async () => {
+	const f = fixture();
+	const signal = new AbortController().signal;
+	f.executor.submit = async (request) => {
+		f.submissions.push(request);
+		return { kind: "unknown", requestId: request.requestId, reason: "reply lost" };
+	};
+	try {
+		const receipt = await f.facade.execute("run", { selector: "chat@1", input: { text: "once" } }, signal);
+		const requestId = f.submissions[0]!.requestId;
+		const task = "task:local:" + requestId;
+		expect(receipt).toMatchObject({ status: "unknown", details: { kind: "confirming", task } });
+		expect(await f.facade.execute("tasks", { op: "get", task }, signal)).toMatchObject({
+			status: "unknown",
+			details: { task, phase: "confirming" },
+		});
+		expect(await f.facade.execute("tasks", { op: "get", task: "task:another:" + requestId }, signal)).toMatchObject({
+			details: { code: "TASK_PROFILE_MISMATCH" },
+		});
+		await f.facade.execute("tasks", { op: "stop", task }, signal);
+		expect(f.stops).toMatchObject([{ target: { request: requestId } }]);
+		const originalLookup = f.executor.lookup;
+		f.executor.lookup = async (id) => {
+			const found = await originalLookup("root");
+			return { ...found, requestId: id, snapshot: { ...found.snapshot, rootRequestId: requestId } };
+		};
+		expect(await f.facade.execute("tasks", { op: "get", task }, signal)).toMatchObject({
+			details: { task, phase: "needs_input" },
+		});
+		expect(f.submissions).toHaveLength(1);
 	} finally {
 		await f.facade.close();
 	}
@@ -148,28 +215,30 @@ test("run passes explicit replacement and preemption schedules to Runtime", asyn
 	const f = fixture();
 	try {
 		for (const schedule of [
-			{ kind: "replace_pending", targets: ["run:old"] },
-			{ kind: "preempt_current", expectedRun: "run:old" },
+			{ kind: "replace_pending", targets: [continuation.task] },
+			{ kind: "preempt_current", expectedRun: continuation.task },
 			{ kind: "enqueue", priority: true },
 		]) {
 			const result = await f.facade.execute("run", { selector: "chat@1", schedule }, new AbortController().signal);
 			expect(result.status).toBe("succeeded");
-			expect(f.submissions.at(-1)?.schedule).toEqual(schedule);
+			expect(f.submissions.at(-1)?.schedule).toEqual(
+				JSON.parse(JSON.stringify(schedule).replace(continuation.task, "run:one")),
+			);
 		}
 	} finally {
 		await f.facade.close();
 	}
 });
 
-test("runs.continue 只返回受理：决策结果由 Completion 独立交付", async () => {
+test("tasks.continue 只返回受理：决策结果由 Completion 独立交付", async () => {
 	const f = fixture();
 	try {
-		const result = await f.facade.execute("runs", continuation, new AbortController().signal);
+		const result = await f.facade.execute("tasks", continuation, new AbortController().signal);
 		expect(result.status).toBe("succeeded");
 		expect(result.continuation).toBe("yield");
 		// 工具结果只给受理句柄。decision 副本属于 Completion：新段允许继续推进，
 		// 但工具这一层不能把它当成"这一轮已经结束"。
-		expect(JSON.parse(result.result)).toMatchObject({ kind: "accepted", run: "run:one", segment: "segment:two" });
+		expect(JSON.parse(result.result)).toMatchObject({ kind: "accepted", task: continuation.task });
 		expect(JSON.parse(result.result)).not.toHaveProperty("snapshot");
 		expect(JSON.parse(result.result)).not.toHaveProperty("phase");
 		// 交付只剩 Completion 一条路：受理不再创建 tool 通道的 Attempt。
@@ -211,6 +280,12 @@ test("the ledger retains continuation intent across reopen and rejects schema v2
 				request: { requestId: "request", entry: credential.request.entry, schedule: { kind: "enqueue" } },
 			}),
 		).rejects.toThrow("REQUEST_CONFLICT");
+		const refusal = { kind: "rejected", code: "DECISION_STALE", message: "decision moved" } as const;
+		await ledger.refuse(credential.requestId, refusal);
+		await ledger.close();
+		ledger = new ExecutorLedger();
+		await ledger.open(path, "owner", "storage");
+		expect(await ledger.getRequest(credential.requestId)).toEqual({ ...credential, refusal });
 		await ledger.close();
 		execFileSync(
 			process.execPath,
@@ -241,7 +316,7 @@ test("continue IPC binds origin on the execution side and excludes scheduling", 
 	expect(validate?.({ ...input, origin: { worldOwner: "forged", activation: "forged" } })).toBe(false);
 	expect(validate?.({ ...input, schedule: { kind: "enqueue" } })).toBe(false);
 	const Ajv = createRequire(import.meta.url)("ajv");
-	const facadeInput = new Ajv({ strict: false }).compile(actionSchemas.runs);
+	const facadeInput = new Ajv({ strict: false }).compile(actionSchemas.tasks);
 	expect(facadeInput(continuation)).toBe(true);
 	expect(facadeInput({ ...continuation, entry: { ...continuation.entry, schedule: { kind: "enqueue" } } })).toBe(false);
 });

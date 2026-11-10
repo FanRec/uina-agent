@@ -29,7 +29,7 @@ test("一至三条：run、phase、进度摘要逐条给，并标明与世界状
 
 test("等决策的任务说明下一步用哪个动作，而不是只给一个状态名", () => {
 	const text = formatActiveRuns([run("run:3", "awaiting_decision", "要挖哪里")], at);
-	expect(text).toContain("awaiting_decision（用 runs.continue 推进）");
+	expect(text).toContain("needs_input（用 tasks.get 查当前决策）");
 	expect(text).toContain("要挖哪里");
 });
 
@@ -37,7 +37,7 @@ test("超出上限只给有界前缀和剩余数量，正文不随任务数增�
 	const runs = Array.from({ length: 10 }, (_, index) => run(`run:${index}`, "running", `任务 ${index}`));
 	const text = formatActiveRuns(runs, at);
 	expect(text?.split("\n").filter((line) => line.startsWith("- run:"))).toHaveLength(4);
-	expect(text).toContain("- 其余 6 条：runs.list");
+	expect(text).toContain("- 其余 6 条：tasks.list");
 });
 
 test("过长的进度摘要截断处留标，不静默吃掉后半句", () => {
@@ -58,6 +58,6 @@ test("任务列表读不到时明确说未知，不留白被读成没有活跃�
 	const text = formatActiveRuns(null, at);
 	expect(text).toContain("未能读取");
 	expect(text).toContain("不代表没有活跃任务");
-	expect(text).toContain("runs.list");
+	expect(text).toContain("tasks.list");
 	expect(formatActiveRuns([], at)).toBeNull();
 });

@@ -9,8 +9,8 @@ Program 是普通 JavaScript：`async function main(mc, input) { ... }`。不能
 1. `mc.call(selector, input)` **直接返回该动作的业务结果**，不是 `{value:...}` 包装。例如 `collect@1` 返回 `{mined, acquired, collected, remaining, toolsUsed}`。
 2. `mc.read(ref, input)` 返回 `{value, version, unknown}`。`unknown` 非空或 `value` 缺失时，不能当成"没有"。
 3. `mc.progress(obj)` 只更新当前诊断快照，**不是**持久恢复存档；对象过大或含非法值会抛 `PROGRAM_VALUE`。
-4. `mc.decide(reason, checkpoint?)` 抛 `NEEDS_DECISION` 结束当前段，交还主脑；续段由 `runs.continue` 新建，重新读取现场，不恢复旧 JS 调用栈、Body 或 Window 句柄。只读 `mc.checkpoint` 在续段取回检查点。
-5. 顶层 `run` 只回受理 `accepted`，完成由 `minecraft_completion` 事件独立投递。Program 内 `await mc.call(...)` 仍会等子动作结果；不要在 Program 里轮询 `runs.wait` 等自己。
+4. `mc.decide(reason, checkpoint?)` 抛 `NEEDS_DECISION` 结束当前段，交还主脑；续段由 `tasks.continue` 新建，重新读取现场，不恢复旧 JS 调用栈、Body 或 Window 句柄。只读 `mc.checkpoint` 在续段取回检查点。
+5. 顶层 `run` 只回受理结果。任务完成由 `minecraft_completion` 独立投递，`tasks.get` 可查当前结果。Program 内 `await mc.call(...)` 等待子动作结果。
 
 子动作失败会抛带 `code / message / source / dispatch / effects / progress / hint / recoverable` 的 Error。
 `recoverable:true` 只表示"存在合理的后续路径"，**不是**自动重试授权：`dispatch:'sent'` 或 `effects` 非空时先重新读世界事实，不原样重跑。
@@ -59,10 +59,10 @@ async function main(mc, input) {
 
 ## 受理、调度与继续
 
-- `run.schedule`：`{kind:'enqueue',priority:true}` 让身体申请插队一档（Safety 仍最前）；`{kind:'replace_pending',targets:[...]}` 换掉排队项；`{kind:'preempt_current',expectedRun:'...'}` 抢占 `control=active` 的 Run。`runs.continue` 不带 schedule。
-- `run/chat/runs.continue` 返回 `accepted`（已交给运行时）、`not_accepted`（未派发）或 `unknown`（必须用原 request 查证，不能重发）。
-- 停止游戏任务用 `runs.stop`；工具取消只结束等待。
-- 程序试做成功后再用 `library.save {name,summary,from:{run,segment,call}}` 保存确切调用（先用 `runs.calls` 找 Call）；也可以直接 `source` 保存。Experience 是有条件的判断，不是系统规则。
+- `run.schedule`：`{kind:'enqueue',priority:true}` 让身体申请插队一档（Safety 仍最前）；`{kind:'replace_pending',targets:[...]}` 用任务句柄替换排队项；`{kind:'preempt_current',expectedRun:'...'}` 用任务句柄抢占 `control=active` 的任务。`tasks.continue` 不带 schedule。
+- `run/chat/tasks.continue` 返回 `accepted`（已交给运行时）、`rejected`（未受理）或 `confirming`（用原 task 调 `tasks.get` 查证）。
+- 停止游戏任务用 `tasks.stop`；工具取消只结束等待。
+- 程序试做成功后再用 `library.save {name,summary,from:{run,segment,call}}` 保存确切调用（先用 `tasks.trace` 找 Call）；也可以直接 `source` 保存。Experience 是有条件的判断，不是系统规则。
 
 ## 示例未验证前的边界
 

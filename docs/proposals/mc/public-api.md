@@ -4,6 +4,18 @@
 
 本文只定义跨模块交换的东西：值、失败、观测、能力声明、Body、World、Executor 接入。行为合同见所属 `modules/`；[协作导航](contracts.md) 只列所有权与跨模块流程。Program、能力面与库的合同分别由 [program.md](modules/program.md)、[capabilities.md](modules/capabilities.md)、[library.md](modules/library.md) 唯一拥有，本文不复制也不改写它们。各节由对应模块拥有，放在同一文档只为核对类型，不要求实现成一个 SDK 包或共同基类。
 
+## 用户任务入口
+
+当前 Minecraft 工具以 `session / observe / describe / run / chat / tasks / library` 服务用户。版本化能力和个人 Program 仍用原 selector。按需用 `describe {kind:"guide",name:"program_api"}` 查脚本接口。
+
+- `run`、`chat`、`tasks.continue` 只返回 `accepted`、`rejected` 或 `confirming`。有提交凭据时返回 `task`，其归属为原 Profile。确认期用原句柄查证。继续时沿用原任务句柄。
+- `tasks.get {task}` 返回当前阶段、修订、进度与结果。`tasks.list` 默认列活跃任务，`activeOnly:false` 包含历史。`tasks.stop {task}` 处理确认期原请求或已受理任务。`tasks.continue {task,decision,entry,environment?}` 只消费当前仍有效的决策。
+- `tasks.trace {task}` 按需展开当前执行摘要和调用页。可传该摘要里的 `record` 或 `completionRef` 读取当前任务的完整记录。程序源码另经 Library 读取和保存。
+- `minecraft_completion` 的用户正文使用相同任务句柄及修订，旧通知以 `tasks.get` 的当前状态为准。完成只按能力声明和世界证据解释，Program 普通返回仅证明脚本运行结束。
+- 用户调度仍用 `run.schedule`。其中 `replace_pending.targets` 和 `preempt_current.expectedRun` 接收 Task 句柄。内部 Runtime 与 IPC 保持原有 Run 合同。
+
+本文后续章节的 `Run`、`Acceptance` 与 `runs` 描述内部执行、记录及开发诊断口径。正式工具 schema 只暴露上述用户入口。
+
 ## 1. 读什么、谁拥有什么
 
 行为语义由所属模块唯一维护；跨模块所有权及协作导航见 [contracts](contracts.md)。Runtime 执行机制以 [Runtime 详细设计](modules/runtime.md) 为准。本文与各模块文档构成唯一公开定义；旧 `contracts/*.ts` 已于 2026-10-18 删除。新代码按本文和所属模块合同实现，不把旧类型作为兼容层。

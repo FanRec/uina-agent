@@ -1,7 +1,13 @@
 import { Worker } from "node:worker_threads";
 import type { SubmissionLookup } from "../contracts/runtime.js";
 import { RpcError } from "./ipc.js";
-import type { DeliveryAttempt, LedgerRequest, LedgerSnapshot, RequestCredential } from "./ledger-worker.js";
+import type {
+	DeliveryAttempt,
+	LedgerRequest,
+	LedgerSnapshot,
+	RequestCredential,
+	TaskRequestSelection,
+} from "./ledger-worker.js";
 
 export class ExecutorLedger {
 	private readonly worker: Worker;
@@ -69,8 +75,11 @@ export class ExecutorLedger {
 	async getRequest(requestId: string): Promise<RequestCredential | null> {
 		return (await this.request({ op: "request_get", requestId })) as RequestCredential | null;
 	}
-	async requests(): Promise<RequestCredential[]> {
-		return (await this.request({ op: "request_list" })) as RequestCredential[];
+	async requests(selection?: TaskRequestSelection): Promise<RequestCredential[]> {
+		return (await this.request({ op: "request_list", ...(selection ? { selection } : {}) })) as RequestCredential[];
+	}
+	async refuse(requestId: string, refusal: NonNullable<RequestCredential["refusal"]>): Promise<void> {
+		await this.request({ op: "request_refused", requestId, refusal });
 	}
 	async found(requestId: string, lookup: Extract<SubmissionLookup, { kind: "found" }>): Promise<void> {
 		await this.request({ op: "request_found", requestId, lookup });

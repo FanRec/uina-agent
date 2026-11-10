@@ -10,8 +10,8 @@ export interface I2Scenario {
 export async function i2Scenario(s: I2Scenario): Promise<void> {
 	const status = (run: string) => s.direct("runs", { op: "status", run });
 	const finish = async (reply: Record<string, unknown>) => {
-		assert.ok(reply.kind === "accepted" || reply.kind === "result", JSON.stringify(reply));
-		const run = (reply.snapshot as { run: string }).run;
+		assert.ok(reply.kind === "accepted", JSON.stringify(reply));
+		const run = reply.run as string;
 		const result = await s.until(
 			() => s.direct("runs", { op: "wait", run, timeoutMs: 1000 }),
 			(r) => r.kind === "result",

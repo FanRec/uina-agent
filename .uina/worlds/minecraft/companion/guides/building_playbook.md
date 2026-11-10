@@ -30,3 +30,43 @@ async function main(mc, input) {
 精确字段以 `describe {selector:'build.plan@1'}` / `describe {selector:'build@1'}` 为准；`need` 是仍需放置的方块数，`missing` 是缺口，`blocked` 是冲突格。
 
 如要照明，可复用经过验证的照明 Program：在环境事实允许下选择墙面和间距，避免"四面连续插火把"的机械布局；但用户希望故意做火把墙也可以。基础 `place@1` 不负责美学，火把间距属于场景策略。
+
+## 可复制小型施工 Program
+
+传入 input.cells（与 build.plan@1 的 cells 同形）。示例只放置当前站位能触及的格子，保留其他方块，施工后重新核验显式的方块属性。
+
+```js
+async function main(mc, input) {
+  const request = { cells: input.cells, replace: false };
+  const plan = (await mc.read("build.plan@1", request)).value;
+  if (!plan) mc.decide("计划不可读");
+  const matches = (target, block) => block?.name === (typeof target.block === "string" ? target.block : target.block.name) &&
+    Object.entries(target.block.properties ?? {}).every(([key, value]) => block.properties?.[key] === value);
+  const read = async (at) => (await mc.read("block@1", { at })).value?.block;
+  const blocked = new Set(plan.blocked.map(({ at }) => JSON.stringify(at)));
+  const failures = [];
+  for (const target of plan.targets) {
+    if (target.kind !== "set" || matches(target, await read(target.at))) continue;
+    if (blocked.has(JSON.stringify(target.at))) continue;
+    try {
+      await mc.call("place@1", {
+        at: target.at,
+        block: target.block,
+        replace: false,
+      });
+    } catch (error) {
+      if (error.dispatch !== "not_sent" ||
+          !["MISSING_MATERIAL", "CONFLICT", "UNREACHABLE"].includes(error.code)) throw error;
+      failures.push({ at: target.at, code: error.code });
+    }
+  }
+  const remaining = [];
+  for (const target of plan.targets) {
+    if (target.kind === "set" && !matches(target, await read(target.at))) remaining.push(target.at);
+  }
+  const after = (await mc.read("build.plan@1", request)).value;
+  const result = { remaining, missing: after?.missing ?? null, failures };
+  if (remaining.length) mc.decide("还有目标格未满足，请补充材料或调整设计", result);
+  return result;
+}
+```
