@@ -13,6 +13,7 @@ export function installConnectionRegistry(bot: MineflayerBot, evidence: Connecti
 	const blocksByName = { ...registry.blocksByName };
 	const blocksArray = [...registry.blocksArray];
 	const blocksByStateId = { ...registry.blocksByStateId };
+	const collisionShapes = { ...registry.blockCollisionShapes, blocks: { ...registry.blockCollisionShapes.blocks } };
 	for (const { name, id } of evidence.items) {
 		if (!customName.test(name) || !idValid(id) || items[id] || itemsByName[name])
 			throw new Error(`invalid or conflicting item registry entry ${name}=${id}`);
@@ -32,18 +33,26 @@ export function installConnectionRegistry(bot: MineflayerBot, evidence: Connecti
 		)
 			throw new Error(`invalid or conflicting block registry entry ${name}=${id}/${stateId}`);
 		const block = {
-			...registry.blocksByName.stone,
 			name,
 			id,
 			displayName: name,
 			hardness,
+			stackSize: itemsByName[name]?.stackSize ?? 64,
+			diggable: hardness >= 0,
+			boundingBox: "block" as const,
+			transparent: false,
+			emitLight: 0,
+			filterLight: 15,
+			drops: [],
 			minStateId: stateId,
 			maxStateId: stateId,
 			defaultState: stateId,
 			states: [],
+			shapes: [[0, 0, 0, 1, 1, 1]],
 		};
 		blocks[id] = blocksByName[name] = blocksByStateId[stateId] = block;
 		blocksArray.push(block);
+		collisionShapes.blocks[name] = collisionShapes.blocks.stone!;
 	}
 	for (const [kind, ids] of Object.entries(evidence.synchronizedIds)) {
 		const entries = kind === "minecraft:item" ? itemsByName : kind === "minecraft:block" ? blocksByName : null;
@@ -61,5 +70,14 @@ export function installConnectionRegistry(bot: MineflayerBot, evidence: Connecti
 			if (evidence.synchronizedIds[kind]?.[entry.name] !== entry.id)
 				throw new Error(`missing registry mapping ${kind}:${entry.name}`);
 	}
-	Object.assign(registry, { items, itemsByName, itemsArray, blocks, blocksByName, blocksArray, blocksByStateId });
+	Object.assign(registry, {
+		items,
+		itemsByName,
+		itemsArray,
+		blocks,
+		blocksByName,
+		blocksArray,
+		blocksByStateId,
+		blockCollisionShapes: collisionShapes,
+	});
 }

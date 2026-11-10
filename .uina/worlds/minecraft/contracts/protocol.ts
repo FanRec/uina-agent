@@ -23,7 +23,7 @@ export interface RecoveryIdentity {
 	readonly dimension: string;
 }
 
-/** Registry evidence for items and single-state solid cubes on this connection. */
+/** Registry evidence for 64-stack items and opaque, non-luminous single-state cubes. */
 export interface ConnectionRegistry {
 	readonly world: string;
 	readonly items: readonly { name: string; id: number }[];
