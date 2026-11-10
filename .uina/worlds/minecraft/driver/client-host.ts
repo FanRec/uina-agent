@@ -13,6 +13,7 @@ import type {
 	ConnectionFactSink,
 	LocalScreenActivity,
 	ProtocolExtension,
+	RecoveryIdentity,
 } from "../contracts/protocol.js";
 import type { Ref } from "../contracts/values.js";
 import { trackVitals } from "./facts/vitals.js";
@@ -22,6 +23,7 @@ import {
 	fromMineflayerVec3,
 	type MineflayerBot,
 } from "./mineflayer/adapter.js";
+import { installConnectionRegistry } from "./mineflayer/connection-registry.js";
 import { createPendingClient, type PendingClient } from "./mineflayer/pending-client.js";
 import { protocolFor } from "./mineflayer/protocol.js";
 import { fixToolTierMaterials } from "./mineflayer/upstream-fixes.js";
@@ -79,6 +81,7 @@ export class ClientHost {
 	private _incarnation: Ref | null = null;
 	private _disconnect: DisconnectFacts | null = null;
 	private _lastDimension: string | null = null;
+	private _worldIdentity: string | null = null;
 	private _attachGeneration = 0;
 	/** death（respawn 包）后待重生：下一次 spawn 落位时换 Incarnation。 */
 	private _pendingRebirth = false;
@@ -100,6 +103,13 @@ export class ClientHost {
 
 	get disconnectFacts(): DisconnectFacts | null {
 		return this._disconnect;
+	}
+
+	recoveryIdentity(): RecoveryIdentity | null {
+		const dimension = this.dimension;
+		return this.state === "ready" && this._worldIdentity && dimension
+			? { world: this._worldIdentity, dimension }
+			: null;
 	}
 
 	/** Driver 内部模块（facts/body/goto）经此取 Bot；不得逃逸出 Driver。 */
@@ -131,6 +141,7 @@ export class ClientHost {
 		this._screenExtensions = [];
 		this._disconnect = null;
 		this._lastDimension = null;
+		this._worldIdentity = null;
 		this._pendingRebirth = false;
 		const connection = this.nextRef("conn");
 		this._connection = connection;
@@ -172,6 +183,12 @@ export class ClientHost {
 				minecraftVersion: opts.version,
 				connection,
 				isCurrent: () => generation === this._attachGeneration,
+				installRegistry: (registry) => {
+					if (this._worldIdentity != null || !/^[a-z0-9_.:-]{1,128}$/.test(registry.world))
+						throw new Error("invalid or duplicate server world identity");
+					installConnectionRegistry(bot, registry);
+					this._worldIdentity = registry.world;
+				},
 			});
 			assembly.installAll(extensions);
 			assembly.finish();

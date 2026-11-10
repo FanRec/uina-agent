@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "uina_fixture",
+  "version": "1.0.0",
+  "name": "Uina V2 Acceptance Fixture",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.uina.fixture.Fixture"
+    ],
+    "client": [
+      "dev.uina.fixture.Observer"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "1.21.11",
+    "fabric-api": "*"
+  }
+}

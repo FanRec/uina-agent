@@ -1,0 +1,33 @@
+plugins {
+    id "fabric-loom" version "1.14.10"
+}
+group = "dev.uina"
+version = "1.0.0"
+repositories {
+    mavenCentral()
+}
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.11"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:0.20.1"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.141.4+1.21.11"
+    def spectator = providers.environmentVariable("UINA_FABRIC_SPECTATOR_JAR")
+    if (spectator.isPresent()) {
+        modRuntimeOnly files(spectator.get())
+        // Loom remaps file dependencies separately from their nested mod jars.
+        modRuntimeOnly files(zipTree(spectator.get()).matching {
+            include "META-INF/jars/fabric-permissions-api-0.6.1.jar"
+        }.singleFile)
+    }
+}
+loom {
+    runs {
+        client {
+            vmArg "-Duina.fixture.observer=127.0.0.1:25566"
+            programArgs "--username", "UinaObserver", "--width", "640", "--height", "480"
+        }
+    }
+}
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+}

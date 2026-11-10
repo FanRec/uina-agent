@@ -18,6 +18,19 @@ import type { Fact, JsonValue, Ref } from "./values.js";
 
 export type ProtocolPhase = "login" | "configuration" | "play";
 
+export interface RecoveryIdentity {
+	readonly world: string;
+	readonly dimension: string;
+}
+
+/** Registry evidence for items and single-state solid cubes on this connection. */
+export interface ConnectionRegistry {
+	readonly world: string;
+	readonly items: readonly { name: string; id: number }[];
+	readonly solidBlocks: readonly { name: string; id: number; stateId: number; hardness: number }[];
+	readonly synchronizedIds: Readonly<Record<string, Readonly<Record<string, number>>>>;
+}
+
 /** Addon 事实的作用域：换代即失效（身体相关） / 保留到本连接断开（服务器范围状态）。 */
 export type AddonFactScope = "connection" | "incarnation";
 
@@ -55,6 +68,8 @@ export interface PhaseContext {
 	replyPacket(packetName: string, packet: unknown): void;
 	/** 回复当前阶段的 custom payload；只允许 configuration 阶段。 */
 	replyPayload(channel: string, data: Uint8Array): void;
+	/** Configuration-only. The contributing Addon must claim connection-registry. */
+	installRegistry(registry: ConnectionRegistry): void;
 }
 
 /**

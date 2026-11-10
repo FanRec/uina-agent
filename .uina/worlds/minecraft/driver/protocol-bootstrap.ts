@@ -14,7 +14,7 @@
  * play 阶段偷偷追加注册。
  */
 
-import type { PhaseContext, ProtocolBootstrap, ProtocolExtension, ProtocolPhase } from "../contracts/protocol.js";
+import type { ConnectionRegistry, PhaseContext, ProtocolBootstrap, ProtocolExtension, ProtocolPhase } from "../contracts/protocol.js";
 import { callFailure, type Ref } from "../contracts/values.js";
 import type { PendingProtocolClient } from "./mineflayer/pending-client.js";
 import type { DriverProtocol } from "./mineflayer/protocol.js";
@@ -35,6 +35,7 @@ export interface ProtocolAssemblyOptions {
 	connection: Ref;
 	/** 连接代次判定：换代后旧装配不再派发，也不再回复。 */
 	isCurrent: () => boolean;
+	installRegistry?: (registry: ConnectionRegistry) => void;
 }
 
 export interface ProtocolAssembly extends ProtocolBootstrap {
@@ -80,7 +81,7 @@ export function createProtocolAssembly(options: ProtocolAssemblyOptions): Protoc
 		client.write("custom_payload", { channel, data: Buffer.from(data) });
 	};
 
-	const context = (phase: ProtocolPhase): PhaseContext => ({
+	const context = (phase: ProtocolPhase, addonId: string): PhaseContext => ({
 		phase,
 		connection,
 		replyPacket(packetName, packet) {
@@ -96,6 +97,13 @@ export function createProtocolAssembly(options: ProtocolAssemblyOptions): Protoc
 			if (phaseNow() !== "configuration")
 				throw failure("ADDON_PROTOCOL_PHASE_EXPIRED", `reply refused: configuration ended in ${phaseNow()}`);
 			writePayload(channel, data);
+		},
+		installRegistry(registry) {
+			if (!alive() || phase !== "configuration" || phaseNow() !== phase)
+				throw failure("ADDON_PROTOCOL_PHASE_EXPIRED", "registry evidence must arrive during configuration");
+			if (owners.get(key(phase, "connection-registry")) !== addonId || options.installRegistry == null)
+				throw failure("ADDON_PROTOCOL_CONFLICT", "registry evidence requires the connection-registry claim");
+			options.installRegistry(registry);
 		},
 	});
 
@@ -159,7 +167,7 @@ export function createProtocolAssembly(options: ProtocolAssemblyOptions): Protoc
 			// client.js 对每个包 emit(metadata.name, data, meta)：第一个参数就是解码后的包。
 			listen(name, (packet: unknown) => {
 				if (!alive() || phaseNow() !== phase) return;
-				safely(addonId, () => handler(packet, context(phase)));
+				safely(addonId, () => handler(packet, context(phase, addonId)));
 			});
 		},
 		onPayload(phase, channel, handler) {
@@ -167,12 +175,14 @@ export function createProtocolAssembly(options: ProtocolAssemblyOptions): Protoc
 			// 订阅即声明接收；普通通道允许多个订阅者。
 			declareReceive(phase, channel);
 			const addonId = currentAddon;
-			listen("custom_payload", (packet: unknown) => {
+			// minecraft-protocol mutates registration payloads in its named event handler.
+			listen("packet", (packet: unknown, metadata: unknown) => {
+				if ((metadata as { name?: string } | null)?.name !== "custom_payload") return;
 				const value = packet as { channel?: unknown; data?: unknown } | null;
 				if (value?.channel !== channel || !(value.data instanceof Uint8Array)) return;
 				if (!alive() || phaseNow() !== phase) return;
 				const bytes = value.data;
-				safely(addonId, () => handler(bytes, context(phase)));
+				safely(addonId, () => handler(bytes, context(phase, addonId)));
 			});
 		},
 		declareReceive,

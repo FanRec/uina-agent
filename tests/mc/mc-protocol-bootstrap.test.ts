@@ -85,16 +85,16 @@ test("阶段过滤：login 阶段的包不派发给 configuration 订阅者", ()
 		{
 			id: "alpha",
 			install(boot) {
-				boot.onPacket("configuration", "custom_payload", () => seen.push("configuration"));
+				boot.onPayload("configuration", "fabric:sync", () => seen.push("configuration"));
 			},
 		},
 	]);
 	f.assembly.finish();
 	f.client.state = "login";
-	f.client.emit("custom_payload", { channel: "fabric:sync", data: Buffer.from([1]) });
+	f.client.emit("packet", { channel: "fabric:sync", data: Buffer.from([1]) }, { name: "custom_payload" });
 	expect(seen).toEqual([]);
 	f.client.state = "configuration";
-	f.client.emit("custom_payload", { channel: "fabric:sync", data: Buffer.from([1]) });
+	f.client.emit("packet", { channel: "fabric:sync", data: Buffer.from([1]) }, { name: "custom_payload" });
 	expect(seen).toEqual(["configuration"]);
 });
 
@@ -204,10 +204,10 @@ test("onPayload 按阶段和通道派发原始字节", () => {
 	]);
 	f.assembly.finish();
 	f.client.state = "play";
-	f.client.emit("custom_payload", { channel: "fabric:sync", data: Buffer.from([9]) });
+	f.client.emit("packet", { channel: "fabric:sync", data: Buffer.from([9]) }, { name: "custom_payload" });
 	f.client.state = "configuration";
-	f.client.emit("custom_payload", { channel: "fabric:other", data: Buffer.from([8]) });
-	f.client.emit("custom_payload", { channel: "fabric:sync", data: Buffer.from([1, 2]) });
+	f.client.emit("packet", { channel: "fabric:other", data: Buffer.from([8]) }, { name: "custom_payload" });
+	f.client.emit("packet", { channel: "fabric:sync", data: Buffer.from([1, 2]) }, { name: "custom_payload" });
 	expect(seen).toEqual([[1, 2]]);
 });
 
@@ -249,11 +249,11 @@ test("dispose 解除全部订阅并执行低层插件 disposer，且幂等", () 
 	]);
 	f.assembly.finish();
 	expect(f.client.listenerCount("login_plugin_request")).toBe(1);
-	expect(f.client.listenerCount("custom_payload")).toBe(1);
+	expect(f.client.listenerCount("packet")).toBe(1);
 	f.assembly.dispose();
 	f.assembly.dispose();
 	expect(f.client.listenerCount("login_plugin_request")).toBe(0);
-	expect(f.client.listenerCount("custom_payload")).toBe(0);
+	expect(f.client.listenerCount("packet")).toBe(0);
 	expect(cleaned).toEqual(["fml"]);
 });
 

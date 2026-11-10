@@ -1,0 +1,13 @@
+{
+	"name": "@uina-addons/fabric-fixture",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"main": "./index.js",
+	"uinaMinecraft": {
+		"api": 1,
+		"id": "fabric-fixture",
+		"minecraft": ["1.21.11"],
+		"requiresAddons": {}
+	}
+}

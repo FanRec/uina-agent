@@ -40,6 +40,7 @@ notes/
 
 # Minecraft 开发服务端本体（jar/存档/配置）：可整体删除复位，见 .uina/worlds/minecraft/dev-env/README.md
 /.uina/worlds/minecraft/dev-env/server/
+/.uina/worlds/minecraft/dev-env/fabric/server/
 # 测试插件构建产物（源码 build.mjs + src/ 入库，产物可重建）
 /.uina/worlds/minecraft/dev-env/uina-plugin/out/
 /.uina/worlds/minecraft/dev-env/uina-plugin/javac.args
