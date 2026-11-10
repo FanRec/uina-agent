@@ -32,10 +32,12 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | 文档 | 是什么 | 读者 |
 |---|---|---|
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
+| [游玩信息交付重构计划](play-context-refactor-plan.md) | 入服与任务交接、固定快照退役、真服与真实模型发布门 | 本轮实施与审查 |
 | [development-plan.md](development-plan.md) | 全模块依赖、正式实现工作包、51 项能力覆盖；**§10 当前施工总纲（批次、就绪队列与分责任验收）** | 实施负责人，按依赖推进 |
 | [multi-world-v3.md](multi-world-v3.md) | 多世界自治设计合同（M1/M2/M3.1 已落地，M3.2/M3.3/M4 为批26 施工范围） | 批26 实施者 |
 | [addons.md](addons.md) | Addon 合同：Manifest、Profile 选择、连接级协议与通道注册、事实/知识边界、CLI 与真服夹具 | 扩展实现者/运维 |
 | [refactor-v2/](refactor-v2/DEVELOPMENT-PLAN.md) | 下一轮重构/打磨执行包（2026-11-06，基线 a0c9a596）：M0–M10 工作包、三条接缝、验收场景与 Agent 指令；**待核实的设计候选与执行指令，不是现行合同**——已确认的决策与进度回填 development-plan/known-gaps/modules 后，整包转 archive | 下一轮实施负责人 |
+| [play-interface/](play-interface/01-DESIGN.md) | 游玩接口改造提案。依次阅读设计合同、重构路线和验收门槛。现行行为见 [公开接口](public-api.md) | 玩法设计、实现与验收 |
 | [development-guide.md](development-guide.md) | 统一接缝、复用/重构、真实环境优先及适量验证 | 所有开发者，开工前阅读 |
 | [contracts.md](contracts.md) | 所有权、依赖与跨模块协作导航；算法链接所属模块 | 实现者（跨模块时） |
 | [public-api.md](public-api.md) | 公开类型与方法；§6 导航到 Program/Library 的权威定义 | 实现者（查类型） |
