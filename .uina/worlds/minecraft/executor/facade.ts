@@ -9,6 +9,7 @@ import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
 import { constructionDecisionEvidence, submitsTask, taskHandle, taskIdentity, taskView } from "../contracts/task.js";
 import type { RequestIntent } from "./ledger-worker.js";
+import { observationView } from "./observation-view.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
 	return { status, result: JSON.stringify(value), details: value };
@@ -74,6 +75,7 @@ export class MinecraftFacade {
 			switch (action) {
 				case "observe":
 					return await this.observeResult(
+						params,
 						await this.executor.rpc("observe", { selector: params.selector, input: params.input ?? {} }, signal),
 						signal,
 					);
@@ -107,8 +109,12 @@ export class MinecraftFacade {
 	 * 时，经受信任伴生进程核验 realpath/摘要并读出字节，填进已有 ToolExecutionResult.images；
 	 * 读取失败给明确原因和原路径，元数据不冒充图片。路径不是授权——授权校验在伴生侧。
 	 */
-	private async observeResult(value: unknown, signal: AbortSignal): Promise<ToolExecutionResult> {
-		const base = response(value);
+	private async observeResult(
+		params: Record<string, unknown>,
+		value: unknown,
+		signal: AbortSignal,
+	): Promise<ToolExecutionResult> {
+		const base = { ...response(observationView(params, value)), details: value };
 		const image = (value as { value?: ObservedValue | null } | null)?.value?.image;
 		if (image == null) return base;
 		try {
@@ -232,7 +238,18 @@ export class MinecraftFacade {
 		}
 		if (accepted.kind === "unknown") return this.confirming(task, accepted.reason);
 		if (accepted.kind === "not_accepted")
-			return response({ kind: "rejected", task, code: accepted.code, message: accepted.message }, "failed");
+			return response(
+				{
+					kind: "rejected",
+					task,
+					code: accepted.code,
+					message:
+						intent.operation === "submit" && accepted.code === "USE_MC_READ"
+							? "Use observe for this query (mc.read inside a Program)."
+							: accepted.message,
+				},
+				"failed",
+			);
 		return {
 			...response({
 				kind: "accepted",

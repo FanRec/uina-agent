@@ -40,6 +40,37 @@ test("a submit rejected before IPC dispatch retains its credential and reports n
 	}
 });
 
+test("ordinary inventory responses are compact and full or incremental reads keep their evidence", async () => {
+	const fact = {
+		value: { counts: { oak_log: 2 }, revision: 7, freeSlots: 5, layout: { slotCount: 46 }, slots: [1] },
+		coverage: "partial",
+		unknown: ["offhand unavailable"],
+		source: "derived",
+		observedAt: "sampled-at",
+		cursor: { revision: 7 },
+		evidence: ["effect:1"],
+	};
+	const executor = { rpc: async () => fact } as unknown as MinecraftExecutor;
+	const signal = new AbortController().signal;
+	const facade = new MinecraftFacade(executor, { signal });
+	try {
+		const selector = "inventory@1";
+		const normal = await facade.execute("observe", { selector }, signal);
+		expect(JSON.parse(normal.result)).toEqual({
+			value: { counts: { oak_log: 2 }, revision: 7, freeSlots: 5 },
+			coverage: "partial",
+			unknown: ["offhand unavailable"],
+			source: "derived",
+			observedAt: "sampled-at",
+		});
+		expect(normal.details).toBe(fact);
+		for (const params of [{ detail: "full" }, { input: { since: 6 } }, { input: { matching: "oak_log" } }])
+			expect(JSON.parse((await facade.execute("observe", { selector, ...params }, signal)).result)).toEqual(fact);
+	} finally {
+		await facade.close();
+	}
+});
+
 test("native facade uses durable requests and Host acknowledgement, preserves explicit unsupported branches", () => {
 	const dir = mkdtempSync(join(tmpdir(), "uina-mc-facade-"));
 	const url = (p: string) => JSON.stringify(pathToFileURL(resolve(p)).href);

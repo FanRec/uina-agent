@@ -8,9 +8,11 @@
 
 当前 Minecraft 工具以 `session / observe / describe / run / chat / tasks / library` 服务用户。版本化能力和个人 Program 仍用原 selector。按需用 `describe {kind:"guide",name:"program_api"}` 查脚本接口。
 
-`describe {query}` 接受中英文玩法词。能力候选标明入口、简单必填项和已核实的默认值。空输入有效时，`nextCall` 可直接观察或执行。需要输入时指向精确合同。
+`describe {query}` 接受中英文玩法词。能力候选标明入口、简单必填项和已核实的默认值。探索、方块搜索和区域读取附一条 `inputExample` 解释参数形状。空输入有效时，`nextCall` 可直接观察或执行。需要输入时指向精确合同。
 
 `describe {selector,includeSource:true}` 按需读取 `collect@1` 和 `build.resume@1` 当前绑定的 `programSource {source,digest}`，精确查询用 `sourceAvailable` 标记可读。可以用 `library.save {name,summary,source}` 建立个人副本。当前绑定的源码与某次执行的源码分别由目录与 `tasks.trace` 提供。
+
+`session.connect/status` 默认正文给出连接状态、服务器、当前身份和行动资格。 `session {op:"status",detail:"full"}` 查看完整诊断。 `observe` 的自身、环境和普通库存查询默认正文保留现场摘要和非完整观测。需要槽位、完整体态或观察依据时传顶层 `detail:"full"`。带 `since` 或 `matching` 的库存查询、地图、界面、事件分页与 Program 的 `mc.read` 保留完整事实形状。
 
 - `run`、`chat`、`tasks.continue` 只返回 `accepted`、`rejected` 或 `confirming`。有提交凭据时返回 `task`，其归属为原 Profile。确认期用原句柄查证。继续时沿用原任务句柄。
 - `tasks.get {task}` 返回当前阶段、修订、进度与结果。`tasks.list` 默认列活跃任务，`activeOnly:false` 包含历史。`tasks.stop {task}` 处理确认期原请求或已受理任务。`tasks.continue {task,decision,entry,environment?}` 只消费当前仍有效的决策。

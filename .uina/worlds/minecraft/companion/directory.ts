@@ -31,10 +31,15 @@ const aliases = new Map([
 	["build.resume@1", ["恢复施工", "继续施工", "续建", "resume construction", "resume"]],
 ]);
 
-function searchResult(item: SearchSummary, input?: QueryDescriptor["input"]) {
+// These shapes caused actual model retries. Show one catalog example without proposing it as an action.
+const quickInputRefs = new Set(["blocks@1", "explore@1", "region@1"]);
+
+function searchResult(item: SearchSummary, descriptor?: QueryDescriptor | CallableDescriptor) {
 	const { name, kind, summary, reason } = item;
 	const base = { name, kind, summary, ...(reason ? { reason } : {}) };
 	if (kind === "capability") {
+		const input = descriptor?.input;
+		const inputExample = quickInputRefs.has(name) ? descriptor?.examples[0]?.input : undefined;
 		const use = item.access === "read" ? "observe" : "run";
 		const required = Array.isArray(input?.required) ? input.required.filter((key) => typeof key === "string") : [];
 		// Only a plain object schema with no required fields proves that {} is valid.
@@ -49,6 +54,7 @@ function searchResult(item: SearchSummary, input?: QueryDescriptor["input"]) {
 			use,
 			...(required.length ? { required } : {}),
 			...(name === "collect@1" ? { defaults: { count: COLLECT_DEFAULT_COUNT } } : {}),
+			...(inputExample !== undefined ? { inputExample } : {}),
 			nextCall: { action: emptyAllowed ? use : "describe", params: { selector: name } },
 		};
 	}
@@ -257,8 +263,8 @@ export async function describeDirectory(
 		);
 	const offset = Number(params.cursor ?? 0);
 	if (!Number.isSafeInteger(offset)) throw new RpcError("CURSOR_INVALID", "invalid catalogue cursor");
-	const inputs = new Map<string, QueryDescriptor["input"]>(descriptors.map((d) => [d.ref, d.input]));
-	const page = found.slice(offset, offset + 10).map(({ item }) => searchResult(item, inputs.get(item.name)));
+	const byRef = new Map<string, QueryDescriptor | CallableDescriptor>(descriptors.map((d) => [d.ref, d]));
+	const page = found.slice(offset, offset + 10).map(({ item }) => searchResult(item, byRef.get(item.name)));
 	return {
 		items: page,
 		...(found.length > offset + 10 ? { next: String(offset + 10) } : {}),

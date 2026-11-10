@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -91,6 +92,23 @@ test.each([
 		nextCall: { action, params: { selector: name } },
 		...(name === "collect@1" ? { required: ["item"], defaults: { count: 1 } } : {}),
 	});
+});
+
+test("input examples explain complex shapes without dispatching them", async () => {
+	const library = { list: async () => [], get: async () => null } as never;
+	const descriptors = builtinCatalog.allDescriptors();
+	const Ajv = createRequire(import.meta.url)("ajv");
+	const ajv = new Ajv({ strict: false });
+	for (const selector of ["blocks@1", "explore@1", "region@1"]) {
+		const result = await describeDirectory(descriptors, library, { query: selector });
+		const candidate = ("items" in result ? result.items[0] : null) as {
+			inputExample: unknown;
+			nextCall: unknown;
+		} | null;
+		expect(candidate?.inputExample).toBeDefined();
+		expect(ajv.compile(descriptors.find((d) => d.ref === selector)!.input)(candidate?.inputExample)).toBe(true);
+		expect(candidate?.nextCall).toEqual({ action: "describe", params: { selector } });
+	}
 });
 
 test("exact discovery advertises published Programs and only includes source on request", async () => {

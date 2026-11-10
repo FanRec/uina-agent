@@ -57,7 +57,9 @@ test("resident Minecraft world serves describe/library without a session; game a
 		const session = act(world, "session");
 		const status = await session({ op: "status" });
 		expect(status).toMatchObject({ status: "succeeded" });
-		const parsed = JSON.parse(status.result as string) as { state: string; active: unknown; settingsPath: string };
+		expect(JSON.parse(status.result as string)).toEqual({ state: "disconnected", actionsAllowed: false });
+		const full = await session({ op: "status", detail: "full" });
+		const parsed = JSON.parse(full.result as string) as { state: string; active: unknown; settingsPath: string };
 		expect(parsed.state).toBe("disconnected");
 		expect(parsed.active).toBeNull();
 		// 旧 config.json → settings 种子（defaultUsername + 具名服务器）；用户手编文件不被覆盖。
@@ -96,7 +98,8 @@ test("resident Minecraft world serves describe/library without a session; game a
 		const afterFail = JSON.parse((await session({ op: "status" })).result as string);
 		expect(afterFail.state).toBe("disconnected");
 		expect(afterFail.lastError).toMatchObject({ code: "CONNECT_FAILED" });
-		expect(afterFail.active).toBeNull();
+		expect(afterFail.actionsAllowed).toBe(false);
+		expect(afterFail).not.toHaveProperty("settingsPath");
 		expect(activation.exposed.size).toBe(0);
 		const profiles = JSON.parse((await session({ op: "list" })).result as string);
 		expect(profiles).toHaveLength(1);

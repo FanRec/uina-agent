@@ -31,10 +31,24 @@ export const librarySchema = {
 	oneOf: [
 		object({ op: { const: "list" }, kind, text, tag: text, limit: { type: "integer", minimum: 1 } }, ["op"]),
 		object({ op: { enum: ["get", "delete"] }, kind, name }, ["op", "name"]),
-		object({ ...save, source: text }, ["op", "name", "summary", "source"]),
-		object({ ...save, from: object({ run: text, segment: text, call: text }) }, ["op", "name", "summary", "from"]),
-		object({ ...update, source: text }, ["op", "name", "source"]),
-		object({ ...update, metadata: patch }, ["op", "name", "metadata"]),
+		{
+			...object({ ...save, source: text, from: object({ run: text, segment: text, call: text }) }, [
+				"op",
+				"name",
+				"summary",
+			]),
+			oneOf: [
+				{ properties: { source: {} }, required: ["source"] },
+				{ properties: { from: {} }, required: ["from"] },
+			],
+		},
+		{
+			...object({ ...update, source: text, metadata: patch }, ["op", "name"]),
+			oneOf: [
+				{ properties: { source: {} }, required: ["source"] },
+				{ properties: { metadata: {} }, required: ["metadata"] },
+			],
+		},
 		object({ op: { const: "save" }, kind: { const: "experience" }, name, text }),
 		object(
 			{ op: { const: "update" }, kind: { const: "experience" }, name, expectedDigest: update.expectedDigest, text },

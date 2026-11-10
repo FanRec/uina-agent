@@ -478,9 +478,11 @@ export function formatCompletion(view: CompletionView, profileId = "local", entr
 	const effect = view.snapshot.unknownEffects[0];
 	const nextCall = effect
 		? { action: "tasks", params: { op: "trace", task, record: effect } }
-		: view.snapshot.phase === "awaiting_decision" || view.content.kind !== "inline"
-			? { action: "tasks", params: { op: "get", task } }
-			: undefined;
+		: view.snapshot.unknownEffectCount > 0 || view.snapshot.unknownEffectsComplete === false
+			? { action: "tasks", params: { op: "trace", task } }
+			: view.snapshot.phase === "awaiting_decision" || view.content.kind !== "inline"
+				? { action: "tasks", params: { op: "get", task } }
+				: undefined;
 	const construction =
 		report?.reportKind === "decision" &&
 		entry?.kind === "call" &&

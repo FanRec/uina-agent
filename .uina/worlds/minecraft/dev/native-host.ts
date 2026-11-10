@@ -104,6 +104,7 @@ const calibrationUsage = new Map<string, RequestUsage>();
 let calibrationBudgetHit: string | null = null;
 let scenarioStarted: number | undefined;
 let firstActionMs: number | undefined;
+let firstObservationMs: number | undefined;
 host.subscribe((event) => {
 	if (event.type === "usage_update") {
 		calibrationUsage.set(event.usage.callId, event.usage);
@@ -117,9 +118,16 @@ host.subscribe((event) => {
 			scenarioStarted !== undefined &&
 			firstActionMs === undefined &&
 			event.status === "succeeded" &&
-			(event.args.action === "run" || event.args.action === "observe")
+			event.args.action === "run"
 		)
 			firstActionMs = Date.now() - scenarioStarted;
+		if (
+			scenarioStarted !== undefined &&
+			firstObservationMs === undefined &&
+			event.status === "succeeded" &&
+			event.args.action === "observe"
+		)
+			firstObservationMs = Date.now() - scenarioStarted;
 		results.set(event.callId, event);
 		transcript.push(event);
 		console.log(
@@ -264,6 +272,7 @@ try {
 							? "real-model"
 							: "controlled-provider-real-paper",
 				firstActionMs,
+				firstObservationMs,
 				passed,
 				modelRequests,
 				usage: [...calibrationUsage.values()],
@@ -412,6 +421,30 @@ async function runScenarios() {
 			clearTimeout(timer);
 		}
 	} else if (tasksMode) {
+		if (!modelMode)
+			await step("default tool text keeps field facts and full detail stays available", async () => {
+				for (const [action, params] of [
+					["session", { op: "status" }],
+					["observe", { selector: "self@1" }],
+					["observe", { selector: "world@1" }],
+					["observe", { selector: "inventory@1" }],
+				] as const) {
+					const normal = await host.runToolDirect("minecraft", { action, params });
+					const full = await host.runToolDirect("minecraft", { action, params: { ...params, detail: "full" } });
+					assert.equal(normal.status, "succeeded");
+					assert.equal(full.status, "succeeded");
+					assert(Buffer.byteLength(normal.result) < Buffer.byteLength(full.result));
+					const body = JSON.parse(normal.result);
+					if (action === "session") {
+						assert.equal(body.state, "connected");
+						assert.equal(body.username, "UinaDev");
+						assert.equal(body.settingsPath, undefined);
+					} else assert(body.value);
+					console.log(
+						`[mc-native] text ${action} ${"selector" in params ? params.selector : params.op}: ${Buffer.byteLength(full.result)} → ${Buffer.byteLength(normal.result)} bytes`,
+					);
+				}
+			});
 		const get = (task: string) => direct("tasks", { op: "get", task });
 		const acceptedTask = (reply: { details?: unknown }) => {
 			const details = reply.details as { kind?: string; task?: string; run?: string };
@@ -446,6 +479,9 @@ async function runScenarios() {
 		} else {
 			await step("public Task discovery, collection and completion", async () => {
 				assert.equal((await ask("describe", { selector: "collect@1" })).status, "succeeded");
+				const queryAsAction = await ask("run", { selector: "self@1" });
+				assert.equal(queryAsAction.status, "failed");
+				assert.match(queryAsAction.result, /Use observe for this query/);
 				const rejected = await ask("run", { selector: "missing_play@1" });
 				assert.equal((rejected.details as { kind: string }).kind, "rejected");
 				const rejectedTask = (rejected.details as { task: string }).task;
@@ -466,6 +502,22 @@ async function runScenarios() {
 					() => context.delivery!.inspect(completionRef),
 					(state) => state.kind === "committed",
 				);
+				const notice = await until(
+					async () => {
+						const rows = (await readFile(join(root, "session.jsonl"), "utf8")).split(/\r?\n/).slice(0, -1);
+						for (const line of rows) {
+							if (!line.includes(task)) continue;
+							const row = JSON.parse(line);
+							if (row.kind !== "input" || row.input?.source?.type !== "minecraft_completion") continue;
+							return JSON.parse(row.input.text) as Record<string, unknown>;
+						}
+						return null;
+					},
+					(notice) => notice !== null,
+				);
+				assert.equal(notice?.outcome, "succeeded");
+				assert.equal((notice?.value as { acquired: number })?.acquired, 1);
+				assert.equal(notice?.nextCall, undefined);
 			});
 			await step("continue and stop preserve the same Task identity", async () => {
 				const task = acceptedTask(
@@ -498,7 +550,15 @@ async function runScenarios() {
 				assert.equal(active.find((item) => item.label === "临时 Program")?.task, task);
 				assert.equal(active.find((item) => item.label === "运行 pause_here")?.task, other);
 				await direct("tasks", { op: "stop", task: other });
-				assert.equal((await get(other)).outcome, "cancelled");
+				assert.equal(
+					(
+						await until(
+							() => get(other),
+							(view) => view.phase === "finished",
+						)
+					).outcome,
+					"cancelled",
+				);
 				assert.equal((await get(task)).control, "active");
 				await direct("tasks", { op: "stop", task });
 				const stopped = await until(

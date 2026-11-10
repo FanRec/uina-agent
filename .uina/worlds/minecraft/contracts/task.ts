@@ -59,14 +59,14 @@ export function taskIdentity(entry?: Entry): { label: string; goal?: string } {
 function compactProgress(progress: Progress, entry?: Entry): Progress {
 	if (entry?.kind !== "call") return progress;
 	if (entry.selector === "collect@1" && typeof progress.acquired === "number")
-		return { acquired: progress.acquired, goal: progress.goal };
+		return { summary: progress.summary, acquired: progress.acquired, goal: progress.goal };
 	if (entry.selector === "build@1" && progress.goal !== undefined)
-		return { goal: progress.goal, missing: progress.missing };
+		return { summary: progress.summary, goal: progress.goal, missing: progress.missing };
 	return progress;
 }
 
 export function taskProgressText(snapshot: RunSummary, entry?: Entry): string | undefined {
-	const progress = snapshot.progress;
+	const progress = compactProgress(snapshot.progress, entry);
 	if (typeof progress?.summary === "string" && progress.summary.trim()) return progress.summary.trim();
 	if (entry?.kind !== "call" || !progress) return undefined;
 	if (entry.selector === "collect@1" && typeof progress.acquired === "number") return `已入包 ${progress.acquired}`;

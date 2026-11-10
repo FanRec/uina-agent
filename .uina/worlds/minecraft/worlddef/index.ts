@@ -17,9 +17,22 @@ import { createProgramValidator, type ProgramValidator } from "../program/valida
 import { type ActiveTaskFrame, formatActiveRuns } from "../world/run-digest.js";
 import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
-import { SessionController, sessionResponse } from "./session-controller.js";
+import { SessionController, type SessionStatus, sessionResponse } from "./session-controller.js";
 import { actionSchemas, nativeGuide } from "./schema.js";
 import { MC_PROTOCOL_VERSION } from "./session-identity.js";
+
+function sessionView(status: SessionStatus, full = false): ToolExecutionResult {
+	if (full) return sessionResponse(status);
+	const { state, active, operation, lastError } = status;
+	const value = {
+		state,
+		actionsAllowed: active?.actionsAllowed ?? false,
+		...(active ? { server: active.target.endpoint, username: active.actualUsername } : {}),
+		...(operation ? { operation: operation.kind } : {}),
+		...(lastError ? { lastError } : {}),
+	};
+	return { ...sessionResponse(value), details: status };
+}
 
 export function createMinecraftWorld(
 	options: {
@@ -118,7 +131,9 @@ export function createMinecraftWorld(
 			case "session": {
 				switch (params.op) {
 					case "status":
-						return ok(controller?.status() ?? { state: "disconnected", active: null });
+						return controller
+							? sessionView(controller.status(), params.detail === "full")
+							: ok({ state: "disconnected", actionsAllowed: false });
 					case "list":
 						return ok(controller ? await controller.list() : []);
 					case "connect": {
@@ -126,7 +141,7 @@ export function createMinecraftWorld(
 						const target = params.target;
 						if (target == null || typeof target !== "object" || Array.isArray(target))
 							throw invalidInput("session connect requires a target object");
-						return ok(await controller.connect(target as never, signal));
+						return sessionView(await controller.connect(target as never, signal));
 					}
 					case "disconnect": {
 						if (!controller) return disabled();

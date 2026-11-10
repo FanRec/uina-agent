@@ -15,7 +15,9 @@ import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/in
 import { ExecutorLedger } from "../../.uina/worlds/minecraft/executor/ledger.js";
 import type { RequestCredential, TaskRequestSelection } from "../../.uina/worlds/minecraft/executor/ledger-worker.js";
 import { methods } from "../../.uina/worlds/minecraft/executor/protocol.js";
+import { createMinecraftWorld } from "../../.uina/worlds/minecraft/worlddef/index.js";
 import { actionSchemas } from "../../.uina/worlds/minecraft/worlddef/schema.js";
+import { createWorldTool } from "../../src/extensions/world-framework/world-tool.js";
 
 function fixture() {
 	const credentials = new Map<string, RequestCredential>();
@@ -97,6 +99,48 @@ const continuation = {
 	entry: { code: "async function main(mc){return mc.checkpoint;}" },
 	environment: "inherit",
 };
+
+test("shared schema fields preserve mutually exclusive run and library inputs", () => {
+	const world = createMinecraftWorld();
+	expect(() => createWorldTool(world, { getRuntime: () => ({ definition: world, enabled: true }) })).not.toThrow();
+	const Ajv = createRequire(import.meta.url)("ajv");
+	const ajv = new Ajv({ strict: false });
+	const run = ajv.compile(actionSchemas.run);
+	const library = ajv.compile(actionSchemas.library);
+	const input = { item: "oak_log" };
+	const schedule = { kind: "enqueue", priority: true };
+	const code = "async function main(){}";
+	for (const params of [
+		{ selector: "collect@1", input, schedule },
+		{ code, input, schedule },
+	])
+		expect(run(params)).toBe(true);
+	for (const params of [{ input }, { code, selector: "collect@1" }, { code, bogus: true }, { code: 42 }])
+		expect(run(params)).toBe(false);
+	const save = { op: "save", name: "fixture", summary: "test" };
+	const update = { op: "update", name: "fixture" };
+	const source = code;
+	const from = { run: "r", segment: "s", call: "c" };
+	const metadata = { summary: "revised" };
+	for (const params of [
+		{ ...save, source },
+		{ ...save, from },
+		{ ...save, kind: "blueprint" },
+		{ ...update, source },
+		{ ...update, metadata },
+		{ ...update, kind: "experience", text: "note" },
+	])
+		expect(library(params)).toBe(true);
+	for (const params of [
+		save,
+		{ ...save, source, from },
+		{ ...save, from: { ...from, extra: true } },
+		update,
+		{ ...update, source, metadata },
+		{ ...update, metadata, expectedDigest: "bad" },
+	])
+		expect(library(params)).toBe(false);
+});
 
 test.each([false, true])("construction decisions give read-only evidence (unconfirmed write: %s)", async (unknown) => {
 	const f = fixture();

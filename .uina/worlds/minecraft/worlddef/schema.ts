@@ -13,6 +13,7 @@ const object = (properties: object, required: string[] = Object.keys(properties)
 const op = (name: string, properties: object = {}, required: string[] = Object.keys(properties)) =>
 	object({ op: { const: name }, ...properties }, ["op", ...required]);
 const schedule = {
+	description: "Omit for normal queuing.",
 	oneOf: [
 		object({ kind: { const: "enqueue" }, priority: { type: "boolean" } }, ["kind"]),
 		object({ kind: { const: "replace_pending" }, targets: { type: "array", items: text } }, ["kind"]),
@@ -28,22 +29,26 @@ const connectTarget = {
 	],
 };
 const entry = (extra: object = {}) => ({
+	...object({ selector: text, code: { type: "string" }, input: any, ...extra }, []),
 	oneOf: [
-		object({ selector: text, input: any, ...extra }, ["selector"]),
-		object({ code: { type: "string" }, input: any, ...extra }, ["code"]),
+		{ properties: { selector: {} }, required: ["selector"] },
+		{ properties: { code: {} }, required: ["code"] },
 	],
 });
+const detail = { const: "full" };
 
 export const actionSchemas: Record<string, Record<string, unknown>> = {
 	session: {
 		oneOf: [
-			op("status", {}, []),
+			op("status", { detail }, []),
 			op("list", {}, []),
 			op("connect", { target: connectTarget }, ["target"]),
 			op("disconnect", {}, []),
 		],
 	},
-	observe: object({ selector: text, input: any }, ["selector"]),
+	observe: object({ selector: { ...text, description: "Exact query ref, e.g. self@1." }, input: any, detail }, [
+		"selector",
+	]),
 	describe: {
 		oneOf: [
 			object({ cursor: text }, []),
@@ -82,4 +87,4 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
  * 压缩准则：删掉的每一句都能在 Guide、descriptor、工具 schema 或错误 hint 里找回。
  */
 export const nativeGuide =
-	"Minecraft：用 session {op:'connect',target:{host:'…',username:'…'|server:'别名'}} 入服；status/list/disconnect 管理会话，同一时刻最多一个活跃客户端。describe 与 library 无连接也可用；observe/run/chat/tasks 需要连接。observe 读世界事实；describe 查能力/程序/蓝图/经验/官方 Guide 的合同与示例（kind:'guide' 取全文），library.get 读个人资料原文。run 接受 selector（能力如 collect@1；裸名为 programs/ 内的程序）或 code，两者恰一，input 在 params 内；代码是普通 async function main(mc,input){...}，无 import/require/fs/net。Program 接口用 describe {kind:'guide',name:'program_api'}，身体和窗口查 body_api。run/chat/tasks.continue 只回受理。accepted 表示已交给运行时，rejected 表示未受理，confirming 表示系统仍在查证。用原 task 调 tasks.get 查进展，tasks.stop 停止，tasks.continue 回答当前决策。完成由 minecraft_completion 投递。当前世界状态由运行时在每次模型请求前自动附上最新快照，不必额外 observe。";
+	"Minecraft：session 入服或离开，describe 找玩法和合同，observe 查现场（如 self@1），run 执行动作或 Program，chat 聊天，tasks 接回进度，library 读写自己的资料。入服可用 target:{host,username} 或 {server}。入服后附当前状态。后台任务先回受理，结束时通知。Program 用 async function main(mc,input)，等待用 await mc.sleep(ms)。接口见 describe {kind:'guide',name:'program_api'}。";
