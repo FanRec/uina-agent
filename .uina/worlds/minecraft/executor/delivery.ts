@@ -2,7 +2,7 @@
  * 完成通知只走一条路：Runtime 的 completion 报告 → Host 批量持久入队 → 模型回合消费。
  * Host 的 Canonical 回执才 ACK Runtime；工具层只回受理，不带报告正文。
  */
-import { taskHandle, taskView } from "../contracts/task.js";
+import { constructionDecisionEvidence, taskHandle, taskView } from "../contracts/task.js";
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
@@ -83,10 +83,7 @@ export class DeliveryPump {
 					channel: "world",
 					// 需要尽快重新决策的事件（玩家私聊/死亡/断线）走 steer；其余排队等下一次决策。
 					...(urgentEvent(event.payload) ? { delivery: "urgent" as const } : {}),
-					text: JSON.stringify({
-						...event,
-						nextCall: { action: "observe", params: { selector: "events@1" } },
-					}),
+					text: JSON.stringify(gameEventView(event)),
 				});
 			}
 		});
@@ -437,7 +434,7 @@ export class DeliveryPump {
  */
 function urgentEvent(payload: unknown): boolean {
 	const value = payload as
-		| { kind?: string; state?: string; channel?: string; self?: boolean; ended?: string }
+		| { kind?: string; state?: string; channel?: string; self?: boolean; ended?: string; addressed?: boolean }
 		| null
 		| undefined;
 	if (value == null) return false;
@@ -447,7 +444,7 @@ function urgentEvent(payload: unknown): boolean {
 		case "connection":
 			return value.state === "disconnected";
 		case "chat":
-			return value.channel === "private" && value.self === false;
+			return value.self === false && (value.channel === "private" || value.addressed === true);
 		// 本地安全响应已尽力仍未脱险：等到下一个回合可能就晚了。
 		case "safety_changed":
 			return value.ended === "blocked" || value.ended === "timeout";
@@ -456,16 +453,48 @@ function urgentEvent(payload: unknown): boolean {
 	}
 }
 
+function gameEventView(event: { ref: string; observedAt: string; payload: JsonValue }) {
+	const payload = event.payload as {
+		kind?: string;
+		channel?: string;
+		sender?: { name?: string | null };
+		text?: string;
+	} | null;
+	if (payload?.kind === "chat")
+		return {
+			kind: "chat",
+			channel: payload.channel,
+			sender: payload.sender?.name ?? null,
+			text: payload.text,
+			ref: event.ref,
+		};
+	return { ...event, nextCall: { action: "observe", params: { selector: "events@1" } } };
+}
+
 /** User text is projected from the fixed report. The structured receipt remains internal. */
 export function formatCompletion(view: CompletionView, profileId = "local", entry?: Entry): string {
 	const task = taskHandle(profileId, view.snapshot.rootRequestId);
 	const report = view.content.kind === "inline" ? view.content.report : undefined;
+	const effect = view.snapshot.unknownEffects[0];
+	const nextCall = effect
+		? { action: "tasks", params: { op: "trace", task, record: effect } }
+		: view.snapshot.phase === "awaiting_decision" || view.content.kind !== "inline"
+			? { action: "tasks", params: { op: "get", task } }
+			: undefined;
+	const construction =
+		report?.reportKind === "decision" &&
+		entry?.kind === "call" &&
+		entry.selector === "build.resume@1" &&
+		report.snapshot.checkpoint?.kind === "program"
+			? constructionDecisionEvidence(task, view.snapshot, report.snapshot.checkpoint)
+			: {};
 	return JSON.stringify({
 		kind: "result",
 		...taskView(task, view.snapshot, entry),
 		...(report?.reportKind === "terminal" ? { value: report.snapshot.value } : {}),
 		...(view.content.kind !== "inline" ? { detail: view.content.kind } : {}),
-		nextCall: { action: "tasks", params: { op: "get", task } },
+		...(nextCall ? { nextCall } : {}),
+		...construction,
 	});
 }
 

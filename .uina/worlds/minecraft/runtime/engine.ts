@@ -1908,6 +1908,16 @@ export class RuntimeEngine {
 						origin: { call: callState.call, program: invocation.ref, digest: invocation.digest },
 					};
 					await this.queue.flushThrough(this.queue.enqueue(this.segmentMutation(state)));
+					if (
+						invocation.ref === "build.resume@1" &&
+						!callState.abort.signal.aborted &&
+						!state.stopped &&
+						value &&
+						typeof value === "object" &&
+						!Array.isArray(value) &&
+						typeof value.verified === "number"
+					)
+						await ctx.progress({ verifiedAtCheckpoint: value.verified });
 					return null;
 				};
 				for (const method of ["watch", "sleep"] as const) {

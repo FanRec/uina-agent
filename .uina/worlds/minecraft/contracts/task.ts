@@ -1,5 +1,6 @@
 import type { Entry, RunSummary } from "./runtime.js";
-import type { JsonValue, ProgramCheckpoint, Vec3 } from "./values.js";
+import type { JsonValue, ProgramCheckpoint, Progress, Vec3 } from "./values.js";
+import { COLLECT_DEFAULT_COUNT } from "../program/collect.js";
 
 export const taskHandle = (profileId: string, rootRequestId: string): string => `task:${profileId}:${rootRequestId}`;
 
@@ -17,7 +18,7 @@ export function taskIdentity(entry?: Entry): { label: string; goal?: string } {
 	switch (entry.selector) {
 		case "collect@1": {
 			const item = input.item;
-			const count = input.count ?? 1;
+			const count = input.count ?? COLLECT_DEFAULT_COUNT;
 			return {
 				label: "采集",
 				...(typeof item === "string" && Number.isInteger(count) && Number(count) > 0
@@ -55,20 +56,62 @@ export function taskIdentity(entry?: Entry): { label: string; goal?: string } {
 	}
 }
 
+function compactProgress(progress: Progress, entry?: Entry): Progress {
+	if (entry?.kind !== "call") return progress;
+	if (entry.selector === "collect@1" && typeof progress.acquired === "number")
+		return { acquired: progress.acquired, goal: progress.goal };
+	if (entry.selector === "build@1" && progress.goal !== undefined)
+		return { goal: progress.goal, missing: progress.missing };
+	return progress;
+}
+
+export function taskProgressText(snapshot: RunSummary, entry?: Entry): string | undefined {
+	const progress = snapshot.progress;
+	if (typeof progress?.summary === "string" && progress.summary.trim()) return progress.summary.trim();
+	if (entry?.kind !== "call" || !progress) return undefined;
+	if (entry.selector === "collect@1" && typeof progress.acquired === "number") return `已入包 ${progress.acquired}`;
+	if (entry.selector === "explore@1" && typeof progress.scanned === "number" && typeof progress.traveled === "number")
+		return `已扫描 ${progress.scanned} 处，走了 ${Math.round(progress.traveled)} 格`;
+	if (entry.selector === "build.resume@1" && typeof progress.verifiedAtCheckpoint === "number")
+		return `已核验 ${progress.verifiedAtCheckpoint} 格`;
+	const goal = progress.goal;
+	if (
+		entry.selector === "build@1" &&
+		goal &&
+		typeof goal === "object" &&
+		!Array.isArray(goal) &&
+		typeof goal.completed === "number" &&
+		typeof goal.total === "number"
+	)
+		return `已完成 ${goal.completed}/${goal.total} 格`;
+	return undefined;
+}
+
 export function taskView(task: string, snapshot: RunSummary, entry?: Entry) {
+	const progress = compactProgress(snapshot.progress, entry);
 	return {
 		task,
 		...taskIdentity(entry),
 		revision: snapshot.revision,
 		phase: snapshot.phase === "awaiting_decision" ? "needs_input" : snapshot.phase,
 		control: snapshot.control,
-		progress: snapshot.progress,
-		progressComplete: snapshot.progressComplete,
-		unknownEffectCount: snapshot.unknownEffectCount,
-		unknownEffectsComplete: snapshot.unknownEffectsComplete,
-		completionScope: snapshot.completion.scope,
+		...(progress && Object.values(progress).some((value) => value !== undefined) ? { progress } : {}),
+		...(snapshot.progressComplete === false ? { progressComplete: false } : {}),
+		...(snapshot.unknownEffectCount > 0 || snapshot.unknownEffectsComplete === false
+			? { unknownEffectCount: snapshot.unknownEffectCount }
+			: {}),
+		...(snapshot.unknownEffectsComplete === false ? { unknownEffectsComplete: false } : {}),
+		...(snapshot.completion.scope === "execution" && snapshot.phase === "finished"
+			? { completionScope: "execution" }
+			: {}),
 		...(snapshot.phase === "waiting" ? { waiting: snapshot.waiting } : {}),
-		...(snapshot.phase === "awaiting_decision" ? { decision: snapshot.decision, reason: snapshot.reason } : {}),
+		...(snapshot.phase === "awaiting_decision"
+			? {
+					decision: snapshot.decision,
+					reason: snapshot.reason,
+					...(snapshot.reasonComplete === false ? { reasonComplete: false } : {}),
+				}
+			: {}),
 		...(snapshot.phase === "finished" ? { outcome: snapshot.outcome, error: snapshot.error } : {}),
 	};
 }

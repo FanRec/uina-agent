@@ -7,11 +7,12 @@ import { join } from "node:path";
 import type { Model, ModelStreamFn, RequestUsage } from "../../../../src/core/types.js";
 import type { ExtensionAPI } from "../../../../src/extensions/runner.js";
 import type { BodyEndpoint } from "../../../../src/extensions/world-framework/seams.js";
-import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import type { ServiceCompanionContext, WorldEvent } from "../../../../src/extensions/world-framework/types.js";
 import { WorldActivation } from "../../../../src/extensions/world-framework/world-activation.js";
 import { UinaHost } from "../../../../src/host/host.js";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
 import type { JsonValue } from "../contracts/values.js";
+import { ClientHost } from "../driver/client-host.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
 import { executionProbe } from "./execution-probe.js";
 import { feedbackScenario, prepareFeedbackModelScene } from "./feedback-scenario.js";
@@ -32,7 +33,10 @@ const port = Number(process.env.MC_DEV_PORT ?? "25565");
 assert(Number.isInteger(port) && port > 0 && port < 65536, "invalid MC_DEV_PORT");
 const modelMode = process.argv.includes("--model");
 const autonomyMode = process.argv.includes("--autonomy");
+const fixedExploreMode = process.argv.includes("--fixed-explore");
+const chatFlowMode = process.argv.includes("--chat-flow");
 assert(!autonomyMode || modelMode, "--autonomy requires --model");
+assert(!fixedExploreMode || modelMode, "--fixed-explore requires --model");
 const programMode = process.argv.includes("--program");
 const tasksMode = process.argv.includes("--tasks");
 const waitMode = process.argv.includes("--wait");
@@ -98,6 +102,8 @@ const results = new Map<string, ToolResultEvent>();
 const transcript: unknown[] = [];
 const calibrationUsage = new Map<string, RequestUsage>();
 let calibrationBudgetHit: string | null = null;
+let scenarioStarted: number | undefined;
+let firstActionMs: number | undefined;
 host.subscribe((event) => {
 	if (event.type === "usage_update") {
 		calibrationUsage.set(event.usage.callId, event.usage);
@@ -107,6 +113,13 @@ host.subscribe((event) => {
 		}
 	}
 	if (event.type === "tool_result") {
+		if (
+			scenarioStarted !== undefined &&
+			firstActionMs === undefined &&
+			event.status === "succeeded" &&
+			(event.args.action === "run" || event.args.action === "observe")
+		)
+			firstActionMs = Date.now() - scenarioStarted;
 		results.set(event.callId, event);
 		transcript.push(event);
 		console.log(
@@ -116,10 +129,22 @@ host.subscribe((event) => {
 	if (event.type === "usage_update" || event.type === "error" || event.type === "output_end") transcript.push(event);
 });
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
+const chatNotices: WorldEvent[] = [];
 const probe = executionProbe();
 const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: configPath });
 const start = world.onStart!;
 world.onStart = async (ctx) => {
+	if (chatFlowMode) {
+		const emitEvent = ctx.emitEvent!;
+		ctx = {
+			...ctx,
+			emitEvent: (event) => {
+				if (event.type === "minecraft_event" && event.text && JSON.parse(event.text).kind === "chat")
+					chatNotices.push(event);
+				return emitEvent(event);
+			},
+		};
+	}
 	context = ctx;
 	await start(ctx);
 };
@@ -171,7 +196,7 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
-		if (modelMode && (feedbackMode || tasksMode || autonomyMode))
+		if (modelMode && (feedbackMode || tasksMode || autonomyMode || fixedExploreMode))
 			api.onHook("turn.transformContext", (projection) => ({
 				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
 			}));
@@ -187,6 +212,7 @@ try {
 		assert.equal((await direct("session", { op: "status" })).state, "disconnected");
 		const timer = setTimeout(() => host.interrupt(), 120000);
 		try {
+			scenarioStarted = Date.now();
 			await host.submitText(
 				`有一个 Minecraft 世界在线，地址是 127.0.0.1:${port}。这是 Java 1.21.11 离线服，可用名字 Uina。`,
 				"direct",
@@ -230,7 +256,14 @@ try {
 		join(root, "report.json"),
 		JSON.stringify(
 			{
-				mode: autonomyMode ? "autonomy-real-model" : modelMode ? "real-model" : "controlled-provider-real-paper",
+				mode: autonomyMode
+					? "autonomy-real-model"
+					: fixedExploreMode
+						? "fixed-explore-real-model"
+						: modelMode
+							? "real-model"
+							: "controlled-provider-real-paper",
+				firstActionMs,
 				passed,
 				modelRequests,
 				usage: [...calibrationUsage.values()],
@@ -264,6 +297,53 @@ async function runScenarios() {
 			);
 		await observe("self@1");
 	});
+	if (chatFlowMode) {
+		await step("only direct public address and private chat reach the Host", async () => {
+			const peer = new ClientHost();
+			try {
+				await peer.connect({ host: "127.0.0.1", port, username: "UinaPeer", version: "1.21.11" });
+				const friend = peer.bot;
+				assert(peer.state === "ready" && friend);
+				friend.chat("Just looking around");
+				friend.chat("UinaDev_suffix is another name");
+				friend.chat("@uinadev, come see this");
+				await until(
+					async () => chatNotices.length,
+					(count) => count === 1,
+				);
+				friend.chat("UinaDev, see the hill");
+				await until(
+					async () => chatNotices.length,
+					(count) => count === 2,
+				);
+				friend.chat("/tell UinaDev Found a cave");
+				await until(
+					async () => chatNotices.length,
+					(count) => count === 3,
+				);
+				await direct("chat", { text: "@UinaDev This is my own echo" });
+				await sleep(800);
+				assert.deepEqual(
+					chatNotices.map((event) => {
+						const { ref, ...content } = JSON.parse(event.text!);
+						assert.equal(ref, event.id);
+						assert.equal(event.delivery, "urgent");
+						return content;
+					}),
+					[
+						{ kind: "chat", channel: "public", sender: "UinaPeer", text: "@uinadev, come see this" },
+						{ kind: "chat", channel: "public", sender: "UinaPeer", text: "UinaDev, see the hill" },
+						{ kind: "chat", channel: "private", sender: "UinaPeer", text: "Found a cave" },
+					],
+				);
+				const history = await observe("events@1", { kinds: ["chat"] });
+				assert(JSON.stringify(history.value).includes("Just looking around"));
+			} finally {
+				peer.close();
+			}
+		});
+		return;
+	}
 	const command = async (text: string) => {
 		await direct("chat", { text });
 		await sleep(180);
@@ -322,7 +402,16 @@ async function runScenarios() {
 				Math.abs((o.value as { place: { position: { y: number } } }).place.position.y - 200) < 0.1,
 		);
 	});
-	if (tasksMode) {
+	if (fixedExploreMode) {
+		scenarioStarted = Date.now();
+		const timer = setTimeout(() => host.interrupt(), 120000);
+		try {
+			await host.submitText("用探索能力找附近的橡木原木。探索有结果后，说说找到的位置或已经确认的结果。", "direct");
+			await host.waitForIdle();
+		} finally {
+			clearTimeout(timer);
+		}
+	} else if (tasksMode) {
 		const get = (task: string) => direct("tasks", { op: "get", task });
 		const acceptedTask = (reply: { details?: unknown }) => {
 			const details = reply.details as { kind?: string; task?: string; run?: string };
@@ -361,9 +450,7 @@ async function runScenarios() {
 				assert.equal((rejected.details as { kind: string }).kind, "rejected");
 				const rejectedTask = (rejected.details as { task: string }).task;
 				assert.equal((await get(rejectedTask)).outcome, "not_started");
-				const task = acceptedTask(
-					await ask("run", { selector: "collect@1", input: { item: "oak_log", count: 1, radius: 8 } }),
-				);
+				const task = acceptedTask(await ask("run", { selector: "collect@1", input: { item: "oak_log", radius: 8 } }));
 				const finished = await until(
 					() => get(task),
 					(view) => view.phase === "finished",

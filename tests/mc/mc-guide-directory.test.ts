@@ -62,10 +62,12 @@ test("Guide 参与检索与家族计数，但不进 reads/acts，不写 Library"
 	expect(overview.acts).not.toContain("program_api");
 
 	const mining = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, { query: "mining" })) as {
-		items: { kind: string; name: string; callable: boolean }[];
+		items: { kind: string; name: string; nextCall: { action: string } }[];
 	};
 	expect(mining.items.some((item) => item.kind === "guide" && item.name === "mining_playbook")).toBe(true);
-	expect(mining.items.filter((item) => item.kind === "guide").every((item) => item.callable === false)).toBe(true);
+	expect(
+		mining.items.filter((item) => item.kind === "guide").every((item) => item.nextCall.action === "describe"),
+	).toBe(true);
 
 	// exact > prefix > summary/tags：精确名字必须排第一。
 	const exact = (await describeDirectory(createCapabilityCatalog().allDescriptors(), lib, {

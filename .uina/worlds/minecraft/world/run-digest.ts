@@ -10,7 +10,7 @@
  */
 
 import type { Entry, RunSummary } from "../contracts/runtime.js";
-import { taskHandle, taskIdentity } from "../contracts/task.js";
+import { taskHandle, taskIdentity, taskProgressText } from "../contracts/task.js";
 
 /** 最多列几条：超出只给数量。状态帧每次请求都会出现，不能变成任务日志。 */
 export const MAX_ACTIVE_TASKS = 4;
@@ -33,15 +33,10 @@ function runLine(run: RunSummary, profileId?: string, entry?: Entry): string {
 	const identity = taskIdentity(entry);
 	if (profileId || entry) parts.push([identity.label, identity.goal].filter(Boolean).join(" "));
 	parts.push(phase);
-	const summary = run.progress?.summary;
-	if (typeof summary === "string" && summary.trim() !== "") parts.push(clip(summary.trim(), MAX_SUMMARY));
-	else if (
-		run.progressComplete &&
-		entry?.kind === "call" &&
-		entry.selector === "collect@1" &&
-		typeof run.progress?.acquired === "number"
-	)
-		parts.push(`已入包 ${run.progress.acquired}`);
+	const summary = taskProgressText(run, entry);
+	if (summary) parts.push(clip(summary, MAX_SUMMARY));
+	if (run.progressComplete === false) parts.push("进度部分可读");
+	if (run.unknownEffectCount > 0) parts.push(`未知效果 ${run.unknownEffectCount}`);
 	return `- ${parts.join(" · ")}`;
 }
 

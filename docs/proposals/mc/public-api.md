@@ -8,7 +8,7 @@
 
 当前 Minecraft 工具以 `session / observe / describe / run / chat / tasks / library` 服务用户。版本化能力和个人 Program 仍用原 selector。按需用 `describe {kind:"guide",name:"program_api"}` 查脚本接口。
 
-`describe {query}` 接受中英文玩法词。精确名称先于玩法别名，再按匹配词项排序。候选带 `nextCall` 指向观察、执行或资料入口。能力的完整输入仍以精确查询为准。
+`describe {query}` 接受中英文玩法词。能力候选标明入口、简单必填项和已核实的默认值。空输入有效时，`nextCall` 可直接观察或执行。需要输入时指向精确合同。
 
 `describe {selector,includeSource:true}` 按需读取 `collect@1` 和 `build.resume@1` 当前绑定的 `programSource {source,digest}`，精确查询用 `sourceAvailable` 标记可读。可以用 `library.save {name,summary,source}` 建立个人副本。当前绑定的源码与某次执行的源码分别由目录与 `tasks.trace` 提供。
 
@@ -18,6 +18,8 @@
 - `build.resume@1` 停在 `needs_input` 时，`tasks.get` 可以返回 `construction.verifiedAtCheckpoint` 和有界的 `cellsToRecheck`。这些字段来自最后一份可读检查点。定位到未知 Effect 或待复读格时给出只读 `nextCall`，结果未知的写入继续保留未知。
 - `tasks.trace {task}` 按需展开当前执行摘要和调用页。可传 `record` 读取同一任务的调用、执行段、Effect 或当前报告。记录受任务归属检查。程序源码另经 Library 读取和保存。
 - `minecraft_completion` 的用户正文使用相同任务句柄及修订，旧通知以 `tasks.get` 的当前状态为准。完成只按能力声明和世界证据解释，Program 普通返回仅证明脚本运行结束。
+- 任务正文省略完整性标记的常态值和零个未知效果。截断、失败、待决策和未知效果仍显式呈现，通知在需要进一步查证时才带 `nextCall`。
+- 私聊和公屏直接点名经现有即时事件进入回合，提供频道、发言人、原文和记录引用。普通公屏经 `events@1` 读取。
 - 用户调度仍用 `run.schedule`。其中 `replace_pending.targets` 和 `preempt_current.expectedRun` 接收 Task 句柄。内部 Runtime 与 IPC 保持原有 Run 合同。
 - 版本化能力以 Catalog 冻结的合同与实现为准。`collect@1` 的成功要求本次库存净增达到目标，`build.resume@1` 的成功要求显式放置目标逐格复读满足。个人 Program 仍用裸名解析，其成功表示脚本结束。
 - `build.resume@1` 只接受显式目标格。它把检查点持久提交到当前 Segment。同一存档与维度、固定源码与合同、固定 Addon 装配和已退休的旧 Writer 是自动续段的条件。无法归因的 Effect 保留为未知，任务停在 `needs_input`，当前查询会给出自动续段拒绝原因。

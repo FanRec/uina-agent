@@ -141,7 +141,7 @@ test.each([false, true])("construction decisions give read-only evidence (unconf
 		task,
 		phase: "needs_input",
 		reason,
-		unknownEffectCount: unknown ? 1 : 0,
+		...(unknown ? { unknownEffectCount: 1 } : {}),
 		construction: { verifiedAtCheckpoint: 0, cellsToRecheck: [at], cellsToRecheckCount: 1 },
 		nextCall: unknown
 			? { action: "tasks", params: { op: "trace", task, record: "effect:one" } }

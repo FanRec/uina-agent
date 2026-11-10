@@ -3,6 +3,7 @@ import type { AddonStatus, DirectorySnapshot } from "../contracts/addons.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { RpcError } from "../executor/ipc.js";
+import { COLLECT_DEFAULT_COUNT } from "../program/collect.js";
 import { findGuide, guideSummaries, readGuide } from "./guides/index.js";
 
 export interface DescribeParams {
@@ -30,13 +31,33 @@ const aliases = new Map([
 	["build.resume@1", ["恢复施工", "继续施工", "续建", "resume construction", "resume"]],
 ]);
 
-function nextCall(item: SearchSummary) {
-	if (item.kind === "capability")
-		return { action: item.access === "read" ? "observe" : "run", params: { selector: item.name } };
-	if (item.kind === "program") return { action: "run", params: { selector: item.name } };
-	if (item.kind === "guide" || item.kind === "addon")
-		return { action: "describe", params: { kind: item.kind, name: item.name } };
-	return { action: "library", params: { op: "get", kind: item.kind, name: item.name } };
+function searchResult(item: SearchSummary, input?: QueryDescriptor["input"]) {
+	const { name, kind, summary, reason } = item;
+	const base = { name, kind, summary, ...(reason ? { reason } : {}) };
+	if (kind === "capability") {
+		const use = item.access === "read" ? "observe" : "run";
+		const required = Array.isArray(input?.required) ? input.required.filter((key) => typeof key === "string") : [];
+		// Only a plain object schema with no required fields proves that {} is valid.
+		const emptyAllowed =
+			input?.type === "object" &&
+			!required.length &&
+			Object.keys(input).every((key) =>
+				["type", "properties", "required", "additionalProperties", "description", "title"].includes(key),
+			);
+		return {
+			...base,
+			use,
+			...(required.length ? { required } : {}),
+			...(name === "collect@1" ? { defaults: { count: COLLECT_DEFAULT_COUNT } } : {}),
+			nextCall: { action: emptyAllowed ? use : "describe", params: { selector: name } },
+		};
+	}
+	if (kind === "program") return { ...base, use: "run", nextCall: { action: "describe", params: { selector: name } } };
+	const nextCall =
+		kind === "guide" || kind === "addon"
+			? { action: "describe", params: { kind, name } }
+			: { action: "library", params: { op: "get", kind, name } };
+	return { ...base, nextCall };
 }
 /**
  * 目录投影：descriptor 来自**真实装配**（活动 Companion 快照或内置模块），
@@ -236,7 +257,8 @@ export async function describeDirectory(
 		);
 	const offset = Number(params.cursor ?? 0);
 	if (!Number.isSafeInteger(offset)) throw new RpcError("CURSOR_INVALID", "invalid catalogue cursor");
-	const page = found.slice(offset, offset + 10).map(({ item }) => ({ ...item, nextCall: nextCall(item) }));
+	const inputs = new Map<string, QueryDescriptor["input"]>(descriptors.map((d) => [d.ref, d.input]));
+	const page = found.slice(offset, offset + 10).map(({ item }) => searchResult(item, inputs.get(item.name)));
 	return {
 		items: page,
 		...(found.length > offset + 10 ? { next: String(offset + 10) } : {}),

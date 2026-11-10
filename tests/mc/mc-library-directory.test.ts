@@ -74,19 +74,22 @@ test("describe without arguments lists every capability ref in one response", as
 });
 
 test.each([
-	["原木", "collect@1", "run"],
-	["采集", "collect@1", "run"],
-	["WOOD", "collect@1", "run"],
-	["collect，采集 原木 log", "collect@1", "run"],
-	["想找个高处看看", "explore@1", "run"],
-	["想继续施工", "build.resume@1", "run"],
-	["施工差异", "build.plan@1", "observe"],
-])("discover %s as %s", async (query, name, action) => {
+	["原木", "collect@1", "run", "describe"],
+	["采集", "collect@1", "run", "describe"],
+	["WOOD", "collect@1", "run", "describe"],
+	["collect，采集 原木 log", "collect@1", "run", "describe"],
+	["想找个高处看看", "explore@1", "run", "describe"],
+	["想继续施工", "build.resume@1", "run", "describe"],
+	["施工差异", "build.plan@1", "observe", "describe"],
+	["self", "self@1", "observe", "observe"],
+])("discover %s as %s", async (query, name, use, action) => {
 	const library = { list: async () => [], get: async () => null } as never;
 	const result = await describeDirectory(createCapabilityCatalog().allDescriptors(), library, { query });
 	expect("items" in result && result.items[0]).toMatchObject({
 		name,
+		use,
 		nextCall: { action, params: { selector: name } },
+		...(name === "collect@1" ? { required: ["item"], defaults: { count: 1 } } : {}),
 	});
 });
 

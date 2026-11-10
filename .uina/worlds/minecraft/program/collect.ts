@@ -1,5 +1,6 @@
+export const COLLECT_DEFAULT_COUNT = 1;
 export const collectProgram = `async function main(mc, input) {
-  const { item: requestedItem, count = 1, radius = 32, digThrough = false, tool } = input;
+  const { item: requestedItem, count = ${COLLECT_DEFAULT_COUNT}, radius = 32, digThrough = false, tool } = input;
   let info;
   try {
     info = (await mc.read("item@1", { name: requestedItem })).value;

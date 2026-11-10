@@ -157,13 +157,26 @@ export async function openExecutionSide(
 			if (notice.kind !== "evidence") return;
 			for (const record of notice.records) {
 				const value = record.fact.value as Record<string, JsonValue>;
+				const username = host.bot?.username;
+				const addressed =
+					value?.kind === "chat" &&
+					value.channel === "public" &&
+					value.self === false &&
+					typeof value.text === "string" &&
+					!!username &&
+					(value.text.match(/[\p{L}\p{N}_]+/gu) ?? []).some((word) => word.toLowerCase() === username.toLowerCase());
 				if (
 					value &&
 					(value.kind === "death" ||
 						(value.kind === "connection" && value.state === "disconnected") ||
-						(value.kind === "chat" && value.channel === "private" && value.self === false))
+						(value.kind === "chat" && value.channel === "private" && value.self === false) ||
+						addressed)
 				)
-					options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
+					options.onGameEvent?.({
+						ref: record.ref,
+						observedAt: record.fact.observedAt,
+						payload: addressed ? { ...value, addressed: true } : value,
+					});
 			}
 		});
 		registerClose(() => importantEvents.close());
