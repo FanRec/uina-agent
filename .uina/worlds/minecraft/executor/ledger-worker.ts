@@ -47,6 +47,7 @@ export type LedgerRequest =
 	| { id: number; op: "clean"; launch: string }
 	| { id: number; op: "request_put"; credential: RequestCredential }
 	| { id: number; op: "request_get"; requestId: string }
+	| { id: number; op: "request_entries"; ids: string[] }
 	| { id: number; op: "request_list"; selection: TaskRequestSelection }
 	| { id: number; op: "request_found"; requestId: string; lookup: Extract<SubmissionLookup, { kind: "found" }> }
 	| { id: number; op: "request_refused"; requestId: string; refusal: NonNullable<RequestCredential["refusal"]> }
@@ -125,6 +126,13 @@ parentPort!.on("message", (request: LedgerRequest) => {
 			} else if (request.op === "request_get") {
 				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
 				value = row ? JSON.parse(String(row.credential)) : null;
+			} else if (request.op === "request_entries") {
+				value = db
+					.prepare(`SELECT request_id AS id, json_extract(credential, '$.request.entry') AS entry
+					FROM requests WHERE request_id IN (SELECT value FROM json_each(?))
+					AND json_extract(credential, '$.operation') = 'submit'`)
+					.all(JSON.stringify(request.ids))
+					.map(({ id, entry }) => [id, JSON.parse(String(entry))]);
 			} else if (request.op === "request_list") {
 				const selection = request.selection;
 				const rows =

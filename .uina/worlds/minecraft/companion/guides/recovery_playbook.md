@@ -37,7 +37,7 @@ async function main(mc, input) {
 ## 长任务与 Completion
 
 顶层 `run` 受理表示后台已接单，实际阶段以任务查询为准；完成事件 `minecraft_completion` 与 `tasks.get/trace` 反映当前真实终态。
-不要因为几秒没收到 Completion 就重复下单。当前 `runs`、`run.schedule` 及等待相关字段以 `describe` 的最新工具 schema 为准；旧的同步 `wait` / 短窗等待说明已由异步 Run 改造删除。
+后台任务完成时会送来通知。需要依据当前进度做决定时，用 `tasks.get` 查原任务。想放弃这段工作时用 `tasks.stop`，并查看返回的控制状态。
 
 ## 写经验
 

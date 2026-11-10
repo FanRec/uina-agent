@@ -16,6 +16,21 @@ test("没有活跃任务时不产生这一段", () => {
 	expect(formatActiveRuns([], at)).toBeNull();
 });
 
+test("shows the original task label and confirmed acquisition beside the stable handle", () => {
+	const snapshot = {
+		...run("run:1", "running"),
+		rootRequestId: "request:1",
+		progressComplete: true,
+		progress: { acquired: 2 },
+	};
+	const entries = new Map([
+		["request:1", { kind: "call" as const, selector: "collect@1", input: { item: "oak_log", count: 4 } }],
+	]);
+	expect(formatActiveRuns([snapshot], at, "profile", entries)).toContain(
+		"task:profile:request:1 · 采集 4 × oak_log · running · 已入包 2",
+	);
+});
+
 test("一至三条：run、phase、进度摘要逐条给，并标明与世界状态分别采样", () => {
 	const text = formatActiveRuns([run("run:1", "running", "挖铁矿 9/16"), run("run:2", "queued")], at);
 	expect(text).toBe(

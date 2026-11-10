@@ -6,7 +6,7 @@ import { taskHandle, taskView } from "../contracts/task.js";
 import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import type { CompletionView, DeliveryRef, DeliveryState } from "../contracts/runtime.js";
+import type { CompletionView, DeliveryRef, DeliveryState, Entry } from "../contracts/runtime.js";
 import type { JsonValue } from "../contracts/values.js";
 import type { MinecraftExecutor } from "./index.js";
 import type { DeliveryAttempt } from "./ledger-worker.js";
@@ -324,6 +324,7 @@ export class DeliveryPump {
 	private deliver(ready: readonly Deliverable[]): void {
 		if (this.emitting) return;
 		this.emitting = true;
+		let entries: Promise<ReadonlyMap<string, Entry>> | undefined;
 		const events = ready.map(({ ref, view, attempt }) => ({
 			id: attempt.attempt,
 			type: "minecraft_completion",
@@ -333,8 +334,12 @@ export class DeliveryPump {
 			// 正文到宿主真正取用才成形：一次决策看几条由宿主的有界领取预算决定。
 			render: async () => {
 				if (this.stopped) return null;
+				entries ??= this.executor.ledger
+					.taskEntries(ready.map(({ view }) => view.snapshot.rootRequestId))
+					.catch(() => new Map());
+				const entry = (await entries).get(view.snapshot.rootRequestId);
 				const latest = await this.executor.rpc<DeliveryState>("runtime.readDelivery", { ref: ref.completionRef });
-				return latest.eligible ? formatCompletion(view, this.profileId) : null;
+				return latest.eligible ? formatCompletion(view, this.profileId, entry) : null;
 			},
 			data: view,
 		}));
@@ -455,12 +460,12 @@ function urgentEvent(payload: unknown): boolean {
 }
 
 /** User text is projected from the fixed report. The structured receipt remains internal. */
-export function formatCompletion(view: CompletionView, profileId = "local"): string {
+export function formatCompletion(view: CompletionView, profileId = "local", entry?: Entry): string {
 	const task = taskHandle(profileId, view.snapshot.rootRequestId);
 	const report = view.content.kind === "inline" ? view.content.report : undefined;
 	return JSON.stringify({
 		kind: "result",
-		...taskView(task, view.snapshot),
+		...taskView(task, view.snapshot, entry),
 		...(report?.reportKind === "terminal" ? { value: report.snapshot.value } : {}),
 		...(view.content.kind !== "inline" ? { detail: view.content.kind } : {}),
 		nextCall: { action: "tasks", params: { op: "get", task } },

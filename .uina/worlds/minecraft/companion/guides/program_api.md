@@ -41,6 +41,8 @@ async function main(mc, input) {
 
 ## 等待、避免轮询
 
+要留出一段时间，可以直接 `await mc.sleep(1000)`。要等背包或方块发生变化，用 `mc.waitUntil`，让 Program 在条件满足时继续。
+
 ```js
 async function main(mc, input) {
   const outcome = await mc.waitUntil(

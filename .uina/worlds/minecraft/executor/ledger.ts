@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import type { SubmissionLookup } from "../contracts/runtime.js";
+import type { Entry, SubmissionLookup } from "../contracts/runtime.js";
 import { RpcError } from "./ipc.js";
 import type {
 	DeliveryAttempt,
@@ -74,6 +74,10 @@ export class ExecutorLedger {
 	}
 	async getRequest(requestId: string): Promise<RequestCredential | null> {
 		return (await this.request({ op: "request_get", requestId })) as RequestCredential | null;
+	}
+	async taskEntries(ids: string[]): Promise<ReadonlyMap<string, Entry>> {
+		if (!ids.length) return new Map();
+		return new Map((await this.request({ op: "request_entries", ids })) as [string, Entry][]);
 	}
 	async requests(selection: TaskRequestSelection): Promise<RequestCredential[]> {
 		return (await this.request({ op: "request_list", selection })) as RequestCredential[];

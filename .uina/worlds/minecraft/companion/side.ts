@@ -44,7 +44,7 @@ import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
-import { formatActiveRuns } from "../world/run-digest.js";
+import { MAX_ACTIVE_TASKS } from "../world/run-digest.js";
 import { sampleStateFrame } from "../world/state-frame.js";
 import { safetyNeedsAttention } from "./safety-route.js";
 
@@ -573,12 +573,14 @@ export async function openExecutionSide(
 					} catch {
 						// 保留 null：查询失败不是"零条"，由 formatActiveRuns 如实写出。
 					}
-					const digest = formatActiveRuns(
-						activeRuns,
-						new Date().toISOString(),
-						(payload as { profileId?: string }).profileId,
-					);
-					value = digest ? { ...frame, text: `${frame.text}\n${digest}` } : frame;
+					value = {
+						...frame,
+						activeTasks: {
+							items: activeRuns?.slice(0, MAX_ACTIVE_TASKS) ?? null,
+							omitted: Math.max(0, (activeRuns?.length ?? 0) - MAX_ACTIVE_TASKS),
+							sampledAt: new Date().toISOString(),
+						},
+					};
 					break;
 				}
 				case "read_image": {

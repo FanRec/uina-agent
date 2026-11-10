@@ -105,6 +105,8 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 V2 当前目录有 18 个查询和 37 个动作。54 个既有 selector 各有唯一绑定，新动作 `build.resume@1` 用于可恢复的小型施工。`describe`、顶层 `run` 与 `mc.call` 共用 Catalog。用户通过 `tasks` 查询、停止、续段及查证，开发验收通过 Executor 读内部记录。采集策略由发布的 `collect@1` Program 承载，移动、挖掘、拾取和窗口事务由 Native 完成。
 
+玩法搜索支持中英文别名与词项，候选给出公开入口。任务查询、完成通知和请求前简报展示由根提交派生的任务名与目标。玩法搜索词与任务名均为展示数据，不参与执行绑定或续段资格。 [游玩体验验收](proposals/mc/archive/world-refactor-v2.md#游玩体验)
+
 `build.resume@1` 冻结显式目标格、存档身份、维度、源码和 Addon 装配摘要。符合恢复资格的任务重连后通过既有认领事务创建新 Segment。无法确认的写入保留在 Effect 记录中，现场读数作为续段决策的证据。Fabric 支持范围以验收中的注册表和 SpectatorPlus 组合为准。 [V2 验收记录](proposals/mc/archive/world-refactor-v2.md)
 
 以下为历史批次记录。早期 I1/K1 在 `.uina/worlds/minecraft/` 建立了原生动作、采集、容器与合成熔炼闭环。连接级 DriverProtocol 当前实现 Java 1.21.11；未来版本沿同一窄端口接入，未支持版本的相关操作明确失败。玩家库存与容器共用 mode-0 的服务端槽位/光标确认，装备、移槽、丢弃不进入上游异步预测写入链；ItemValue 与选择器保留有效组件、堆叠上限和剩余耐久。采矿只认实际服务端方块更新，Runtime 保留直接/嵌套未知效果；查询先执行统一 schema 校验。World 沿既有 SQLite 证据链保留最后容器观察，历史不代表当前库存。

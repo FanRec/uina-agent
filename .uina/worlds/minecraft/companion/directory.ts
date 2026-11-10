@@ -12,6 +12,31 @@ export interface DescribeParams {
 	kind?: "capability" | "guide" | "addon" | LibraryKind;
 	name?: string;
 }
+
+const normalize = (value: string) =>
+	value
+		.normalize("NFKC")
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim();
+
+// Search vocabulary is presentation data. It must not change a frozen capability contract.
+const aliases = new Map([
+	["collect@1", ["采集", "原木", "木头", "砍树", "收集资源", "gather resources", "wood", "log", "chop tree"]],
+	["explore@1", ["探索", "找个高处看看", "看看附近", "探路", "scout", "look around"]],
+	["build@1", ["建造", "盖房子", "建避难所", "construction", "shelter"]],
+	["build.plan@1", ["施工差异", "检查建造", "建造计划", "construction plan"]],
+	["build.resume@1", ["恢复施工", "继续施工", "续建", "resume construction", "resume"]],
+]);
+
+function nextCall(item: SearchSummary) {
+	if (item.kind === "capability")
+		return { action: item.access === "read" ? "observe" : "run", params: { selector: item.name } };
+	if (item.kind === "program") return { action: "run", params: { selector: item.name } };
+	if (item.kind === "guide" || item.kind === "addon")
+		return { action: "describe", params: { kind: item.kind, name: item.name } };
+	return { action: "library", params: { op: "get", kind: item.kind, name: item.name } };
+}
 /**
  * 目录投影：descriptor 来自**真实装配**（活动 Companion 快照或内置模块），
  * 这里不再持有 Catalog，也不再为第三方能力另编一份静态 Schema。
@@ -172,19 +197,34 @@ export async function describeDirectory(
 				: {}),
 		})),
 	];
-	const q = (params.query ?? "").toLowerCase();
-	const score = (d: SearchSummary) =>
-		d.name.toLowerCase() === q || (d.kind === "capability" && d.name.split("@")[0] === q)
-			? 0
-			: d.name.toLowerCase().startsWith(q)
-				? 1
-				: 2;
+	const q = normalize(params.query ?? "");
+	const words = [...new Set(q.split(" ").filter(Boolean))];
 	const found = candidates
-		.filter((d) => [d.name, d.summary ?? "", ...d.tags].some((v) => v.toLowerCase().includes(q)))
-		.sort((a, b) => score(a) - score(b) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+		.flatMap((item) => {
+			const name = normalize(item.name);
+			const known = aliases.get(item.ref ?? "") ?? [];
+			const matches = known.filter((alias) =>
+				/\p{Script=Han}/u.test(alias) ? q.includes(alias) : ` ${q} `.includes(` ${alias} `),
+			);
+			const fields = [name, normalize(item.summary ?? ""), ...item.tags.map(normalize)];
+			const terms = words.filter((word) => fields.some((field) => field.split(" ").includes(word))).length;
+			const exact = name === q || (item.kind === "capability" && normalize(item.name.split("@")[0]!) === q);
+			const prefix = q !== "" && name.startsWith(q);
+			if (q && !exact && !matches.length && !terms && !prefix) return [];
+			return [{ item, rank: exact ? 0 : matches.length ? 1 : 2, matches: matches.length, terms, prefix }];
+		})
+		.sort(
+			(a, b) =>
+				a.rank - b.rank ||
+				b.matches - a.matches ||
+				b.terms - a.terms ||
+				Number(b.prefix) - Number(a.prefix) ||
+				a.item.kind.localeCompare(b.item.kind) ||
+				a.item.name.localeCompare(b.item.name),
+		);
 	const offset = Number(params.cursor ?? 0);
 	if (!Number.isSafeInteger(offset)) throw new RpcError("CURSOR_INVALID", "invalid catalogue cursor");
-	const page = found.slice(offset, offset + 10);
+	const page = found.slice(offset, offset + 10).map(({ item }) => ({ ...item, nextCall: nextCall(item) }));
 	return {
 		items: page,
 		...(found.length > offset + 10 ? { next: String(offset + 10) } : {}),

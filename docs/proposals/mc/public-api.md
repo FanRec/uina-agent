@@ -8,8 +8,11 @@
 
 当前 Minecraft 工具以 `session / observe / describe / run / chat / tasks / library` 服务用户。版本化能力和个人 Program 仍用原 selector。按需用 `describe {kind:"guide",name:"program_api"}` 查脚本接口。
 
+`describe {query}` 接受中英文玩法词。精确名称先于玩法别名，再按匹配词项排序。候选带 `nextCall` 指向观察、执行或资料入口。能力的完整输入仍以精确查询为准。
+
 - `run`、`chat`、`tasks.continue` 只返回 `accepted`、`rejected` 或 `confirming`。有提交凭据时返回 `task`，其归属为原 Profile。确认期用原句柄查证。继续时沿用原任务句柄。
 - `tasks.get {task}` 返回当前阶段、修订、进度与结果。`tasks.list` 默认列活跃任务，`activeOnly:false` 包含历史。`tasks.stop {task}` 处理确认期原请求或已受理任务。`tasks.continue {task,decision,entry,environment?}` 只消费当前仍有效的决策。
+- 查询、完成通知和请求前简报显示同一根提交的 `label` 与可提取的 `goal`。当前进度来自 Runtime，续段保留原目标。缺少原提交的历史记录保留句柄，以“任务”显示。
 - `tasks.trace {task}` 按需展开当前执行摘要和调用页。可传 `record` 读取同一任务的调用、执行段、Effect 或当前报告。记录受任务归属检查。程序源码另经 Library 读取和保存。
 - `minecraft_completion` 的用户正文使用相同任务句柄及修订，旧通知以 `tasks.get` 的当前状态为准。完成只按能力声明和世界证据解释，Program 普通返回仅证明脚本运行结束。
 - 用户调度仍用 `run.schedule`。其中 `replace_pending.targets` 和 `preempt_current.expectedRun` 接收 Task 句柄。内部 Runtime 与 IPC 保持原有 Run 合同。

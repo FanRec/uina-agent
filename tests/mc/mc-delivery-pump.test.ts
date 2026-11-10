@@ -35,7 +35,12 @@ test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执
 		},
 	};
 	const executor = {
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async (method: string, p: { ref?: string }) => {
 			if (method === "runtime.pendingDeliveries")
 				return { items: [...pending].map((completionRef) => ({ completionRef, requestId: completionRef })) };
@@ -115,6 +120,7 @@ test("一次交接不占位：旧激活留下的输入退役后，同一轮的�
 	};
 	const executor = {
 		ledger: {
+			taskEntries: async () => new Map(),
 			requests: async () => [],
 			attempts: async () => [
 				{
@@ -231,7 +237,12 @@ test("one unavailable report does not block other headers; unavailable content r
 		},
 	};
 	const executor = {
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async (method: string, p: { ref?: string }) => {
 			if (method === "runtime.pendingDeliveries")
 				return {
@@ -311,7 +322,12 @@ test("同轮多处完成一次交出：每条各自回执，宿主还在处理�
 		},
 	};
 	const executor = {
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async (method: string, p: { ref?: string }) => {
 			if (method === "runtime.pendingDeliveries")
 				return { items: [...pending].map((completionRef) => ({ completionRef, requestId: completionRef })) };
@@ -384,7 +400,12 @@ test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest �
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async () => ({ items: [] }),
 	} as unknown as MinecraftExecutor;
 	const pump = new DeliveryPump(executor, ctx, 10);
@@ -439,7 +460,12 @@ test("需要立即重新决策的事件走 urgent；其余事实排队等下一�
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async () => ({ items: [] }),
 	} as unknown as MinecraftExecutor;
 	const pump = new DeliveryPump(executor, ctx, 60_000);
@@ -504,7 +530,12 @@ function eventPump(emit: (event: WorldEvent) => Promise<EventSubmission>) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async () => ({ items: [] }),
 	} as unknown as MinecraftExecutor;
 	return {
@@ -734,7 +765,12 @@ test("awaiting_decision hands out the decision, never a record pointer", () => {
 function pendingExecutor(keys: readonly string[]): MinecraftExecutor {
 	const pending = [...keys];
 	return {
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async (method: string, p: { ref?: string }) => {
 			if (method === "runtime.pendingDeliveries")
 				return { items: pending.map((completionRef) => ({ completionRef, requestId: completionRef })) };
@@ -838,7 +874,12 @@ test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", 
 	};
 	// 键集分页替身：cursor 是最后一条的 rowid，与真实实现同口径。
 	const executor = {
-		ledger: { requests: async () => [], attempts: async () => [], putAttempt: async () => {} },
+		ledger: {
+			taskEntries: async () => new Map(),
+			requests: async () => [],
+			attempts: async () => [],
+			putAttempt: async () => {},
+		},
 		rpc: async (method: string, p: { ref?: string; cursor?: string; limit?: number }) => {
 			if (method === "runtime.pendingDeliveries") {
 				const after = p.cursor == null ? 0 : Number(p.cursor);

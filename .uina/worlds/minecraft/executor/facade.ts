@@ -7,7 +7,7 @@ import type { JsonValue } from "../contracts/values.js";
 import { DeliveryPump } from "./delivery.js";
 import { MinecraftExecutor } from "./index.js";
 import { RpcError } from "./ipc.js";
-import { submitsTask, taskHandle, taskView } from "../contracts/task.js";
+import { submitsTask, taskHandle, taskIdentity, taskView } from "../contracts/task.js";
 import type { RequestIntent } from "./ledger-worker.js";
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
@@ -279,7 +279,6 @@ export class MinecraftFacade {
 	}
 
 	private async tasks(p: Record<string, unknown>, signal: AbortSignal): Promise<ToolExecutionResult> {
-		const project = (snapshot: RunSummary) => taskView(this.handle(snapshot.rootRequestId), snapshot);
 		if (p.op === "list") {
 			const page = await this.executor.rpc<{ items: RunSummary[]; next?: string }>(
 				"runtime.list",
@@ -287,6 +286,7 @@ export class MinecraftFacade {
 				signal,
 			);
 			const seen = new Set(page.items.map((item) => item.rootRequestId));
+			const entries = await this.executor.ledger.taskEntries([...seen]);
 			const additional = p.cursor
 				? []
 				: (await this.executor.ledger.requests({ kind: "roots", activeOnly: p.activeOnly !== false }))
@@ -301,25 +301,39 @@ export class MinecraftFacade {
 						.reverse()
 						.map((item) => {
 							const task = this.handle(item.requestId);
-							if (!item.refusal) return { task, phase: "confirming" };
+							const identity = taskIdentity(item.request.entry);
+							if (!item.refusal) return { task, ...identity, phase: "confirming" };
 							const { kind, code, message } = item.refusal;
 							return {
 								task,
+								...identity,
 								phase: "finished",
 								outcome: kind === "cancelled" ? "cancelled" : "not_started",
 								error: { code, message },
 							};
 						});
-			return response({ ...page, items: [...additional, ...page.items.map(project)] });
+			return response({
+				...page,
+				items: [
+					...additional,
+					...page.items.map((snapshot) =>
+						taskView(this.handle(snapshot.rootRequestId), snapshot, entries.get(snapshot.rootRequestId)),
+					),
+				],
+			});
 		}
 		const task = p.task as string;
 		const requestId = this.taskRequest(task);
 		const credential = await this.executor.ledger.getRequest(requestId);
 		if (credential?.operation === "continue") throw new RpcError("TASK_NOT_FOUND", "use the original task handle");
+		const entry = credential?.request.entry;
+		const identity = taskIdentity(entry);
+		const project = (snapshot: RunSummary) => taskView(this.handle(snapshot.rootRequestId), snapshot, entry);
 		if (credential?.refusal) {
 			const { kind, code, message } = credential.refusal;
 			const terminal = {
 				task,
+				...identity,
 				phase: "finished",
 				outcome: kind === "cancelled" ? "cancelled" : "not_started",
 				error: { code, message },
@@ -333,6 +347,7 @@ export class MinecraftFacade {
 			if (p.op === "get" || p.op === "stop")
 				return response({
 					task,
+					...identity,
 					phase: "finished",
 					outcome: found.kind === "cancelled" ? "cancelled" : "not_started",
 					...(found.kind === "rejected" ? { error: { code: found.code, message: found.message } } : {}),
@@ -362,6 +377,7 @@ export class MinecraftFacade {
 				return response(
 					{
 						task,
+						...identity,
 						code: "TASK_UNAVAILABLE",
 						reason: found.kind === "unavailable" ? found.reason : "execution state is not readable",
 					},
@@ -371,6 +387,7 @@ export class MinecraftFacade {
 				return response(
 					{
 						task,
+						...identity,
 						phase: "confirming",
 						reason: found.kind === "unavailable" ? found.reason : "acceptance is not yet confirmed",
 					},

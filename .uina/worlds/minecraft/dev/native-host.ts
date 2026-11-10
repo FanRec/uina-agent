@@ -31,6 +31,8 @@ async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms
 const port = Number(process.env.MC_DEV_PORT ?? "25565");
 assert(Number.isInteger(port) && port > 0 && port < 65536, "invalid MC_DEV_PORT");
 const modelMode = process.argv.includes("--model");
+const autonomyMode = process.argv.includes("--autonomy");
+assert(!autonomyMode || modelMode, "--autonomy requires --model");
 const programMode = process.argv.includes("--program");
 const tasksMode = process.argv.includes("--tasks");
 const waitMode = process.argv.includes("--wait");
@@ -169,7 +171,7 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
-		if (modelMode && (feedbackMode || tasksMode))
+		if (modelMode && (feedbackMode || tasksMode || autonomyMode))
 			api.onHook("turn.transformContext", (projection) => ({
 				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
 			}));
@@ -181,6 +183,68 @@ try {
 		notifyExposed() {},
 	});
 	await activation.start();
+	if (autonomyMode) {
+		assert.equal((await direct("session", { op: "status" })).state, "disconnected");
+		const timer = setTimeout(() => host.interrupt(), 120000);
+		try {
+			await host.submitText(
+				`有一个 Minecraft 世界在线，地址是 127.0.0.1:${port}。这是 Java 1.21.11 离线服，可用名字 Uina。`,
+				"direct",
+			);
+			await host.waitForIdle();
+		} finally {
+			clearTimeout(timer);
+		}
+		const calls = [...results.values()];
+		const reads = calls.filter(({ args }) => args.action === "tasks" && (args.params as { op?: string }).op === "get");
+		const revisions = new Set(
+			reads.map(({ details }) => {
+				const view = details as { task?: string; revision?: number };
+				return `${view.task}:${view.revision}`;
+			}),
+		);
+		console.log(
+			"[mc-native] autonomy observation",
+			JSON.stringify({
+				session: (await direct("session", { op: "status" })).state,
+				calls: calls.length,
+				taskReads: reads.length,
+				repeatedTaskReads: reads.length - revisions.size,
+				emptySearches: calls.filter(
+					({ args, details }) => args.action === "describe" && (details as { items?: unknown[] })?.items?.length === 0,
+				).length,
+			}),
+		);
+	} else await runScenarios();
+	await step("activation stop closes managed process and endpoint", async () => {
+		await activation!.stop();
+		activation = undefined;
+	});
+} catch (error) {
+	console.error("[mc-native] acceptance failed", error);
+	throw error;
+} finally {
+	await activation?.stop();
+	await host.dispose();
+	await writeFile(
+		join(root, "report.json"),
+		JSON.stringify(
+			{
+				mode: autonomyMode ? "autonomy-real-model" : modelMode ? "real-model" : "controlled-provider-real-paper",
+				passed,
+				modelRequests,
+				usage: [...calibrationUsage.values()],
+				calibrationBudgetHit,
+				transcript,
+			},
+			null,
+			2,
+		),
+	);
+	console.log(`[mc-native] ${passed} passed; report=${join(root, "report.json")}`);
+}
+
+async function runScenarios() {
 	const observe = (selector: string, input: JsonValue = {}) => direct("observe", { selector, input });
 	// 批25：World 不再自动入服——经 session 工具显式连接（settings 种子来自旧 config.json）。
 	await step("session connect", async () => {
@@ -230,6 +294,7 @@ try {
 			await command("/kill @e[type=!minecraft:player,distance=..64]");
 		}
 		await command("/clear UinaDev");
+		await command("/kill @e[type=minecraft:item,distance=..16]");
 		if (mapMode) {
 			// map 模式场景：四象限材质平台 + 空白地图。开图交给模型/受控步骤（use@1）。
 			await command("/fill 16000 199 16000 16008 199 16008 minecraft:stone");
@@ -301,6 +366,8 @@ try {
 					(view) => view.phase === "finished",
 				);
 				assert.equal(finished.outcome, "succeeded", JSON.stringify(finished));
+				assert.equal(finished.label, "采集");
+				assert.equal(finished.goal, "1 × oak_log");
 				const inventory = await observe("inventory@1");
 				assert.equal((inventory.value as { counts: Record<string, number> }).counts.oak_log, 1);
 				const trace = await direct("tasks", { op: "trace", task });
@@ -330,6 +397,19 @@ try {
 				);
 				const listed = await direct("tasks", { op: "list" });
 				assert((listed.items as { task: string }[]).some((item) => item.task === task));
+				await direct("library", {
+					op: "save",
+					name: "pause_here",
+					summary: "Wait here",
+					source: "async function main(mc){await mc.sleep(30000);}",
+				});
+				const other = acceptedTask(await ask("run", { selector: "pause_here" }));
+				const active = (await direct("tasks", { op: "list" })).items as { task: string; label: string }[];
+				assert.equal(active.find((item) => item.label === "临时 Program")?.task, task);
+				assert.equal(active.find((item) => item.label === "运行 pause_here")?.task, other);
+				await direct("tasks", { op: "stop", task: other });
+				assert.equal((await get(other)).outcome, "cancelled");
+				assert.equal((await get(task)).control, "active");
 				await direct("tasks", { op: "stop", task });
 				const stopped = await until(
 					() => get(task),
@@ -779,30 +859,4 @@ try {
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 		});
 	}
-	await step("activation stop closes managed process and endpoint", async () => {
-		await activation!.stop();
-		activation = undefined;
-	});
-} catch (error) {
-	console.error("[mc-native] acceptance failed", error);
-	throw error;
-} finally {
-	await activation?.stop();
-	await host.dispose();
-	await writeFile(
-		join(root, "report.json"),
-		JSON.stringify(
-			{
-				mode: modelMode ? "real-model" : "controlled-provider-real-paper",
-				passed,
-				modelRequests,
-				usage: [...calibrationUsage.values()],
-				calibrationBudgetHit,
-				transcript,
-			},
-			null,
-			2,
-		),
-	);
-	console.log(`[mc-native] ${passed} passed; report=${join(root, "report.json")}`);
 }

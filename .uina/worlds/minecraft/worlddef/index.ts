@@ -14,6 +14,7 @@ import { createLibrary, type FileLibrary } from "../library/index.js";
 import { readCallSource } from "../library/origin.js";
 import { readRunSnapshot } from "../program/index.js";
 import { createProgramValidator, type ProgramValidator } from "../program/validator.js";
+import { type ActiveTaskFrame, formatActiveRuns } from "../world/run-digest.js";
 import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { SessionController, sessionResponse } from "./session-controller.js";
@@ -184,8 +185,21 @@ export function createMinecraftWorld(
 		requestContext: async () => {
 			const session = controller?.session;
 			if (!session) return null;
-			const frame = await session.executor.rpc<{ text: string }>("state.snapshot", { profileId: session.profileId });
-			return frame.text;
+			const { text, activeTasks } = await session.executor.rpc<{ text: string; activeTasks: ActiveTaskFrame }>(
+				"state.snapshot",
+				{},
+			);
+			const entries = await session.executor.ledger
+				.taskEntries(activeTasks.items?.map((run) => run.rootRequestId) ?? [])
+				.catch(() => undefined);
+			const digest = formatActiveRuns(
+				activeTasks.items,
+				activeTasks.sampledAt,
+				session.profileId,
+				entries,
+				activeTasks.omitted,
+			);
+			return digest ? `${text}\n${digest}` : text;
 		},
 		/**
 		 * 静态环境认知：只在有活动 Minecraft 会话的回合注入，避免污染纯聊天。
@@ -199,7 +213,7 @@ export function createMinecraftWorld(
 				{
 					description:
 						name === "run"
-							? "Run an exact capability, named program or JavaScript code; accepted may continue in background"
+							? "Run an exact capability, named Program or async function main(mc,input). Use await mc.sleep(ms) to wait inside code. Accepted tasks deliver completion in the background."
 							: name,
 					parameters,
 					run: async (params: Record<string, unknown>, ctx: { signal: AbortSignal }) => {
