@@ -308,9 +308,9 @@ export class WindowSessionImpl implements WindowSession {
 			return;
 		}
 		if (screen.contentRevision !== this.publishedRevision) {
-			this.publishedRevision = screen.contentRevision;
 			const view = this.view();
 			if (view != null && this.deps.target) {
+				this.publishedRevision = screen.contentRevision;
 				this.deps.publishWindow?.(structuredClone({ target: this.deps.target, snapshot: this.snapshotOf(view) }));
 			}
 		}

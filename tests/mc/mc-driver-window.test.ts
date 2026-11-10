@@ -25,7 +25,7 @@ const target = { place: placeT(), block: { x: 0, y: 64, z: 0 } };
 const empty = { item: null, count: 0 };
 const stone = (count: number) => new Item(1, count);
 
-function harness(autoTick = true, options: { type?: string; slots?: number } = {}) {
+function harness(autoTick = true, options: { type?: string; slots?: number; fullBeforeLayout?: boolean } = {}) {
 	const windowType = options.type ?? "minecraft:generic_9x3";
 	const bot = new EventEmitter() as EventEmitter & Record<string, any>;
 	const client = new EventEmitter() as EventEmitter & Record<string, any>;
@@ -77,9 +77,13 @@ function harness(autoTick = true, options: { type?: string; slots?: number } = {
 		writes.push({ name, data });
 		if (name === "block_place" || name === "use_entity") {
 			queueMicrotask(() => {
+				if (options.fullBeforeLayout) {
+					client.emit("open_window", { windowId: 1, inventoryType: 2 });
+					full();
+				}
 				bot.currentWindow = windows.createWindow(1, windowType, "Chest");
 				bot.emit("windowOpen", bot.currentWindow);
-				full();
+				if (!options.fullBeforeLayout) full();
 			});
 		}
 		if (name === "window_click" && data.mode === 0 && accept) {
@@ -156,6 +160,19 @@ async function primePlayerInventory(h: ReturnType<typeof harness>): Promise<void
 afterEach(() => vi.useRealTimers());
 
 describe("Driver window lifetime and server confirmation", () => {
+	test("publishes the first authoritative snapshot when full arrives before the layout", async () => {
+		const h = harness(true, { fullBeforeLayout: true });
+		const window = await h.session.openContainer(target);
+		expect(h.observations).toEqual([
+			expect.objectContaining({
+				target,
+				snapshot: expect.objectContaining({
+					slots: expect.arrayContaining([{ slot: 0, item: expect.objectContaining({ name: "stone", count: 8 }) }]),
+				}),
+			}),
+		]);
+		await window.close();
+	});
 	test("suspended parent window keeps server observations and can revalidate after delegation", async () => {
 		const h = harness();
 		let suspended = false;

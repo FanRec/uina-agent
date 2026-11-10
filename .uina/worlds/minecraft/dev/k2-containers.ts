@@ -45,7 +45,25 @@ const checkWindow: NativeCallable<JsonValue, JsonValue> = {
 					expectedCursor: { item: null, count: 0 },
 				});
 				if (receipt.dispatch !== "sent") throw new Error(`stale revision was rejected: ${receipt.dispatch}`);
-				return { rejected: false };
+				const lifted = (await window.snapshot()).value;
+				if (item != null) {
+					const cursor = lifted.cursor as { name: string; count: number } | null;
+					if (cursor?.name !== item.name || cursor.count !== item.count)
+						throw new Error("stale revision click did not move the expected stack");
+					await window.click({
+						slot: 0,
+						button: 0,
+						mode: 0,
+						expectedRevision: lifted.revision,
+						expectedSlots: [{ slot: 0, stack: { item: null, count: 0 } }],
+						expectedCursor: { item: { name: cursor.name }, count: cursor.count },
+					});
+				}
+				const restored = (await window.snapshot()).value;
+				const restoredItem = restored.slots[0]?.item as { name: string; count: number } | null;
+				if (restored.cursor != null || restoredItem?.name !== item?.name || restoredItem?.count !== item?.count)
+					throw new Error("window probe did not restore the original stack");
+				return { restored: true };
 			} finally {
 				await window.close();
 			}
@@ -104,8 +122,8 @@ async function main(): Promise<void> {
 				z: Math.floor(self.place.position.z),
 			};
 			await s.command(`/clear ${h.host.bot?.username ?? "UinaDev"}`);
+			await s.command(`/setblock ${at.x} ${at.y} ${at.z} minecraft:air`);
 			await s.command(`/setblock ${at.x} ${at.y} ${at.z} minecraft:barrel`);
-			await s.command(`/data merge block ${at.x} ${at.y} ${at.z} {Items:[]}`);
 			await s.command(`/kill @e[tag=uina_batch2_container]`);
 			await s.command(`/item replace block ${at.x} ${at.y} ${at.z} container.0 with minecraft:dirt 12`);
 			await s.command(`/give ${h.host.bot?.username ?? "UinaDev"} minecraft:dirt 20`);
@@ -149,7 +167,7 @@ async function main(): Promise<void> {
 				throw new Error(JSON.stringify(value));
 			return "dirt=14; closed";
 		});
-		await s.step("stale window revision rejected with CONFLICT", async () => {
+		await s.step("stale revision with matching content permits the click and its reversal", async () => {
 			const result = await s.call("dev.window.check@1", { at: plain(at) });
 			if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
 			return JSON.stringify(result.value);
@@ -192,8 +210,8 @@ async function main(): Promise<void> {
 			const delta = before - ((await s.readInventory()).counts.dirt ?? 0);
 			if (delta !== 1) throw new Error(`actual deposited quantity ${delta}`);
 			// 只清本场景容器，为后面的历史检查恢复一个已核验的空容器。
+			await s.command(`/setblock ${at.x} ${at.y} ${at.z} minecraft:air`);
 			await s.command(`/setblock ${at.x} ${at.y} ${at.z} minecraft:barrel`);
-			await s.command(`/data merge block ${at.x} ${at.y} ${at.z} {Items:[]}`);
 			const read = await s.call("container@1", { at: plain(at) });
 			if (!read.ok) throw new Error(`${read.code}: ${read.message}`);
 			return "INVENTORY_FULL; moved=1, remaining=4; confirmed by player inventory";
@@ -227,7 +245,7 @@ async function main(): Promise<void> {
 		await s.step("history survives full client/runtime/world close and reopen", async () => {
 			const self = await s.readSelf();
 			await closeHarness(h);
-			h = await openHarness("containers-reopen", { binding });
+			h = await openHarness("containers-reopen", { binding, dataRoot: h.dataRoot, ns: h.ns });
 			const value = (
 				await h.world.read<LastValue>({
 					ref: "container.last@1",
