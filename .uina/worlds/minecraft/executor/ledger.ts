@@ -91,8 +91,9 @@ export class ExecutorLedger {
 	async putAttempt(attempt: DeliveryAttempt): Promise<void> {
 		await this.request({ op: "attempt_put", attempt });
 	}
-	async attempts(): Promise<DeliveryAttempt[]> {
-		return (await this.request({ op: "attempt_list" })) as DeliveryAttempt[];
+	async attempts(keys: string[]): Promise<ReadonlyMap<string, DeliveryAttempt>> {
+		if (!keys.length) return new Map();
+		return new Map((await this.request({ op: "attempt_list", keys })) as [string, DeliveryAttempt][]);
 	}
 	close(): Promise<void> {
 		return (this.closePromise ??= (async () => {

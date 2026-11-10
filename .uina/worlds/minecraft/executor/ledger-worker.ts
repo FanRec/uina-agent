@@ -52,7 +52,7 @@ export type LedgerRequest =
 	| { id: number; op: "request_found"; requestId: string; lookup: Extract<SubmissionLookup, { kind: "found" }> }
 	| { id: number; op: "request_refused"; requestId: string; refusal: NonNullable<RequestCredential["refusal"]> }
 	| { id: number; op: "attempt_put"; attempt: DeliveryAttempt }
-	| { id: number; op: "attempt_list" }
+	| { id: number; op: "attempt_list"; keys: string[] }
 	| { id: number; op: "close" };
 
 let db: DatabaseSync | null = null;
@@ -181,9 +181,9 @@ parentPort!.on("message", (request: LedgerRequest) => {
 				).run(request.attempt.key, JSON.stringify(request.attempt));
 			} else if (request.op === "attempt_list") {
 				value = db
-					.prepare("SELECT attempt FROM delivery_attempts ORDER BY rowid")
-					.all()
-					.map((r) => JSON.parse(String(r.attempt)));
+					.prepare("SELECT key, attempt FROM delivery_attempts WHERE key IN (SELECT value FROM json_each(?))")
+					.all(JSON.stringify(request.keys))
+					.map(({ key, attempt }) => [key, JSON.parse(String(attempt))]);
 			} else if (request.op === "close") {
 				db.close();
 				db = null;

@@ -11,9 +11,10 @@ import type {
 } from "../../src/extensions/world-framework/types.js";
 import { pollUntil as until } from "./mc-native-fixture.js";
 
-test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执滞留", async () => {
+test.each([false, true])("ACK 失败不阻塞同批其他回执 (已写入 %s)", async (committedBeforeLoss) => {
 	const pending = new Set(["first", "next"]),
 		emitted: string[] = [];
+	let failFirstAck = true;
 	const host = new Map<string, HostDeliveryState>();
 	const ctx: ServiceCompanionContext = {
 		signal: new AbortController().signal,
@@ -39,15 +40,19 @@ test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string }) => {
 			if (method === "runtime.pendingDeliveries")
 				return { items: [...pending].map((completionRef) => ({ completionRef, requestId: completionRef })) };
 			if (method === "runtime.settleDelivery") {
+				if (p.ref === "first" && failFirstAck) {
+					if (committedBeforeLoss) pending.delete(p.ref);
+					throw new Error("ACK reply lost");
+				}
 				pending.delete(p.ref!);
-				throw new Error("ACK committed but reply lost");
+				return null;
 			}
 			if (method === "runtime.readDelivery")
 				return {
@@ -73,9 +78,11 @@ test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执
 		await pump.reconcile();
 		await Promise.resolve();
 		expect(emitted).toEqual(["first", "next"]);
-		// first 的 ACK 回执丢了：这一页对账中断，但 next 仍在 pending 列表里等下一轮。
 		await pump.reconcile();
 		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
+		expect(pending.has("next")).toBe(false);
+		expect(pending.has("first")).toBe(!committedBeforeLoss);
+		failFirstAck = false;
 		await pump.reconcile();
 		expect(pending.size).toBe(0);
 		// 回执重试不等于重投：两条各交过一次。
@@ -91,7 +98,38 @@ test("一次 ACK 回执丢失既不重复投递，也不让同批的其余回执
 	}
 });
 
-test("一次交接不占位：旧激活留下的输入退役后，同一轮的完成通知照常交出", async () => {
+test("过时的待决策通知退出在途记录，且不确认交付", async () => {
+	const executor = pendingExecutor(["decision"]);
+	const rpc = executor.rpc.bind(executor);
+	let eligible = true;
+	executor.rpc = async <T>(...args: Parameters<MinecraftExecutor["rpc"]>): Promise<T> => {
+		if (args[0] === "runtime.pendingDeliveries" && !eligible) return { items: [] } as T;
+		if (args[0] === "runtime.readDelivery") return { ...(await rpc<DeliveryState>(...args)), eligible } as T;
+		return rpc<T>(...args);
+	};
+	const events: WorldEvent[] = [];
+	const pump = new DeliveryPump(executor, {
+		signal: new AbortController().signal,
+		delivery: absentBatchPort(),
+		emitEvents: async (batch) => {
+			events.push(...batch);
+			return batch.map(() => ({ accepted: true }) as const);
+		},
+	});
+	try {
+		await pump.reconcile();
+		expect(pump.diagnostics().activeInputs.map((input) => input.key)).toEqual(["decision"]);
+		eligible = false;
+		expect(await events[0]!.render!()).toBeNull();
+		await pump.reconcile();
+		expect(pump.diagnostics().activeInputs).toEqual([]);
+		expect(pump.diagnostics().commit.activated).toBe(0);
+	} finally {
+		await pump.close();
+	}
+});
+
+test.each(["input", "tool"] as const)("旧激活的 %s 交接不阻塞同轮通知", async (channel) => {
 	const pending = new Set(["old", "next"]),
 		emitted: string[] = [];
 	const receipt = {
@@ -100,7 +138,7 @@ test("一次交接不占位：旧激活留下的输入退役后，同一轮的�
 		namespace: "n",
 		session: "s",
 		record: "canonical",
-		channel: "input" as const,
+		channel,
 	};
 	const ctx: ServiceCompanionContext = {
 		signal: new AbortController().signal,
@@ -110,9 +148,12 @@ test("一次交接不占位：旧激活留下的输入退役后，同一轮的�
 			durability: "durable",
 			inspect: async (key) =>
 				key === "old"
-					? { kind: "pending", channel: "input", activity: "processing", attempt: "old-attempt", since: "now" }
+					? { kind: "pending", channel, activity: "processing", attempt: "old-attempt", since: "now" }
 					: { kind: "absent" },
-			retire: async () => ({ kind: "committed", receipt }),
+			retire: async (key, attempt) => {
+				expect([key, attempt]).toEqual(["old", "old-attempt"]);
+				return { kind: "committed", receipt };
+			},
 		},
 		emitEvents: async (events) => {
 			for (const event of events) emitted.push(event.receipt!.key);
@@ -123,17 +164,21 @@ test("一次交接不占位：旧激活留下的输入退役后，同一轮的�
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [
-				{
-					key: "old",
-					attempt: "old-attempt",
-					channel: "input",
-					namespace: "n",
-					session: "s",
-					activation: "old-activation",
-					createdAt: "now",
-				},
-			],
+			attempts: async () =>
+				new Map([
+					[
+						"old",
+						{
+							key: "old",
+							attempt: "old-attempt",
+							channel,
+							namespace: "n",
+							session: "s",
+							activation: "old-activation",
+							createdAt: "now",
+						},
+					],
+				]),
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string }) => {
@@ -241,7 +286,7 @@ test("one unavailable report does not block other headers; unavailable content r
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string }) => {
@@ -282,8 +327,6 @@ test("one unavailable report does not block other headers; unavailable content r
 		expect(pump.diagnostics().error).toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
 		await pump.reconcile();
 		expect(acked).toEqual(["good"]);
-		await pump.retry("good", "older");
-		expect(events).toHaveLength(1);
 	} finally {
 		await pump.close();
 	}
@@ -326,7 +369,7 @@ test("同轮多处完成一次交出：每条各自回执，宿主还在处理�
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string }) => {
@@ -404,7 +447,7 @@ test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest �
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async () => ({ items: [] }),
@@ -464,7 +507,7 @@ test("需要立即重新决策的事件走 urgent；其余事实排队等下一�
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async () => ({ items: [] }),
@@ -551,7 +594,7 @@ function eventPump(emit: (event: WorldEvent) => Promise<EventSubmission>) {
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async () => ({ items: [] }),
@@ -779,7 +822,7 @@ test("awaiting_decision hands out the decision, never a record pointer", () => {
 		decision: "rec:decision:1",
 		reason: "need a plan",
 	});
-	// 唯一能推进的是 runs.continue，而 entry 不能预填，因此不给 nextCall。
+	// 先查当前决策，再选择续段入口。
 	expect(projected.nextCall).toMatchObject({ action: "tasks", params: { op: "get" } });
 	expect(projected).not.toHaveProperty("outcome");
 });
@@ -791,7 +834,7 @@ function pendingExecutor(keys: readonly string[]): MinecraftExecutor {
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async () => new Map(),
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string }) => {
@@ -988,6 +1031,7 @@ test("批量回执少一条时清掉那条在途记录，不留下永远退不�
 test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", async () => {
 	const total = 300;
 	const pending = new Map<number, string>();
+	const requestedAttempts: string[][] = [];
 	for (let index = 0; index < total; index++) pending.set(index + 1, `c${index}`);
 	const delivered: string[] = [];
 	const host = new Map<string, HostDeliveryState>();
@@ -1017,7 +1061,10 @@ test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", 
 		ledger: {
 			taskEntries: async () => new Map(),
 			requests: async () => [],
-			attempts: async () => [],
+			attempts: async (keys: string[]) => {
+				requestedAttempts.push(keys);
+				return new Map();
+			},
 			putAttempt: async () => {},
 		},
 		rpc: async (method: string, p: { ref?: string; cursor?: string; limit?: number }) => {
@@ -1062,6 +1109,7 @@ test("大量 pending：每轮有界扫描，新完成不被历史积压饿死", 
 		// 一轮只看 96 条：不是"扫完全部历史待办才处理新内容"。
 		expect(pump.diagnostics().scan.inspected).toBe(96);
 		expect(pump.diagnostics().scan.resumable).toBe(true);
+		expect(requestedAttempts[0]).toEqual([...pending.values()].slice(0, 96));
 		// 但积压总数要报真值：96 是"这轮看了多少"，不是"还剩多少"。
 		expect(pump.diagnostics().pendingCount).toBe(total);
 		// 每轮最多交 8 条。

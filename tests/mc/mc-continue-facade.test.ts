@@ -369,6 +369,17 @@ test("the ledger retains continuation intent across reopen and rejects schema v2
 		ledger = new ExecutorLedger();
 		await ledger.open(path, "owner", "storage");
 		expect(await ledger.getRequest(credential.requestId)).toEqual(credential);
+		const attempt = {
+			key: "completion",
+			attempt: "attempt",
+			channel: "input" as const,
+			namespace: "world",
+			session: "session",
+			activation: "activation",
+			createdAt: credential.createdAt,
+		};
+		await ledger.putAttempt(attempt);
+		await ledger.putAttempt({ ...attempt, key: "other", channel: "tool" });
 		await expect(
 			ledger.putRequest({
 				...credential,
@@ -382,6 +393,7 @@ test("the ledger retains continuation intent across reopen and rejects schema v2
 		ledger = new ExecutorLedger();
 		await ledger.open(path, "owner", "storage");
 		expect(await ledger.getRequest(credential.requestId)).toEqual({ ...credential, refusal });
+		expect(await ledger.attempts(["missing", attempt.key])).toEqual(new Map([[attempt.key, attempt]]));
 		await ledger.close();
 		execFileSync(
 			process.execPath,

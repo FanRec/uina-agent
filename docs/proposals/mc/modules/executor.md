@@ -497,27 +497,24 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 
 Runtime 只持久保存 pending/committed 两种交付处置；committed 只接受真实 HostCommitReceipt，不因接口返回、流水线 tool_result 或 render 成功而确认。报告仍是同一 CompletionReport，不新增补报报告。所需的通用接口与内核接线见 [Host 持久交付回执](../../runtime/delivery-receipts.md)，该通用接缝已在批 5 实现，见 [实施记录](../archive/host-delivery-implementation.md)；Executor 的实际消费与可靠通知已在批 6 接通，见 [原生接入实施](../archive/native-host-implementation.md)。
 
-Host delivery 端口的 namespace/session 由实际上下文注入。key 使用 completionRef，attempt 使用宿主生成的本次交付 UUID；输入渠道可直接令 inputId=attempt。返回的 receipt 必须匹配当前端口、生产者 key 与真实持久记录；guest/模型的同形 JSON 无效。持久后 settleDelivery(receipt) 幂等将原项改 committed；ACK 丢失可重复同一确认，不能降回 pending。不同会话无法核实旧回执时允许重新呈现同 key，不推断游戏动作没执行。
+Host delivery 端口提供 namespace 和 session。Executor 用 completionRef 作 key，并为每次投递生成 UUID，同时用作 attempt 和 inputId。回执须匹配端口、key 和持久记录。`settleDelivery` 幂等确认同一回执。换会话后无法核实旧回执时，可以重新投递同一 key。
 
-事件只是加速信号：input_accepted/input_settled、tool_result 或 turn_end 唤起 inspect，真正依据是 Host delivery 索引。Executor 不扫描会话日志；Host 自己从 Canonical history/Mailbox 派生状态，没有 Minecraft 专属 Core 分支。
+输入接收、结算和回合边界事件唤醒对账。Host delivery 索引从 Canonical history 和 Mailbox 派生接收状态。
 
 ### 8.2 受理屏障、集中投递与恢复
 
-1. 派出受理 RPC 前按 `requestId` 登记本地暂缓（`heldRequests`），受理回执到手、或请求仍在不明地飞时解除。这段窗口里对账跳过同一 requestId 的待投递项：工具结果还没进 canonical 历史，完成通知不能抢在它前面被消费。它是因果屏障，不是等结果的时间窗。
-2. 工具只把受理回执（`accepted`、`rejected` 或 `confirming`）交回模型，不读 Completion、不创建 tool attempt、不带 `completionRef` receipt；`confirming` 用原任务句柄经 `tasks.get` 查证。Runtime 的交付处置此时仍是 pending。
-3. 结算只有一条通道：后台按 `completionRef` 独立 `inspect(key)`，逐份准备 input attempt，经批量入口持久入队；Host 形成 committed 回执后才 `settleDelivery`。受理窗口里被跳过的项下一轮对账自然补上，不因"工具已返回"丢失，也不因重复投递重跑世界动作。
-4. 后台分页读 eligible pending 引用并先 inspect(key)。committed 直接 ACK；pending 不重复入队；absent 才准备同一 CompletionView，持久登记新 input attempt 后集中交付（带 receipt）。一轮对账把所有可交付的 key 收进一个有界批次（最多 8 个）、一次 `emitEvents` 交出：多份完成通知互不占位，宿主还在处理的那份不挡别的。没交出去的那条不推进状态，下一轮换新 attempt 重投；全被拒不再立即重排，避免忙等。宿主少回一条回执与明确拒收同样按未交出算：清掉在途记录、记 `DELIVERY_UNCONFIRMED`，不留一个永远退不了的输入。宿主没有批量入口时本轮对账直接失败并在诊断报出原因，既不静默把完成通知当成已交出，也不退回逐条投递（那会让第一条独占模型回合）。批量受理只等到逐条持久入队，模型回合由宿主随后统一调度，不在对账串行区内等待。
-5. 发出前、deferred render 前以小型 readDelivery 复查 eligibility；当前 decision 过时则 null，不写 ACK；不可核实则暂缓并继续查询。正文是已准备好的固定 View，材料不可读也可交付真实 header。Host input_settled 后查询 receipt，committed 才 ACK。渲染后的最后 decision 展示竞态仍由 continue CAS 阻止重复行动。
-6. 每 5 秒兜底 inspect 活动 key，恢复/事件触发也推进。pending queued/processing 表示 Host 仍持有交付，不因忙碌或超时新增队列项；committed 补齐丢失回调/ACK；absent 释放本地占位并重试；unavailable 保留并暴露 unconfirmed，不假称仍忙或已丢失。重试 1/2/4/8 秒封顶，可取消，均为内部策略。
-7. 旧 activation 的 render 已失效，或操作者明确 delivery.retry 时，以 key/expectedAttempt 调 Host.retire。committed 就 ACK；retired 才换新 attempt；changed 读新状态，不撤销别人的新尝试；unavailable 不加新队列项。只退役交付，不取消工具协议、Run 或其他输入。迟到的投递可能重复同 key，动作绝不重跑。
+1. 发出受理 RPC 前，Executor 暂缓该 `requestId` 的完成投递。提交链路结算后解除保护，实际跳过的报告会触发补扫。工具返回 `accepted`、`rejected` 或 `confirming`。受理待确认时，通过 `tasks.get` 查询原任务句柄。
+2. 后台分页扫描仍具备投递资格的报告，只读当前页对应的尝试记录。每条先用 `completionRef` 查 Host。已持久接收的回执交给 Runtime 确认，排队或处理中继续等待，缺少接收记录时准备新的输入尝试。单条查证或确认失败时保留待对账状态，其余报告继续处理。
+3. 每批最多 8 条，经 `emitEvents` 持久入队。宿主拒收或缺回执的条目留待下一轮，整批拒收时等待兜底扫描。批量入口缺失时记录交付失败。入队后的模型回合由 Host 调度。
+4. 准备报告和延迟渲染时均复查投递资格。过时的待决策报告退出在途记录，历史仍可查。材料不可读时可交付报告摘要。渲染后发生的决策竞态由续段的原子校验处理。
+5. 旧激活留下的交付按 `completionRef` 和旧 attempt 经 Host 退役。已提交则确认回执，已退役则留待新尝试，状态已变时以 Host 当前结果为准。这一步只处理通知交付。
+6. 事件唤醒加速扫描，扫描期间的即时唤醒保留给下一轮。定时兜底为 5 秒，对账失败按 1、2、4、8 秒退避。重新启用后先核对 Host 状态。回执只证明 Host 持久接收，模型读取情况未知。
 
-delivery 诊断至少给 pendingCount（积压总数）、本轮扫描的 inspected/budget/resumable、各在途输入的 key/attempt/channel 与 Host 查询状态、createdAt/lastCheckedAt、可得的 hostBusy、最后错误与 nextCall。积压总数与"本轮看了几条"必须分开显示：有界扫描下把后者当总数，10000 条积压会伪装成只剩 96 条。查询失败显示 unconfirmed；hostBusy 只是辅助显示，不能掩盖回执未知。显式 retry 通过现有端口对账/退役，不增加另一个交付调度器。
-
-停用暂停递送，重新启用先核对 Host 状态再处理 pending；不自动恢复旧游戏行动。仍适用的完成通知在持久存储与 Host 最终恢复处理后至少进入会话一次，允许同 ref 重复；已失效 decision 不再主动递送，历史仍可查询。rewind 不撤销已发生的接收事实；已 committed 的普通 retry 只返回原回执，再次查看用 record，不把交付重试当新的主动唤醒。
+内部诊断分别记录总积压、本轮扫描量、在途尝试、Host 查询结果和交付错误。重复确认同一个回执只记一次。
 
 ### 8.3 通知正文
 
-完成通知至少包含 run/segment/completionRef、terminal 或 decision、真实 outcome 或 reason、根 progress 及其完整性、未知效果总数/引用完整性、record、content 的 inline/record/unavailable 形态，以及下一步调用。缺料时直接保留已完成量和剩余工作；查询错误不变成“已完成”。完成通知只有这一个格式器，不能一条渠道写成功、另一条写未知。
+用户看到 Task 句柄、修订、当前阶段和可确认进度。完成通知带结果，待决策通知带原因。正文不可用、需要决策或有未知效果时附查证入口。交付回执和执行引用留在内部记录。
 
 普通状态缓存只为 BodyEndpoint/status 提供带时间的一瞥，不通过每次模型请求注入隐式上下文。精确观察与完整结果由工具/通知取得，避免维持第二份不断漂移的模型世界状态。
 
@@ -536,10 +533,10 @@ delivery 诊断至少给 pendingCount（积压总数）、本轮扫描的 inspec
 | 场景 | 完整路径与应见事实 |
 |---|---|
 | 首次启用，服务端尚未连上 | 取得独占 → 恢复运行库 → ready/connecting → 工具已注册；describe/library 可用，游戏动作 DISCONNECTED，不冒认 ready=已进服 |
-| 窗口内采集完成 | 固定报告 → 带 receipt 的工具结果 → Host canonical 回执 → ACK；正常无额外唤醒 |
+| 采集完成 | 固定报告经后台投递，Host 持久接收后由 Runtime 确认回执 |
 | 长施工，主脑转去聊天 | accepted 返回；工具回合结束，Run 继续；身体 FIFO 与内部等待仍归 Runtime；只在完成/决策时通知 |
-| 受理提交后回复丢失 | unknown/q17；request 查得原 segment，禁止新键重发；明确 retry 在同一存储使用 q17 加入原受理去重 |
-| 代码文件在未知提交期间修改 | 已受理则使用原快照；尚未受理的显式同键 retry 按真正首次受理时文件解析，返回实际摘要，不承诺原文件回放 |
+| 受理提交后回复丢失 | 返回 `confirming` 和原任务句柄，经 `tasks.get` 查证 |
+| 受理待确认期间修改代码文件 | 已受理的段保留其源码快照，查证使用原句柄 |
 | 三层程序请求决策 | 普通调用链由 Program/Runtime 处理；中层可捕获；根未处理才形成 decision，Executor 只交付固定报告；continue 是明确新段 |
 | 停用恰逢受理准备 | 生命周期同步关本地门并发 disabled；已提交的工作被停止，旧 activation 迟到请求被拒绝；工具等待先结算，onStop 等同一个 close |
 | 主脑打断/焦点切换 | action 等待可取消，endpoint.interrupt 为空；已受理游戏任务不取消。显式 stop/safeStop 才停止相应范围 |

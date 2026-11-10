@@ -66,10 +66,12 @@ export function playRhythmProbe(probe: ExecutionProbe) {
 			if (event.type === "output_end" && event.channel === "content") {
 				for (const row of timings.values()) if (row.modelContextAt !== undefined) row.replyAt ??= Date.now();
 			}
+			if (event.type === "tool_call" && event.args.action === "tasks") {
+				const params = event.args.params as { op?: string; task?: string } | undefined;
+				if (params?.op === "get" && params.task) reads.push({ task: params.task, at: Date.now() });
+			}
 			if (event.type !== "tool_result") return;
-			const params = event.args.params as { selector?: string; op?: string; task?: string; code?: string } | undefined;
-			if (event.args.action === "tasks" && params?.op === "get" && params.task)
-				reads.push({ task: params.task, at: Date.now() });
+			const params = event.args.params as { selector?: string; code?: string } | undefined;
 			if (event.args.action !== "run" || (params?.selector !== "explore@1" && !params?.code?.includes("rhythmProbe")))
 				return;
 			const result = event.details as { kind: string; task: string };
