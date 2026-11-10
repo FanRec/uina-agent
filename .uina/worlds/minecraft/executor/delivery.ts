@@ -45,10 +45,12 @@ export class DeliveryPump {
 	/**
 	 * 工具调用期间压住该 requestId 的 Completion：受理结果还没进它自己的回合时，
 	 * 不要让同一件事的完成通知抢先成为模型看到的第一个事实。
+	 * 值记录本轮是否已经跳过该请求，解除保护时据此补扫。
 	 */
-	readonly heldRequests = new Set<string>();
+	private readonly heldRequests = new Map<string, boolean>();
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private running: Promise<void> | null = null;
+	private rescan = false;
 	private stopped = false;
 	private unsubscribe: (() => void) | null = null;
 	private unsubscribeSide: (() => void) | null = null;
@@ -92,6 +94,11 @@ export class DeliveryPump {
 	}
 	private wake(ms: number): void {
 		if (this.stopped) return;
+		if (ms === 0) {
+			// 当前扫描可能已经读过待投递页，把新的唤醒留给下一轮。
+			this.rescan = true;
+			if (this.running) return;
+		}
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = setTimeout(() => {
 			this.timer = null;
@@ -99,6 +106,14 @@ export class DeliveryPump {
 		}, ms);
 		// 纯轮询定时器不拥有进程寿命：停机时没人清理也不会拖住伴生退役。
 		this.timer.unref();
+	}
+	holdRequest(requestId: string): void {
+		this.heldRequests.set(requestId, false);
+	}
+	releaseRequest(requestId: string): void {
+		const skipped = this.heldRequests.get(requestId);
+		this.heldRequests.delete(requestId);
+		if (skipped) this.wake(0);
 	}
 	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
 	private emitNotice(notice: EventNotice): void {
@@ -168,6 +183,7 @@ export class DeliveryPump {
 	reconcile(): Promise<void> {
 		if (this.stopped) return Promise.resolve();
 		return (this.running ??= (async () => {
+			this.rescan = false;
 			try {
 				await this.drain();
 				this.error = null;
@@ -177,7 +193,8 @@ export class DeliveryPump {
 				this.failures++;
 			} finally {
 				this.running = null;
-				this.wake(this.failures ? Math.min(8000, 1000 * 2 ** (this.failures - 1)) : this.pollMs);
+				const nextScan = this.rescan ? 0 : this.pollMs;
+				this.wake(this.failures ? Math.min(8000, 1000 * 2 ** (this.failures - 1)) : nextScan);
 			}
 		})());
 	}
@@ -247,7 +264,10 @@ export class DeliveryPump {
 			for (const ref of page.items) {
 				if (this.stopped || this.ctx.signal.aborted) return { backlog: backlog ?? inspected, unconfirmed, ready };
 				inspected += 1;
-				if (this.heldRequests.has(ref.requestId)) continue;
+				if (this.heldRequests.has(ref.requestId)) {
+					this.heldRequests.set(ref.requestId, true);
+					continue;
+				}
 				const host = await port.inspect(ref.completionRef);
 				this.lastCheckedAt = new Date().toISOString();
 				const known = this.inputs.get(ref.completionRef);

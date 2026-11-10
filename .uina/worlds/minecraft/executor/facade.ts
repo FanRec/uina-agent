@@ -205,7 +205,7 @@ export class MinecraftFacade {
 			return response({ kind: "rejected", task, code, message }, status);
 		};
 		if (signal.aborted) return reject("REQUEST_CANCELLED", "cancelled before dispatch", "not_started");
-		this.delivery.heldRequests.add(requestId);
+		this.delivery.holdRequest(requestId);
 		const submission = (
 			intent.operation === "submit" ? this.executor.submit(intent.request) : this.executor.continue(intent.request)
 		).then(async (accepted) => {
@@ -234,7 +234,7 @@ export class MinecraftFacade {
 				return reject(error.code, error.message, "not_started");
 			return this.confirming(task, String(error));
 		} finally {
-			void submission.finally(() => this.delivery.heldRequests.delete(requestId)).catch(() => {});
+			void submission.finally(() => this.delivery.releaseRequest(requestId)).catch(() => {});
 		}
 		if (accepted.kind === "unknown") return this.confirming(task, accepted.reason);
 		if (accepted.kind === "not_accepted")

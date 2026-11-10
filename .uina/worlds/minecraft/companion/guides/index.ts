@@ -50,8 +50,8 @@ export const GUIDES: readonly GuideEntry[] = Object.freeze([
 	},
 	{
 		name: "recovery_playbook",
-		summary: "UNKNOWN / INTERRUPTED / Stop / checkpoint / 异步 Completion 的处理边界",
-		tags: ["recovery", "unknown", "interrupted", "checkpoint", "playbook"],
+		summary: "什么时候行动、查证或等结果，怎样在聊天和中断后接回手头的事",
+		tags: ["recovery", "unknown", "interrupted", "checkpoint", "waiting", "playbook"],
 		file: "recovery_playbook.md",
 	},
 	{

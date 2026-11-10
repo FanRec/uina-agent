@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { SelfState } from "../contracts/body.js";
 import type { SafetyInterventionRecord } from "../contracts/runtime.js";
-import { openHarness } from "./harness.js";
+import { prepareModelScene } from "./harness.js";
 
 import type { ExecutionProbe } from "./execution-probe.js";
 
@@ -291,26 +289,7 @@ export async function feedbackScenario(s: Scenario) {
 /** Prepare the environment before creating a model Host, so admin completion
  * reports cannot wake and charge the calibration model. Same real execution side. */
 export async function prepareFeedbackModelScene() {
-	const root = await mkdtemp(join(tmpdir(), "uina-mc-feedback-model-setup-"));
-	const h = await openHarness("feedback-model-setup", { dataRoot: root });
-	try {
-		let n = 0;
-		const command = async (text: string) => {
-			const accepted = await h.runtime.submit(
-				{ worldOwner: h.worldOwner, activation: h.activation },
-				{
-					requestId: `setup:${++n}`,
-					schedule: { kind: "enqueue" },
-					entry: { kind: "call", selector: "chat@1", input: { text } },
-				},
-			);
-			assert.equal(accepted.kind, "accepted");
-			if (accepted.kind !== "accepted") throw new Error("setup not accepted");
-			const result = await h.runtime.wait(accepted.snapshot.run, { timeoutMs: 5000 });
-			if (result.snapshot.phase !== "finished") throw new Error("setup command did not finish");
-			assert.equal(result.snapshot.outcome, "succeeded");
-			await new Promise((r) => setTimeout(r, 200));
-		};
+	await prepareModelScene("feedback-model", async (h, command) => {
 		await command("/gamemode creative UinaDev");
 		await command("/tp UinaDev 16010.5 205 16000.5");
 		const deadline = Date.now() + 10000;
@@ -330,7 +309,5 @@ export async function prepareFeedbackModelScene() {
 		await command("/setblock 16010 200 16000 minecraft:air");
 		await command("/gamemode survival UinaDev");
 		await command("/effect give UinaDev minecraft:instant_health 1 5 true");
-	} finally {
-		await h.close();
-	}
+	});
 }

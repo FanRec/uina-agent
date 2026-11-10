@@ -11,12 +11,14 @@ import type { ServiceCompanionContext, WorldEvent } from "../../../../src/extens
 import { WorldActivation } from "../../../../src/extensions/world-framework/world-activation.js";
 import { UinaHost } from "../../../../src/host/host.js";
 import type { ToolResultEvent } from "../../../../src/runtime/events.js";
-import type { JsonValue } from "../contracts/values.js";
+import type { ExactRef, JsonValue } from "../contracts/values.js";
 import { ClientHost } from "../driver/client-host.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
 import { executionProbe } from "./execution-probe.js";
 import { feedbackScenario, prepareFeedbackModelScene } from "./feedback-scenario.js";
+import { DEV_SERVER, prepareModelScene } from "./harness.js";
 import { libraryScenario } from "./library-scenario.js";
+import { playRhythmProbe } from "./play-rhythm.js";
 import { waitScenario } from "./wait-scenario.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,9 +36,13 @@ assert(Number.isInteger(port) && port > 0 && port < 65536, "invalid MC_DEV_PORT"
 const modelMode = process.argv.includes("--model");
 const autonomyMode = process.argv.includes("--autonomy");
 const fixedExploreMode = process.argv.includes("--fixed-explore");
+const rhythmFlowMode = process.argv.includes("--rhythm-flow");
+const guideFile = process.argv.find((arg) => arg.startsWith("--guide-file="))?.slice("--guide-file=".length);
 const chatFlowMode = process.argv.includes("--chat-flow");
 assert(!autonomyMode || modelMode, "--autonomy requires --model");
 assert(!fixedExploreMode || modelMode, "--fixed-explore requires --model");
+assert(!rhythmFlowMode || !modelMode, "--rhythm-flow uses the controlled Provider");
+assert(!guideFile || fixedExploreMode, "--guide-file requires --fixed-explore");
 const programMode = process.argv.includes("--program");
 const tasksMode = process.argv.includes("--tasks");
 const waitMode = process.argv.includes("--wait");
@@ -44,6 +50,13 @@ const libraryMode = process.argv.includes("--library");
 const feedbackMode = process.argv.includes("--feedback");
 const mapMode = process.argv.includes("--map");
 if (feedbackMode && modelMode) await prepareFeedbackModelScene();
+if (fixedExploreMode || rhythmFlowMode) {
+	assert.equal(DEV_SERVER.username, "UinaDev", "fixed arena setup uses the isolated UinaDev player");
+	await prepareModelScene("fixed-explore", async (h, command) => {
+		await prepareGameScene(command, (selector, input = {}) => h.world.read({ ref: selector, input }));
+	});
+}
+const guideOverride = guideFile ? await readFile(guideFile, "utf8") : undefined;
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-model-" : "uina-mc-native-"));
 console.log(`[mc-native] ${modelMode ? "REAL MODEL" : "controlled Provider, REAL Host/Paper"} data=${root}`);
 const configPath = join(root, "config.json");
@@ -55,6 +68,7 @@ await writeFile(
 	}),
 );
 let planned: { id: string; action: string; params: Record<string, unknown> } | null = null;
+let nextRequest: (() => Promise<void>) | undefined;
 let modelRequests = 0;
 const model: Model = {
 	id: "mc-acceptance",
@@ -64,6 +78,11 @@ const model: Model = {
 };
 const stream: ModelStreamFn = async (_model, _req, delta) => {
 	modelRequests++;
+	if (nextRequest) {
+		const wait = nextRequest;
+		nextRequest = undefined;
+		await wait();
+	}
 	if (planned) {
 		const call = planned;
 		planned = null;
@@ -100,12 +119,15 @@ const host = await UinaHost.create({
 });
 const results = new Map<string, ToolResultEvent>();
 const transcript: unknown[] = [];
+const probe = executionProbe();
+const rhythm = fixedExploreMode || rhythmFlowMode ? playRhythmProbe(probe) : undefined;
 const calibrationUsage = new Map<string, RequestUsage>();
 let calibrationBudgetHit: string | null = null;
 let scenarioStarted: number | undefined;
 let firstActionMs: number | undefined;
 let firstObservationMs: number | undefined;
 host.subscribe((event) => {
+	rhythm?.onHostEvent(event);
 	if (event.type === "usage_update") {
 		calibrationUsage.set(event.usage.callId, event.usage);
 		if (feedbackMode && modelMode && calibrationUsage.size >= 12) {
@@ -138,10 +160,14 @@ host.subscribe((event) => {
 });
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
 const chatNotices: WorldEvent[] = [];
-const probe = executionProbe();
 const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: configPath });
+if (guideOverride !== undefined) {
+	const environmentGuide = world.environmentGuide!;
+	world.environmentGuide = () => (environmentGuide() === null ? null : guideOverride);
+}
 const start = world.onStart!;
 world.onStart = async (ctx) => {
+	if (rhythm) ctx = rhythm.wrap(ctx);
 	if (chatFlowMode) {
 		const emitEvent = ctx.emitEvent!;
 		ctx = {
@@ -204,10 +230,13 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
-		if (modelMode && (feedbackMode || tasksMode || autonomyMode || fixedExploreMode))
-			api.onHook("turn.transformContext", (projection) => ({
-				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
-			}));
+		if (rhythmFlowMode || (modelMode && (feedbackMode || tasksMode || autonomyMode || fixedExploreMode)))
+			api.onHook("turn.transformContext", (projection) => {
+				rhythm?.onRequest(projection);
+				return {
+					projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
+				};
+			});
 	});
 	activation = new WorldActivation(world, {
 		pi,
@@ -275,6 +304,7 @@ try {
 				firstObservationMs,
 				passed,
 				modelRequests,
+				...(rhythm ? { rhythm: await rhythm.report(), guide: guideFile ?? "published" } : {}),
 				usage: [...calibrationUsage.values()],
 				calibrationBudgetHit,
 				transcript,
@@ -287,7 +317,8 @@ try {
 }
 
 async function runScenarios() {
-	const observe = (selector: string, input: JsonValue = {}) => direct("observe", { selector, input });
+	const observe = (selector: string, input: JsonValue = {}) =>
+		direct("observe", { selector, input }) as Promise<Record<string, unknown> & { value?: unknown }>;
 	const offlineSource = programMode
 		? await direct("describe", { selector: "collect@1", includeSource: true })
 		: undefined;
@@ -357,65 +388,31 @@ async function runScenarios() {
 		await direct("chat", { text });
 		await sleep(180);
 	};
-	await step("prepare dedicated game scene", async () => {
-		if (feedbackMode && modelMode) return;
-		await command("/gamemode creative UinaDev");
-		await command("/tp UinaDev 16000.5 205 16000.5");
-		await until(
-			() => observe("block@1", { at: { x: 16000, y: 199, z: 16000 } }),
-			(o) => (o.value as { block: unknown })?.block != null,
-		);
-		for (const at of [
-			{ x: 15996, y: 199, z: 15996 },
-			{ x: 16090, y: 199, z: 16004 },
-		])
-			await until(
-				() => observe("block@1", { at }),
-				(o) => (o.value as { block: unknown })?.block != null,
-			);
-		await command("/fill 15996 199 15996 16090 199 16004 minecraft:stone");
-		await command("/fill 15996 200 15996 16030 204 16004 minecraft:air");
-		await until(
-			() => observe("block@1", { at: { x: 16000, y: 199, z: 16000 } }),
-			(o) => (o.value as { block: { name: string } | null }).block?.name === "stone",
-		);
-		await command("/tp UinaDev 16000.5 200 16000.5");
-		if (libraryMode || waitMode || feedbackMode || mapMode) {
-			await command("/time set day");
-			await command("/weather clear");
-			await command("/kill @e[type=!minecraft:player,distance=..64]");
-		}
-		await command("/clear UinaDev");
-		await command("/kill @e[type=minecraft:item,distance=..16]");
-		if (mapMode) {
-			// map 模式场景：四象限材质平台 + 空白地图。开图交给模型/受控步骤（use@1）。
-			await command("/fill 16000 199 16000 16008 199 16008 minecraft:stone");
-			await command("/fill 16009 199 16000 16016 199 16008 minecraft:dirt");
-			await command("/fill 16000 199 16009 16008 199 16016 minecraft:oak_planks");
-			await command("/fill 16009 199 16009 16016 199 16016 minecraft:sandstone");
-			await command("/give UinaDev minecraft:map 1");
-			await command("/gamemode survival UinaDev");
-			await sleep(600);
-		} else {
-			await command("/fill 16002 200 16000 16002 204 16000 minecraft:oak_log");
-			await until(
-				() => observe("block@1", { at: { x: 16002, y: 200, z: 16000 } }),
-				(o) => (o.value as { block: { name: string } | null }).block?.name === "oak_log",
-			);
-			await command("/gamemode survival UinaDev");
-		}
-		await until(
-			() => observe("self@1"),
-			(o) =>
-				(o.value as { onGround: boolean; place: { position: { y: number } } }).onGround === true &&
-				Math.abs((o.value as { place: { position: { y: number } } }).place.position.y - 200) < 0.1,
-		);
-	});
+	if (!rhythm && !(feedbackMode && modelMode))
+		await step("prepare dedicated game scene", () => prepareGameScene(command, observe));
+	if (rhythmFlowMode) {
+		rhythm!.watch(probe.executor());
+		await runRhythmFlow();
+		return;
+	}
 	if (fixedExploreMode) {
+		rhythm!.watch(probe.executor());
 		scenarioStarted = Date.now();
 		const timer = setTimeout(() => host.interrupt(), 120000);
 		try {
 			await host.submitText("用探索能力找附近的橡木原木。探索有结果后，说说找到的位置或已经确认的结果。", "direct");
+			await until(
+				() => rhythm!.report(),
+				(report) =>
+					report.tasks.some((task) => {
+						const found = task.found as { name?: string; at?: { position?: Record<string, number> } } | undefined;
+						const at = found?.at?.position;
+						return (
+							task.replyAt != null && found?.name === "oak_log" && at?.x === 16002 && at?.y === 200 && at?.z === 16000
+						);
+					}),
+				90_000,
+			);
 			await host.waitForIdle();
 		} finally {
 			clearTimeout(timer);
@@ -1024,4 +1021,129 @@ async function runScenarios() {
 			assert.equal((stopped.snapshot as { outcome: string }).outcome, "cancelled");
 		});
 	}
+}
+
+async function runRhythmFlow(): Promise<void> {
+	const report = () => rhythm!.report();
+	const accepted = async (delay: number) => {
+		const reply = await ask("run", {
+			code: `async function main(mc) { await mc.sleep(${delay}); return "rhythmProbe"; }`,
+		});
+		const value = reply.details as { kind: string; task: string };
+		assert.equal(value.kind, "accepted", reply.result);
+		return value.task;
+	};
+	await step("idle Host receives one completion within one second", async () => {
+		const task = await accepted(600);
+		const snapshot = await until(report, (r) => r.tasks.some((t) => t.task === task && t.replyAt != null));
+		const row = snapshot.tasks.find((t) => t.task === task)!;
+		assert(row.hostAcceptedAt! >= row.acceptedAt!, JSON.stringify(row));
+		assert(row.hostAcceptedAt! - Math.max(row.durableObservedAt!, row.acceptedAt!) <= 1000, JSON.stringify(row));
+		assert.equal(snapshot.completionAttempts, 1);
+	});
+	await step("busy Host receives completion and addressed chat, then uses fresh game facts", async () => {
+		const peer = new ClientHost();
+		let releaseBusy!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			releaseBusy = resolve;
+		});
+		let busyTurn: Promise<unknown> | undefined;
+		try {
+			// The isolated dev server grants FanRec the operator role for fixture edits.
+			await peer.connect({ host: DEV_SERVER.host, port, username: "FanRec", version: "1.21.11" });
+			assert(peer.bot);
+			const task = await accepted(2500);
+			let busy = false;
+			nextRequest = async () => {
+				busy = true;
+				await gate;
+			};
+			busyTurn = host.submitText("Continue the controlled test while the Program is active.", "direct");
+			await until(async () => busy, Boolean);
+			peer.bot.chat("/setblock 16002 200 16000 air");
+			peer.bot.chat("@UinaDev is the oak log still at the marked spot?");
+			const queued = await until(
+				report,
+				(r) => r.worldEventsAccepted === 1 && r.tasks.some((t) => t.task === task && t.hostAcceptedAt != null),
+			);
+			const row = queued.tasks.find((t) => t.task === task)!;
+			assert.equal(
+				row.modelContextAt,
+				undefined,
+				"queued completion reached a model request while the Provider was blocked",
+			);
+			assert(host.isBusy());
+			releaseBusy();
+			await busyTurn;
+			await until(report, (r) => r.tasks.some((t) => t.task === task && t.replyAt != null));
+			await host.waitForIdle();
+			assert.equal((await report()).worldEventsProjected, 1);
+			const reply = await ask("observe", { selector: "block@1", input: { at: { x: 16002, y: 200, z: 16000 } } });
+			const value = JSON.parse(reply.result) as { value?: { block?: { name: string } } };
+			assert.equal(value.value?.block?.name, "air");
+			await ask("chat", { text: "The marked block is air now." });
+			assert.equal((await report()).tasks.length, 2);
+		} finally {
+			releaseBusy();
+			await busyTurn;
+			peer.close();
+		}
+	});
+}
+
+async function prepareGameScene(
+	command: (text: string) => Promise<void>,
+	observe: (selector: ExactRef, input?: JsonValue) => Promise<{ value?: unknown }>,
+): Promise<void> {
+	await command("/gamemode creative UinaDev");
+	await command("/tp UinaDev 16000.5 205 16000.5");
+	await until(
+		() => observe("block@1", { at: { x: 16000, y: 199, z: 16000 } }),
+		(o) => (o.value as { block: unknown })?.block != null,
+	);
+	for (const at of [
+		{ x: 15996, y: 199, z: 15996 },
+		{ x: 16090, y: 199, z: 16004 },
+	])
+		await until(
+			() => observe("block@1", { at }),
+			(o) => (o.value as { block: unknown })?.block != null,
+		);
+	await command("/fill 15996 199 15996 16090 199 16004 minecraft:stone");
+	await command("/fill 15996 200 15996 16030 204 16004 minecraft:air");
+	await until(
+		() => observe("block@1", { at: { x: 16000, y: 199, z: 16000 } }),
+		(o) => (o.value as { block: { name: string } | null }).block?.name === "stone",
+	);
+	await command("/tp UinaDev 16000.5 200 16000.5");
+	if (libraryMode || waitMode || feedbackMode || mapMode) {
+		await command("/time set day");
+		await command("/weather clear");
+		await command("/kill @e[type=!minecraft:player,distance=..64]");
+	}
+	await command("/clear UinaDev");
+	await command("/kill @e[type=minecraft:item,distance=..16]");
+	if (mapMode) {
+		// map 模式场景：四象限材质平台 + 空白地图。开图交给模型/受控步骤（use@1）。
+		await command("/fill 16000 199 16000 16008 199 16008 minecraft:stone");
+		await command("/fill 16009 199 16000 16016 199 16008 minecraft:dirt");
+		await command("/fill 16000 199 16009 16008 199 16016 minecraft:oak_planks");
+		await command("/fill 16009 199 16009 16016 199 16016 minecraft:sandstone");
+		await command("/give UinaDev minecraft:map 1");
+		await command("/gamemode survival UinaDev");
+		await sleep(600);
+	} else {
+		await command("/fill 16002 200 16000 16002 204 16000 minecraft:oak_log");
+		await until(
+			() => observe("block@1", { at: { x: 16002, y: 200, z: 16000 } }),
+			(o) => (o.value as { block: { name: string } | null }).block?.name === "oak_log",
+		);
+		await command("/gamemode survival UinaDev");
+	}
+	await until(
+		() => observe("self@1"),
+		(o) =>
+			(o.value as { onGround: boolean; place: { position: { y: number } } }).onGround === true &&
+			Math.abs((o.value as { place: { position: { y: number } } }).place.position.y - 200) < 0.1,
+	);
 }

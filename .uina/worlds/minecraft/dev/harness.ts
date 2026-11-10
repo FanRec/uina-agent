@@ -1,6 +1,8 @@
 /** Development scenarios share the production execution-side composition. */
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callableModule } from "../addons/contribute.js";
@@ -170,4 +172,33 @@ export async function openHarness(
 }
 export async function closeHarness(h: DevHarness): Promise<void> {
 	await h.close();
+}
+
+/** Set up a real game scene without putting admin task notices into the model session. */
+export async function prepareModelScene(
+	label: string,
+	prepare: (h: DevHarness, command: (text: string) => Promise<void>) => Promise<void>,
+): Promise<void> {
+	const dataRoot = await mkdtemp(join(tmpdir(), `uina-mc-${label}-setup-`));
+	const h = await openHarness(label, { dataRoot });
+	try {
+		await prepare(h, async (text) => {
+			const accepted = await h.runtime.submit(
+				{ worldOwner: h.worldOwner, activation: h.activation },
+				{
+					requestId: randomUUID(),
+					schedule: { kind: "enqueue" },
+					entry: { kind: "call", selector: "chat@1", input: { text } },
+				},
+			);
+			assert.equal(accepted.kind, "accepted");
+			if (accepted.kind !== "accepted") throw new Error(`setup not accepted: ${text}`);
+			const result = await h.runtime.wait(accepted.snapshot.run, { timeoutMs: 5000 });
+			assert.equal(result.snapshot.phase, "finished", text);
+			assert.equal(result.snapshot.outcome, "succeeded", text);
+			await sleep(200);
+		});
+	} finally {
+		await h.close();
+	}
 }

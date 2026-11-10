@@ -1,6 +1,7 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import type { CompletionView, DeliveryState } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import { DeliveryPump, formatCompletion } from "../../.uina/worlds/minecraft/executor/delivery.js";
+import { MinecraftFacade } from "../../.uina/worlds/minecraft/executor/facade.js";
 import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import type { HostDeliveryState } from "../../src/core/types.js";
 import type {
@@ -826,6 +827,123 @@ function absentBatchPort(): ServiceCompanionContext["delivery"] {
 		retire: async () => ({ kind: "retired" }),
 	};
 }
+
+test("a completion wake received during a scan gets another pass before the fallback timer", async () => {
+	vi.useFakeTimers();
+	const executor = pendingExecutor(["completion"]);
+	const rpc = executor.rpc.bind(executor);
+	const inScan = deferred<void>();
+	const resume = deferred<void>();
+	let scans = 0;
+	executor.rpc = async <T>(...args: Parameters<MinecraftExecutor["rpc"]>): Promise<T> => {
+		if (args[0] === "runtime.pendingDeliveries" && ++scans === 1) {
+			inScan.resolve();
+			await resume.promise;
+			return { items: [] } as T;
+		}
+		return rpc<T>(...args);
+	};
+	let changed!: Parameters<MinecraftExecutor["subscribe"]>[0];
+	executor.subscribe = (listener) => {
+		changed = listener;
+		return () => {};
+	};
+	const emitted: string[] = [];
+	const pump = new DeliveryPump(executor, {
+		signal: new AbortController().signal,
+		delivery: absentBatchPort(),
+		emitEvents: async (events) => {
+			emitted.push(...events.map((event) => event.receipt!.key));
+			// Leave any retry to the fallback timer, as for a real Host refusal.
+			return events.map(() => ({ accepted: false, reason: "test", retryable: true }) as const);
+		},
+	});
+	try {
+		pump.start();
+		const initial = pump.reconcile();
+		await inScan.promise;
+		changed([]);
+		changed([]);
+		resume.resolve();
+		await initial;
+		await vi.advanceTimersByTimeAsync(100);
+		expect(emitted).toEqual(["completion"]);
+		expect(scans).toBe(2);
+	} finally {
+		resume.resolve();
+		await pump.close();
+		vi.useRealTimers();
+	}
+});
+
+test("a completion skipped during admission is promptly delivered once after the receipt", async () => {
+	vi.useFakeTimers();
+	const admission = deferred<void>();
+	const submitting = deferred<string>();
+	let requestId: string | undefined;
+	let host: HostDeliveryState = { kind: "absent" };
+	let settled = false;
+	const events: string[] = [];
+	const executor = pendingExecutor(["completion"]);
+	const rpc = executor.rpc.bind(executor);
+	Object.assign(executor, {
+		status: () => ({ actionsAllowed: true, side: { launch: "launch" } }),
+		submit: async (request: { requestId: string }) => {
+			requestId = request.requestId;
+			submitting.resolve(requestId);
+			await admission.promise;
+			return { kind: "accepted", segment: "segment", snapshot: { run: "run" } };
+		},
+		ledger: { ...executor.ledger, putRequest: async () => {}, found: async () => {} },
+	});
+	executor.rpc = async <T>(...args: Parameters<MinecraftExecutor["rpc"]>): Promise<T> => {
+		if (args[0] === "runtime.pendingDeliveries")
+			return { items: requestId && !settled ? [{ completionRef: "completion", requestId }] : [] } as T;
+		if (args[0] === "runtime.settleDelivery") {
+			settled = true;
+			return undefined as T;
+		}
+		return rpc<T>(...args);
+	};
+	const port = absentBatchPort()!;
+	const signal = new AbortController().signal;
+	const facade = new MinecraftFacade(executor, {
+		signal,
+		delivery: { ...port, inspect: async () => host },
+		emitEvents: async (batch) => {
+			for (const event of batch) {
+				events.push(event.receipt!.key);
+				host = {
+					kind: "committed",
+					receipt: {
+						...event.receipt!,
+						namespace: port.namespace,
+						session: port.session,
+						record: "input",
+						channel: "input",
+					},
+				};
+			}
+			return batch.map(() => ({ accepted: true }) as const);
+		},
+	});
+	try {
+		const run = facade.execute("run", { selector: "chat@1", input: { text: "hello" } }, signal);
+		await submitting.promise;
+		await facade.reconcile();
+		expect(events).toEqual([]);
+		admission.resolve();
+		expect((await run).details).toMatchObject({ kind: "accepted" });
+		expect(events).toEqual([]);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(events).toEqual(["completion"]);
+		expect(settled).toBe(true);
+	} finally {
+		admission.resolve();
+		await facade.close();
+		vi.useRealTimers();
+	}
+});
 
 test("宿主没有批量入口时显式报错，不静默把完成通知当成已交出", async () => {
 	const ctx: ServiceCompanionContext = {

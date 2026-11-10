@@ -1,45 +1,15 @@
-# 中断、未知副作用与继续执行
+# 玩到一半，怎么接着玩
 
-一条总原则：**动作失败不等于目标失败；动作没回执也不等于它没发生。**
+## 探索交出去以后
 
-| 事实 | 推荐处理 |
-| --- | --- |
-| 入参被拒绝，确认 `dispatch:'not_sent'` | 修正参数/条件后可以重新调用 |
-| 服务器已确认效果 | 更新已完成进度，不重复同一工作 |
-| 已派发但效果 `unknown` | 停止相关写入、读新状态与 Effect；无法确认就保留未知，**绝不盲重试** |
-| 路径不通，观察到替代路线 | 有界局部重规划 |
-| Safety 暂时抢占 | 旧控制停止；风险解除、拿到新资格后读取现场再决定 |
-| 用户明确 Stop | 不自动续跑 |
-| 连接/世界代次变化 | 旧 Waypoint / Fact / Window / Body 句柄重新验证 |
-| 无可信解决方案或目标需改变 | `mc.decide(reason, checkpoint)` |
+你让探索去找原木，收到 `accepted`。如果下一步只取决于找到的位置，这一轮可以到这里。完成通知有坐标，就用坐标决定要不要过去。朋友这时叫你，也可以先聊两句，等结果到了再接上。想改走另一条路，且当前进度会影响取舍，可以用 `tasks.get` 查一次。想停就用 `tasks.stop`。
 
-`recoverable:true` 只表示"存在合理后续路径"，不是重试授权。`accepted` 是受理，不是完成；`Call/Capability met` 不等于最初的 Program 目标达成。
+`confirming` 表示受理结果还未查实。需要确定它是否在跑时查原任务句柄。明确知道动作未派发时，可以修正条件后重新提交。
 
-## Checkpoint
+## 施工做到一半
 
-只保存下一段所必需的：**目标、阶段、已确认效果、候选与已知障碍及其来源**。不携带 Body / Window handle，不保存"世界当前事实"（下段必须重读）。
-`mc.decide` 结束当前段；`tasks.continue {task, decision, entry, environment}` 建新段，续段用只读 `mc.checkpoint` 取回检查点，重新读现场，不恢复旧 JS 调用栈。
+材料不足时，先看 `needs_input` 给出的原因和已确认进度，按待复读格检查还差多少。断线后写入结果未知时，复读目标格和相应 Effect。已经符合目标的格可以从余量里扣掉。原动作是否成功由 Effect 证据决定，证据不够就保留未知。续段使用当前决策和同一任务，现场仍需要复读。显式停止的任务不会自动续跑。
 
-```js
-async function main(mc, input) {
-  const cp = mc.checkpoint || {};
-  const self = await mc.read('self@1');
-  const bag = await mc.read('inventory@1');
-  if (!self.value || !bag.value) mc.decide('现场不可读', { phase: 'recheck_unknown', goal: cp.goal });
-  const observed = { position: self.value.place.position, dimension: self.value.place.dimension,
-                     counts: bag.value.counts };
-  if (!cp.goal) return { phase: 'fresh', observed };
-  mc.progress({ phase: 'resumed', goal: cp.goal, observed });
-  return { phase: 'resumed', observed, goal: cp.goal };
-}
-```
+## 等材料到了再做
 
-## 长任务与 Completion
-
-顶层 `run` 受理表示后台已接单，实际阶段以任务查询为准；完成事件 `minecraft_completion` 与 `tasks.get/trace` 反映当前真实终态。
-后台任务完成时会送来通知。需要依据当前进度做决定时，用 `tasks.get` 查原任务。想放弃这段工作时用 `tasks.stop`，并查看返回的控制状态。
-
-## 写经验
-
-修复一类错误后，以相似但**不同**的环境再验证，才写 Experience。未观察的部分标为推测；已被证伪的旧方法要更新，而不是永远追加一条补丁。
-官方 Guide 是随版本发布的只读资料；个人 Experience / Program 由你通过 `library` 自己保存，两者生命周期不同，不会互相覆盖。
+如果已经决定库存到量就接着做，可以用 Program 的 `mc.waitUntil` 等库存条件，把后续步骤放在条件满足之后。等待期间把身体留给其他动作。示例、超时、检查点和续段参数见 `program_api`。

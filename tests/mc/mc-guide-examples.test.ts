@@ -32,15 +32,15 @@ test("七份官方 Guide 与 ENV 常驻正文都在有界成本内、无过时�
 	}
 	const env = await readFile(envPath, "utf8");
 	expect(env).toContain("Minecraft");
-	expect(env).toContain("受理只表示已接单");
-	expect(env).toContain("完成时会收到通知");
+	expect(env).toContain("accepted 表示已接单");
+	expect(env).toContain("结果会主动送到");
 	expect(env).toContain("describe");
 	// 常驻文本只讲环境认知与实践原则，不写 API 参数、当前状态或旧等待机制。
 	expect(env).not.toContain("runs.wait");
 	expect(env).not.toContain("shortWindow");
 	expect(env).not.toContain("placeToReach");
 	expect(env).not.toContain("mc.call(");
-	expect(Buffer.byteLength(env, "utf8")).toBeLessThan(2400);
+	expect(Buffer.byteLength(env, "utf8")).toBeLessThanOrEqual(1200);
 });
 
 test("Guide 中的每段 JS 示例与参考 Program 都能被真实 validator 编译", async () => {

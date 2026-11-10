@@ -113,6 +113,8 @@ V2 当前目录有 18 个查询和 37 个动作。54 个既有 selector 各有�
 
 能力候选标出必填参数，普通完成通知直接给结果。私聊和明确点名的公屏消息即时进入 Minecraft 回合。连接及常用观察采用简短正文，完整事实通过 `detail:"full"` 按需读取。 [工具表达验收](proposals/mc/archive/world-refactor-v2.md#工具表达与往返)
 
+活动会话的短 Guide 以「查询结果是否会改变下一步」区分行动、查证和等通知。按需的 `recovery_playbook` 用探索、施工和等待材料示范如何接回进度。完成投递对账保留扫描期间的即时唤醒，已跳过的受理保护项在解除后补扫。 [游玩节奏与完成投递验收](proposals/mc/archive/world-refactor-v2.md#游玩节奏与完成投递)
+
 以下为历史批次记录。早期 I1/K1 在 `.uina/worlds/minecraft/` 建立了原生动作、采集、容器与合成熔炼闭环。连接级 DriverProtocol 当前实现 Java 1.21.11；未来版本沿同一窄端口接入，未支持版本的相关操作明确失败。玩家库存与容器共用 mode-0 的服务端槽位/光标确认，装备、移槽、丢弃不进入上游异步预测写入链；ItemValue 与选择器保留有效组件、堆叠上限和剩余耐久。采矿只认实际服务端方块更新，Runtime 保留直接/嵌套未知效果；查询先执行统一 schema 校验。World 沿既有 SQLite 证据链保留最后容器观察，历史不代表当前库存。
 
 实际入口是 `pnpm dev:mc`、`dev:mc:k1`、`dev:mc:k2`、`dev:mc:containers`、`dev:mc:k3`、`dev:mc:production-repair`。`dev:mc:repair` 与 `dev:mc:production-repair` 默认使用独立 Temp 数据根；前者覆盖工具/物品实例选择、取消、导航与历史重开，后者覆盖满背包制作、组件匹配、弱燃料分批、等待期间并发身体动作及取消后取货。
