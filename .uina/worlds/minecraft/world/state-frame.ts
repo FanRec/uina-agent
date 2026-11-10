@@ -33,10 +33,9 @@ export interface StateFrameOptions {
 }
 
 export interface StateFrame {
-	/** 面向模型的单帧正文；connected=false 时是明确的不可用说明。 */
+	/** 面向模型的单帧正文。采样失败时说明原因。 */
 	text: string;
 	sampledAt: string;
-	connected: boolean;
 	/** 整段读不到的段落（诊断用）。字段级覆盖由 observe 负责，不在这里重复报告。 */
 	unknown: string[];
 }
@@ -202,8 +201,7 @@ function buildText(options: StateFrameOptions, view: ClientFactView, failed: str
 }
 
 /**
- * 采样一份当前状态帧。未附着活连接时返回 connected=false 的明确文本：
- * 断线后继续沿用旧坐标是伪造观察，比不给状态更糟。
+ * 采样一份当前状态帧。连接事实由 Driver 单独提供，采样失败只说明读不到什么。
  */
 export function sampleStateFrame(options: StateFrameOptions): StateFrame {
 	const sampledAt = new Date().toISOString();
@@ -212,18 +210,8 @@ export function sampleStateFrame(options: StateFrameOptions): StateFrame {
 	try {
 		text = options.facts.sample((view) => buildText(options, view, failed)).value;
 	} catch (error) {
-		const code = (error as { code?: string } | null)?.code;
 		const message = error instanceof Error ? error.message : String(error);
-		return {
-			text:
-				code === "WRONG_STATE"
-					? "Minecraft 未连接：当前没有可用的世界观察；连接建立前不要按旧坐标或旧背包行动。"
-					: `Minecraft 状态不可用：${message}`,
-			sampledAt,
-			connected: false,
-			// 未连接不是"某一段读不到"：原因已写进正文，段落列表保持空，避免两种含义混用一个字段。
-			unknown: [],
-		};
+		return { text: `Minecraft 状态不可用：${message}`, sampledAt, unknown: [] };
 	}
-	return { text, sampledAt, connected: true, unknown: failed };
+	return { text, sampledAt, unknown: failed };
 }

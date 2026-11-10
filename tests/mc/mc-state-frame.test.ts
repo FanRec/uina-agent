@@ -62,7 +62,6 @@ function rig(
 describe("state frame", () => {
 	test("三段同一采样边界；站位取脚下那格、维度去掉命名空间、手持与背包同帧", () => {
 		const frame = sampleStateFrame(rig());
-		expect(frame.connected).toBe(true);
 		expect(frame.text).toBe(
 			[
 				// 10.6 → 10、-3.2 → -4：与全世界 Math.floor 的方块坐标一致，不是四舍五入。
@@ -91,7 +90,6 @@ describe("state frame", () => {
 
 	test("单段读取失败只降级该段，其余段落仍然可用", () => {
 		const frame = sampleStateFrame(rig({ self: failingReader("boom") }));
-		expect(frame.connected).toBe(true);
 		expect(frame.unknown).toEqual(["self"]);
 		expect(frame.text).not.toContain("生命");
 		expect(frame.text).toContain("night·第3天");
@@ -117,15 +115,12 @@ describe("state frame", () => {
 		const frame = sampleStateFrame(
 			rig({ self: failingReader("a"), inventory: failingReader("b"), world: failingReader("c") }),
 		);
-		expect(frame.connected).toBe(true);
 		expect(frame.text).toBe("Minecraft 状态不可读（缺失段落：self、inventory、world）");
 	});
 
-	test("未附着活连接：connected=false 且明确要求不要按旧坐标行动", () => {
+	test("Facts 未附着时保留采样失败原因，不构造旧坐标", () => {
 		const frame = sampleStateFrame(rig({}, { failSample: "WRONG_STATE" }));
-		expect(frame.connected).toBe(false);
-		expect(frame.text).toContain("Minecraft 未连接");
-		expect(frame.text).toContain("不要按旧坐标");
+		expect(frame.text).toBe("Minecraft 状态不可用：WRONG_STATE");
 		expect(frame.sampledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 		// 未连接不是"某段缺失"：原因在正文，段落列表留空，别让一个字段担两种含义。
 		expect(frame.unknown).toEqual([]);
@@ -133,7 +128,6 @@ describe("state frame", () => {
 
 	test("非连接原因采样失败如实带出原因，不冒充未连接", () => {
 		const frame = sampleStateFrame(rig({}, { failSample: "INTERNAL" }));
-		expect(frame.connected).toBe(false);
 		expect(frame.text).toContain("Minecraft 状态不可用：INTERNAL");
 	});
 

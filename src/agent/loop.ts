@@ -18,6 +18,7 @@ import type {
 	Model,
 	ModelStreamFn,
 	RequestInspection,
+	RequestObservation,
 	RequestProjection,
 	RequestUsage,
 	ThinkingLevel,
@@ -221,6 +222,7 @@ export class Subject {
 	private currentCallUsage?: RequestUsage;
 	private latestUsageSeq = 0;
 	private currentContextSnapshot?: ContextSnapshot;
+	private lastRequestObservations?: readonly RequestObservation[];
 	private contextInspectionSeq = 0;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
@@ -519,10 +521,10 @@ export class Subject {
 		};
 	}
 
-	async getContextSnapshot(basis: ContextSnapshot["basis"] = "idle_baseline"): Promise<ContextSnapshot> {
+	async getContextSnapshot(): Promise<ContextSnapshot> {
 		const sequence = ++this.contextInspectionSeq;
 		const inspection = await this.inspectRequest();
-		const snapshot = this.contextSnapshot(inspection, basis);
+		const snapshot = this.contextSnapshot(inspection, "idle_baseline");
 		if (sequence === this.contextInspectionSeq && inspection.projection.modelKey === modelKey(this.model)) {
 			this.publishContextSnapshot(snapshot);
 		}
@@ -530,6 +532,12 @@ export class Subject {
 	}
 
 	private contextSnapshot(inspection: RequestInspection, basis: ContextSnapshot["basis"]): ContextSnapshot {
+		const requestObservations =
+			basis === "active_request"
+				? inspection.projection.messages.flatMap(({ context }) =>
+						context?.requestObservation ? [context.requestObservation] : [],
+					)
+				: this.lastRequestObservations;
 		return {
 			projectionId: inspection.projection.projectionId,
 			modelKey: inspection.projection.modelKey,
@@ -540,10 +548,12 @@ export class Subject {
 			availableInputBudget: inspection.inputBudget,
 			measurementKind: inspection.measurement.kind,
 			segments: inspection.measurement.segments,
+			...(requestObservations === undefined ? {} : { requestObservations }),
 		};
 	}
 
 	private publishContextSnapshot(snapshot: ContextSnapshot): void {
+		if (snapshot.basis === "active_request") this.lastRequestObservations = snapshot.requestObservations;
 		this.currentContextSnapshot = snapshot;
 		void this.dispatch({ type: "context_update", snapshot });
 	}
@@ -569,7 +579,7 @@ export class Subject {
 				previousLevel: prevLevel,
 			});
 		}
-		await this.getContextSnapshot("idle_baseline");
+		await this.getContextSnapshot();
 	}
 
 	setThinkingLevel(level: ThinkingLevel): void {
@@ -585,7 +595,7 @@ export class Subject {
 			});
 			// Active preparation publishes its own projection before sending. Idle
 			// changes need an immediate baseline refresh for the UI.
-			if (!this.isBusy()) await this.getContextSnapshot("idle_baseline");
+			if (!this.isBusy()) await this.getContextSnapshot();
 		})().catch((error) => this.reportError(error));
 	}
 
@@ -701,6 +711,7 @@ export class Subject {
 			);
 			committed = true;
 			this.history = history;
+			this.lastRequestObservations = undefined;
 			// 历史刚被替换：先失效 usage 缓存，再广播。
 			this.invalidateContext();
 			await this.dispatch({
@@ -1248,7 +1259,7 @@ export class Subject {
 		this.abort = null;
 		this.activity = undefined;
 		try {
-			await this.getContextSnapshot("idle_baseline");
+			await this.getContextSnapshot();
 		} catch (snapshotError) {
 			this.reportError(snapshotError);
 		}

@@ -32,6 +32,7 @@ test("世界请求上下文出现在每一次模型请求的尾部，并且是�
 	// 只留投影消息：ModelRequest 带 providerHooks（函数），不可结构化克隆。
 	const requests: { messages: readonly ChatMsg[] }[] = [];
 	let snapshot = "第1帧：坐标 (0,64,0) 生命20/20";
+	let connected = true;
 	const stream: ModelStreamFn = async (_model, request, delta) => {
 		requests.push({ messages: [...request.messages] });
 		if (requests.length === 1) {
@@ -57,7 +58,7 @@ test("世界请求上下文出现在每一次模型请求的尾部，并且是�
 		name: "probe",
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-		requestContext: async () => snapshot,
+		requestContext: () => (connected ? { key: "visit", read: async () => snapshot } : null),
 	};
 	const pi = {
 		subject: undefined,
@@ -84,7 +85,26 @@ test("世界请求上下文出现在每一次模型请求的尾部，并且是�
 		expect(text(0)).toContain("第1帧：坐标 (0,64,0)");
 		expect(text(1)).toContain("第2帧：坐标 (3,64,1)");
 		expect(text(1)).not.toContain("第1帧：坐标 (0,64,0)");
-		// 帧是瞬态投影：不进持久历史，模型之外没人消费它。
+		// UI 快照记录实际请求的正文，闲置期间的估算不替换它。
+		const sent = requests[1]!.messages.find((message) => message.context?.requestObservation);
+		expect(JSON.stringify(sent?.content)).toContain(snapshot);
+		expect(harness.subject.getCurrentContextSnapshot()?.requestObservations).toEqual([
+			{ source: "probe", text: snapshot },
+		]);
+		const lastSent = snapshot;
+		snapshot = "只会被闲置预览读取的新内容";
+		expect((await harness.subject.getContextSnapshot()).requestObservations).toEqual([
+			{ source: "probe", text: lastSent },
+		]);
+		await harness.subject.setModel(harness.subject.getModel());
+		expect(harness.subject.getCurrentContextSnapshot()?.requestObservations).toEqual([
+			{ source: "probe", text: lastSent },
+		]);
+		connected = false;
+		await harness.run("离开后继续对话");
+		expect(requests[2]!.messages.some((message) => message.context?.requestObservation)).toBe(false);
+		expect(harness.subject.getCurrentContextSnapshot()?.requestObservations).toEqual([]);
+		// 帧是瞬态投影，不进持久历史。
 		expect(JSON.stringify(harness.subject.historySnapshot())).not.toContain("第2帧");
 	} finally {
 		await activation.stop();
@@ -104,7 +124,7 @@ test("世界停用后不再注入，后续请求回到无帧状态", async () =>
 		name: "probe",
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-		requestContext: async () => "世界仍在运行",
+		requestContext: () => ({ key: "visit", read: async () => "世界仍在运行" }),
 	};
 	const pi = {
 		subject: undefined,
@@ -140,9 +160,12 @@ test("世界读取抛错时注入占位帧，handler 不抛错", async () => {
 		name: "probe",
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-		requestContext: async () => {
-			throw new Error("world snapshot crashed");
-		},
+		requestContext: () => ({
+			key: "visit",
+			read: async () => {
+				throw new Error("world snapshot crashed");
+			},
+		}),
 	};
 	const activation = new WorldActivation(definition, {
 		pi: probeHost(host, (registered) => {
@@ -175,7 +198,7 @@ test("世界读取超时时注入占位帧，不静默消失", async () => {
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
 		// 永不结算：模拟世界侧卡住。
-		requestContext: () => new Promise<string | null>(() => {}),
+		requestContext: () => ({ key: "visit", read: () => new Promise<string | null>(() => {}) }),
 	};
 	const activation = new WorldActivation(definition, {
 		pi: probeHost(host, (registered) => {
@@ -204,7 +227,7 @@ test("超时当场摘掉 abort 监听器，不等原始读取结算", async () =
 		name: "probe",
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-		requestContext: () => new Promise<string | null>(() => {}),
+		requestContext: () => ({ key: "visit", read: () => new Promise<string | null>(() => {}) }),
 	};
 	const activation = new WorldActivation(definition, {
 		pi: probeHost(host, (registered) => {
@@ -235,10 +258,13 @@ test("上一份读取还在飞时，下一份直接说还没回来", async () =>
 		name: "probe",
 		description: "request context probe",
 		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-		requestContext: () => {
-			calls++;
-			return new Promise<string | null>(() => {});
-		},
+		requestContext: () => ({
+			key: "visit",
+			read: () => {
+				calls++;
+				return new Promise<string | null>(() => {});
+			},
+		}),
 	};
 	const activation = new WorldActivation(definition, {
 		pi: probeHost(host, (registered) => {
@@ -255,6 +281,45 @@ test("上一份读取还在飞时，下一份直接说还没回来", async () =>
 		expect(second).toContain("上一次读取仍未返回");
 		expect(JSON.stringify(await first)).toContain("读取超时");
 		expect(calls).toBe(1);
+	} finally {
+		await activation.stop();
+	}
+});
+
+test("退游和换服时丢弃在途旧观察，新会话可独立读取", async () => {
+	const host = new ExtensionHost();
+	let handler: ((projection: { messages: readonly ChatMsg[] }) => Promise<unknown>) | undefined;
+	let finishOld!: (text: string) => void;
+	const old = new Promise<string>((resolve) => {
+		finishOld = resolve;
+	});
+	let key: string | null = "first";
+	const definition: WorldDef = {
+		name: "probe",
+		description: "request context probe",
+		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
+		requestContext: () => {
+			if (key === null) return null;
+			return { key, read: key === "first" ? () => old : async () => "新服观察" };
+		},
+	};
+	const activation = new WorldActivation(definition, {
+		pi: probeHost(host, (registered) => {
+			handler = registered as typeof handler;
+		}),
+		runtime: { definition, enabled: true },
+		worldName: "probe",
+		notifyExposed: () => {},
+	});
+	await activation.start();
+	try {
+		const first = handler!({ messages: [] });
+		key = null;
+		expect(await handler!({ messages: [] })).toBeUndefined();
+		key = "second";
+		expect(JSON.stringify(await handler!({ messages: [] }))).toContain("新服观察");
+		finishOld("旧服观察");
+		expect(await first).toBeUndefined();
 	} finally {
 		await activation.stop();
 	}

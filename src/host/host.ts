@@ -506,7 +506,7 @@ export class UinaHost {
 		// 先发布一次恢复基线快照：扩展装配（伴生服务预热、world 启动）可能拖住
 		// start 数十秒，上下文条先以恢复出的历史基线可见。start 末尾的快照在全部
 		// transformContext 装配完成后重算，仍是权威收口。
-		await this.subject.getContextSnapshot("idle_baseline");
+		await this.subject.getContextSnapshot();
 		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
 		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
 		// 激活顺序：compaction → world-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
@@ -531,7 +531,7 @@ export class UinaHost {
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
 		await this.extensionHost.activateBuiltin("world-framework", activateWorldFramework);
 		await this.extensionHost.load();
-		await this.subject.getContextSnapshot("idle_baseline");
+		await this.subject.getContextSnapshot();
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
@@ -575,7 +575,7 @@ export class UinaHost {
 			await Promise.allSettled([...this.directRuns.values()]);
 			if (this.state.stopping) throw new Error("宿主正在关闭");
 			await this.extensionHost.reload();
-			await this.subject.getContextSnapshot("idle_baseline");
+			await this.subject.getContextSnapshot();
 			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
 		} finally {
 			this.reloading--;

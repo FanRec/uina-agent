@@ -27,6 +27,7 @@ export interface ContextUsageData {
 	cacheWrite?: number;
 	inputTokens?: number;
 	segments?: ContextSegments;
+	observationCount?: number;
 	/** usedTokens 是估算值（非 Provider 实测）；剩余容量同样只作估算展示。 */
 	estimated?: boolean;
 }
@@ -171,6 +172,7 @@ export class ContextBarComponent implements Component {
 	private cacheWrite?: number;
 	private inputTokens?: number;
 	private segments?: ContextSegments;
+	private observationCount = 0;
 	private estimated = false;
 	private isHovered = false;
 	private expanded = false;
@@ -183,6 +185,7 @@ export class ContextBarComponent implements Component {
 		this.cacheWrite = data.cacheWrite;
 		this.inputTokens = data.inputTokens;
 		this.segments = data.segments;
+		this.observationCount = data.observationCount ?? 0;
 		this.estimated = data.estimated ?? false;
 	}
 
@@ -211,9 +214,11 @@ export class ContextBarComponent implements Component {
 
 	render(width: number): string[] {
 		if (width <= 0 || !this.hasDetails()) return [];
+		const observation = this.observationCount > 0 ? `上次世界观察 ${this.observationCount} /prompt` : "";
 
 		if (!this.isHovered && !this.expanded) {
-			return [fitLine(`${C.inactive}Ctrl+L 查看上下文详情${C.reset}`, width, "clip")];
+			const hint = observation ? `${observation} · Ctrl+L 上下文详情` : "Ctrl+L 查看上下文详情";
+			return [fitLine(`${C.inactive}${hint}${C.reset}`, width, "clip")];
 		}
 
 		// 鼠标悬停时：渲染隐藏明细（工作目录 + 剩余容量 + 分段分布 + 缓存与输入）
@@ -271,11 +276,13 @@ export class ContextBarComponent implements Component {
 			line = body;
 		}
 
+		if (observation) line = `${C.inactive}${observation}${C.reset} · ${line}`;
 		return [fitLine(line, width, "clip")];
 	}
 
 	private hasDetails(): boolean {
 		return (
+			this.observationCount > 0 ||
 			this.cwd.length > 0 ||
 			this.usedTokens !== undefined ||
 			this.contextWindow !== undefined ||

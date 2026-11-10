@@ -116,10 +116,10 @@ const projectionOf = (messages: ChatMsg[]): RequestProjection => ({
 const { projection: framePolicy } = createEventFrameProfile();
 
 async function activateWith(
-	requestContext: WorldDef["requestContext"],
+	read: (() => Promise<string | null>) | undefined,
 ): Promise<{ activation: WorldActivation; hooks: ReturnType<typeof makeHookPi>["hooks"] }> {
 	const { pi, hooks } = makeHookPi();
-	const definition = makeDef({ requestContext });
+	const definition = makeDef({ requestContext: read ? () => ({ key: "visit", read }) : undefined });
 	const activation = new WorldActivation(definition, {
 		pi: pi as never,
 		runtime: { definition, enabled: true },
@@ -166,8 +166,16 @@ describe("world requestContext 接缝", () => {
 		}
 	});
 
-	// 空正文也是"这一轮没拿到"：注入一行原因，而不是让位置空着——空着会被读成没有变化。
-	it("返回 null 或空白时注入占位帧，说明没有提供内容", async () => {
+	it("取样返回 null 时不注入帧", async () => {
+		const { activation, hooks } = await activateWith(async () => null);
+		try {
+			expect(await hooks[0]!.handler(projectionOf([]))).toBeUndefined();
+		} finally {
+			await activation.stop();
+		}
+	});
+
+	it("取样返回空白时注入占位帧，说明没有提供内容", async () => {
 		const { activation, hooks } = await activateWith(async () => "  ");
 		try {
 			const base = projectionOf([{ role: "user", content: "hi" }]);

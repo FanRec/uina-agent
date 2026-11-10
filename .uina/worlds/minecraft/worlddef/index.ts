@@ -53,6 +53,10 @@ export function createMinecraftWorld(
 	let environmentText: string | null = null;
 	/** 本次 activation 的真实数据根（`<worldDataDir>`）；离线目录摘要只读它的 addons/。 */
 	let minecraftRoot: string | null = null;
+	const connectedSession = () => {
+		const session = controller?.session;
+		return session?.executor.status().side?.connection === "ready" ? session : null;
+	};
 
 	const close = (): Promise<void> =>
 		(closing ??= (async () => {
@@ -204,31 +208,38 @@ export function createMinecraftWorld(
 		 * 无活动会话时返回 null——"没在玩 MC"不值得每次请求都提醒一次。
 		 * 有会话但采样失败时由伴生侧返回明确的不可用正文（断线后不沿用旧坐标）。
 		 */
-		requestContext: async () => {
-			const session = controller?.session;
+		requestContext: () => {
+			const session = connectedSession();
 			if (!session) return null;
-			const { text, activeTasks } = await session.executor.rpc<{ text: string; activeTasks: ActiveTaskFrame }>(
-				"state.snapshot",
-				{},
-			);
-			const entries = await session.executor.ledger
-				.taskEntries(activeTasks.items?.map((run) => run.rootRequestId) ?? [])
-				.catch(() => undefined);
-			const digest = formatActiveRuns(
-				activeTasks.items,
-				activeTasks.sampledAt,
-				session.profileId,
-				entries,
-				activeTasks.omitted,
-			);
-			return digest ? `${text}\n${digest}` : text;
+			return {
+				key: session.visitId,
+				read: async () => {
+					const { text, connected, activeTasks } = await session.executor.rpc<{
+						text: string;
+						connected: boolean;
+						activeTasks: ActiveTaskFrame;
+					}>("state.snapshot", {});
+					if (!connected) return null;
+					const entries = await session.executor.ledger
+						.taskEntries(activeTasks.items?.map((run) => run.rootRequestId) ?? [])
+						.catch(() => undefined);
+					const digest = formatActiveRuns(
+						activeTasks.items,
+						activeTasks.sampledAt,
+						session.profileId,
+						entries,
+						activeTasks.omitted,
+					);
+					return digest ? `${text}\n${digest}` : text;
+				},
+			};
 		},
 		/**
 		 * 静态环境认知：只在有活动 Minecraft 会话的回合注入，避免污染纯聊天。
 		 * 正文在 onStart 预载；这里同步返回，不读世界事实、不产生副作用。
 		 * 坐标/库存等会变的事实仍只由 requestContext 的瞬态状态帧提供。
 		 */
-		environmentGuide: () => (controller?.session ? environmentText : null),
+		environmentGuide: () => (connectedSession() ? environmentText : null),
 		actions: Object.fromEntries(
 			Object.entries(actionSchemas).map(([name, parameters]) => [
 				name,

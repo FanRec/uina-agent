@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model, ModelStreamFn, RequestUsage } from "../../../../src/core/types.js";
+import type { Model, ModelStreamFn, RequestObservation, RequestUsage } from "../../../../src/core/types.js";
 import type { ExtensionAPI } from "../../../../src/extensions/runner.js";
 import type { BodyEndpoint } from "../../../../src/extensions/world-framework/seams.js";
 import type { ServiceCompanionContext, WorldEvent } from "../../../../src/extensions/world-framework/types.js";
@@ -70,14 +70,24 @@ await writeFile(
 let planned: { id: string; action: string; params: Record<string, unknown> } | null = null;
 let nextRequest: (() => Promise<void>) | undefined;
 let modelRequests = 0;
+let sentObservations: RequestObservation[] = [];
 const model: Model = {
 	id: "mc-acceptance",
 	name: "MC acceptance scripted Provider",
 	providerId: "mc-acceptance",
 	contextWindow: 128000,
 };
-const stream: ModelStreamFn = async (_model, _req, delta) => {
+const stream: ModelStreamFn = async (_model, request, delta) => {
 	modelRequests++;
+	if (rhythmFlowMode) {
+		sentObservations = request.messages.flatMap((message) => {
+			const observation = message.context?.requestObservation;
+			if (!observation) return [];
+			assert.equal(JSON.parse(message.content).text, observation.text);
+			return [observation];
+		});
+		assert.deepEqual(host.snapshot().context?.requestObservations, sentObservations);
+	}
 	if (nextRequest) {
 		const wait = nextRequest;
 		nextRequest = undefined;
@@ -322,6 +332,13 @@ async function runScenarios() {
 	const offlineSource = programMode
 		? await direct("describe", { selector: "collect@1", includeSource: true })
 		: undefined;
+	if (rhythmFlowMode) {
+		await step("no request observation before joining", async () => {
+			await host.submitText("The Minecraft server is available.", "direct");
+			await host.waitForIdle();
+			assert.equal(sentObservations.length, 0);
+		});
+	}
 	// 批25：World 不再自动入服——经 session 工具显式连接（settings 种子来自旧 config.json）。
 	await step("session connect", async () => {
 		const reply = (await direct("session", { op: "connect", target: { server: "default" } })) as {
@@ -1033,6 +1050,13 @@ async function runRhythmFlow(): Promise<void> {
 		assert.equal(value.kind, "accepted", reply.result);
 		return value.task;
 	};
+	await step("joined request exposes the same live observation to Provider and Host", async () => {
+		await host.submitText("Check the request projection while connected.", "direct");
+		await host.waitForIdle();
+		assert.equal(sentObservations.length, 1);
+		assert.equal(sentObservations[0]!.source, "minecraft");
+		assert.match(sentObservations[0]!.text, /^overworld \(16000,200,16000\)/u);
+	});
 	await step("idle Host receives one completion within one second", async () => {
 		const task = await accepted(600);
 		const snapshot = await until(report, (r) => r.tasks.some((t) => t.task === task && t.replyAt != null));
@@ -1086,6 +1110,30 @@ async function runRhythmFlow(): Promise<void> {
 		} finally {
 			releaseBusy();
 			await busyTurn;
+			peer.close();
+		}
+	});
+	await step("leaving clears the next request observation and reconnect restores it", async () => {
+		assert.equal((await ask("session", { op: "disconnect" })).status, "succeeded");
+		assert.equal(sentObservations.length, 0);
+		assert.equal((await ask("session", { op: "connect", target: { server: "default" } })).status, "succeeded");
+		assert.equal(sentObservations[0]?.source, "minecraft");
+		assert.match(sentObservations[0]!.text, /^overworld \(-?\d+,-?\d+,-?\d+\)/u);
+	});
+	await step("server kick removes the live observation", async () => {
+		const peer = new ClientHost();
+		try {
+			await peer.connect({ host: DEV_SERVER.host, port, username: "FanRec", version: "1.21.11" });
+			assert(peer.bot);
+			peer.bot.chat("/kick UinaDev request-observation-acceptance");
+			await until(
+				() => probe.executor().rpc<{ connected: boolean }>("state.snapshot", {}),
+				(frame) => !frame.connected,
+			);
+			await host.submitText("Check the request projection after the kick.", "direct");
+			await host.waitForIdle();
+			assert.equal(sentObservations.length, 0);
+		} finally {
 			peer.close();
 		}
 	});

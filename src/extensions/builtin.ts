@@ -176,7 +176,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand({
 		name: "prompt",
-		description: "查看最近一次真正生效的系统提示词与注入来源",
+		description: "查看系统提示词、注入来源与最近一次模型请求的世界观察",
 		handler: () => {
 			ui.openFeature?.({ name: "prompt" });
 		},

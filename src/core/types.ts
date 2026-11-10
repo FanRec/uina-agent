@@ -91,12 +91,19 @@ export interface InputProvenance {
 	source?: InputSource;
 	receivedAt?: string;
 }
+export interface RequestObservation {
+	readonly source: string;
+	readonly text: string;
+}
+
 export interface ModelContextMeta {
 	input?: InputProvenance;
 	group?: { id: string; index: number; size: number };
 	kind?: string;
 	/** Stable canonical request-bearing entry identity; never serialized to Provider wire. */
 	entryId?: string;
+	/** Presentation view of this transient request message. */
+	requestObservation?: RequestObservation;
 }
 
 export interface QueuedMessage {
@@ -307,6 +314,8 @@ export interface ContextSnapshot {
 	readonly availableInputBudget?: number;
 	readonly measurementKind: "exact" | "approximate";
 	readonly segments?: ContextSegments;
+	/** Observations in the last finalized request; absent until the first request. */
+	readonly requestObservations?: readonly RequestObservation[];
 }
 
 export interface RequestInspection {

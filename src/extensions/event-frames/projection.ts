@@ -49,6 +49,8 @@ export interface EventFrameGroupOptions {
 	text: string;
 	/** 覆盖默认通知文案；用于区分到达事件与瞬态快照等不同呈现。 */
 	notice?: string;
+	/** Label for a transient observation in request inspection. */
+	observationSource?: string;
 	/** 缺省 { type: 'unknown', origin: 'external' }（与到达事件行为一致）。 */
 	source?: InputSource;
 	receivedAt?: string;
@@ -66,7 +68,16 @@ export interface EventFrameGroupOptions {
  * （世界视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
  */
 export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[] {
-	const { eventId, entryId, text: rawText, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
+	const {
+		eventId,
+		entryId,
+		text: rawText,
+		notice = DEFAULT_FRAME_NOTICE,
+		observationSource,
+		source,
+		receivedAt,
+		images,
+	} = options;
 	if (!eventId) throw new Error("外部事件帧缺少稳定 eventId");
 	// 收口为 string：undefined 正文经 JSON.stringify 会丢失 text 字段，触发协议校验
 	// “回执不是合法帧”回合失败——空正文帧仍合法，比回合崩溃正确。
@@ -103,7 +114,10 @@ export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[]
 			tool_call_id: id,
 			content: JSON.stringify(body),
 			...(images ? { images } : {}),
-			context: context(2),
+			context: {
+				...context(2),
+				...(observationSource ? { requestObservation: { source: observationSource, text } } : {}),
+			},
 		},
 	];
 }

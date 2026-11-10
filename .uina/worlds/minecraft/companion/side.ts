@@ -584,12 +584,13 @@ export async function openExecutionSide(
 					// 静默省略会被读成"没有活跃任务"，也不能拿旧缓存充当实时结果。
 					let activeRuns: RunSummary[] | null = null;
 					try {
-						activeRuns = (await getRuntime().list({ activeOnly: true })).items;
+						if (host.state === "ready") activeRuns = (await getRuntime().list({ activeOnly: true })).items;
 					} catch {
 						// 保留 null：查询失败不是"零条"，由 formatActiveRuns 如实写出。
 					}
 					value = {
 						...frame,
+						connected: host.state === "ready",
 						activeTasks: {
 							items: activeRuns?.slice(0, MAX_ACTIVE_TASKS) ?? null,
 							omitted: Math.max(0, (activeRuns?.length ?? 0) - MAX_ACTIVE_TASKS),

@@ -10,6 +10,7 @@ import {
 	WORLD_HOST_EVENT_TYPES,
 	type WorldDef,
 	type WorldEvent,
+	type WorldRequestContext,
 	type WorldRuntime,
 } from "./types.js";
 import { createWorldTool } from "./world-tool.js";
@@ -89,7 +90,7 @@ export class WorldActivation {
 	readonly exposed = new Map<string, unknown>();
 	private readonly context: ServiceCompanionContext;
 	/** 上一份还在飞的采样。世界侧卡住时，不能让每个请求都再压一份上去。 */
-	private inflight: Promise<void> | null = null;
+	private inflight: { key: string } | null = null;
 
 	constructor(
 		private readonly definition: WorldDef,
@@ -137,7 +138,7 @@ export class WorldActivation {
 	 * 用 tail 相位：无论其他扩展先后注册，观察帧恒排在一切历史注入之后，作为"此刻"的
 	 * 最后一段。帧的生命周期跟随 world activation（`track`），世界停用即摘除 handler。
 	 *
-	 * 每回合都有一帧：取不到时正文写明原因，而不是让位置空着——空着会被读成"没有变化"。
+	 * 当前会话适用时才采样，读失败保留原因。离开或切换会话时丢弃旧读取。
 	 */
 	private registerRequestContext(): void {
 		const provide = this.definition.requestContext;
@@ -149,12 +150,17 @@ export class WorldActivation {
 				"turn.transformContext",
 				async (projection) => {
 					if (!this.scope.active) return;
-					const { text, available } = await this.readObservation(provide);
+					const source = provide();
+					if (source == null) return;
+					const observation = await this.readObservation(source);
+					if (!observation || !this.scope.active || provide()?.key !== source.key) return;
+					const { text, available } = observation;
 					const appended = appendTailFrame(
 						projection.messages,
 						buildEventFrameGroup({
 							eventId: contentAddressedEventId(`world:${name}:state`, text),
 							text,
+							observationSource: name,
 							notice: observationNotice(name, available),
 							source: { kind: "runtime", type: "runtime.observation", origin: "internal" },
 						}),
@@ -200,19 +206,17 @@ export class WorldActivation {
 		);
 	}
 
-	/** 本次请求的观察正文：正常给快照，异常给原因。同一时刻只有一份采样在飞。 */
-	private async readObservation(provide: () => Promise<string | null>): Promise<{ text: string; available: boolean }> {
-		if (this.inflight) return { text: observationUnavailable("上一次读取仍未返回"), available: false };
-		const work = provide();
-		// 只跟踪"还在不在飞"，不携带结果：结果由下面这次 await 自己取，失败也不产生未处理的 rejection。
-		const settled = work.then(
-			() => undefined,
-			() => undefined,
-		);
-		this.inflight = settled;
-		void settled.then(() => {
-			this.inflight = null;
-		});
+	/** 本次请求的观察正文：正常给快照，异常给原因。同一会话只跟踪一份进行中的读取。 */
+	private async readObservation(source: WorldRequestContext): Promise<{ text: string; available: boolean } | null> {
+		if (this.inflight?.key === source.key)
+			return { text: observationUnavailable("上一次读取仍未返回"), available: false };
+		const flight = { key: source.key };
+		this.inflight = flight;
+		const work = Promise.resolve().then(source.read);
+		const clearFlight = () => {
+			if (this.inflight === flight) this.inflight = null;
+		};
+		void work.then(clearFlight, clearFlight);
 		let text: string | null;
 		try {
 			text = await withTimeout(work, REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
@@ -220,8 +224,8 @@ export class WorldActivation {
 			const reason = this.scope.signal.aborted ? "世界已停用" : reasonOf(error);
 			return { text: observationUnavailable(reason), available: false };
 		}
-		if (text == null || text.trim() === "")
-			return { text: observationUnavailable("世界没有提供内容"), available: false };
+		if (text == null) return null;
+		if (text.trim() === "") return { text: observationUnavailable("世界没有提供内容"), available: false };
 		return { text, available: true };
 	}
 

@@ -59,6 +59,8 @@ TUI 向 CLI 发出的动作是 `PresentationIntent` 联合（命名空间化：`
 
 组件异常在组件边界内报告并隔离。弹窗按收到的宽高组织可见内容；空 ContextBar 不占行，存在上下文事实时提供 Ctrl+L 入口。时间线轨只在有多轮导航且历史可滚动时出现，无可滚动内容时不保留 gutter。布局与鼠标热区共用 `FrameLayout`。这些约束由 fake terminal 覆盖 40/50/80/120 列与 8/12/24 行；真实终端字体、配色观感和 IME 仍需现场验收。
 
+TUI 输入框下的 `上次世界观察 N /prompt` 指向最近一次实际模型请求的世界观察。`/prompt` 面板顶部显示来源和正文，可滚动查看，系统提示词在其下方。闲置上下文估算不会替换这份记录。下一次请求没有观察时，面板显示“未附加世界观察”。这份记录保留在运行内存中，随会话回溯清空。
+
 ## Agent lifecycle
 
 `Subject` 对外以 `activeRun` 表示完整运行。`waitForIdle()` 会等待 turn 结束、extension handler、队列续跑和 observed output flush 全部结算。
@@ -139,7 +141,9 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批20（2026-11-03）关闭横向缺口 G6/G7/G8：G6 节流 digest 推送（`world/digest.ts` 按查询依赖采样、10s 前缘节流、内容哈希去重、独立事件类型 `minecraft_digest`、主脑忙时只保最新一份）；G7 `inventory@1 {since}` 增量游标（协议槽位变更标记 → 差量 + 变化后总数）；G8 `run {wait}` 按调用短窗覆盖（0 只受理不等）。真服 `pnpm dev:mc:digest` 7/7；tests/mc 771 项全绿。剩余横向缺口 G9/G10（运行时调度）、G12/G13（认证与平台）、G14–G17（复验与终态报告）、G24（tunnel 上行净空）登记于 [known-gaps](proposals/mc/known-gaps.md)。
 
-批37（2026-11-08）把 G6 的关闭方式整个换掉：状态不再推送。digest 链路（定时采样、10s 节流、内容哈希去重、`minecraft_digest` 事件类型、忙时只保最新一份）全删，改为 `world/state-frame.ts` 采样 + `state.snapshot` 只读 RPC，由 `WorldDef.requestContext` 经 `turn.transformContext`（`tail` 相位）在每次模型请求前注入一份当前快照，宿主侧 250ms 超时即本轮不注入。理由是推送本身选错了方向——旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义，而每次现读一次既能保证新鲜又不在空闲时产生任何 Subject 输入。同批事件按种类分流（死亡/断线/私聊/本地没脱险 → steer，其余排队）、已脱险的安全干预带 `interruptedRun` 上报而取消/失效不上报、同一世界的后续输入在宿主侧合成一次决策、失败终态保留调用侧报告的进度。真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧都是身体当前所在格）；接缝由 world-request-context、qq-world-framework-seams、smoke 覆盖；tests/mc 903 项（901 通过，`mcp-extension-loading` 2 项为既有基线红）。
+Minecraft 状态由 `world/state-frame.ts` 采样，经 `state.snapshot` 只读 RPC 和 `WorldDef.requestContext` 附在当前模型请求尾部。只对已连接的会话附加，退游或换服作废旧会话的在途读取。Driver 在 RPC 返回时提供连接事实。仍在会话中而取样失败、空白或超过 250ms 时，请求附一条不可用说明。观察帧不写入会话历史，不唤醒主体。死亡、断线、私聊、任务完成等事件经各自的事件投递路径送达。批37真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧均为身体当前所在格）。
+
+隔离 Paper 1.21.11 使用受控 Provider，`pnpm dev:mc:native --rhythm-flow` 与 `node dist/.uina/worlds/minecraft/dev/native-host.js --rhythm-flow` 均通过 9 项检查，覆盖入服前、在服、主动退出、重连和服务端踢出，并逐请求核对 Host 快照与模型收到的观察正文。TUI 的观察入口与面板正文由终端渲染测试核对。
 
 批39（2026-11-08）修正批37 的一处判据：安全干预的终态要不要告诉模型，不能看终态值，要看起因。同一句 `ended: invalidated` 有两个来源——连接身份变了（`connection`/`death` 事实已经在说同一件事），或者没有任何别的事实承担的失败（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录）。`RuntimeSafety.cancel(reason, cause)` 由调用点声明起因、`changed(record, cause)` 带出，`companion/safety-route.ts` 的 `safetyNeedsAttention(ended, cause)` 是唯一判定（世界自己关门与连接变了导致的失效不说，其余都说）。起因只在内存里活一次干预的生命周期，不进库——记录本身的 ended/outcome 已经说清发生了什么。
 

@@ -4,7 +4,13 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import type { ContextSnapshot, GenerationTiming, RequestUsage, ThinkingLevel } from "../core/types.js";
+import type {
+	ContextSnapshot,
+	GenerationTiming,
+	RequestObservation,
+	RequestUsage,
+	ThinkingLevel,
+} from "../core/types.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import type {
 	BuiltinUIActionRequest,
@@ -143,6 +149,7 @@ export class UIHost implements UIHostContextPort {
 	private cwd: string;
 	private lastUsage?: RequestUsage;
 	private contextSegments?: ContextSegments;
+	private requestObservations?: readonly RequestObservation[];
 	/** 最近一次有效提示词快照，供对话流与 /prompt 查询共用。 */
 	private promptSnapshot?: PromptContextCardData;
 
@@ -590,6 +597,7 @@ export class UIHost implements UIHostContextPort {
 			inputTokens: this.lastUsage?.promptTokens,
 			cacheWrite: this.lastUsage?.cacheWrite,
 			segments: this.contextSegments,
+			observationCount: this.requestObservations?.length,
 			estimated: !this.usageActual,
 		});
 	}
@@ -599,6 +607,7 @@ export class UIHost implements UIHostContextPort {
 		this.contextWindow = snapshot.contextWindow && snapshot.contextWindow > 0 ? snapshot.contextWindow : undefined;
 		this.usageActual = snapshot.measurementKind === "exact";
 		this.contextSegments = snapshot.segments;
+		this.requestObservations = snapshot.requestObservations;
 		this.syncContextComponents();
 		this.requestRender();
 	}
@@ -616,9 +625,10 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** 会话回溯：旧请求的 usage 与缓存属于被丢弃的未来，显式清空。 */
+	/** 会话回溯：清空被丢弃请求的用量与观察。 */
 	clearRequestUsage(): void {
 		this.lastUsage = undefined;
+		this.requestObservations = undefined;
 		this.usageActual = false;
 		this.syncContextComponents();
 		this.requestRender();
@@ -732,6 +742,10 @@ export class UIHost implements UIHostContextPort {
 
 	getPromptSnapshot(): PromptContextCardData | undefined {
 		return this.promptSnapshot;
+	}
+
+	getRequestObservations(): readonly RequestObservation[] | undefined {
+		return this.requestObservations;
 	}
 
 	addExternalInput(input: ExternalContextCardData): void {

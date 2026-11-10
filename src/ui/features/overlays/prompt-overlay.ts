@@ -1,18 +1,24 @@
+import type { RequestObservation } from "../../../core/types.js";
 import { ContextCardComponent, type PromptContextCardData } from "../../components/transcript/context-card.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 import { hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
+import { wrapLine } from "../../layout/fit.js";
 import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
 
-/** /prompt 查询面板：展示最近一次真正用于模型请求的最终 system prompt。 */
+/** /prompt 查询面板：回合提示词与最近一次请求附带的世界观察。 */
 export class PromptOverlay implements Component, Focusable {
 	focused = true;
 	onClose?: () => void;
 	private offset = 0;
 	private totalLines = 0;
 
-	constructor(private readonly snapshot?: PromptContextCardData) {}
+	constructor(
+		private readonly snapshot?: PromptContextCardData,
+		private readonly getObservations?: () => readonly RequestObservation[] | undefined,
+	) {}
 
 	keymap(): Keymap {
 		return {
@@ -66,30 +72,36 @@ export class PromptOverlay implements Component, Focusable {
 		const leftPad = width >= 64 ? 2 : 0;
 		const boxWidth = Math.max(1, Math.min(width - leftPad, 112));
 		const innerW = Math.max(1, panelInnerWidth(boxWidth));
-		const body: string[] = [];
-		let footer = `${C.inactive}${"Esc 关闭"}${C.reset}`;
+		const lines: string[] = [];
+		const observations = this.getObservations?.();
+		if (observations !== undefined) {
+			lines.push(...wrapLine(`${C.bold}最近一次模型请求 · 世界观察${C.reset}`, innerW));
+			if (observations.length === 0) lines.push(...wrapLine("未附加世界观察", innerW));
+			for (const { source, text } of observations) {
+				lines.push(...wrapLine(`${C.cyan}${sanitizeRenderText(source)}${C.reset}`, innerW));
+				lines.push(...wrapLine(sanitizeRenderText(text), innerW));
+			}
+			lines.push("");
+		}
 		if (this.snapshot) {
 			const card = new ContextCardComponent({ ...this.snapshot, id: this.snapshot.id ?? "prompt-current" });
 			card.toggle();
-			const lines = card.render(innerW);
-			this.totalLines = lines.length;
-			// 顶边框 + 底边框 + 页脚行占 3 行，其余给卡片正文
-			const bodyHeight = Math.max(1, height - 3);
-			const maxOffset = Math.max(0, lines.length - bodyHeight);
-			this.offset = Math.min(this.offset, maxOffset);
-			body.push(...lines.slice(this.offset, this.offset + bodyHeight));
-			// F3：位置指示——页脚声明的能力与真实滚动状态一致
-			const first = Math.min(lines.length, this.offset + 1);
-			const last = Math.min(lines.length, this.offset + bodyHeight);
-			// F3：页脚由键位表生成 + 位置指示，声明与真实滚动状态一致
-			footer = `${C.inactive}${hintsFor(this.keymap(), innerW)} · 第 ${first}-${last}/${lines.length} 行${C.reset}`;
+			lines.push(...card.render(innerW));
 		} else {
-			body.push(`${C.inactive}当前还没有模型回合，暂无提示词快照${C.reset}`);
+			lines.push(`${C.inactive}暂无系统提示词快照${C.reset}`);
 		}
+		this.totalLines = lines.length;
+		const bodyHeight = Math.max(1, height - 3);
+		this.offset = Math.min(this.offset, Math.max(0, lines.length - bodyHeight));
+		const last = Math.min(lines.length, this.offset + bodyHeight);
+		const footer =
+			lines.length > bodyHeight
+				? `${hintsFor(this.keymap(), innerW)} · 第 ${this.offset + 1}-${last}/${lines.length} 行`
+				: "Esc 关闭";
 		return renderPanel({
 			title: "提示词查询 · /prompt",
-			body,
-			footer,
+			body: lines.slice(this.offset, this.offset + bodyHeight),
+			footer: `${C.inactive}${footer}${C.reset}`,
 			boxWidth,
 			leftPad,
 			titleColor: `${C.bold}${C.suggestion}`,
