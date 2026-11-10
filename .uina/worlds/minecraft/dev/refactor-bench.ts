@@ -7,12 +7,12 @@ import { openHarness, sleep } from "./harness.js";
 import { makeScenario } from "./scenario.js";
 
 const argument = process.argv[2] ?? "10";
-const disconnectMode =
-	argument === "--disconnect-native" ? "native" : argument === "--disconnect-program" ? "program" : null;
+const disconnect = argument === "--disconnect";
 const faults = argument === "--faults";
-const rounds = faults || disconnectMode ? 0 : Number(argument);
+const partial = argument === "--partial";
+const rounds = faults || partial || disconnect ? 0 : Number(argument);
 assert(
-	Number.isInteger(rounds) && (rounds >= 1 || faults || disconnectMode),
+	Number.isInteger(rounds) && (rounds >= 1 || faults || partial || disconnect),
 	"pass a positive round count or a fault scenario",
 );
 const fence = String.fromCharCode(96).repeat(3);
@@ -50,8 +50,7 @@ async function run(entry: Entry) {
 }
 
 const program = (code: string, input: Entry["input"]): Entry => ({ kind: "program", source: { code }, input });
-const gathering = (mode: "program" | "native", input: Entry["input"]): Entry =>
-	mode === "program" ? program(collect, input) : { kind: "call", selector: "collect@1", input };
+const gathering = (input: Entry["input"]): Entry => ({ kind: "call", selector: "collect@1", input });
 async function reset(tools: string | null) {
 	await s.command(`/gamemode creative ${user}`);
 	await s.command(`/tp ${user} 8.5 100 8.5`);
@@ -68,7 +67,7 @@ try {
 	await s.command("/fill 4 99 4 29 99 13 stone");
 	await s.command("/time set day");
 
-	if (disconnectMode) {
+	if (disconnect) {
 		await reset("diamond_axe 1");
 		await s.command("/fill 12 100 8 13 100 8 oak_log");
 		const client = h.bot._client;
@@ -81,42 +80,48 @@ try {
 				h.bot.end("refactor probe: disconnected immediately after dig dispatch");
 			}
 		};
-		const result = await run(gathering(disconnectMode, { item: "oak_log", count: 2, radius: 8 }));
+		const result = await run(gathering({ item: "oak_log", count: 2, radius: 8 }));
 		assert.equal(dispatched, 1);
 		assert(result.snapshot.phase === "finished" && result.snapshot.outcome !== "succeeded", JSON.stringify(result));
 		assert(result.snapshot.unknownEffectCount > 0, JSON.stringify(result));
-		console.log("BENCH disconnect " + JSON.stringify({ mode: disconnectMode, dispatched, snapshot: result.snapshot }));
+		console.log("BENCH disconnect " + JSON.stringify({ dispatched, snapshot: result.snapshot }));
+	} else if (partial) {
+		await reset("diamond_axe 1");
+		await s.command("/fill 12 100 8 27 100 8 air");
+		await s.command("/setblock 12 106 8 air");
+		await s.command("/setblock 12 100 8 oak_log");
+		const result = await run(gathering({ item: "oak_log", radius: 8, count: 2 }));
+		const after = await s.serverInventory();
+		assert(after.source === "server" && after.counts.oak_log === 1, JSON.stringify(after));
+		assert(result.snapshot.phase === "finished" && result.snapshot.outcome === "failed", JSON.stringify(result));
+		console.log("BENCH partial " + JSON.stringify({ after, ...result }));
 	} else if (faults) {
-		for (const mode of ["native", "program"] as const) {
-			for (const fault of ["full", "missing-tool", "existing-drop", "unreachable"] as const) {
-				await reset(fault === "full" ? "cobblestone 2304" : fault === "missing-tool" ? null : "diamond_axe 1");
-				await s.command("/fill 12 100 8 27 100 8 air");
-				await s.command("/setblock 12 100 8 air");
-				await s.command("/setblock 12 120 8 air");
-				const item = fault === "missing-tool" ? "raw_iron" : "oak_log";
-				const y = fault === "unreachable" ? 120 : 100;
-				const block = fault === "missing-tool" ? "iron_ore" : "oak_log";
-				await s.command("/setblock 12 " + y + " 8 " + block);
-				if (fault === "existing-drop")
-					await s.command('/summon item 10.5 100 8.5 {Item:{id:"minecraft:oak_log",count:1}}');
-				const result = await run(gathering(mode, { item, radius: 8, count: 1 }));
-				const unchanged = await s.serverBlock({ x: 12, y, z: 8 }, block);
-				assert(result.snapshot.phase === "finished" || result.snapshot.phase === "awaiting_decision");
-				if (fault !== "existing-drop") {
-					assert(unchanged, JSON.stringify(result));
-					assert(
-						result.snapshot.phase !== "finished" || result.snapshot.outcome !== "succeeded",
-						JSON.stringify(result),
-					);
-				} else {
-					const inventory = await s.serverInventory();
-					assert.equal(inventory.source, "server");
-					assert((inventory.counts.oak_log ?? 0) >= 1, JSON.stringify(inventory));
-				}
-				console.log(
-					"BENCH fault " + JSON.stringify({ mode, fault, unchanged, snapshot: result.snapshot, detail: result.detail }),
-				);
+		for (const fault of ["full", "missing-tool", "existing-drop", "unreachable"] as const) {
+			await reset(fault === "full" ? "cobblestone 2304" : fault === "missing-tool" ? null : "diamond_axe 1");
+			await s.command("/fill 12 100 8 27 100 8 air");
+			await s.command("/setblock 12 100 8 air");
+			await s.command("/setblock 12 106 8 air");
+			const item = fault === "missing-tool" ? "raw_iron" : "oak_log";
+			const y = fault === "unreachable" ? 106 : 100;
+			const block = fault === "missing-tool" ? "iron_ore" : "oak_log";
+			await s.command("/setblock 12 " + y + " 8 " + block);
+			if (fault === "existing-drop")
+				await s.command('/summon item 10.5 100 8.5 {Item:{id:"minecraft:oak_log",count:1}}');
+			if (fault === "unreachable") assert((await s.readBlocks(block, 8)).some(({ position }) => position.y === y));
+			const result = await run(gathering({ item, radius: 8, count: 1 }));
+			const unchanged = await s.serverBlock({ x: 12, y, z: 8 }, block);
+			assert(result.snapshot.phase === "finished" || result.snapshot.phase === "awaiting_decision");
+			if (fault !== "existing-drop") {
+				assert(unchanged, JSON.stringify(result));
+				assert(result.snapshot.phase !== "finished" || result.snapshot.outcome !== "succeeded", JSON.stringify(result));
+			} else {
+				const inventory = await s.serverInventory();
+				assert.equal(inventory.source, "server");
+				assert((inventory.counts.oak_log ?? 0) >= 1, JSON.stringify(inventory));
 			}
+			console.log(
+				"BENCH fault " + JSON.stringify({ fault, unchanged, snapshot: result.snapshot, detail: result.detail }),
+			);
 		}
 	} else {
 		await reset("oak_log 1");
@@ -156,27 +161,23 @@ try {
 		assert.equal(widened.counts.oak_log, 1);
 		console.log("BENCH copied Program: edited radius changed the server outcome");
 
-		const samples = { program: [] as number[], native: [] as number[] };
+		const samples: number[] = [];
 		for (let index = 0; index < rounds; index++) {
-			const modes = index % 2 === 0 ? (["native", "program"] as const) : (["program", "native"] as const);
-			for (const mode of modes) {
-				await reset("diamond_axe 1");
-				await s.command("/fill 12 100 8 27 100 8 oak_log");
-				const before = await s.serverInventory();
-				assert.equal(before.source, "server");
-				assert.equal(before.counts.oak_log ?? 0, 0);
-				const input = { item: "oak_log", radius: 32, count: 16 };
-				const result = await run(gathering(mode, input));
-				const after = await s.serverInventory();
-				console.log(
-					"BENCH " +
-						JSON.stringify({ index: index + 1, mode, elapsedMs: result.elapsedMs, after, detail: result.detail }),
-				);
-				assert(result.snapshot.phase === "finished" && result.snapshot.outcome === "succeeded", JSON.stringify(result));
-				assert.equal(after.source, "server");
-				assert.equal(after.counts.oak_log, 16);
-				samples[mode].push(result.elapsedMs);
-			}
+			await reset("diamond_axe 1");
+			await s.command("/fill 12 100 8 27 100 8 oak_log");
+			const before = await s.serverInventory();
+			assert.equal(before.source, "server");
+			assert.equal(before.counts.oak_log ?? 0, 0);
+			const input = { item: "oak_log", radius: 32, count: 16 };
+			const result = await run(gathering(input));
+			const after = await s.serverInventory();
+			console.log(
+				"BENCH " + JSON.stringify({ index: index + 1, elapsedMs: result.elapsedMs, after, detail: result.detail }),
+			);
+			assert(result.snapshot.phase === "finished" && result.snapshot.outcome === "succeeded", JSON.stringify(result));
+			assert.equal(after.source, "server");
+			assert.equal(after.counts.oak_log, 16);
+			samples.push(result.elapsedMs);
 		}
 		const stats = (values: number[]) => {
 			const sorted = [...values].sort((a, b) => a - b);
@@ -185,17 +186,7 @@ try {
 				p90: sorted[Math.ceil(sorted.length * 0.9) - 1]!,
 			};
 		};
-		const native = stats(samples.native);
-		const guest = stats(samples.program);
-		console.log(
-			"BENCH summary " +
-				JSON.stringify({
-					rounds,
-					native,
-					program: guest,
-					withinBudget: guest.median <= native.median * 1.15 && guest.p90 <= native.p90 * 1.25,
-				}),
-		);
+		console.log("BENCH summary " + JSON.stringify({ rounds, ...stats(samples) }));
 	}
 } finally {
 	await h.close();

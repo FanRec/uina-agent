@@ -11,7 +11,7 @@
 
 import { Worker } from "node:worker_threads";
 import type { ControlOwner, PlayerPort } from "../contracts/body.js";
-import type { NativeCallable } from "../contracts/capabilities.js";
+import type { NativeCallable, ProgramCallable } from "../contracts/capabilities.js";
 import type {
 	Acceptance,
 	CallSummary,
@@ -67,6 +67,7 @@ export interface MinecraftRuntimeOptions {
 	world: WorldPort;
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
+	programs?: ProgramCallable[];
 	program?: import("../contracts/program.js").ProgramPort;
 	queryRefs?: string[];
 	environment?: { serverVersion: string; protocol: number };
@@ -218,6 +219,7 @@ export class MinecraftRuntime {
 			world: opts.world,
 			playerPort: opts.playerPort,
 			callables: opts.callables,
+			programs: opts.programs,
 			program: opts.program,
 			queryRefs: opts.queryRefs,
 			worldOwner: opts.worldOwner,

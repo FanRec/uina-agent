@@ -35,6 +35,7 @@ export interface ProgramDiagnostic {
 	line?: number;
 	column?: number;
 	guestStack?: string[];
+	declared?: true;
 	consoleTail?: string[];
 	hint?: string;
 }

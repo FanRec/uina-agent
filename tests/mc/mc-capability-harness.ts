@@ -578,7 +578,7 @@ export function makeHarness(state: HarnessState, hooks: HarnessHooks = {}) {
 		if (found == null) throw new Error(`no callable ${ref}`);
 		return found;
 	};
-	return { ctx, calls, callable, bodyAcquired: () => bodyAcquired };
+	return { ctx, calls, callable, knowledge: hooks.knowledge ?? knowledge, bodyAcquired: () => bodyAcquired };
 }
 
 /** 捕获 CallFailure；调用未失败时显式失败。实现收编在 mc-native-fixture。 */

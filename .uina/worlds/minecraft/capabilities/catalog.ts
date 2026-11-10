@@ -14,12 +14,14 @@ import type { ValidateFunction } from "ajv";
 import type {
 	CallableDescriptor,
 	NativeCallable,
+	ProgramCallable,
 	QueryDescriptor,
 	QueryReader,
 	QueryValidator,
 } from "../contracts/capabilities.js";
 import type { ExactRef, JsonValue, Ref } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
+import { parseProgramSource } from "../library/program-source.js";
 import type { CapabilityDeps } from "./deps.js";
 
 /** 动作绑定只返回 invoke；最终 NativeCallable 由目录用同一 descriptor 组装。 */
@@ -27,7 +29,8 @@ export type CapabilityInvoke = NativeCallable<JsonValue, JsonValue>["invoke"];
 
 export type CapabilityDefinition =
 	| { kind: "query"; descriptor: QueryDescriptor; bind(deps: CapabilityDeps): QueryReader | null }
-	| { kind: "action"; descriptor: CallableDescriptor; bind(deps: CapabilityDeps): CapabilityInvoke };
+	| { kind: "action"; descriptor: CallableDescriptor; bind(deps: CapabilityDeps): CapabilityInvoke }
+	| { kind: "program"; descriptor: CallableDescriptor; source: string };
 
 export interface MinecraftCapabilityModule {
 	id: string;
@@ -42,6 +45,7 @@ export interface BuiltCapabilities {
 	/** World executes this boundary before any current/static/history dispatch. */
 	validators: ReadonlyMap<ExactRef, QueryValidator>;
 	callables: NativeCallable<JsonValue, JsonValue>[];
+	programs: ProgramCallable[];
 	refs: Ref[];
 }
 
@@ -71,6 +75,14 @@ function queryValidator(ref: ExactRef, ajv: AjvLike, validate: ValidateFunction)
 	};
 }
 
+function freezeContract<T>(value: T): T {
+	if (value != null && typeof value === "object" && !Object.isFrozen(value)) {
+		Object.freeze(value);
+		for (const member of Object.values(value)) freezeContract(member);
+	}
+	return value;
+}
+
 export class CapabilityCatalog {
 	private readonly defs: readonly CapabilityDefinition[];
 	private readonly descriptors: readonly (QueryDescriptor | CallableDescriptor)[];
@@ -86,7 +98,11 @@ export class CapabilityCatalog {
 			if (module.id.length === 0) throw new Error("capability module id must not be empty");
 			if (seenIds.has(module.id)) throw new Error(`duplicate capability module id: ${module.id}`);
 			seenIds.add(module.id);
-			for (const definition of module.definitions) {
+			for (const contribution of module.definitions) {
+				const definition = {
+					...contribution,
+					descriptor: freezeContract(structuredClone(contribution.descriptor)),
+				} as CapabilityDefinition;
 				const { ref } = definition.descriptor;
 				if (byRef.has(ref)) throw new Error(`duplicate capability ref: ${ref}`);
 				byRef.set(ref, definition);
@@ -115,7 +131,7 @@ export class CapabilityCatalog {
 			}
 		}
 		this.defs = defs;
-		this.descriptors = defs.map((definition) => definition.descriptor);
+		this.descriptors = Object.freeze(defs.map((definition) => definition.descriptor));
 		this.queryValidators = validators;
 	}
 
@@ -133,17 +149,23 @@ export class CapabilityCatalog {
 		const queries: QueryDescriptor[] = [];
 		const readers = new Map<ExactRef, QueryReader>();
 		const callables: NativeCallable<JsonValue, JsonValue>[] = [];
-		const actionRefs = new Set<string>();
+		const programs: ProgramCallable[] = [];
+		const actionRefs: Ref[] = [];
 		for (const definition of this.defs) {
 			if (definition.kind === "query") {
 				queries.push(definition.descriptor);
 				const reader = definition.bind(deps);
 				if (reader != null) readers.set(definition.descriptor.ref, reader);
 			} else {
-				callables.push({ descriptor: definition.descriptor, invoke: definition.bind(deps) });
-				actionRefs.add(definition.descriptor.ref);
+				actionRefs.push(definition.descriptor.ref);
+				if (definition.kind === "program")
+					programs.push({
+						descriptor: definition.descriptor,
+						program: freezeContract(parseProgramSource(definition.source, null)),
+					});
+				else callables.push({ descriptor: definition.descriptor, invoke: definition.bind(deps) });
 			}
 		}
-		return { queries, readers, validators: this.queryValidators, callables, refs: [...actionRefs] };
+		return { queries, readers, validators: this.queryValidators, callables, programs, refs: actionRefs };
 	}
 }

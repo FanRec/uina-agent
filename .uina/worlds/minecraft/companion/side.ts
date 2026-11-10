@@ -284,6 +284,7 @@ export async function openExecutionSide(
 			world,
 			playerPort,
 			callables: capabilities.callables,
+			programs: capabilities.programs,
 			queryRefs: capabilities.queries.map((q) => q.ref),
 			program,
 			protocol: protocolWrite,

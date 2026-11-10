@@ -22,7 +22,7 @@ export interface CallableDescriptor {
 	errors: { code: string; meaning: string }[];
 	requires: string[];
 	examples: { input: JsonValue; output: JsonValue }[];
-	implementation: "native";
+	implementation: "native" | "program";
 }
 
 export interface Availability {
@@ -136,6 +136,11 @@ export type QueryReader =
 			cursor?: "observed" | "none";
 	  }
 	| { kind: "static"; read: (input: JsonValue) => Fact<unknown> };
+
+export interface ProgramCallable {
+	descriptor: CallableDescriptor;
+	program: import("./program.js").ResolvedProgram;
+}
 
 export interface NativeCallable<I, O> {
 	descriptor: CallableDescriptor;

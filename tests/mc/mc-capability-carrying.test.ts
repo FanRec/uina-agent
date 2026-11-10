@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
-import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { approachKind, mineKind } from "../../.uina/worlds/minecraft/capabilities/actions/carrying.js";
+import { runInNewContext } from "node:vm";
+import { collectProgram } from "../../.uina/worlds/minecraft/program/collect.js";
+import type { Progress } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { type EntityFixture, failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /**
@@ -38,6 +40,55 @@ function itemEntity(
 	};
 }
 
+const main = runInNewContext(collectProgram + "\nmain") as (mc: object, input: JsonValue) => Promise<JsonValue>;
+
+function collect(harness: ReturnType<typeof makeHarness>, input: JsonValue, state?: HarnessState): Promise<JsonValue> {
+	let progress: Progress | undefined;
+	return main(
+		{
+			async read(ref: string, input: JsonValue = {}) {
+				if (ref === "item@1") {
+					const item = harness.knowledge.item((input as { name: string }).name);
+					if (!item)
+						throw callFailure({
+							code: "NOT_FOUND",
+							source: "capability",
+							message: "unknown item",
+							dispatch: "not_sent",
+							effects: [],
+							recoverable: false,
+						});
+					return { value: item };
+				}
+				const result = await harness.ctx.world.read({ ref: ref as ExactRef, input });
+				if (ref === "inventory@1" && state) {
+					const occupied = state.inventory.slots.filter(({ slot }) => slot >= 9 && slot <= 44).length;
+					return { ...result, value: { ...state.inventory, freeSlots: 36 - occupied } };
+				}
+				return result;
+			},
+			call: harness.ctx.call,
+			waitUntil: async () => undefined,
+			progress(value: Progress) {
+				progress = value;
+			},
+			fail(code: string, message: string, hint?: string) {
+				throw callFailure({
+					code,
+					source: "capability",
+					message,
+					hint,
+					dispatch: "not_sent",
+					effects: [],
+					recoverable: false,
+					progress,
+				});
+			},
+		},
+		input,
+	);
+}
+
 describe("collect@1", () => {
 	test("挖够数量即停；acquired 只算本次新增入包", async () => {
 		const state: HarnessState = {
@@ -53,7 +104,7 @@ describe("collect@1", () => {
 				give(state, "dirt", 1);
 			},
 		});
-		const result = (await harness.callable("collect@1").invoke(harness.ctx, {
+		const result = (await collect(harness, {
 			item: "dirt",
 			count: 2,
 		} as JsonValue)) as {
@@ -79,9 +130,7 @@ describe("collect@1", () => {
 				give(state, "dirt", 1);
 			},
 		});
-		const err = await failureOf(
-			harness.callable("collect@1").invoke(harness.ctx, { item: "dirt", count: 3 } as JsonValue),
-		);
+		const err = await failureOf(collect(harness, { item: "dirt", count: 3 } as JsonValue));
 		expect(err.code).toBe("NOT_FOUND");
 		expect(err.progress).toMatchObject({
 			mined: 1,
@@ -96,9 +145,7 @@ describe("collect@1", () => {
 			inventory: { slots: [], counts: {} },
 		};
 		const harness = makeHarness(state);
-		const err = await failureOf(
-			harness.callable("collect@1").invoke(harness.ctx, { item: "cobblestone", count: 1 } as JsonValue),
-		);
+		const err = await failureOf(collect(harness, { item: "cobblestone", count: 1 } as JsonValue));
 		expect(err.code).toBe("MISSING_TOOL");
 		expect(err.hint).toContain("wooden_pickaxe");
 		expect(harness.calls).toEqual([]);
@@ -113,9 +160,7 @@ describe("collect@1", () => {
 			inventory: { slots, counts: { stone: 36 * 64 } },
 		};
 		const harness = makeHarness(state);
-		const err = await failureOf(
-			harness.callable("collect@1").invoke(harness.ctx, { item: "dirt", count: 1 } as JsonValue),
-		);
+		const err = await failureOf(collect(harness, { item: "dirt", count: 1 }, state));
 		expect(err.code).toBe("INVENTORY_FULL");
 		expect(harness.calls).toEqual([]);
 	});
@@ -123,12 +168,10 @@ describe("collect@1", () => {
 	test("未知物品、或物品没有方块来源 → NOT_FOUND（两种原因分开说）", async () => {
 		const state: HarnessState = { blocks: new Map(), inventory: { slots: [], counts: {} } };
 		const harness = makeHarness(state);
-		const unknown = await failureOf(
-			harness.callable("collect@1").invoke(harness.ctx, { item: "unobtainium" } as JsonValue),
-		);
+		const unknown = await failureOf(collect(harness, { item: "unobtainium" } as JsonValue));
 		expect(unknown.code).toBe("NOT_FOUND");
 		expect(unknown.message).toContain("unknown item");
-		const noSource = await failureOf(harness.callable("collect@1").invoke(harness.ctx, { item: "bread" } as JsonValue));
+		const noSource = await failureOf(collect(harness, { item: "bread" } as JsonValue));
 		expect(noSource.code).toBe("NOT_FOUND");
 		expect(noSource.message).toContain("no block source");
 	});
@@ -144,7 +187,7 @@ describe("collect@1", () => {
 				give(state, "cobblestone", 1);
 			},
 		});
-		const result = (await harness.callable("collect@1").invoke(harness.ctx, {
+		const result = (await collect(harness, {
 			item: "cobblestone",
 			count: 1,
 		} as JsonValue)) as { mined: number; toolsUsed: string[] };
@@ -416,28 +459,41 @@ describe("drop@1", () => {
 	});
 });
 
-/**
- * C10：候选失败分类是 collect 的安全边界。
- * 移动超时（goto）不修改世界，可以换候选；挖源方块超时若已派发/已有 effect，
- * 结果未知，必须停止该副作用链，不能跳到别的候选假装没发生。
- */
-describe("collect candidate failure classification (C10)", () => {
-	test("a dispatched mine TIMEOUT is unknown, never skippable", () => {
-		expect(mineKind({ code: "TIMEOUT", dispatch: "sent", effects: [] })).toBe("unknown");
-		expect(mineKind({ code: "TIMEOUT", dispatch: "unknown", effects: ["eff:1"] })).toBe("unknown");
-		// 未派发的超时只是预算问题，可换候选。
-		expect(mineKind({ code: "TIMEOUT", dispatch: "not_sent", effects: [] })).toBe("transient");
-		expect(mineKind({ code: "UNREACHABLE", dispatch: "not_sent", effects: [] })).toBe("transient");
-		expect(mineKind({ code: "NOT_FOUND", dispatch: "not_sent", effects: [] })).toBe("permanent");
-		// 未知错误不吞：交给上层。
-		expect(mineKind({ code: "INTERNAL", dispatch: "not_sent", effects: [] })).toBeNull();
+test.each(["sent", "unknown"] as const)("collect stops after a mine with %s dispatch", async (dispatch) => {
+	const calls: string[] = [];
+	const failure = callFailure({
+		code: "TIMEOUT",
+		source: "capability",
+		message: "mine timed out",
+		dispatch,
+		effects: [],
+		recoverable: true,
 	});
-
-	test("approach failures are route-only and never world side effects", () => {
-		// goto 即使报了 sent，也只是移动；换候选不会漏掉已发生的世界修改。
-		expect(approachKind({ code: "TIMEOUT", dispatch: "sent", effects: ["eff:goto"] })).toBe("transient");
-		expect(approachKind({ code: "UNREACHABLE" })).toBe("transient");
-		expect(approachKind({ code: "NOT_FOUND" })).toBe("permanent");
-		expect(approachKind({ code: "CONTROL_CONFLICT" })).toBeNull();
-	});
+	await expect(
+		main(
+			{
+				async read(ref: string) {
+					switch (ref) {
+						case "item@1":
+							return { value: { name: "dirt", sources: [{ kind: "block", block: "dirt", harvest: { kind: "any" } }] } };
+						case "inventory@1":
+							return { value: { counts: {}, slots: [] } };
+						case "self@1":
+							return { value: { place: { position: { x: 10, y: 64, z: 10 } } } };
+						case "blocks@1":
+							return { value: { blocks: [11, 12].map((z) => ({ position: { x: 10, y: 64, z } })) } };
+						default:
+							throw new Error(ref);
+					}
+				},
+				call(ref: string) {
+					calls.push(ref);
+					throw failure;
+				},
+				progress() {},
+			},
+			{ item: "dirt", count: 2 },
+		),
+	).rejects.toBe(failure);
+	expect(calls).toEqual(["mine@1"]);
 });

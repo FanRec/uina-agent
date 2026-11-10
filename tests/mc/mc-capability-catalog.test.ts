@@ -56,7 +56,8 @@ describe("能力目录", () => {
 	test("bind 产出与目录同源：18 查询 / 36 动作 / refs 只含动作", () => {
 		const built = createCapabilityCatalog().bind(noopDeps);
 		expect(built.queries).toHaveLength(18);
-		expect(built.callables).toHaveLength(36);
+		expect(built.callables).toHaveLength(35);
+		expect(built.programs.map(({ descriptor }) => descriptor.ref)).toEqual(["collect@1"]);
 		expect(built.refs).toHaveLength(36);
 		expect(new Set(built.refs).size).toBe(36);
 		// query reader 与 descriptor 同一清单：self@1 有 reader，events@1 由 World 读取。
@@ -134,7 +135,8 @@ describe("能力目录", () => {
 		const built = catalog.bind(noopDeps);
 		expect(built.queries).toHaveLength(19);
 		// testModule 只注入一个查询：动作数不变。
-		expect(built.callables).toHaveLength(36);
+		expect(built.callables).toHaveLength(35);
+		expect(built.programs.map(({ descriptor }) => descriptor.ref)).toEqual(["collect@1"]);
 		const reader = built.readers.get("test.echo@1");
 		expect(reader?.kind).toBe("static");
 		// 注入不得扰动内置：重建纯内置目录，ref 集与默认目录一致。

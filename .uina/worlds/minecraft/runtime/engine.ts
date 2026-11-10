@@ -18,6 +18,7 @@ import type {
 	BodyCallScope,
 	CallContext,
 	NativeCallable,
+	ProgramCallable,
 	ProtocolWriteBinding,
 	ProtocolWritePort,
 } from "../contracts/capabilities.js";
@@ -184,6 +185,7 @@ export interface EngineOptions {
 	world: WorldPort;
 	playerPort: PlayerPort;
 	callables: NativeCallable<JsonValue, JsonValue>[];
+	programs?: ProgramCallable[];
 	program?: ProgramPort;
 	queryRefs?: string[];
 	worldOwner: Ref;
@@ -209,7 +211,7 @@ export class RuntimeEngine {
 	private readonly als = new AsyncLocalStorage<CallFrame>();
 	private readonly ajv = new AjvCtor({ strict: false, allErrors: true, addUsedSchema: false });
 	private readonly validatorCache = new Map<string, ValidateFunction>();
-	private readonly byRef = new Map<Ref, NativeCallable<JsonValue, JsonValue>>();
+	private readonly byRef = new Map<Ref, NativeCallable<JsonValue, JsonValue> | ProgramCallable>();
 	private readonly runs = new Map<Ref, RunState>();
 	private readonly submissions = new Map<Ref, SubmissionState>();
 	private readonly byRequestId = new Map<Ref, SubmissionState>();
@@ -287,7 +289,7 @@ export class RuntimeEngine {
 			onClose: () => this.stopAll(),
 			control: () => this.controlState(),
 		});
-		for (const callable of opts.callables) {
+		for (const callable of [...opts.callables, ...(opts.programs ?? [])]) {
 			const existing = this.byRef.get(callable.descriptor.ref);
 			if (existing != null) {
 				throw new Error(`duplicate callable ref: ${callable.descriptor.ref}`);
@@ -1730,6 +1732,26 @@ export class RuntimeEngine {
 				if (result.kind === "decision") throw createDecisionError(result.request);
 				if ("scope" in result.failure) callState.diagnostic = result.failure;
 				const f = result.failure;
+				if ("declared" in f && f.declared) {
+					const allowed = invocation.descriptor?.errors?.some((error) => error.code === f.code);
+					if (!allowed) throw this.scopeError("PROGRAM_ERROR", "program failure code is not declared: " + f.code);
+					const effects = this.callEffects(callState);
+					const dispatch = effects.some((ref) => this.queue.effectRecord(ref)?.latest.dispatch === "unknown")
+						? "unknown"
+						: effects.some((ref) => this.queue.effectRecord(ref)?.latest.dispatch === "sent")
+							? "sent"
+							: "not_sent";
+					throw callFailure({
+						code: f.code,
+						message: f.message,
+						hint: f.hint,
+						source: "capability",
+						dispatch,
+						effects,
+						progress: callState.progress,
+						recoverable: true,
+					});
+				}
 				throw callFailure({
 					...f,
 					dispatch: "dispatch" in f ? f.dispatch : "not_sent",
@@ -1737,7 +1759,10 @@ export class RuntimeEngine {
 					recoverable: "recoverable" in f ? f.recoverable : true,
 				});
 			});
-			const validate = this.validatorFor(callState.callable.outputSchema, `${callState.callable.digest}:out`);
+			const validate = this.validatorFor(
+				callState.callable.outputSchema,
+				`${callState.callable.ref}:${callState.callable.digest}:out`,
+			);
 			if (!validate(raw)) {
 				throw callFailure({
 					code: "INTERNAL",
@@ -2188,18 +2213,17 @@ export class RuntimeEngine {
 	 * 上层不能再等旧 work，不证明它没有派发。只有"已记录且明确 not_sent"才算没派发；
 	 * 这里保守取 unknown / sent，并把已有 effect refs 全部保留。
 	 */
+	private callEffects(call: CallState): Ref[] {
+		return [...this.queue.effectsForCall(call.call), ...[...call.children].flatMap((child) => this.callEffects(child))];
+	}
+
 	private retirementFailure(
 		callState: CallState,
 		state: RunState,
 		explicit: ControlRetirementNotice | null,
 	): CallFailure {
 		const notice = explicit ?? state.retiredBy ?? this.notice("unknown", "runtime:interrupt", state.run);
-		const refs: Ref[] = [];
-		const collect = (call: CallState): void => {
-			refs.push(...this.queue.effectsForCall(call.call));
-			for (const child of call.children) collect(child);
-		};
-		collect(callState);
+		const refs = this.callEffects(callState);
 		const dispatched = refs.some((ref) => {
 			const entry = this.queue.effectRecord(ref);
 			return entry != null && entry.latest.dispatch !== "not_sent";
@@ -2327,12 +2351,13 @@ export class RuntimeEngine {
 					code: "NOT_FOUND",
 					source: "capability",
 					message: `capability ${selector} is not registered`,
-					hint: "programs are not callable in I1; use a registered native capability ref",
+					hint: "use describe to find a registered capability",
 					dispatch: "not_sent",
 					effects: [],
 					recoverable: false,
 				});
 			}
+			if ("program" in callable) return this.prepareProgram(callable.program, run, callable);
 			return {
 				kind: "native",
 				native: callable,
@@ -2352,7 +2377,12 @@ export class RuntimeEngine {
 		if (!this.opts.program) throw this.scopeError("PROGRAM_UNAVAILABLE", "Program is not installed in this Runtime");
 		return this.opts.program;
 	}
-	private async prepareProgram(program: ResolvedProgram, run: string): Promise<ResolvedInvocation> {
+	private async prepareProgram(
+		program: ResolvedProgram,
+		run: string,
+		binding?: ProgramCallable,
+	): Promise<ResolvedInvocation> {
+		const descriptor = binding?.descriptor;
 		const port = this.requireProgram();
 		const validation = await port.validate(program);
 		if (!validation.ok) throw this.scopeError(validation.code, validation.message);
@@ -2361,14 +2391,15 @@ export class RuntimeEngine {
 			kind: "program",
 			program,
 			snapshot: snapshot.path,
-			ref: program.name ?? `code:${program.digest.slice(0, 8)}`,
+			ref: descriptor?.ref ?? program.name ?? `code:${program.digest.slice(0, 8)}`,
 			digest: program.digest,
-			completion: {
+			descriptor,
+			completion: descriptor?.completion ?? {
 				scope: "execution",
 				description: "program returned; world goals depend on its actions and observations",
 			},
-			inputSchema: program.header.input ?? {},
-			outputSchema: program.header.output ?? {},
+			inputSchema: descriptor?.input ?? program.header.input ?? {},
+			outputSchema: descriptor?.output ?? program.header.output ?? {},
 		};
 	}
 
@@ -2383,7 +2414,7 @@ export class RuntimeEngine {
 				recoverable: true,
 			});
 		}
-		const validate = this.validatorFor(descriptor.inputSchema, `${descriptor.digest}:in`);
+		const validate = this.validatorFor(descriptor.inputSchema, `${descriptor.ref}:${descriptor.digest}:in`);
 		if (!validate(input)) {
 			const message = this.ajv.errorsText(validate.errors);
 			throw callFailure({

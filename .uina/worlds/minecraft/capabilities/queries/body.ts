@@ -6,13 +6,14 @@
  * 读不到的字段一律进 unknown（health/food 不填 0，耐久不编造）。
  */
 
-import type { ItemValue } from "../../contracts/body.js";
+import type { ItemSelector, ItemValue } from "../../contracts/body.js";
 import type { ClientFactView, ClientInventoryValue } from "../../contracts/client-facts.js";
+import { matchesItem } from "../../contracts/items.js";
 import type { Fact, JsonSchema, JsonValue } from "../../contracts/values.js";
 import { callFailure } from "../../contracts/values.js";
 import type { CapabilityDefinition, MinecraftCapabilityModule } from "../catalog.js";
 import { factOf } from "../shared/facts.js";
-import { EMPTY_INPUT } from "../shared/schema.js";
+import { EMPTY_INPUT, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
 
 /** 槽位物品：只保留非 null 的字段；字段名仍受 ItemValue 约束。 */
 type SlotItem = Pick<ItemValue, "name" | "count"> & Partial<Pick<ItemValue, "stackSize" | "components" | "durability">>;
@@ -109,6 +110,7 @@ const INVENTORY_INPUT: JsonSchema = {
 	type: "object",
 	properties: {
 		since: { type: "integer", minimum: 0, description: "inventory revision; omit for the full read" },
+		matching: { oneOf: [{ type: "string", minLength: 1 }, ITEM_SELECTOR_SCHEMA] },
 	},
 	additionalProperties: false,
 };
@@ -136,6 +138,7 @@ function fullInventoryFact(
 	meta: { unknown: string[]; source: Fact<unknown>["source"]; basis: Fact<unknown>["basis"] },
 	summary: { counts: Record<string, number>; usedSlots: number; freeSlots: number },
 	extraUnknown: string[],
+	matching?: string | ItemSelector,
 ): Fact<unknown> {
 	const slots: (SlotItem & { slot: number })[] = [];
 	for (const slot of value.slots) if (slot.item != null) slots.push({ slot: slot.slot, ...compactItem(slot.item) });
@@ -144,6 +147,7 @@ function fullInventoryFact(
 			revision: value.revision,
 			layout: value.layout,
 			slots,
+			...(matching == null ? {} : { matchingSlots: slots.filter((slot) => matchesItem(matching, slot)) }),
 			...summary,
 			selectedSlot: value.selectedSlot,
 			...gearOf(value),
@@ -203,10 +207,10 @@ const inventoryDefinition: CapabilityDefinition = {
 			if (inventory.value == null) return inventory as Fact<unknown>;
 			const value = inventory.value;
 			const meta = { unknown: [...inventory.unknown], source: inventory.source, basis: inventory.basis };
-			const since = (input as { since?: number } | null)?.since;
+			const { since, matching } = input as { since?: number; matching?: string | ItemSelector };
 			const fullSlots = value.slots.map((slot) => ({ slot: slot.slot, item: slot.item }));
 			const summary = carrySummary(value, fullSlots);
-			if (since === undefined) return fullInventoryFact(value, meta, summary, []);
+			if (since === undefined || matching !== undefined) return fullInventoryFact(value, meta, summary, [], matching);
 			// 游标超前（含跨进程重启后 revision 归零）：如时报错，不编差量。
 			if (value.revision < since)
 				throw callFailure({

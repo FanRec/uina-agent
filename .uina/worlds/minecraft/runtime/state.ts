@@ -24,6 +24,7 @@ export type ResolvedInvocation = {
 			kind: "program";
 			program: ResolvedProgram;
 			snapshot: string;
+			descriptor?: CallableDescriptor;
 	  }
 );
 

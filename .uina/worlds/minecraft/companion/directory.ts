@@ -23,7 +23,7 @@ export async function describeDirectory(
 	params: DescribeParams,
 	addons: readonly AddonStatus[] = [],
 ) {
-	const native = (d: CallableDescriptor | QueryDescriptor) => ({
+	const capability = (d: CallableDescriptor | QueryDescriptor) => ({
 		kind: "capability",
 		callable: d.access === "act",
 		descriptor: d,
@@ -35,7 +35,7 @@ export async function describeDirectory(
 		if (kind === "capability") {
 			const d = descriptors.find((d) => d.ref === exact);
 			if (!d) throw new RpcError("NOT_FOUND", `capability ${exact} not found`);
-			return native(d);
+			return capability(d);
 		}
 		if (kind === "addon") {
 			const status = addons.find((addon) => addon.id === exact);

@@ -15,6 +15,7 @@ import { buildModule } from "./actions/build.js";
 import { buildingModule } from "./actions/building.js";
 import { carryingModule } from "./actions/carrying.js";
 import { chatModule } from "./actions/chat.js";
+import { collectModule } from "./actions/collect.js";
 import { combatModule } from "./actions/combat.js";
 import { containersModule } from "./actions/containers.js";
 import { craftModule } from "./actions/craft.js";
@@ -80,6 +81,7 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 	interactionModule,
 	combatModule,
 	carryingModule,
+	collectModule,
 	containersModule,
 	craftModule,
 	smeltModule,

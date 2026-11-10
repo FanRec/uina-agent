@@ -150,6 +150,13 @@ export const SHIM = String.raw`(() => {
         if(change.status==='timeout')return final();
       }
     },
+    fail: (code,message,hint) => {
+      if(typeof code!=='string'||!code||typeof message!=='string'||!message||
+        (hint!==undefined&&typeof hint!=='string')) throw error('PROGRAM_INPUT_INVALID','fail requires a code and message');
+      const e=assign(new GuestError(message),{code});
+      failureSet(e,{code,message,hint,source:'program',scope:'call',declared:true});
+      throw e;
+    },
     decide: (reason,cp) => {
       if(typeof reason!=='string' || !trim(reason)) throw error('PROGRAM_INPUT_INVALID','decide requires a nonempty reason');
       const encoded=cp===undefined?undefined:encode(cp);
