@@ -2313,11 +2313,14 @@ export class RuntimeEngine {
 		const current = this.queue.effectRecord(effect);
 		const assessment = current == null ? null : assessEffectFacts(current.facts, current.verifications);
 		const stale = current == null || current.facts.length !== anchor;
+		// 过期时 evidence 也取当前事实投影自己的证据——过期核验的证据留在历史
+		// Verification 里，不与"当前 unknown"的结论混在同一个回执里。
+		const currentEvidence = current?.facts.at(-1)?.evidence ?? [];
 		return {
 			effect,
 			dispatch: assessment?.dispatch ?? "unknown",
 			completion: stale ? (assessment?.completion ?? "unknown") : verdict.completion,
-			evidence: verdict.evidence,
+			evidence: stale ? currentEvidence : verdict.evidence,
 		};
 	}
 

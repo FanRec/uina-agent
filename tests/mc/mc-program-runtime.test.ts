@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { createSuspendError, type JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
 import { readCallSource } from "../../.uina/worlds/minecraft/library/origin.js";
@@ -282,4 +282,94 @@ test("F1: handle close failures surface to the runtime teardown; every handle st
 	expect([...closedWindows].sort()).toEqual(["failing:false", "failing:true", "healthy:false"].sort());
 	expect((captured as { message?: string } | null)?.message).toContain("handle close failed");
 	expect((captured as { message?: string } | null)?.message).toContain("window is wedged");
+});
+
+test("a child smelt-style durable suspend is refused SUSPEND_NOT_ROOT while a root submission still parks", async () => {
+	// 组合契约（§3.4）：持久挂起只允许根原生调用。Program 调用 smelt 风格能力
+	// {wait:"durable"} 必须得到确定的 SUSPEND_NOT_ROOT 失败（Run finished，不挂起、
+	// 不悬挂）；同一能力作为根 Run 提交时照常 awaiting_decision。假 Host 测试覆盖
+	// 不了这条跨 Capability 限制，必须走真实 RuntimeEngine 执行链。
+	const root = await mkdtemp(join(tmpdir(), "uina-suspend-root-"));
+	const program = await createProgram({
+		dataRoot: root,
+		loadProgram: (name) => Promise.reject(new Error(`no library program expected: ${name}`)),
+		onChanged: () => {},
+	});
+	const smeltlike = nativeCallable(
+		"smeltlike@1",
+		async (_ctx, input) => {
+			if ((input as { wait?: unknown }).wait === "durable") {
+				throw createSuspendError({
+					reason: "waiting for the furnace to finish",
+					checkpoint: { item: (input as { item: string }).item },
+					recheckAfterMs: 50,
+					deadlineAfterMs: 60000,
+				});
+			}
+			return { done: true };
+		},
+		{ summary: "smelt-like", completion: { scope: "capability", description: "smelted" } },
+	);
+	const { runtime } = await MinecraftRuntime.open({
+		dbPath: join(root, "runtime.db"),
+		storageId: "suspend",
+		namespace: "prog",
+		worldOwner: "owner",
+		world: {} as WorldPort,
+		playerPort: {
+			acquire: async () => ({ close: async () => {} }) as unknown as BodySession,
+			chat: async () => {
+				throw new Error("unused");
+			},
+		} satisfies PlayerPort,
+		callables: [smeltlike],
+		program,
+	});
+	const origin = { worldOwner: "owner", activation: "activation" };
+	const owner = await runtime.attach(origin);
+	await runtime.setOwnerGate({
+		requestId: "enable",
+		attachment: owner.attachment,
+		gate: "disabled",
+		closed: false,
+		expectedRevision: owner.gateRevision,
+	});
+	try {
+		// 子调用挂起：确定失败 SUSPEND_NOT_ROOT，Run finished，不留 awaiting_decision 悬账。
+		const childAccepted = await runtime.submit(origin, {
+			requestId: "req:child-suspend",
+			schedule: { kind: "enqueue" },
+			entry: {
+				kind: "program",
+				source: {
+					code: "async function main(mc){ return await mc.call('smeltlike@1', { item: 'iron_ingot', wait: 'durable' }); }",
+				},
+				input: {},
+			},
+		});
+		expect(childAccepted.kind).toBe("accepted");
+		if (childAccepted.kind !== "accepted") return;
+		const childResult = await runtime.wait(childAccepted.snapshot.run, { timeoutMs: 5000 });
+		expect(childResult.snapshot).toMatchObject({ phase: "finished", outcome: "failed" });
+		expect(childResult.snapshot.phase === "finished" && childResult.snapshot.error?.code).toBe("SUSPEND_NOT_ROOT");
+		const childCalls = await runtime.listCalls(childAccepted.snapshot.run);
+		const childRecord = await runtime.readRecord(childCalls.items.find((c) => c.ref === "smeltlike@1")!.record);
+		expect(childRecord.kind === "inline" && (childRecord.record.value as { outcome?: string } | null)?.outcome).toBe(
+			"failed",
+		);
+
+		// 同一能力作为根 Run：持久挂起照常工作（awaiting_decision），不是本契约的否定面。
+		const rootAccepted = await runtime.submit(origin, {
+			requestId: "req:root-suspend",
+			schedule: { kind: "enqueue" },
+			entry: { kind: "call", selector: "smeltlike@1", input: { item: "iron_ingot", wait: "durable" } },
+		});
+		expect(rootAccepted.kind).toBe("accepted");
+		if (rootAccepted.kind !== "accepted") return;
+		const rootResult = await runtime.wait(rootAccepted.snapshot.run, { timeoutMs: 5000 });
+		expect(rootResult.snapshot).toMatchObject({ phase: "awaiting_decision" });
+	} finally {
+		await runtime.close().catch(() => {});
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	}
 });

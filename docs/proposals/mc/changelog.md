@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-12 · 跨 Capability 组合契约修正（复查轮）
+
+复查发现"单个 Capability 测试通过 ≠ 跨 Capability 的 Program 组合正确"，本轮修三处组合/一致性问题：
+
+- **P0 备料×smelt 挂起契约**：Program 内调 `smelt@1 {wait:"durable"}` 必然失败——持久挂起只允许根原生调用（SUSPEND_NOT_ROOT）。示例改为 `wait:true`（同步等炉子）；需要跨重启等待时把 `smelt@1 {wait:"durable"}` 单独作为根 Run 提交，不让 Runtime 支持任意嵌套持久挂起。新增真实 RuntimeEngine 组合测试：子调用挂起 → 确定失败 SUSPEND_NOT_ROOT（Run finished 不挂账），同一能力作根 Run 照常 awaiting_decision。
+- **P0 备料×recipe 终产方式**：最终目标被硬编码 `craft@1`，铁锭这类熔炼目标必错。`recipe@1` 的 plan 新增 `action`（选中配方的最终执行方式，furnace→smelt 否则 craft），组合程序按它调用；文档合同同步。备料测试补熔炼终产用例（smelt@1 + wait:true，绝不 durable）。
+- **P2 过期核验的回执一致性**：核验期间被晚到事实作废时，返回的 evidence 不再沿用旧核验的成功证据（避免"completion: unknown + 旧成功证据"的矛盾表达），改为当前事实投影自己的证据；旧证据保留在历史 Verification 里。
+- **观察**：`mc-executor-node-faults` 在全量并行中出现过一次间歇失败（隔离复跑 3/3 通过，fault 注入测试对负载敏感）；三轮全量两绿一红，后续轮次继续观察，不因单次 flake 改生产代码。
+- 仍未验证：T1–T3 真服端到端（含真实配方与 Runtime 执行链的备料验证——假 Host 测试只证明脚本流程与组合契约，不证明原版生产路径）。
+
 ## 2026-11-12 · 执行正确性收口与两处玩法修复（第二轮）
 
 - **F1**：`program-host.close()` 收集全部句柄关闭结果并上抛首因（原来 allSettled 吞掉，外层 CLEANUP_FAILED 结算永远看不到这一路）；body scope 的结束结果在收尾/屏障路径下是控制退役自身的后果，不重复计为清理失败，Guest 正常关闭路径的原合同不变。验收：双窗口一败一成的单元契约测试（全部尝试、失败可见），safety 撤销两测试不退化。

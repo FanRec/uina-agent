@@ -23,10 +23,11 @@ afterAll(async () => {
 	await validator.close();
 });
 
-/** 石镐 = 3 圆石 + 2 木棍（recipe@1 的单层直接配方计划）。 */
+/** 石镐 = 3 圆石 + 2 木棍（recipe@1 的单层直接配方计划；action 是最终执行方式）。 */
 const RECIPE_PLAN = {
 	recipes: [{ action: "craft", produces: { stone_pickaxe: 1 }, consumes: { cobblestone: 3, stick: 2 } }],
 	plan: {
+		action: "craft",
 		steps: [
 			{ item: "cobblestone", count: 3, action: "craft" },
 			{ item: "stick", count: 2, action: "craft" },
@@ -41,6 +42,8 @@ interface ScriptOptions {
 	counts: () => Record<string, number>;
 	onCall?: (selector: string, input: { item?: string; count?: number }) => void;
 	failures?: Map<string, { code: string; message: string }>;
+	/** recipe@1 返回的配方计划（缺省用石镐 craft 计划）。 */
+	plan?: unknown;
 }
 
 /** 脚本化 ProgramHostApi：read/call/sleep/progress 应答注册表。 */
@@ -70,7 +73,7 @@ function fakeHost(script: ScriptOptions) {
 				} else if (target.ref === "recipe@1") {
 					const failure = script.failures?.get(`recipe:${target.input?.item}`);
 					if (failure) throw Object.assign(new Error(failure.message), failure);
-					values[key] = RECIPE_PLAN;
+					values[key] = script.plan ?? RECIPE_PLAN;
 					versions[key] = null;
 					unknown[key] = [];
 				} else throw new Error(`unexpected read ${target.ref}`);
@@ -294,4 +297,37 @@ test("B2: a batch yield larger than the shortfall still satisfies the goal with 
 		{ item: "stone_pickaxe", count: 1 },
 		{ item: "stick", count: 2 },
 	]);
+});
+
+test("B2/P0: a smelt-only final goal routes through smelt@1 with wait:true, never wait:'durable'", async () => {
+	// 组合契约：铁锭类目标必须 smelt@1（plan.action 声明），且 Program 内只能同步
+	// 等（wait:true）——"durable" 是根原生调用的持久挂起，子调用会被 SUSPEND_NOT_ROOT 拒绝。
+	const inv: Record<string, number> = { raw_iron: 3, iron_ingot: 0 };
+	const smeltCalls: Record<string, unknown>[] = [];
+	const result = await runPrepare(
+		{
+			counts: () => ({ ...inv }),
+			plan: {
+				recipes: [
+					{
+						station: "furnace",
+						ingredients: [{ item: "raw_iron", count: 1 }],
+						output: { item: "iron_ingot", count: 1 },
+					},
+				],
+				plan: { action: "smelt", steps: [], need: {}, have: {}, missing: {} },
+			},
+			onCall: (selector, input) => {
+				if (selector === "smelt@1") {
+					smeltCalls.push({ ...input });
+					inv.iron_ingot = (inv.iron_ingot ?? 0) + Number(input.count);
+					inv.raw_iron = (inv.raw_iron ?? 0) - Number(input.count);
+				}
+			},
+		},
+		[{ item: "iron_ingot", count: 3 }],
+	);
+	expect(result.kind).toBe("returned");
+	expect(smeltCalls).toEqual([{ item: "iron_ingot", count: 3, wait: true }]);
+	expect(result.kind === "returned" && result.value.prepared).toEqual([{ item: "iron_ingot", count: 3 }]);
 });

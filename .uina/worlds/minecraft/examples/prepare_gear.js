@@ -9,8 +9,12 @@
  * - 材料缺口、知识缺失或工作站不可用时给出具体缺口或交主脑，不自动远征采集；
  * - craft 的 station:'auto' 可能从背包放置工作台（真实世界写入，既有默认行为）；
  *   本示例不虚传"禁止放置"字段——需要该约束时由主脑另行决策；
+ * - smelt@1 在 Program 内用 wait:true（同步等炉子）；wait:"durable" 的持久挂起
+ *   只允许根原生调用（子调用挂起会被 Runtime 拒绝 SUSPEND_NOT_ROOT）——需要跨
+ *   重启等待时，把 smelt@1 {wait:"durable"} 单独作为根 Run 提交；
+ * - 最终生产方式来自 plan.action（铁锭这类目标必须 smelt@1，不硬编码 craft@1）；
  * - 子调用 EFFECT_UNCONFIRMED 时不盲重派：重读库存定去留，效果引用交给决策链；
- * - 最终只认 inventory@1 的实得数量；craft 返回值本身不算终验。
+ * - 最终只认 inventory@1 的实得数量；craft/smelt 返回值本身不算终验。
  */
 async function main(mc, input) {
   const goals = input.goals; // [{item:'stone_pickaxe',count:1},{item:'torch',count:16}]
@@ -40,7 +44,9 @@ async function main(mc, input) {
       await mc.call(via === 'smelt' ? 'smelt@1' : 'craft@1', {
         item,
         count: short,
-        ...(via === 'smelt' ? { wait: 'durable' } : {}),
+        // Program 内只能同步等（wait:true）；"durable" 是根原生调用的持久挂起，
+        // 子调用挂起会被 Runtime 以 SUSPEND_NOT_ROOT 拒绝（§3.4）。
+        ...(via === 'smelt' ? { wait: true } : {}),
       });
     } catch (error) {
       if (error.code === 'EFFECT_UNCONFIRMED') {
@@ -91,7 +97,10 @@ async function main(mc, input) {
         mc.decide("配方计划缺少 " + step.item + " 的绝对需求数量，不猜", { phase: "plan_incomplete", step });
       await produce(step.item, absolute, step.action);
     }
-    await produce(goal.item, need, "craft");
+    // 最终生产方式由配方计划声明（铁锭=smelt、工具=craft），不硬编码。
+    if (plan.action !== "craft" && plan.action !== "smelt")
+      mc.decide("配方计划没有给出最终执行方式，不猜", { phase: "plan_incomplete", goal });
+    await produce(goal.item, need, plan.action);
   }
 
   // 终验：只认 inventory@1 的实得数量。

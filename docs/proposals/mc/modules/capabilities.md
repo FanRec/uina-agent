@@ -364,13 +364,13 @@ type ItemSource =
 
 - 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。**批 3 起：合成、方块、实体、熔炼四类来源齐备（熔炼来自 1.21.11 版本数据表），只有交易缺失**，`sourcesComplete` 因此仍恒为 false；`fuel.ticks` 来自手工最小燃料表，未收录的物品保持 null（未知，不是 0）。
 - 燃料表只覆盖主线常用燃料（煤/木炭/煤炭块/木板/原木/木棍/竹/烈焰棒/岩浆桶/干海带块等），`smelt@1` 据此算燃料量；表中没有的物品不会出现在 `fuel` 里，也不按 0 处理。
-- recipe 的 plan 仍只展开 craft/smelt 和当前库存差额；采集、击杀、交易等叶子由程序依据 sources 组织。知识查询不执行行动，不新增自动科技树规划器。
+- recipe 的 plan 仍只展开 craft/smelt 和当前库存差额，`plan.action` 声明选中配方的最终执行方式（组合程序按它调用 craft@1 或 smelt@1，不硬编码）；steps[].count 是缺口数量，绝对目标取 `plan.need[item]`。采集、击杀、交易等叶子由程序依据 sources 组织。知识查询不执行行动，不新增自动科技树规划器。
 - 用途：模型不确定"这东西能不能吃/当燃料/放成方块"时查一次，而不是试错。
 - **不可等待**：静态知识，`version: null`。
 
 ### recipe · `recipe@1`
 - 输入 `{ item: Name, count?: 1 }`
-- 返回 `{ recipes:[{ station, ingredients:[{ item, count }], output:{ item, count }, pattern?, cookTicks? }], plan?: { steps:[{ item, count, action:"craft"|"smelt" }], need:{ [item]: number }, have:{ [item]: number }, missing:{ [item]: number } } }`
+- 返回 `{ recipes:[{ station, ingredients:[{ item, count }], output:{ item, count }, pattern?, cookTicks? }], plan?: { action:"craft"|"smelt", steps:[{ item, count, action:"craft"|"smelt" }], need:{ [item]: number }, have:{ [item]: number }, missing:{ [item]: number } } }`
 - **不可等待**：`plan` 依赖背包，但它是派生计算，`version: null`；要等就等 `inventory@1`。
 - **批 3 起配方含熔炼**：`station` 为 hand/crafting_table/furnace；`pattern` 是成形配方的摆格图案（行优先，`null` 表示空格，`craft@1` 靠它摆 3×3），无形状配方与熔炼配方省略；`cookTicks` 是熔炼一份产物的烹饪刻数。一条熔炼配方只挂一个原料（多原料按条目展开），因此 `ingredients` 始终是真正的账单，不会被读成"任选其一即全都要"。
 - 站别判据是**实际非空格数**：9 个同种材料的 shapeless 也算 3×3（此前按"物品种类数"判断会误判 27 条）。

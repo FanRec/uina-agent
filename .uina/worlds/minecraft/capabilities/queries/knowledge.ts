@@ -191,7 +191,10 @@ function planOf(
 		if (options.length === 0) continue;
 		steps.push({ item, count, action: options.some((recipe) => recipe.station !== "furnace") ? "craft" : "smelt" });
 	}
-	return { steps, need: best.need, have, missing: best.missing };
+	// 选中配方的最终执行方式（§3 recipe）：铁锭这类目标必须走 smelt@1，
+	// 组合 Program 不该硬编码 craft@1——配方的执行方式由知识给出，不猜。
+	const action: "craft" | "smelt" = best.recipe.station === "furnace" ? "smelt" : "craft";
+	return { action, steps, need: best.need, have, missing: best.missing };
 }
 
 export const knowledgeModule: MinecraftCapabilityModule = {
