@@ -256,7 +256,7 @@ continue 核验 decision 未消费，创建新段和新活引用，保留 Run �
 
 成功 await 返回领域值。CallError 携带 code/source/message/hint/dispatch/effects/progress/recoverable；dispatch 与 effects 由 Runtime 填。source 是报错来源，不是责任裁定；hint 仅是建议，不靠错误文本分支，也不凭模板假装分析了任意源码。
 
-子调用的正常返回只代表**已确认的成功**。结算为 `unknown`（当前判定仍未决）时不返回业务值，抛 `EFFECT_UNCONFIRMED`：`error.effects` 是原 Effect 引用，`error.dispatch` 是派发事实，`error.progress` 是真实进度。catch 后先读世界事实或核验原 Effect，再决定换路、交还或继续；不能默认重放原操作。`not_met` 是确定失败或未达，保留原领域 code，不升级成 unknown。`mc.verify` 只追加效果判断，不会把历史 Call/Run 的 unknown 倒写成 succeeded；父调用要消费新证据，就在 catch 之后自己读 receipt 或世界事实，再按自己的目标结算。
+子调用的正常返回只代表**已确认的成功**。结算为 `unknown`（当前判定仍未决）时不返回业务值，抛 `EFFECT_UNCONFIRMED`：`error.effects` 是原 Effect 引用，`error.dispatch` 是派发事实，`error.progress` 是真实进度。catch 后先读世界事实或核验原 Effect，再决定换路、交还或继续；不能默认重放原操作。`not_met` 是确定失败或未达，保留原领域 code，不升级成 unknown。`mc.verify` 只追加核验判断，不改写历史 Call/Run 的 unknown；合格核验可关闭进行中调用的**业务**未决（锚定核验发起时的事实快照），但清理未知不被业务 met 覆盖，核验后又到的 Driver fact 使锚点失效——catch 之后先读世界事实或核验原 Effect，再按自己的目标结算。
 
 ```js
 async function main(mc, input) {

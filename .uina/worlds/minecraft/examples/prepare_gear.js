@@ -34,8 +34,7 @@ async function main(mc, input) {
 
   // targetTotal 是**绝对目标库存**；缺口 = 目标 - 当前，动作后重读定去留。
   const produce = async (item, targetTotal, via) => {
-    const count = targetTotal;
-    const short = Math.max(0, count - (balance[item] || 0));
+    const short = Math.max(0, targetTotal - (balance[item] || 0));
     if (short <= 0) return;
     try {
       await mc.call(via === 'smelt' ? 'smelt@1' : 'craft@1', {
@@ -47,11 +46,11 @@ async function main(mc, input) {
       if (error.code === 'EFFECT_UNCONFIRMED') {
         // 未决写入不盲重派：以最新库存定去留；仍不足就把决定交回主脑。
         await refresh();
-        if ((balance[item] || 0) < count)
+        if ((balance[item] || 0) < targetTotal)
           mc.decide(via + ' 结果未确认且库存不足：' + item, {
             phase: via + '_unconfirmed',
             item,
-            need: count,
+            need: targetTotal,
             have: balance[item] || 0,
             effects: error.effects || [],
           });
@@ -62,7 +61,7 @@ async function main(mc, input) {
         mc.decide('无法备齐 ' + item + '：' + error.message, {
           phase: 'materials_short',
           item,
-          need: count,
+          need: targetTotal,
           have: balance[item] || 0,
           hint: error.hint,
           progress: error.progress,

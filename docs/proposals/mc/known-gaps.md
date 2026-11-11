@@ -363,7 +363,7 @@ Minecraft World V2 已将公开任务入口统一为 `tasks`，并验证限定�
 - **旧归因被推翻**：生产侧 `RpcPeer.call()` 默认 5s 超时、hello 有 handshakeMs 上限、close 走 closeGraceMs 竞速与有界 waitRetired——IPC/spawn 都有界，旧"IPC 无超时"归因不成立。
 - **真实根因（2026-11-12 逐段插桩复现）**：测试用 `spawnSync("powershell", Get-CimInstance ...)`（**无 timeout 参数**）按父 PID+命令行模式找伴生 pid。全量并行时逐段计时显示：插桩副本全程 14s（PowerShell 3.5s），**同场景并发跑的原版在同一次运行里 120s 超时**——两个并发的 WMI/CIM 查询在满载下一个 3.5s、一个无限阻塞。其余每段（open/seeds/storm/rebuild/forensic×2/gates/probe）在满载下全部 <5s。
 - **修复**：`MinecraftExecutor.companionPid()` 直接暴露 `connection.process.identity.pid`（所有权层已持有的精确身份），测试改为按该 pid 击杀——删除 PowerShell 查询，无界边界不复存在；击杀目标从"命令行像伴生的进程"变成"执行域自己登记的那个进程"，并行下也不会认错。
-- **证据**：修复后单跑 3.8s 全绿；全量并行两轮（含修复前 1198 测试那次复现）无悬挂，伴生进程无泄漏（close 幂等复用既有退役路径）。
+- **证据**：修复前 1198 测试全量那次复现 120s 超时（插桩副本同场景 14s 完成）；修复后单跑 3.8s 全绿，全量并行（139 文件 / 1203 测试，含两个 executor 进程类测试并发）无悬挂，伴生进程无泄漏（close 幂等复用既有退役路径）。
 
 ### G40 · 下行阶梯隧道回归：支撑段不是自上而下，砾石帽坠进走位目标（✅ 已于 2026-11-10 关闭）
 

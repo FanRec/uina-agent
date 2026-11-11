@@ -223,7 +223,7 @@ Runtime 的 [调用与身体合同](modules/runtime.md#body) 唯一规定子 Cal
 
 子调用要分开**记录**与**传播**：记录保留原业务值、Outcome、effects 与进度；传播只在子调用上收紧，`unknown` 不向父调用正常返回业务值。抛错形状、`EFFECT_UNCONFIRMED` 的消费方式与清理异常优先级由 [Runtime §5.6](modules/runtime.md) 规定；`not_met` 且终态闭合是确定事实，不阻断传播；未决的清理后果（如 receipt met 但清理 unknown）仍按未决传播。是否替代、恢复或失败由能力的目标核验决定。根调用没有父调用，仍按 Run 结果交付 `unknown + value`。`EFFECT_UNCONFIRMED` 是 Runtime 调用边界码，不是能力领域码，不进 13 码表。
 
-`ctx.verify` 与后续核验只追加 `EffectVerification`，不改写原 Call/Run 的 Outcome 与历史 facts。核验记录锚定它依据的 fact 前缀（`factsAnchor`）：进行中调用的当前判定可由锚定且终态的核验关闭未决（§Runtime §5.6）；核验之后又到达的新 Driver fact 使锚点失效，退回历史诊断；无锚点旧核验只做诊断。要么有更晚的可信 receipt，要么有合格锚定核验，未决才会关闭；父调用也可以自己读世界事实再按自己的目标返回。
+`ctx.verify` 与后续核验只追加 `EffectVerification`，不改写原 Call/Run 的 Outcome 与历史 facts。核验只消费发起时的不可变事实快照，锚点（`factsAnchor`）在发起时定死：进行中调用的**业务**未决可由锚定且终态的核验关闭，但带清理屏障合同的写源静止证明不被核验覆盖（§Runtime §5.6）；核验之后又到达的新 Driver fact 使锚点失效，退回历史诊断，返回给调用方的当前判定按最新事实投影重算；无锚点旧核验只做诊断。要么有更晚的可信 receipt，要么有合格锚定核验加完整的清理证明，未决才会关闭；父调用也可以自己读世界事实再按自己的目标返回。
 
 原生能力等待使用 ctx.world.watch；不新增 Program 的 decide/checkpoint/waitUntil 方法。调用程序时可捕获或继续传播专用决策请求；根未处理才交还，见 [Runtime §4](modules/runtime.md#waiting)。
 

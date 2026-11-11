@@ -258,7 +258,7 @@ Effect 原派发/原回执不可改；后续可信核验追加新记录，含 ob
 
 Effect 的当前判定是**唯一投影** `assessEffectFacts`（records.ts），把 facts + verifications 归约成 `completion`（业务结论）与 `unresolved`（世界写入是否仍待对账）两个字段；`RecordQueue.unknownEffectsFor`、`effectsForSafety`（含恢复路径）、`engine.callHasUnknownEffects` 与子调用交付边界全部消费它，不得各写一份。业务结论取 receipt；独立关闭操作（`body.window.close@1`）以自己的 cleanup 结论为准；只有持久意图而未派发的按确定未达成记 `not_met`；操作已收尾（cleanup met）却无 met 回执的也是 `not_met`——清理成功不冒充业务成功。
 
-`unresolved` 与业务结论分开：`not_met` 且终态闭合不是未知（挖了没掉是确认失败）；但 `receipt met` 之后同一 Effect 的 cleanup 仍未静止时**仍然未决**（导航清理、关窗是真实世界写入，业务成功不遮蔽它）；`body.goto@1` 这类带清理屏障的合同还要求派发后的写源静止证明。合格核验（`EffectVerification` 带 `factsAnchor`，等于追加时的 fact 前缀长度）可以关闭当前未决并参与进行中调用的结算；之后又到达的新 Driver fact 使锚点失效，核验退回历史诊断；无锚点的旧核验只做诊断，跨维度/无身份事实不凭同坐标读数结清。历史 Call/Run 截面从不倒写。
+`unresolved` 与业务结论分开：`not_met` 且终态闭合不是未知（挖了没掉是确认失败）；但 `receipt met` 之后同一 Effect 的 cleanup 仍未静止时**仍然未决**（导航清理、关窗是真实世界写入，业务成功不遮蔽它）；`body.goto@1` 这类带清理屏障的合同还要求派发后的写源静止证明。合格核验（`EffectVerification` 带 `factsAnchor`，等于**核验发起时**所消费事实快照的长度；`ctx.verify` 把快照传给核验器，入账不重写锚点）可以关闭**业务问题**并参与进行中调用的结算，但只到业务为止——带清理屏障的合同仍必须满足 cleanup 静止证明，任何业务 met 不覆盖清理未知。核验期间又到达的新 Driver fact 使锚点失效，核验退回历史诊断，返回给调用方的当前判定按最新事实投影重算；无锚点的旧核验只做诊断，跨维度/无身份事实不凭同坐标读数结清。历史 Call/Run 截面从不倒写。
 
 清理与主目标的异常优先级固定：原始失败原因不被清理失败覆盖；清理失败也不静默吞掉，作为独立事实保留。只释放内部 Handle/锁/Worker 的清理按生命周期关闭结果处理，不虚构世界 Effect；真正发送游戏操作（关窗、释放容器）的清理照常记 Effect，未知保留 unknown。两者并存时 Call 记录主目标的 outcome 与 error，清理的 unknown 进入 effects/unknownEffects，不为此新建独立的清理管理器。
 
