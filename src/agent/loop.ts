@@ -23,6 +23,7 @@ import type {
 	RequestUsage,
 	ThinkingLevel,
 	TokenMeasurement,
+	ToolDef,
 	ToolResultStatus,
 	Usage,
 } from "../core/types.js";
@@ -1529,15 +1530,31 @@ export class Subject {
 		) {
 			throw new Error(`turn.transformContext 返回模型不支持的 thinking level: ${transformed.thinkingLevel}`);
 		}
-		// 声明跟随最终投影：帧可能由尾部注入在这一步之后才出现，工具表必须与之一致。
-		return immutableProjection({ ...transformed, tools: this.declaredTools(transformed.messages) });
+		// 声明跟随最终投影：帧可能由尾部注入在这一步之后才出现。只补缺的上下文工具，
+		// 不把 hook 对工具集的选择覆盖掉（限制工具面是合法用法）。
+		return immutableProjection({
+			...transformed,
+			tools: this.mergeContextTools(transformed.tools, transformed.messages),
+		});
 	}
 
 	/** 下一次模型请求会声明的工具：可执行工具 + 这份投影需要的上下文工具。
 	 * 压缩预算与请求门共用这一份，不能只数可执行工具。 */
-	declaredTools(messages: readonly ChatMsg[]): import("../core/types.js").ToolDef[] {
-		const contextTools = this.projection.contextToolsRequired(messages) ? this.projection.contextTools : [];
-		return requestToolDefs(this.tools.defs(), contextTools);
+	declaredTools(messages: readonly ChatMsg[]): ToolDef[] {
+		return requestToolDefs(this.tools.defs(), this.requiredContextTools(messages));
+	}
+
+	/** 变换之后的声明：保留 hook 给的工具集，只把帧需要的声明补回来。 */
+	private mergeContextTools(tools: readonly ToolDef[], messages: readonly ChatMsg[]): ToolDef[] {
+		const needed = this.requiredContextTools(messages);
+		if (needed.length === 0) return [...tools];
+		const present = new Set(tools.map((tool) => tool.function.name));
+		const missing = needed.filter((tool) => !present.has(tool.function.name));
+		return missing.length === 0 ? [...tools] : requestToolDefs(tools, missing);
+	}
+
+	private requiredContextTools(messages: readonly ChatMsg[]): readonly ToolDef[] {
+		return this.projection.contextToolsRequired(messages) ? this.projection.contextTools : [];
 	}
 
 	/**

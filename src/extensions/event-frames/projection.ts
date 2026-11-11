@@ -89,10 +89,17 @@ export function sourceLabel(source: InputSource | undefined): string {
 }
 
 /** 回执正文：来源标题行 + 原始正文。eventId、来源细目、游标只留在 context，不进正文。 */
-export function eventFrameText(options: Pick<EventFrameOptions, "text" | "label" | "source" | "receivedAt">): string {
+function eventFrameText(options: Pick<EventFrameOptions, "text" | "label" | "source" | "receivedAt">): string {
 	const time = options.receivedAt ? localTimestamp(options.receivedAt) : undefined;
 	const label = options.label ?? sourceLabel(options.source);
 	return `[${time ? `${label} · ${time}` : label}]\n${String(options.text ?? "")}`;
+}
+
+/** 请求检视用的观察记录：两种帧形状都要带，否则首轮观察在 `/prompt` 里看不见。 */
+function observationMeta(options: EventFrameOptions): Pick<ModelContextMeta, "requestObservation"> {
+	return options.observationSource
+		? { requestObservation: { source: options.observationSource, text: options.text } }
+		: {};
 }
 
 function frameProvenance(options: EventFrameOptions): InputProvenance {
@@ -120,7 +127,6 @@ function frameContext(options: EventFrameOptions, index: number): ModelContextMe
  * （世界状态 / 声音状态——运行时合成的环境观察，不落 Session 历史）。
  */
 export function eventFrameMessages(options: EventFrameOptions): ChatMsg[] {
-	if (!options.eventId) throw new Error("外部事件帧缺少稳定 eventId");
 	const id = frameCallId(options.eventId);
 	return [
 		{
@@ -136,9 +142,7 @@ export function eventFrameMessages(options: EventFrameOptions): ChatMsg[] {
 			...(options.images ? { images: options.images } : {}),
 			context: {
 				...frameContext(options, 1),
-				...(options.observationSource
-					? { requestObservation: { source: options.observationSource, text: options.text } }
-					: {}),
+				...observationMeta(options),
 			},
 		},
 	];
@@ -163,6 +167,7 @@ function leadingFrameMessage(options: EventFrameOptions): ChatMsg {
 		context: {
 			input: frameProvenance(options),
 			...(options.entryId ? { entryId: options.entryId } : {}),
+			...observationMeta(options),
 		},
 	};
 }

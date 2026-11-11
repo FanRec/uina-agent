@@ -48,8 +48,8 @@ export interface EventFrameValidationRequest {
 /**
  * Validate the final request structure, after all context hooks. No history repair or silent drops.
  *
- * 校验的是协议不变量，不是正文语义：帧组原子配对、身份来自内部元数据、首位不得是帧
- * （Anthropic 拒绝以 assistant 开场的 messages）、帧在场时声明必须在场。
+ * 校验的是协议不变量，不是正文语义：帧组原子配对、身份来自内部元数据、帧之前必须有对话
+ * 消息（Provider 会剥掉 system，只剩帧就等于以 assistant 开场）、帧在场时声明必须在场。
  *
  * 预算守卫不在此处：超限是请求级硬不变量，由 Subject 的预算门统一裁决（错误可见、
  * journal 保留），本函数只负责帧结构与协议完整性。
@@ -58,10 +58,15 @@ export function assertEventFrameContext(messages: readonly ChatMsg[], request?: 
 	const groups = new Set<string>();
 	const frameIds = new Set<string>();
 	let frames = 0;
+	// Provider 侧会剥掉 system，所以"前面有 system"不算开场：帧之前必须已经有一条对话消息。
+	let started = false;
 	for (let i = 0; i < messages.length; i++) {
 		const m = messages[i]!;
-		if (!isEventFrame(m)) continue;
-		if (i === 0) throw new Error("外部事件帧不能位于对话首位（首条消息必须是 user）");
+		if (!isEventFrame(m)) {
+			if (m.role !== "system") started = true;
+			continue;
+		}
+		if (!started) throw new Error("外部事件帧前必须有对话消息（Provider 不接受以 assistant 开场）");
 		const g = m.context?.group;
 		if (!g || g.index !== 0 || g.size !== EVENT_FRAME_SIZE || groups.has(g.id))
 			throw new Error("外部事件帧分组不完整或重复");
