@@ -37,19 +37,12 @@ it("ordinary file extension handles real commands, silence, user input, failure 
 		onError: (error) => errors.push(error),
 	});
 	const model = mockModel({ id: "deterministic-fixture", name: "deterministic-fixture" });
+	// 外部观察在 Host 同款投影下是帧回执：正文的第一行是来源标签，后面才是原文。
+	// 真实工具回执不是新观察。
 	const observedText = (message: ModelRequest["messages"][number] | undefined): string => {
 		if (!message) return "";
-		// 真实工具回执不是新观察。外部观察在 Host 同款投影下是帧回执，正文在 JSON text 里。
-		if (message.role === "tool") {
-			if (message.context?.kind !== EVENT_FRAME_KIND) return "";
-			try {
-				const body = JSON.parse(message.content) as { text?: unknown };
-				return typeof body.text === "string" ? body.text : "";
-			} catch {
-				return "";
-			}
-		}
-		return message.content ?? "";
+		if (message.role === "tool" && message.context?.kind !== EVENT_FRAME_KIND) return "";
+		return (message.content ?? "").replace(/^\[[^\]\n]*\]\n?/, "");
 	};
 	const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, emit: (d: StreamDelta) => void) => {
 		requests++;

@@ -140,15 +140,21 @@ describe("world requestContext 接缝", () => {
 			const base = projectionOf([{ role: "user", content: "玩家：挖木头" }]);
 			const result = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
 			const messages = result.projection.messages;
-			expect(messages).toHaveLength(4);
+			// 合成调用 + 回执，两条；没有解释性的 user 通知。
+			expect(messages).toHaveLength(3);
 			expect(messages[0]).toEqual({ role: "user", content: "玩家：挖木头" });
-			expect(messages[1]!.role).toBe("user");
-			expect(messages[1]!.content).toContain("test-world 观察");
-			expect(messages[1]!.content).toContain("非用户输入");
-			const receipt = JSON.parse(messages[3]!.content) as { text: string };
-			expect(receipt.text).toBe("overworld (1,64,2) 生命20/20");
+			expect(messages[1]!.role).toBe("assistant");
+			expect(messages[2]!.role).toBe("tool");
+			expect(messages[2]!.content).toBe("[test-world 观察]\noverworld (1,64,2) 生命20/20");
+			// 世界观察是世界侧证据：来源标成 external，而不是"我自己读的"内部状态。
+			expect(messages[2]!.context?.input?.source).toMatchObject({
+				kind: "runtime",
+				type: "world.observation",
+				ref: "test-world",
+				origin: "external",
+			});
 			// 帧组必须自洽：分组/调用配对/回执来源都可校验。
-			expect(() => framePolicy.validateContext(messages)).not.toThrow();
+			expect(() => framePolicy.validateContext(messages, { tools: framePolicy.contextTools! })).not.toThrow();
 		} finally {
 			await activation.stop();
 		}
@@ -180,10 +186,10 @@ describe("world requestContext 接缝", () => {
 		try {
 			const base = projectionOf([{ role: "user", content: "hi" }]);
 			const result = (await hooks[0]!.handler(base)) as { projection: RequestProjection };
-			const messages = result.projection.messages;
-			expect(messages[1]!.content).toContain("本轮没有取到世界状态");
-			const receipt = JSON.parse(messages[3]!.content) as { text: string };
-			expect(receipt.text).toContain("世界没有提供内容");
+			const receipt = result.projection.messages[2]!.content;
+			expect(receipt).toContain("test-world 观察");
+			expect(receipt).toContain("本轮没有取到世界观察");
+			expect(receipt).toContain("世界没有提供内容");
 		} finally {
 			await activation.stop();
 		}
@@ -199,9 +205,9 @@ describe("world requestContext 接缝", () => {
 					projection: RequestProjection;
 				}
 			).projection.messages;
-			const receipt = JSON.parse(messages[3]!.content) as { text: string };
-			expect(receipt.text).toContain("executor unavailable");
-			expect(receipt.text).toContain("不要把它当成世界没有变化");
+			const receipt = messages[2]!.content;
+			expect(receipt).toContain("executor unavailable");
+			expect(receipt).toContain("不要把它当成世界没有变化");
 		} finally {
 			await activation.stop();
 		}
@@ -216,8 +222,8 @@ describe("world requestContext 接缝", () => {
 					projection: RequestProjection;
 				}
 			).projection.messages;
-			const receipt = JSON.parse(messages[3]!.content) as { text: string };
-			expect(receipt.text).toContain("读取超时");
+			const receipt = messages[2]!.content;
+			expect(receipt).toContain("读取超时");
 			expect(Date.now() - started).toBeLessThan(2000);
 		} finally {
 			await activation.stop();

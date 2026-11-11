@@ -17,15 +17,22 @@ const projection = (messages: readonly import("../src/core/types.js").ChatMsg[])
 	messages,
 	tools: [],
 });
+/** 一条外部输入在真实投影里的形状：前面已有对话消息时是一对合成调用与回执。 */
 const frame = (id: string, text: string) =>
 	p.convertToLlm!([
+		{
+			role: "user",
+			id: `${id}-op`,
+			content: "op",
+			input: { eventId: `${id}-op`, source: { kind: "user", type: "operator", origin: "external" } },
+		},
 		{
 			role: "user",
 			id,
 			content: text,
 			input: { eventId: id, source: { kind: "user", type: "terminal", origin: "external" } },
 		},
-	]);
+	]).slice(1);
 describe("event frame compaction", () => {
 	it("keeps the newest frame and summarizes complete old frames as external evidence", async () => {
 		const store = new MemorySessionStore();
@@ -69,13 +76,16 @@ describe("event frame compaction", () => {
 		});
 		expect(decision.action).toBe("rebuild");
 		const out = (await runner.runTransformContext(base)).messages;
-		expect(() => p.validateContext!(out, { model: scenario.model, tools: [] })).not.toThrow();
+		expect(() => p.validateContext!(out, { model: scenario.model, tools: [EVENT_FRAME_TOOL] })).not.toThrow();
 		expect(out.some((m) => m.content.startsWith("[历史摘要]"))).toBe(true);
 		expect(out.some((m) => m.context?.input?.eventId === "e1")).toBe(false);
 		expect(out.some((m) => m.context?.input?.eventId === "e2")).toBe(true);
 		expect(scenario.calls.length).toBeGreaterThanOrEqual(1);
-		expect(scenario.calls[0]!.messages.at(-1)!.content).toContain("外部事件");
-		expect(scenario.calls[0]!.messages.at(-1)!.content).not.toContain("调用工具 external_event_frame");
+		const summaryInput = scenario.calls[0]!.messages.at(-1)!.content;
+		// 摘要输入只看正文与来源标签：eventId 这类程序追踪用的身份不进摘要，也不会被复述成事实。
+		expect(summaryInput).toContain("[外部发言]");
+		expect(summaryInput).not.toContain("eventId");
+		expect(summaryInput).not.toContain("调用工具 external_event_frame");
 		await runner.dispose();
 	});
 	it("leaves an exact-fit history alone until context-tool schema spends the budget", async () => {

@@ -38,7 +38,7 @@ describe("RC-1 宿主与消费者分离", () => {
 			hostOptions: { extensionPaths: [voicePath] },
 		});
 		try {
-			expect(uina.host.subject.declaredTools().some((tool) => tool.function.name === "voice")).toBe(false);
+			expect(uina.host.subject.declaredTools([]).some((tool) => tool.function.name === "voice")).toBe(false);
 			await uina.start();
 			const status = await uina.callTool("voice", { action: "status" });
 			expect(status.status).toBe("succeeded");

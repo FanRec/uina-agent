@@ -62,7 +62,7 @@ describe("Prompt Cache Invariance", () => {
 		// 核心断言：即使发生打断，系统提示词的 sha256 签名必须 100% 绝对一致
 		expect(sys2Step1).toBe(BASE_SYSTEM_PROMPT);
 		expect(sha256(sys2Step1!)).toBe(sha256(sys1!));
-		expect(p2Step1.messages.length).toBe(baseMessages.length + 3);
+		expect(p2Step1.messages.length).toBe(baseMessages.length + 2);
 		expect(() => assertEventFrameContext(p2Step1.messages as ChatMsg[])).not.toThrow();
 
 		// 回合内 Step 2：模型在同一回合内发起了工具调用（如搜索），再次请求模型时打断帧依然稳定存在！
@@ -81,7 +81,7 @@ describe("Prompt Cache Invariance", () => {
 			messages: baseMessagesWithToolCall,
 			tools: [],
 		});
-		expect(p2Step2.messages.length).toBe(baseMessagesWithToolCall.length + 3);
+		expect(p2Step2.messages.length).toBe(baseMessagesWithToolCall.length + 2);
 		const req2Step2 = mockRequest(p2Step2.messages as ChatMsg[]);
 		const sys2Step2 = anthropicSystem(req2Step2);
 		expect(sys2Step2).toBe(BASE_SYSTEM_PROMPT);

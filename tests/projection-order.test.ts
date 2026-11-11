@@ -85,12 +85,15 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上
 			expect(contents[0]).not.toContain("[project context]");
 			expect(contents[0]).not.toContain("[TAIL]");
 
-			// 3. 帧组原子：最新外部输入「跑一轮」以完整帧组到达（通知 + 合成调用 + 回执）。
+			// 3. 帧组原子：最新外部输入「跑一轮」以两消息帧到达（合成调用 + 回执），不再有解释性 user 通知。
 			const messages = last?.messages ?? [];
 			const receiptIndex = messages.findIndex((m) => m.role === "tool" && String(m.content).includes("跑一轮"));
 			expect(receiptIndex).toBeGreaterThan(1);
-			expect(messages[receiptIndex - 2]?.role).toBe("user");
-			expect(messages[receiptIndex - 1]?.role).toBe("assistant");
+			const frameCall = messages[receiptIndex - 1];
+			expect(frameCall?.role).toBe("assistant");
+			expect(frameCall?.role === "assistant" ? frameCall.tool_calls : undefined).toEqual([
+				{ id: expect.any(String), name: "external_event_frame", args: {} },
+			]);
 
 			// 4. 预算门通过：最终请求不含被裁剪的远期历史，回合成功（请求已发出）。
 			expect(contents.some((c) => c.includes("第0问"))).toBe(false);
