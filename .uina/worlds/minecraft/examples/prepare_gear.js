@@ -45,7 +45,7 @@ async function main(mc, input) {
         item,
         count: short,
         // Program 内只能同步等（wait:true）；"durable" 是根原生调用的持久挂起，
-        // 子调用挂起会被 Runtime 以 SUSPEND_NOT_ROOT 拒绝（§3.4）。
+        // 子调用挂起会被 Runtime 直接拒绝（SUSPEND_NOT_ROOT，见 runtime/engine.ts）。
         ...(via === 'smelt' ? { wait: true } : {}),
       });
     } catch (error) {

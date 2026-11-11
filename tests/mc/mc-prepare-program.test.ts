@@ -25,7 +25,16 @@ afterAll(async () => {
 
 /** 石镐 = 3 圆石 + 2 木棍（recipe@1 的单层直接配方计划；action 是最终执行方式）。 */
 const RECIPE_PLAN = {
-	recipes: [{ action: "craft", produces: { stone_pickaxe: 1 }, consumes: { cobblestone: 3, stick: 2 } }],
+	recipes: [
+		{
+			station: "crafting_table",
+			ingredients: [
+				{ item: "cobblestone", count: 3 },
+				{ item: "stick", count: 2 },
+			],
+			output: { item: "stone_pickaxe", count: 1 },
+		},
+	],
 	plan: {
 		action: "craft",
 		steps: [

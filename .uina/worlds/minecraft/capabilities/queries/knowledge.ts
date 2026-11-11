@@ -106,6 +106,7 @@ const recipeDefinition: CapabilityDefinition = {
 							},
 						],
 						plan: {
+							action: "craft",
 							steps: [{ item: "iron_ingot", count: 3, action: "smelt" }],
 							need: { iron_ingot: 3, stick: 2 },
 							have: {},

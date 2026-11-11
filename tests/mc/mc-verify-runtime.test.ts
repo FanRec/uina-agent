@@ -183,7 +183,8 @@ describe("ctx.verify registry (G4)", () => {
 		const racing: EffectVerifier = {
 			check: async () => {
 				await gate;
-				return { completion: "met", evidence: [], reason: "raced verifier read only its snapshot" };
+				// 带非空证据：过期后这些证据不得随回执交给调用方（留在历史 Verification 里）。
+				return { completion: "met", evidence: ["ev:stale-race"], reason: "raced verifier read only its snapshot" };
 			},
 		};
 		const h = harness(
@@ -200,7 +201,15 @@ describe("ctx.verify registry (G4)", () => {
 						// 核验已启动、尚未完成：此刻到达的新事实不在核验器的快照里。
 						queue.record(digReceipt("eff:verify-race", "unknown"));
 						release();
-						return await verifyPromise;
+						const receipt = (await verifyPromise) as unknown as {
+							completion: string;
+							evidence: string[];
+						};
+						// 过期回执与当前判定一致：completion 按最新投影（unknown），
+						// evidence 是当前事实自己的（空），不带旧核验的成功证据。
+						expect(receipt.completion).toBe("unknown");
+						expect(receipt.evidence).toEqual([]);
+						return receipt;
 					}),
 				),
 			],
