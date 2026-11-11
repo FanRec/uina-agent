@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-11-11 · 批46 信息交付收口（每请求快照退役）
+
+- **删除**：`WorldDef.requestContext` 与 `WorldActivation` 的采样/超时/在途去重接缝、`state.snapshot` RPC、`world/state-frame.ts`、`world/run-digest.ts`、`RequestObservation`、TUI「上次世界观察」入口、`dev:mc:state-frame` 与专用测试。生产只剩按需 `observe`、连接回执和静态 `environmentGuide`。
+- **入场**：`session.connect` 只在新建 ready visit 时读一次 `self@1`，带 `visitId`、`observedAt`、覆盖与未知，1.2 秒有界；读取失败、换代或取消不改连接结论。
+- **受理终局**：原请求凭证新增 `notice`；`confirming` 去掉默认 `tasks.get` 并带 `yield`；确定拒绝按 `acceptance:<requestId>` 稳定键走现有批量 receipt 通道，重启可重建，`ack` 按 key 前缀分流，不碰 `completionRef` 语义。
+- **结果正文**：权威 `record`/`segment`、`reportGap`、`completionScope` 与执行范围的 `goalVerification: "unknown"`；`nextCall` 只在具体证据缺口时给；游戏事件去掉默认 `observe(events@1)`，聊天补 `observedAt`。
+- **边界**：跨重启可靠投递的唯一前提是激活时的 `durable` 门禁，ack 链不重复检查；不改 Host 队列调度；`explore@1` 已有 `until` 发现条件与 `mc.decide`，不新增机会通道；进行中对话用发送者稳定身份加频道、5 分钟易失关联。
+- **未验证**：真 Paper 与真模型交错对照、快照 A/B、双客户端社交、长时间压缩后重入、开放式探索发现、跨重启受理终局实跑。裁决与验收门见 [游玩信息交付重构计划](play-context-refactor-plan.md)。
+
 ## 2026-11-10 · 批40 关 G40（阶梯隧道回归：砾石帽坠进走位目标脚位）
 
 批37 关 G31 时 `dev:mc:spatial` 曾 8/8，批38 起真服回到 7/8，卡点坐标与当年一字不差——这是回归，不是老问题复发。

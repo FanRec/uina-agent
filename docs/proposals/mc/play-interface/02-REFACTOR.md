@@ -8,7 +8,7 @@ WorldDef 仍承接一个 Minecraft 工具。Minecraft Runtime 持有任务、执
 
 需求编号 P1–P6 引用设计合同。S1–S4 是可以分别评审和验收的切片。每个切片的末尾通过正式入口提交一次真实形状的任务或读取。只验证内部方法的分支，不能作为该切片的集成结论。
 
-与 [游玩信息交付计划](../play-context-refactor-plan.md) 共用一个 Task 投影与一套完成投递。信息交付的任务回执切片复用 S1 的结果合同，再切换快照。接口成本的对照固定上下文策略，信息交付的对照固定接口版本。最终在两项改造合入后的生产路径复跑。各自负责的 Guide 例子在合入时统一。
+与 [游玩信息交付计划](../play-context-refactor-plan.md) 共用一个 Task 投影与一套完成投递。批43 已在 `contracts/task.ts` 的 `taskView` 里补上 `completionScope`、执行范围的 `goalVerification: "unknown"` 与有界报告缺口；S1 的结果合同以该投影为准，不另写一份。信息交付的生产路径已切换为按需查询加新 visit 入场回执，接口改造不需要再处理快照注入。最终在两项改造合入后的生产路径复跑。各自负责的 Guide 例子在合入时统一。
 
 ## B0 · 先固定对照
 

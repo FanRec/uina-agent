@@ -1,92 +1,67 @@
 # Minecraft World 游玩信息交付重构计划
 
-状态为待实施。设计基线为 `mc/world-refactor@78883144`。现行运行事实以源码和 [运行合同](../../current-runtime.md#minecraft-world) 为准。
+状态：生产路径已切换（2026-11-11，批46）。设计基线为 `mc/world-refactor@78883144`，当前行为以工作树源码和 [运行合同](../../current-runtime.md#minecraft-world) 为准。真 Paper 与真模型对照窗口未跑，见第 4 节。
 
-## 1. 要解决的问题
+本文是这一轮唯一的执行与审查入口。《信息交付与模型决策设计决策》和《信息交付、持续决策与自主感知设计决策》的裁决已并入本文，不再并行维护第二份执行清单。与 [游玩接口重构路线](play-interface/02-REFACTOR.md) 共用 `contracts/task.ts` 的 `taskView`：两项改造都改任务投影时，以同一处改动为准。
 
-Uina 应能选择玩什么，把已想清楚的步骤交给能力或 Program，在等结果时结束当前轮，之后凭新事实接着玩。她也可以回复朋友、做直播旁白、改主意或休息。Minecraft World 的职责是给她可靠的游戏事实和可执行的动作。
+## 1. 裁决
 
-当前在连接期间，**每次模型请求**都会触发 `state.snapshot`，采集身体、背包、世界、界面和 HUD，并读活跃任务。框架把正文追加成一个合成工具调用和一条工具回执（2026-11-09 起是两消息帧，此前还有一条解释性 user 提示）。同一个回合里多次调用工具会多次付出采样、投影和输入开销。即使这一轮只在聊天，规则也一样。`/prompt` 目前能核对其中的正文。 [现行注入](../../../.uina/worlds/minecraft/worlddef/index.ts#L211) · [采样与任务查询](../../../.uina/worlds/minecraft/companion/side.ts#L580) · [两消息帧](../../../src/extensions/event-frames/projection.ts)
+| 问题 | 定下来的做法 |
+| --- | --- |
+| 每请求完整快照 | 从生产链删除。不改成常驻短简报，也不保留禁用开关。当前世界细节由 `observe` 按需读取。 |
+| 新 visit 的起始立足点 | 只由 `session.connect` 本次新建的 ready visit 给一次有界 `entry`；幂等连接、`session.status`、失败连接不给。 |
+| 重入 | 复用历史里的任务引用、`session.status`、`tasks.list/get`、`observe`。不新增意图识别器、第二个状态缓存或恢复专用工具。 |
+| confirming 受理未知 | 义务写进原始请求凭证，按原 `requestId` 对账；确定拒绝主动交到模型面前；长期未知保持未知，不重派动作。 |
+| Completion 正文 | 以已有 RunSummary、CompletionHeader、Effect 为唯一事实源；没有证据就不写 `goalMet`。`nextCall` 只用于跨过具体证据缺口。 |
+| 跨重启可靠投递的前提 | `worlddef/index.ts` 激活时要求 `ctx.delivery.durability === "durable"`，这是唯一前提。ack 链不重复检查，receipt 不加 durability 字段。 |
+| 完成通知的队列时机 | 本次不改 Host 队列调度。`followUp` 在整个回合收口后由 `resumeQueued` 消费是现有确定行为，不为此新建安全点认领或第二套队列。 |
+| 快照对照实验 | 删除快照是裁决，已直接执行。实验只用于判断要不要补最小的边界事实；跑不了就单列未验证，不阻塞代码完成，也不据此宣称验收通过。 |
+| 事件可靠性分级 | `minecraft_event` 是即发即弃加一次幂等补发，证据本体留在 `events@1`，没有 durable receipt；`minecraft_completion` 和受理终局走批量 receipt、Host canonical 回执与结清。两者不混为一谈。 |
+| 自主发现 | `explore@1` 已有 `until` 发现条件和 `mc.decide` 交接，Program 内的等待与纠错沿用现有接口。不新增机会感知通道、兴趣评分器或 MC 心跳。不采用「受理仍未知」的一次性提醒：`tasks.list` 的 confirming 相位已能查回。 |
 
-已有证据说明快照价值取决于时机。一次自由游玩里，Uina 入服发现自己在 `y=-60`，自行选择 `surface@1`。固定探索的早期样本里，她有时比完成通知更早查到任务终态。后来的实测已分开核对持久报告、Host 接收和请求投影，投递修复后受控场景能及时接回。前者要求保住入服时的发现机会，后者要求测清等待和投递，不能把反复查询一概归因于 Guide。 [V2 游玩节奏记录](archive/world-refactor-v2.md#游玩节奏与完成投递)
+不新增 Broker、Manager、Wait Manager、第二状态机或永久双轨生产实现。Runtime 不替 Agent 做开放式决定，MC 不把世界状态自动播给模型，Host 不判断具体世界事实的意义。
 
-外部研究给出验收方法。When2Tool 发现通用的少调用提示也会压掉必要调用。SentinelBench 将完成率、响应时间与资源消耗放在一起衡量。它们的实验边界是各自的工具任务和合成环境。本计划对 Uina 的预期仍须用真实模型与真服验证。 [When2Tool](https://arxiv.org/abs/2605.09252) · [SentinelBench](https://arxiv.org/abs/2606.05342)
-
-## 2. 目标合同
+## 2. 目标合同（现行行为）
 
 | 时机 | 模型收到什么 | 事实来源和出口 |
 | --- | --- | --- |
-| 首次入服、换服或重连，建立新 visit | 连接状态、服务器、身份、能否行动。另给采样时所在维度和位置，帮助决定第一件想做的事。 | `SessionController` 的连接结果，位置复用 `self@1`。一起进入 `session.connect` 的工具回执。 |
-| 想了解现场 | 当前需要的局部观察。坐标、体况、天气、库存、HUD、窗口等由选择的查询决定。 | `observe` 与 Program 的 `mc.read` 复用已有读口，保留各自覆盖、未知、游标、图片及窗口令牌。 |
-| 提交行动 | `accepted`、`confirming` 或 `rejected`，及各状态原有的句柄和原因。能从提交事实提取时给出简短目标。 | 原提交凭据和 Runtime 受理事实。稳定 Task 句柄沿用原合同。 |
-| 行动完成或需要接手 | 原目标、已确认成果、对下一步有影响的余量或阻塞。写入未知时提供相应查证入口。 | Runtime 固定报告、Effect 和 Executor 提交记录，经现有 Task 投影与完成投递输出。 |
-| 有事需要主动告知 | 死亡、断线、私聊、明确点名、自保介入后需要她知道的结果。提供该事件已知的后果。 | 现有 Driver 事实、Runtime 自保与事件投递。私聊和点名保留发言人、频道、原话和引用。 |
+| 新建 ready visit | 连接状态、服务器、身份、能否行动；另给一次带 `visitId` 与 `observedAt` 的维度、位置。读取失败或换代只给准确说明。 | `SessionController.connect`，位置复用 `self@1`，一起进 `session.connect` 工具回执。 |
+| 想了解现场 | 当前需要的局部观察，含覆盖、时点、未知与游标。 | `observe` 与 Program 的 `mc.read`。 |
+| 提交行动 | `accepted`、`confirming` 或 `rejected`，以及句柄、原因和可从提交凭据提取的目标。 | 原提交凭据与 Runtime 受理事实。 |
+| 受理终局 | 明确拒绝或取消前未受理时，按原句柄送达「没有后台 Run」及原因。 | 请求凭证的 `notice` 字段，经 `acceptance:<requestId>` 稳定键走现有批量 receipt 通道。 |
+| 行动完成或需要接手 | 任务身份、结算范围、已证实的成果、部分成果、剩余与未知、决策身份。 | Runtime 固定报告、Effect、任务投影与完成投递。 |
+| 有事需要主动告知 | 死亡、断线、私聊、点名、进行中的短对话、自保未脱险。聊天保留发送者、频道、原话、时点、事件引用。 | Driver 事实、Runtime 自保、事件投递。 |
 
-每次模型请求前的 Minecraft 快照与活跃任务简表从默认上下文移除。进度查询仍可用于定向停止、改主意、恢复上下文或查证。位置缺失可以按需观察。普通移动、血量波动、背包变化和每次 Rhythm 唤醒均不触发新的 Minecraft 消息。Minecraft 范围止于本 World、它专用的框架接缝和对应测试与文档，Host 通用投影、其他扩展的工具、Rhythm 策略及会话存储格式沿用既有合同。
+`accepted` 只表示受理；`yield` 只表示没有必要为等待再调用模型，不锁住主体。混合工具批次仍按 Host 原有规则续轮。`succeeded` 只在报告声明的结算范围内成立，`goalVerification: "unknown"` 表示这次只证明了程序按自己的语义跑完。
 
-对于需要观察但已经想清楚的条件，例如材料达到数量后开工，把等待和下一步放在同一个 Program。使用已有 `mc.waitUntil`，需要其他任务供料时在 `mc.withBody` 之外等待。简单动作优先使用已有目标级能力。模型仍决定去哪、做什么、是否聊天以及是否继续。 [Program 等待接口](../../../.uina/worlds/minecraft/companion/guides/program_api.md#L44) · [身体作用域说明](../../../.uina/worlds/minecraft/companion/guides/body_api.md#L21)
+## 3. 实施记录
 
-## 3. 施工顺序
+**受理闭环。** `RequestCredential` 增加 `notice`（`pending` / `delivered`），状态就在原始请求凭证里，没有平行的请求状态表。`confirming` 先落义务再返回，去掉默认 `tasks.get`，与 `accepted` 一样带 `continuation: "yield"`。`recoverRequests` 仍只按原 `requestId` 对账，不重发动作；确定拒绝由 `scanAcceptance` 从持久凭证重建义务，走与完成通知相同的 Host 批量入口。key 用 `acceptance:<requestId>`，复用 `delivery_attempts` 记录 attempt；`ack` 按 key 前缀区分结清凭证还是 `runtime.settleDelivery`，`completionRef` 语义不变。诊断增加未确认请求数与待交接义务数。
 
-### A. 固定基线和验收入口
+**结果正文。** `formatCompletion` 保留权威 `record` 与 `segment`，报告不可读时给 `reportGap`（引用、缺什么、错误码）。`nextCall` 只剩未知写入的精确 Effect、未知写入范围，以及报告过大时的权威 record；自足结算和已有 decision 的待决定不再附泛用 `tasks.get`。`taskView` 明确 `completionScope`，`execution` 范围附 `goalVerification: "unknown"`，不虚构目标达成。`gameEventView` 去掉默认 `observe(events@1)`，聊天补回 `observedAt`。
 
-- 以当前提交作为对照。复用 `native-host.ts --rhythm-flow` 核对任务受理、持久完成、Host 投递、模型看到通知的时点。复用 `--model --autonomy` 从未连接开始验证自由选择。固定场景可从 `--fixed-explore`、`dev:mc:task` 和 `dev:mc:mobility` 复用布场和服务端断言。布场用独立连接完成，采用临时 Profile，避免命令回执进入被测会话。
-- 固定模型版本、思考档位、场地和初始库存。记录模型实际请求、Provider 报告的非缓存输入和缓存读取 token、首次有效行动耗时、关键事件进入模型上下文的耗时，以及每个 `observe`、`tasks.get` 当时要解决的问题。Provider 未报的用量记未知。受控 Provider 的记录只验证系统链路。
-- 先跑出第 4 节的对照证据。记录中区分首轮思考机会、工具回注后的模型请求、事件触发的后续轮次，以及在游戏世界中真正发生的动作。
+**入场与文案。** `SessionController.connect` 只在确实新建 ready visit 时读一次 `self@1`，读前后核对 `visitId` 与取消状态，1.2 秒有界超时；读数失败、换代、取消都不改连接结果，`actionsAllowed` 独立显露。`ENV_PROMPT.md` 与 `nativeGuide` 改成按需观察与重入的说法，不再声称「简报已经够你行动」。
 
-### B. 补齐入服和任务交接
+**删除的生产链。** `WorldDef.requestContext` 类型与 `WorldActivation` 的采样、超时、在途去重分支全部删除；`state.snapshot` RPC、`world/state-frame.ts`、`world/run-digest.ts`、伴生侧 reader 组合、私有 schema 项一并删除。`RequestObservation`、`ContextSnapshot.requestObservations`、事件帧的 `observationSource`、Subject 的最近观察缓存、TUI 的「上次世界观察」入口和 `/prompt` 观察面板、相关测试与 `dev:mc:state-frame` 脚本全部清掉。通用 `turn.transformContext`、`environmentGuide`、真实外部事件帧和 `getContextSnapshot()` 保留。`--rhythm-flow` 的踢出探针改用 `Executor.status()` 的连接事实判定。
 
-**入服回执。** 让 `SessionController.connect` 的内部结果区分新 visit 与复用原 visit，依据管理事务真正建立的 `visitId`。在 `worlddef/index.ts` 的 `session.connect` 回执中，对新建且 ready 的 visit 通过同一 Executor 只读采样 `self@1` 一次。复用现有 RPC 和查询读取器，从 `value.place` 投影 `entry.dimension`、`entry.position`，附 `observedAt`。`entry` 表示采样时站位。保留 `state/server/username/actionsAllowed` 和当前诊断字段，`session.status` 保持原形态。 [会话管理入口](../../../.uina/worlds/minecraft/worlddef/session-controller.ts#L199) · [会话回执入口](../../../.uina/worlds/minecraft/worlddef/index.ts#L135) · [身体查询合同](../../../.uina/worlds/minecraft/capabilities/queries/body.ts#L64)
-
-初始读数以 250 ms 为上限，使用现有支持取消的 `observe` RPC。采样缺项时只保留有证据的字段，整次失败时省略 `entry`。采样失败不改变已获得的连接回执。采样前后核对当前 visit，旧域退役、切服或采样观察到断线时，丢弃旧位置并使用当前会话状态；现有工具取消及断线处理继续各自结算。幂等 `connect` 复用现有连接，不重复采样。失败、重生同步中、只查状态都不会借用上次位置。首切片使用入服定位和服端复核作完成判据。若实测仍出现只为了解入场环境的固定查询，再依据记录决定是否给入服回执增加一项实际有用的环境事实。
-
-成功回执示意，字段名随本节执行，值为示例。
-
-```json
-{
-  "state": "connected",
-  "server": { "host": "127.0.0.1", "port": 25565 },
-  "username": "Uina",
-  "actionsAllowed": true,
-  "entry": {
-    "dimension": "overworld",
-    "position": { "x": 8, "y": -60, "z": 4 },
-    "observedAt": "2026-11-10T16:00:00.000Z"
-  }
-}
-```
-
-**任务回执。** 以 `contracts/task.ts` 的 `taskView` 为共用投影，逐项核对 `tasks.get/list`、完成通知和受理回执是否能用同一任务身份认出原目标。补字段时复用 Executor 的原始提交凭据和 Runtime 报告。已有投影满足要求的就复用。先覆盖采集、`surface@1` 与恢复施工。核对确认入包量、到达或未到达、阻塞及余量能否直接使用。成功数量只取已有确认依据。派发后未知写入以 Effect 为准，复读现场用来决定还剩什么。Program 没返回可信领域结果时只交代已知执行结局。 [任务投影](../../../.uina/worlds/minecraft/contracts/task.ts#L90) · [完成投递](../../../.uina/worlds/minecraft/executor/delivery.ts#L484)
-
-**事件与 Guide。** 首批复用现有重要事件和投递优先级，核对受理在先、通知去重、忙时队列及回合恢复。只有复现真实漏报时，才补该事实在已有链路里的路由。重写 `ENV_PROMPT.md` 对「请求前简报」的依赖，用三个短例子交代入服后的选择、可结束回合的后台等待、收到朋友消息后如何接着玩。遇到结果未知时指出该看哪个事实。避免把玩法步骤写成固定指令。 [重要事件入口](../../../.uina/worlds/minecraft/companion/side.ts#L155) · [当前 Guide](../../../.uina/worlds/minecraft/worlddef/ENV_PROMPT.md)
-
-### C. 切换生产路径并清理
-
-先用开发对照移除 Minecraft 注入，跑通第 4 节，再在同一切换提交处理以下依赖。仓库内已知生产消费者只有 Minecraft。实施时用 `rg` 复核源码、构建入口、测试和示例，按真实依赖决定删除。
-
-| 范围 | 切换内容 |
-| --- | --- |
-| Minecraft World 和 Executor | 删除 WorldDef 的 `requestContext` 实现。确认无独立消费者后移除 `state.snapshot` 的 companion 分发和私有 RPC schema、`world/state-frame.ts`、`world/run-digest.ts`。保留 `self@1`、库存等实际查询、Task 投影和 Runtime 事实。 |
-| World Framework 和事件帧 | 复核无其他消费者后删除专用 `WorldDef.requestContext` 类型、采样超时与在途去重分支，以及只供该路径使用的帧助手和 `observationSource`。保留通用 `turn.transformContext`、静态 `environmentGuide` 和真实外部事件帧。 |
-| Agent 与 TUI | 若确认 `RequestObservation` 和 `ContextSnapshot.requestObservations` 无其他生产消费者，同批清掉类型、最近一次快照缓存和 TUI「上次世界观察」入口。`/prompt` 继续显示系统提示词及来源，修改命令说明。入服回执、查询、任务完成和已投递事件从现有工具结果与外部输入卡片查看。 |
-| 开发入口与测试 | 迁移 `--rhythm-flow` 中以快照 RPC 判定踢出的探针，改用真实连接证据。重写测试为断言实际 Provider 请求里没有自动快照、事件与工具回执照常可见。替换 `dev:mc:state-frame` 的历史验收职责，删掉仅服务旧 RPC 的脚本和测试。保留服务端状态读取、TUI 事件卡和真实事件协议的覆盖。 |
-
-发布分支只有一条有效路径。对照通过临时检出或开发夹具运行，切换后清掉试验开关。更新 [运行合同](../../current-runtime.md#minecraft-world)、[公开 API](public-api.md)、Guide 和验收记录，说明实时事实如何读取、哪些事件会送达、TUI 在哪里能看到。需要回退时以完整切换提交为单位回退，任务句柄与已发生的游戏动作沿原账本和服务端事实对账。
+**社交关联。** `companion/side.ts` 用发送者的 `uuid`（无则 `name`）加频道作键，只有确实送达的私聊或点名才建立分钟级关联；同一人的后续普通公聊在关联有效时作为非抢占事实送达，带 `related`。自回声、无关公聊不升级；断线清空，换 visit 随伴生重建清空。原始公聊仍进 `events@1`。
 
 ## 4. 验收与发布门
 
 | 场景 | 布场和驱动 | 可观察的通过条件 |
 | --- | --- | --- |
-| 入服后自由游玩 | 重置陌生场景，真实模型只知道服务器信息。记录她是否选择入服、留意什么以及是否行动。 | 主动入服的轮次能看到可信的起点。自由选择不设必玩或必调工具的断言。另用固定入服场景验证正常、幂等连接、换服、断线重连、旧读迟到和读取失败。 |
-| 找铁并遇阻 | 固定含可采来源的区域，用可独立复核的库存与工具状态。分别覆盖顺利采集、途中缺工具或无法继续的场景。 | 对照前后服务端库存变化与报告一致。受阻回执交代确认量和原因。涉及派发未知时核对保留未知，并且没有未经核验的重放。 |
-| 回地面 | 固定地下出发点，复用 `surface@1` 的站立与露天判据。安排一份正常可到达场地，以及一份达不到的对照。 | 成功时由服务器现场证实到达。受阻时保留实际原因。记录她是否能用一次目标级动作接管，是否被迫反复查坐标再提交微动作。 |
-| 等待中被朋友叫到 | 后台任务运行时，第二客户端发送私聊、点名、普通公屏，观察 Host 空闲及忙碌两种情况。另检查自发回声。 | 私聊和点名可见，边界符合现有规则，任务完成一次交付且在受理之后。真实模型可以结束等待轮、回复朋友或继续玩，核对之后能否凭同一任务句柄接回进度。 |
-| 游戏无事和退游 | 正常游戏状态下多次纯聊天或直播式思考，随后退出、服务端踢出并重连。 | Provider 投影中没有固定快照或离线占位，也没有因固定状态采样新增的唤醒。需要知道的断线、任务结果和新入服位置各经原入口可见。用真实 TUI 或终端渲染测试核对入口。 |
+| 入服后自由游玩 | 重置陌生场景，真实模型只知道服务器信息。另用固定入服场景验证正常、幂等连接、换服、断线重连、旧读迟到和读取失败。 | 主动入服的轮次能看到可信起点，不会为同一位置再发一次无增益查询。Owner Gate 真实可见。 |
+| 找铁并遇阻 | 固定含可采来源的区域，服务端库存独立复核。 | 报告与服务端变化一致，受阻回执交代确认量和原因，未知写入不重放。 |
+| 等待与混合批次 | 只有委托工具、accepted 加其他工具两种批次；后台任务运行时第二客户端发私聊、点名、普通公屏。 | 纯委托不为等待产生空续轮；混合批次照常续轮且不丢工具结果。私聊、点名、进行中的短对话送达，无关公聊与自回声不刷屏。 |
+| confirming 三条终局 | 原工具回执只见 confirming，分别让它最终受理、最终拒绝、长期未知；重启后继续对账。 | 受理找到对应一个 Run；拒绝主动送达且无后台 Run；未知保持可诊断，不自动重做，不产生第二条动作。 |
+| 结果正文 | 成功、执行成功但目标未证实、部分成果待决定、未知写入、单报告不可读加多任务积压。 | 正文可直接开始下一次决定；有界权威 Header 回退；一条坏消息不阻塞同批其他任务。 |
+| 用户停止与重启 | 主动停止、回合失败、会话存储与投递重启。 | 不违背 Subject 停止语义，事实留在持久记录里可合法恢复，诊断不称「模型已处理」。 |
+| 游戏无事和退游 | 正常游戏状态下多次纯聊天，随后退出、服务端踢出并重连。 | Provider 投影里没有固定快照或离线占位；断线、任务结果和新入服位置各经原入口可见。 |
+| 长时间聊天后继续任务 | 压缩历史、切换话题、断线重连后再让她继续。 | 能找到原任务并区分历史事实与当前现场，必要时用 `session.status`、`tasks.list/get`、`observe` 恢复，不出现幽灵坐标。 |
+| 开放式探索 | `explore@1` 命中 `until`、Program 里 `mc.decide` 交回候选。 | 发现按能力结果或待决策交接，不靠任务进度洪流，也不把普通实体更新变成主脑待办。 |
 
-固定真模型场景按同一场地交替跑基线和候选，每组至少三轮。入服自由游玩分别记录选择，结合固定场景判断成本。按场景记录任务正确性、必要观察、首次有效行动耗时、输入 token、模型请求数、等待期查证数和通知时延。标注每次新增查询的用途，区分真正补事实和重复索取同一结果。验收至少满足以下条件。
+**已覆盖**：`pnpm typecheck:fast` 除工作树既有的 `vitest.config.ts` `retries` 类型错误外无新增错误；本批相关的静态检查与受控 Provider 链路（含踢出探针改用连接事实）随源码同批核对。本批直接相关的 15 个测试文件 129 项通过（含受理终局闭环与 confirming 义务落账）；一次全量 `pnpm test:dev` 3609 项通过，仅 `tts-bridge-protocol`（缺 httpx）与 `mc-executor-platform`（PATH node 22 缺 `node_api.h`）两项环境基线红；`biome format` 与 `check:boundaries` 通过。`--rhythm-flow` 的踢出探针已改用 `Executor.status()` 的连接事实。
 
-- **正确性门**。受控用例的服务端结果、权限与停止语义、Task 去重、断线和未知写入全部通过。固定真模型场景的结果和必要观察与基线等价，遗漏须定位到具体交接点并修复后重跑。
-- **成本门**。固定场景总体实际输入 token 和重复游戏状态正文下降，模型请求总数不增加。输入 token 按 Provider 的用量口径统计，缓存读取和非缓存输入分列。单场景首次有效行动的中位数允许波动，预算取基线耗时的 20% 和 1 秒中的较大值。这是本计划的发布预算。空闲 Host 从完成通知具备资格到接收仍须在 1 秒内，忙时分别记录投递与排队耗时。超出预算就按同场景交替复测，并区分 Provider 延迟与新增工具往返。若移除快照只是增加 `observe` 或 `tasks.get`，补足可定位的回执或查询后复测。缺少实际用量时保留未知，先用可报告用量的同一模型重跑两组，再判定 token 门槛。
-- **发布门**。`pnpm typecheck`、`pnpm test`、`pnpm build` 通过，核对源码与构建产物走同一交付规则。真实 Paper 和临时 Profile 跑源码与构建入口。报告分别标明受控 Provider、真实模型、服务端独立核验和 TUI 的证据。真人自然同玩若未发生，记录为待验证，并用第二客户端的确定性场景覆盖投递边界。
+**未验证**：真实 Paper 服务器与真实模型的交错对照、快照策略 A/B、双客户端社交、长时间压缩后重入、开放式探索发现、跨重启的受理终局实跑。这些需要隔离 Profile、固定地图/模型/思考档和临时存档；环境不具备时保留可复现命令，不把受控用例当成发布验收。可复现入口：`pnpm dev:mc:task`、`pnpm dev:mc:native --rhythm-flow`、`pnpm dev:mc:session`、`pnpm dev:mc:explore-frontier`。
 
-切片 A 留基线与场景，B 留回执与事件交接证据，C 留生产切换和清理清单。各切片独立提交。全部发布门通过后，把最终行为和可复现命令写回运行文档，旧快照验收作为历史证据归档。
+代码完成与验收完成分开记：前者以源码与静态/受控证据判定，后者以第 4 节的真实服与真模型记录判定。没有实验数据时不宣称信息策略已验证，也不为压低统计数字机械抑制必要工具。

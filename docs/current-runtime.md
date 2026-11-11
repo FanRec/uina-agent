@@ -107,7 +107,7 @@ Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断�
 
 V2 当前目录有 18 个查询和 37 个动作。54 个既有 selector 各有唯一绑定，新动作 `build.resume@1` 用于可恢复的小型施工。`describe`、顶层 `run` 与 `mc.call` 共用 Catalog。用户通过 `tasks` 查询、停止、续段及查证，开发验收通过 Executor 读内部记录。采集策略由发布的 `collect@1` Program 承载，移动、挖掘、拾取和窗口事务由 Native 完成。
 
-玩法搜索支持中英文别名与词项，候选给出公开入口。任务查询、完成通知和请求前简报展示由根提交派生的任务名与目标。玩法搜索词与任务名均为展示数据，不参与执行绑定或续段资格。 [游玩体验验收](proposals/mc/archive/world-refactor-v2.md#游玩体验)
+玩法搜索支持中英文别名与词项，候选给出公开入口。任务查询、完成通知和连接回执展示由根提交派生的任务名与目标。玩法搜索词与任务名均为展示数据，不参与执行绑定或续段资格。 [游玩体验验收](proposals/mc/archive/world-refactor-v2.md#游玩体验)
 
 `build.resume@1` 冻结显式目标格、存档身份、维度、源码和 Addon 装配摘要。符合恢复资格的任务重连后通过既有认领事务创建新 Segment。无法确认的写入保留在 Effect 记录中，现场读数作为续段决策的证据。Fabric 支持范围以验收中的注册表和 SpectatorPlus 组合为准。 [V2 验收记录](proposals/mc/archive/world-refactor-v2.md)
 
@@ -141,17 +141,19 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批20（2026-11-03）关闭横向缺口 G6/G7/G8：G6 节流 digest 推送（`world/digest.ts` 按查询依赖采样、10s 前缘节流、内容哈希去重、独立事件类型 `minecraft_digest`、主脑忙时只保最新一份）；G7 `inventory@1 {since}` 增量游标（协议槽位变更标记 → 差量 + 变化后总数）；G8 `run {wait}` 按调用短窗覆盖（0 只受理不等）。真服 `pnpm dev:mc:digest` 7/7；tests/mc 771 项全绿。剩余横向缺口 G9/G10（运行时调度）、G12/G13（认证与平台）、G14–G17（复验与终态报告）、G24（tunnel 上行净空）登记于 [known-gaps](proposals/mc/known-gaps.md)。
 
-Minecraft 状态由 `world/state-frame.ts` 采样，经 `state.snapshot` 只读 RPC 和 `WorldDef.requestContext` 以一条 `external_event_frame` 两消息帧（来源标 `world.observation`、`origin: external`）附在当前模型请求尾部。只对已连接的会话附加，退游或换服作废旧会话的在途读取。Driver 在 RPC 返回时提供连接事实。仍在会话中而取样失败、空白或超过 250ms 时，请求附一条写明原因的不可用帧（`本轮没有取到世界观察：…`），不让观察静默消失。观察帧不写入会话历史，不唤醒主体。死亡、断线、私聊、任务完成等事件经各自的事件投递路径送达。批37真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧均为身体当前所在格）。
+Minecraft 不再在每次模型请求前采样世界状态。当前位置、体况、背包、地形、界面和活跃任务由 `observe`、`tasks.list/get`、`session.status` 按需读取，回执自带覆盖、时点和未知；旧观察只作历史事实。新建 ready visit 时 `session.connect` 的原回执给一次带 `visitId` 与 `observedAt` 的维度、位置，读取失败或换代只给准确说明，不改变连接结果与 `actionsAllowed`。静态 `environmentGuide` 每回合给一次使用原则，不含实时事实。死亡、断线、私聊、点名、进行中的短对话、自保未脱险和任务完成仍经各自的事件投递路径送达。批37 的 `state.snapshot` / `requestContext` 状态帧链已在批46 整体删除，含框架接缝、TUI 观察入口与专用脚本。
 
-隔离 Paper 1.21.11 使用受控 Provider，`pnpm dev:mc:native --rhythm-flow` 与 `node dist/.uina/worlds/minecraft/dev/native-host.js --rhythm-flow` 均通过 9 项检查，覆盖入服前、在服、主动退出、重连和服务端踢出，并逐请求核对 Host 快照与模型收到的观察正文。TUI 的观察入口与面板正文由终端渲染测试核对。
+隔离 Paper 1.21.11 使用受控 Provider，`pnpm dev:mc:native --rhythm-flow` 与 `node dist/.uina/worlds/minecraft/dev/native-host.js --rhythm-flow` 覆盖任务受理、持久完成、Host 投递和回合收口。踢出场景改用 `Executor.status()` 的真实连接事实判定，不再依赖状态采样。`/prompt` 保留系统提示词快照与来源，不再显示世界观察面板。
 
 批39（2026-11-08）修正批37 的一处判据：安全干预的终态要不要告诉模型，不能看终态值，要看起因。同一句 `ended: invalidated` 有两个来源——连接身份变了（`connection`/`death` 事实已经在说同一件事），或者没有任何别的事实承担的失败（抢占失败、会话关闭出错、崩溃恢复留下的未结算记录）。`RuntimeSafety.cancel(reason, cause)` 由调用点声明起因、`changed(record, cause)` 带出，`companion/safety-route.ts` 的 `safetyNeedsAttention(ended, cause)` 是唯一判定（世界自己关门与连接变了导致的失效不说，其余都说）。起因只在内存里活一次干预的生命周期，不进库——记录本身的 ended/outcome 已经说清发生了什么。
 
-批41（2026-11-08）把 MC 顶层换成纯异步受理：`run`/`chat`/`runs.continue` 删掉默认 3 秒等待窗与公开 `wait`，只回 `accepted`/`not_accepted`/`unknown`，终态一律经 `minecraft_completion` 投递；Program 内的 `await mc.call()` 不变。工具结果增 `continuation:'yield'`，整批都是可靠委派的结果时 Subject 才结束本轮，混合批次照常请求模型。完成通知从单槽串行改为一轮最多 8 个 key 集中入队（新接线 `submitInputs` → `onInputs` → `Subject.acceptBatch` → `emitEvents`），每条独立 attempt、独立 Host committed 回执与 ACK；批量受理只表示逐条持久入队，不等于模型已读。`accept` 在 idle 且队列空时仍同步直启，避免 `waitForIdle()` 在回合未提交时空转返回。请求前状态帧增加有界活跃任务简表（最多 4 条，与世界事实分别标采样时间），Runtime 列表查不到时正文写明"未知"而不是省略，不产生定时推送。完成通知的批量入口缺省或宿主少回一条回执时都让本轮对账显式失败并记进诊断，不静默丢弃、不留假在途。`heldRequests` 保留为受理期间压住同 request 完成通知的屏障；`shortWindowMs`/`toolAttempt`/`heldTools`/`RunReply` 等旧双通道接口已删。批20 G8 的 `run {wait}` 关闭方式由本批替换，缺口仍关闭。验收见 [changelog 批41](proposals/mc/changelog.md)；真实服与真实模型对照窗口本轮未跑。
+批41（2026-11-08）把 MC 顶层换成纯异步受理：`run`/`chat`/`runs.continue` 删掉默认 3 秒等待窗与公开 `wait`，只回 `accepted`/`not_accepted`/`unknown`，终态一律经 `minecraft_completion` 投递；Program 内的 `await mc.call()` 不变。工具结果增 `continuation:'yield'`，整批都是可靠委派的结果时 Subject 才结束本轮，混合批次照常请求模型。完成通知从单槽串行改为一轮最多 8 个 key 集中入队（新接线 `submitInputs` → `onInputs` → `Subject.acceptBatch` → `emitEvents`），每条独立 attempt、独立 Host committed 回执与 ACK；批量受理只表示逐条持久入队，不等于模型已读。`accept` 在 idle 且队列空时仍同步直启，避免 `waitForIdle()` 在回合未提交时空转返回。请求前状态帧的有界活跃任务简表已随批46 的状态帧链一并删除。完成通知的批量入口缺省或宿主少回一条回执时都让本轮对账显式失败并记进诊断，不静默丢弃、不留假在途。`heldRequests` 保留为受理期间压住同 request 完成通知的屏障；`shortWindowMs`/`toolAttempt`/`heldTools`/`RunReply` 等旧双通道接口已删。批20 G8 的 `run {wait}` 关闭方式由本批替换，缺口仍关闭。验收见 [changelog 批41](proposals/mc/changelog.md)；真实服与真实模型对照窗口本轮未跑。
 
 批42（2026-11-08）教学与闭环：`WorldDef` 新增可选只读 `environmentGuide`，`WorldActivation` 在 `turn.prepare` 把活动世界的 ENV 追加到 systemPrompt（多世界依次追加、停用摘除、不写 Session）；Minecraft 的 ENV 在 `onStart` 预载、无活动会话时返回 null。`describe` 增 `kind:'guide'`，六份官方只读 Guide 随包发布并按需读正文，`nativeGuide` 压成入口。`goto@1`/`route.plan@1` 默认 `placeToReach:false`。Body 撤销在真实发起点写不可变 `retiredBy`，`interruptible()` 从 Effect 账本现算 `dispatch/effects`，`user_stop` 不自动续跑。Window 保留 `window_items.stateId` 做迟到包防护，回执增 `outcome/diagnostics`；真服探针证明工作台会先回"仅同步"的 full，因此内容未变仍按 unknown，不设 rejected。`excavate` 的 `remainingCount` 计入未访问格；`collect` 候选分 permanent/transient/unknown，已派发 TIMEOUT 不换候选，候选耗尽先清扫地面掉落；`craft` 暴露 `station` 来源。MINE Program 以最新 `self/inventory` 终验，不满足即 `mc.decide`。真服 `dev:mc:task` MINE/SHELTER/NIGHT 全 PASS；`pnpm typecheck` 全绿；tests/mc 808 passed（唯一失败为既有 `node_api.h` 环境项）。
 
-Minecraft Task 重构（2026-11-10）将正式用户工具的 `runs` 换为 `tasks.get/list/stop/continue/trace`。任务句柄来自原 Profile 和根提交，普通用户与模型通过同一入口查证受理、停止和继续。完成通知与请求前任务简报用同一任务身份。Runtime、Executor Ledger 和 Host 回执仍各持原有事实，受理拒绝和派发前停止可查，查不到记录时保留不确定。采集和施工 Guide 提供可复制的单文件 Program，见 [当前公开合同](proposals/mc/public-api.md#用户任务入口)。
+Minecraft Task 重构（2026-11-10）将正式用户工具的 `runs` 换为 `tasks.get/list/stop/continue/trace`。任务句柄来自原 Profile 和根提交，普通用户与模型通过同一入口查证受理、停止和继续。完成通知与任务查询用同一任务身份。Runtime、Executor Ledger 和 Host 回执仍各持原有事实，受理拒绝和派发前停止可查，查不到记录时保留不确定。采集和施工 Guide 提供可复制的单文件 Program，见 [当前公开合同](proposals/mc/public-api.md#用户任务入口)。
+
+批46（2026-11-11）收口信息交付：删除每请求全量状态帧生产链，`WorldDef.requestContext`、`state.snapshot`、TUI 观察入口与专用脚本一并清理；`session.connect` 只在新建 ready visit 时给一次有界 `entry`。`confirming` 去掉默认轮询并带 `yield`，受理终局的交接义务写进原始请求凭证，按 `acceptance:<requestId>` 稳定键走现有 Host 批量 receipt 通道，重启后可重建；`ack` 按 key 前缀区分结清凭证与 `runtime.settleDelivery`。完成通知正文补权威 `record`/`segment`、报告缺口说明与 `goalVerification: "unknown"`，`nextCall` 只在具体证据缺口时给；游戏事件去掉默认 `observe(events@1)`，聊天补回 `observedAt`。跨重启可靠投递的唯一前提是激活时的 `durable` 门禁，ack 链不重复检查。进行中对话用发送者稳定身份加频道、分钟级易失关联，关联消息走 followUp；自主发现沿用 `explore@1` 的 `until` 与 `mc.decide`，不新增通道。裁决与验收记录见 [游玩信息交付重构计划](proposals/mc/play-context-refactor-plan.md)。真 Paper 与真模型对照窗口未跑。
 
 ## QQ World
 

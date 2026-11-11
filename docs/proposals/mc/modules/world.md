@@ -385,17 +385,15 @@ Driver stamp 只是其中一个输入。失效只按**查询实际可见边界**
 
 WorldWatch 只提示重新看。完整聊天、死亡和所选历史事件从对应记录查询，不依赖 changed 穷举。World 不根据 Watch 定时器开炉、移动、避险或创建 Run；主动复查仍由能力和 Runtime 取得新身体执行。
 
-### 9.5 请求前状态帧（批37，取代批20 的节流 digest）
+### 9.5 当前世界事实怎么到模型手里（批46）
 
-Watch 是"等变化的拉取原语"；状态帧是"每次决策前读一眼"：`world/state-frame.ts` 只有采样与文本投影，没有定时器、没有订阅、没有去重、不落历史、不发消息。一次 `facts.sample` 提交边界采三段（self/inventory/world），复用现有查询读取器，与 observe 同口径，不建第二套事实提取。站位取脚下那一格（与全世界 `Math.floor` 的方块坐标一致，不是四舍五入）；背包超 10 种折叠成种类数加剩余项数；生命/饥饿没收到时说"未知"而不是留白（省略会被读成满血，填 0 会被读成已死）；未附着活连接时明确说"未连接，不要按旧坐标行动"，不沿用旧值。读取器报的字段级缺口（如地面上没有氧气）不算降级，只有整段读不到才进 `unknown`。
+世界状态不再在每次请求前自动采样。批37 的 `state.snapshot` / `WorldDef.requestContext` 链路（`world/state-frame.ts`、活跃任务简表、250ms 超时占位帧、TUI 观察入口）已整体删除。状态不是待办事项：旧坐标排队等模型处理没有价值，所以位置、体况、背包、地形、界面、HUD 和活跃任务都由模型在需要时经 `observe`、`tasks.list/get`、`session.status` 读取，回执自带覆盖、时点与未知；历史里的旧观察只作过去事实，不升级为当前值。
 
-状态不是待办事项：旧坐标与旧背包排队等模型处理没有价值，只有当前值有意义，所以它既不进 `events@1` 也不排队——由 `state.snapshot` 只读 RPC 出，`WorldDef.requestContext` 在每次模型请求前取一份，经 `turn.transformContext`（`tail` 相位）附在该次投影尾部。宿主侧 250ms 超时即本轮不注入。
+例外是入场：`SessionController.connect` 只在本次确实新建了 ready visit 时读一次 `self@1`，把 `visitId`、`observedAt`、维度和位置放进同一次工具回执。读数有 1.2 秒上限，读前后核对 visit 身份；超时、取消、换代、字段缺失都只给准确说明，不改连接结果、不复用旧坐标、不把位置可读当成 `actionsAllowed`。
 
-每回合都有一帧：取不到时正文写明原因（超时 / 读失败 / 世界没有提供内容 / 上一次读取仍未返回），通知文案同时改成"本轮没有取到世界状态"，并明确要求不要把它当成世界没有变化。让位置空着会被读成"世界没变"，那比没有状态更危险。同一时刻只允许一份采样在飞——世界侧卡住时，多个请求不该各压一份上去，也不该各留一个永不清理的 abort 监听器。宿主侧 250ms 超时只把正文换成占位，不挂住请求。
+`WorldDef.environmentGuide` 是**同步、纯读、无副作用**的 getter，返回"这个世界怎么理解、怎么做"的静态认知（如 Minecraft 的 ENV），由 `WorldActivation` 在 `turn.prepare` 追加到本轮 systemPrompt，带稳定边界名 `[world:<name>:environment]`。它只在世界自己判定适用时返回正文（Minecraft 只在有活动会话时给），每回合一次，不随事实变化；多个启用世界依次追加、互不覆盖，停用由 ResourceScope 摘除，不写 Session canonical history，不注入为用户消息。API 合同与场景做法由 `describe {kind:'guide'}` 的官方只读 Guide 提供。静态指南、按需查询与连接回执不合并成一个 PromptManager。
 
-状态帧中的活跃任务段读取 `runtime.list {activeOnly:true}`。读取失败时正文说明任务状态暂不可查，并引导用户用 `tasks.list` 查证。只有确认没有活跃任务时才省略这一段。世界 Facts 与任务列表分别采样。
-
-批42 增加第二类世界文本，与状态帧严格分工：`WorldDef.environmentGuide` 是**同步、纯读、无副作用**的 getter，返回"这个世界怎么理解、怎么做"的静态认知（如 Minecraft 的 ENV），由 `WorldActivation` 在 `turn.prepare` 追加到本轮 systemPrompt，带稳定边界名 `[world:<name>:environment]`。它只在世界自己判定适用时返回正文（Minecraft 只在有活动会话时给），每回合一次，不随事实变化；多个启用世界依次追加、互不覆盖，停用由 ResourceScope 摘除，不写 Session canonical history，不注入为用户消息。会变的坐标/库存仍只由上面的状态帧提供；API 合同与场景做法由 `describe {kind:'guide'}` 的官方只读 Guide 提供。三者不合并成一个 PromptManager。
+事件只承载"发生了什么"：死亡、断线、私聊、点名、进行中的短对话、自保未脱险按可信事实源筛出，其余留在 `events@1` 按需读取。发送者身份来自 Driver 结构化事实，不从聊天正文推断。
 
 <a id="retention"></a>
 
