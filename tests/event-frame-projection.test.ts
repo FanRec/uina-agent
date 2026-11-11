@@ -3,11 +3,14 @@ import { defaultSystemPrompt } from "../src/agent/context.js";
 import { requestToolDefs } from "../src/agent/projection.js";
 import type { ChatMsg } from "../src/core/types.js";
 import {
+	appendEventFrame,
 	createEventFrameProfile,
 	EVENT_FRAME_PROMPT,
 	EVENT_FRAME_TOOL_NAME,
+	eventFrameMessages,
 } from "../src/extensions/event-frames/index.js";
 import { EVENT_FRAME_KIND, EVENT_FRAME_TOOL } from "../src/extensions/event-frames/protocol.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { projectInputMessage } from "../src/session/recovery.js";
 import { SubjectHarness } from "./harness/core/subject-harness.js";
@@ -242,6 +245,83 @@ describe("external event projection", () => {
 			profile.projection.validateContext!(framed, { model: {} as never, tools: profile.projection.contextTools! }),
 		).not.toThrow();
 		expect(() => profile.projection.validateContext!(framed, { model: {} as never, tools: [] })).toThrow(/未声明/);
+	});
+	it("rejects a frame whose only predecessor is system", () => {
+		// Provider 会剥掉 system：只剩帧就等于以 assistant 开场，Anthropic 直接 400。
+		const profile = createEventFrameProfile();
+		const framed = eventFrameMessages({
+			eventId: "e9",
+			text: "观察",
+			source: { kind: "runtime", type: "world.observation", ref: "w", origin: "external" },
+		});
+		expect(() =>
+			profile.projection.validateContext!([{ role: "system", content: "你是 Uina。" }, ...framed], {
+				model: {} as never,
+				tools: [EVENT_FRAME_TOOL],
+			}),
+		).toThrow(/对话消息/);
+	});
+	it("keeps the request observation visible when the frame opens the conversation", () => {
+		const msgs = appendEventFrame([{ role: "system" as const, content: "你是 Uina。" }], {
+			eventId: "world:1",
+			text: "位置 (0, 64, 0)",
+			label: "minecraft 观察",
+			observationSource: "minecraft",
+			source: { kind: "runtime", type: "world.observation", ref: "minecraft", origin: "external" },
+		}) as ChatMsg[];
+		expect(msgs[1]!.role).toBe("user");
+		expect(msgs[1]!.context?.requestObservation).toEqual({ source: "minecraft", text: "位置 (0, 64, 0)" });
+	});
+	it("keeps a transform hook's tool narrowing and only adds the frame declaration", async () => {
+		const profile = createEventFrameProfile();
+		const harness = SubjectHarness.create({
+			store: new MemorySessionStore(),
+			projection: profile.projection,
+			systemPrompt: profile.systemPrompt,
+			tools: [mockProbe()],
+			runtimeHooks: {
+				...NO_RUNTIME_HOOKS,
+				turn: {
+					...NO_RUNTIME_HOOKS.turn,
+					// 限制工具面是合法用法：hook 只留 probe，尾部再补一个观察帧。
+					transformContext: async (projection) => {
+						const messages = appendEventFrame(projection.messages, {
+							eventId: "tail:1",
+							text: "尾部观察",
+							label: "观察",
+						}) as unknown as ChatMsg[];
+						const tools = projection.tools.filter(
+							(tool) => tool.function.name === "probe",
+						) as unknown as import("../src/core/types.js").ToolDef[];
+						return { ...projection, messages, tools };
+					},
+				},
+			},
+		});
+		harness.scenario.reply("好");
+		await harness.run("hello");
+		const sent = harness.scenario.calls.at(-1)!;
+		expect(sent.tools!.map((tool) => tool.function.name).sort()).toEqual(["probe", EVENT_FRAME_TOOL_NAME].sort());
+		expect(sent.messages.some((m) => m.context?.kind === EVENT_FRAME_KIND)).toBe(true);
+	});
+	it("does not put broker tools back when a hook clears the tool list", async () => {
+		const harness = SubjectHarness.create({
+			tools: [mockProbe()],
+			runtimeHooks: {
+				...NO_RUNTIME_HOOKS,
+				turn: {
+					...NO_RUNTIME_HOOKS.turn,
+					transformContext: async (projection) => ({
+						...projection,
+						messages: [...projection.messages] as unknown as ChatMsg[],
+						tools: [],
+					}),
+				},
+			},
+		});
+		harness.scenario.reply("好");
+		await harness.run("hello");
+		expect(harness.scenario.calls.at(-1)!.tools).toEqual([]);
 	});
 });
 
