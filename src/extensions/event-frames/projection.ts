@@ -42,16 +42,11 @@ export interface EventFrameOptions {
 	entryId?: string;
 	/** 回执正文：外部原文，或运行时合成的观察。 */
 	text: string;
-	/**
-	 * 来源标签覆盖。到达事件缺省按 source 推导；观察类帧必须自己给出（"minecraft 观察"），
-	 * 因为"刚刚发生了什么"和"现在是什么样"是两种不同的说法。
-	 */
+	/** 来源标签覆盖。缺省按 source 推导；需要区分同一来源下不同说法时显式给出。 */
 	label?: string;
 	source?: InputSource;
 	receivedAt?: string;
 	images?: ImageContent[];
-	/** 仅瞬态观察：请求检视里展示这份观察，不进模型正文。 */
-	observationSource?: string;
 }
 
 /** 本地时间，固定宽度、无 locale 依赖：ISO 里是 UTC，模型读成本地时间才不会错位。 */
@@ -95,13 +90,6 @@ function eventFrameText(options: Pick<EventFrameOptions, "text" | "label" | "sou
 	return `[${time ? `${label} · ${time}` : label}]\n${String(options.text ?? "")}`;
 }
 
-/** 请求检视用的观察记录：两种帧形状都要带，否则首轮观察在 `/prompt` 里看不见。 */
-function observationMeta(options: EventFrameOptions): Pick<ModelContextMeta, "requestObservation"> {
-	return options.observationSource
-		? { requestObservation: { source: options.observationSource, text: options.text } }
-		: {};
-}
-
 function frameProvenance(options: EventFrameOptions): InputProvenance {
 	return {
 		eventId: options.eventId,
@@ -123,8 +111,7 @@ function frameContext(options: EventFrameOptions, index: number): ModelContextMe
  * 构造一组协议完整的合成回执：[合成调用(assistant), 回执(tool)]。
  *
  * 深模块：调用方只给 eventId 与正文，分组/callId/来源标注机制全部在此封装。
- * 两类生产消费方：① 到达事件投影（projectEventFrames）；② 请求前瞬态观察
- * （世界状态 / 声音状态——运行时合成的环境观察，不落 Session 历史）。
+ * 生产消费方：到达事件投影（projectEventFrames）。帧不落 Session 历史。
  */
 export function eventFrameMessages(options: EventFrameOptions): ChatMsg[] {
 	const id = frameCallId(options.eventId);
@@ -140,10 +127,7 @@ export function eventFrameMessages(options: EventFrameOptions): ChatMsg[] {
 			tool_call_id: id,
 			content: eventFrameText(options),
 			...(options.images ? { images: options.images } : {}),
-			context: {
-				...frameContext(options, 1),
-				...observationMeta(options),
-			},
+			context: frameContext(options, 1),
 		},
 	];
 }
@@ -162,7 +146,6 @@ function leadingFrameMessage(options: EventFrameOptions): ChatMsg {
 		context: {
 			input: frameProvenance(options),
 			...(options.entryId ? { entryId: options.entryId } : {}),
-			...observationMeta(options),
 		},
 	};
 }

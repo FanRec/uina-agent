@@ -152,18 +152,16 @@ describe("B1: layout is the single source of truth", () => {
 			inputTokens: 1000,
 			contextWindow: 5000,
 			measurementKind: "exact",
-			requestObservations: [{ source: "minecraft", text: "overworld (0,64,0)" }],
 		});
 		host.start();
 		await settle();
 		expect(frames.at(-1)).toContain("Ctrl+L");
-		expect(frames.at(-1)).toContain("上次世界观察 1 /prompt");
 		dispatchUIHostInput(host, "\x0c");
 		await settle();
 		expect(frames.at(-1)).toContain("剩余");
 		host.clearRequestUsage();
 		await settle();
-		expect(frames.at(-1)).not.toContain("世界观察");
+		expect(frames.at(-1)).toContain("剩余");
 		host.stop();
 	});
 

@@ -36,6 +36,22 @@ import {
 
 /** 入服等待上限；超时按当前连接事实判失败，不用时间兜底伪装成功。 */
 const CONNECT_TIMEOUT_MS = 30_000;
+/** 入场读数上限：读不到就省掉 entry，绝不为了一个坐标拖住连接成功回执。 */
+const ENTRY_READ_TIMEOUT_MS = 1_200;
+
+/**
+ * 一次新建 ready visit 的起始立足点。position/dimension 是带时点的有界读数，
+ * null 表示 self@1 没给出该字段，不是"世界不存在"；unknown 保留未覆盖路径。
+ */
+export interface SessionEntry {
+	visitId: string;
+	observedAt: string;
+	source: string;
+	coverage: string;
+	dimension: string | null;
+	position: { x: number; y: number; z: number } | null;
+	unknown: string[];
+}
 
 export interface SessionStatus {
 	state: "disconnected" | "connecting" | "syncing" | "connected" | "disconnecting" | "faulted";
@@ -54,6 +70,9 @@ export interface SessionStatus {
 		/** 本次会话冻结的 Addon 装配（Loaded 事实来自 Companion status）。 */
 		addons: { digest: string; ids: string[] };
 	};
+	/** 只在本次确实新建了 ready visit 的 connect 回执里出现；幂等 connect 与 status 不携带。 */
+	entry?: SessionEntry;
+	entryUnavailable?: { reason: string };
 	operation: null | { kind: "connect" | "disconnect" | "close"; id: string };
 	lastError: { code: string; message: string } | null;
 	settingsPath: string;
@@ -89,6 +108,10 @@ export interface SessionControllerOptions {
 
 function response(value: unknown, status: ToolExecutionResult["status"] = "succeeded"): ToolExecutionResult {
 	return { status, result: JSON.stringify(value), details: value };
+}
+
+function recordValue(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function notConnected(action: string, params: Record<string, unknown>): ToolExecutionResult {
@@ -205,6 +228,8 @@ export class SessionController {
 		const settings = await readSettings(join(this.options.minecraftRoot, "settings.json"));
 		const resolved = resolveTarget(input, settings);
 		const tx = this.beginTransition("connect");
+		/** 只有确实新建了 ready visit 才给入场事实，幂等 connect 不伪造新入场。 */
+		let openedVisitId: string | null = null;
 		try {
 			this.lastError = null;
 			const id = profileId(resolved.identity);
@@ -222,7 +247,7 @@ export class SessionController {
 				await this.confirmBlocked();
 				if (signal.aborted || this.closing) proceed = false;
 			}
-			if (proceed) await this.openVisit(resolved, id, signal);
+			if (proceed) openedVisitId = await this.openVisit(resolved, id, signal);
 		} catch (error) {
 			const e = error as { code?: string; message?: string };
 			this.lastError = { code: e.code ?? "CONNECT_FAILED", message: e.message ?? String(error) };
@@ -231,7 +256,73 @@ export class SessionController {
 			this.endTransition(tx);
 		}
 		// 状态在槽位释放后聚合，避免把进行中的管理操作显示成结果。
-		return this.status();
+		const status = this.status();
+		if (!openedVisitId) return status;
+		return { ...status, ...(await this.readEntry(openedVisitId, signal)) };
+	}
+
+	/**
+	 * 起始立足点只从本次 visit 的当前 self@1 读取：读前后核对 visitId 与取消状态，
+	 * 换代或读数失败就给准确说明。连接结论、actionsAllowed 与 Owner Gate 不因此改变。
+	 */
+	private async readEntry(
+		visitId: string,
+		signal: AbortSignal,
+	): Promise<Pick<SessionStatus, "entry" | "entryUnavailable">> {
+		const session = this.active;
+		if (!session || session.visitId !== visitId || signal.aborted)
+			return { entryUnavailable: { reason: "visit changed or connect was cancelled" } };
+		type SelfValue = { place?: { dimension?: unknown; position?: unknown } };
+		const unavailable = (reason: string) => ({ entryUnavailable: { reason } });
+		const read = session.executor.rpc<import("../contracts/values.js").Observation<SelfValue>>(
+			"observe",
+			{ selector: "self@1", input: {} },
+			signal,
+		);
+		// 超时只放弃等待，不取消底层只读调用；迟到的结果直接丢弃。
+		void read.catch(() => {});
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error("entry read timed out")), ENTRY_READ_TIMEOUT_MS);
+		});
+		let fact: import("../contracts/values.js").Observation<SelfValue>;
+		try {
+			fact = await Promise.race([read, timeout]);
+		} catch (error) {
+			return unavailable(`self@1 unreadable: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+		if (this.active?.visitId !== visitId || signal.aborted) return unavailable("visit changed while reading entry");
+		const value = fact.value;
+		const place = recordValue(value) && recordValue(value.place) ? value.place : null;
+		const raw = recordValue(place?.position) ? place.position : null;
+		const position =
+			raw &&
+			typeof raw.x === "number" &&
+			Number.isFinite(raw.x) &&
+			typeof raw.y === "number" &&
+			Number.isFinite(raw.y) &&
+			typeof raw.z === "number" &&
+			Number.isFinite(raw.z)
+				? { x: raw.x, y: raw.y, z: raw.z }
+				: null;
+		const dimension = typeof place?.dimension === "string" && place.dimension ? place.dimension : null;
+		return {
+			entry: {
+				visitId,
+				observedAt: fact.observedAt,
+				source: fact.source,
+				coverage: fact.coverage,
+				dimension,
+				position,
+				unknown: [
+					...(fact.unknown ?? []),
+					...(position ? [] : ["place.position"]),
+					...(dimension ? [] : ["place.dimension"]),
+				],
+			},
+		};
 	}
 
 	async disconnect(signal: AbortSignal): Promise<SessionStatus> {
@@ -344,7 +435,7 @@ export class SessionController {
 		resolved: ReturnType<typeof resolveTarget>,
 		profile: string,
 		signal: AbortSignal,
-	): Promise<void> {
+	): Promise<string> {
 		const dir = profileDir(this.options.minecraftRoot, profile);
 		await ensureIdentityFile(dir, resolved.identity);
 		// Profile Addon 选择在这里解析一次并冻结：连接期间改 addons.json 不影响本会话。
@@ -411,6 +502,7 @@ export class SessionController {
 				detachBody,
 			};
 			candidate = null;
+			return visitId;
 		} catch (error) {
 			// 半初始化候选域退役；不吞所有权退役失败。
 			if (candidate) {

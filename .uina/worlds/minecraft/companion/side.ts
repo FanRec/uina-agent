@@ -22,7 +22,6 @@ import type {
 	DriverExecutionSink,
 	OwnerState,
 	RunRequest,
-	RunSummary,
 	StopCommand,
 } from "../contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../contracts/values.js";
@@ -44,8 +43,6 @@ import { createProgram } from "../program/index.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { pruneExportedImages, readExportedImage } from "../world/map.js";
-import { MAX_ACTIVE_TASKS } from "../world/run-digest.js";
-import { sampleStateFrame } from "../world/state-frame.js";
 import { safetyNeedsAttention } from "./safety-route.js";
 
 export async function openExecutionSide(
@@ -153,30 +150,62 @@ export async function openExecutionSide(
 			assertActionAllowed,
 			requireRetirement,
 		});
+		/**
+		 * 进行中对话：只由确实送达的直接互动（私聊/点名）建立，键用发送者的稳定身份 + 频道，
+		 * 短 TTL 易失。关联有效时同一人的普通公聊作为非抢占事实送达，不必每句都点名。
+		 * 公聊文字不能自称身份：sender 只取 Driver 结构化事实里的 uuid/name。
+		 * 断线清空，换 visit 随伴生重建清空；不进历史，不维护社交状态机。
+		 */
+		const CONVERSATION_TTL_MS = 5 * 60 * 1000;
+		const conversations = new Map<string, number>();
+		const conversationKey = (channel: unknown, value: Record<string, JsonValue>): string | null => {
+			const sender = value.sender;
+			if (!sender || typeof sender !== "object" || Array.isArray(sender)) return null;
+			const actor = sender as Record<string, unknown>;
+			const id =
+				typeof actor.uuid === "string" && actor.uuid
+					? actor.uuid
+					: typeof actor.name === "string" && actor.name
+						? actor.name
+						: null;
+			return id ? `${String(channel ?? "public")}:${id}` : null;
+		};
 		const importantEvents = facts.subscribe((notice) => {
 			if (notice.kind !== "evidence") return;
+			const now = Date.now();
+			for (const [key, until] of conversations) if (until <= now) conversations.delete(key);
 			for (const record of notice.records) {
 				const value = record.fact.value as Record<string, JsonValue>;
+				if (!value) continue;
+				// 断线让关联整体失效；重连后必须由新的直接互动重新建立。
+				if (value.kind === "connection" && value.state === "disconnected") {
+					conversations.clear();
+					options.onGameEvent?.({ ref: record.ref, observedAt: record.fact.observedAt, payload: value });
+					continue;
+				}
 				const username = host.bot?.username;
 				const addressed =
-					value?.kind === "chat" &&
+					value.kind === "chat" &&
 					value.channel === "public" &&
 					value.self === false &&
 					typeof value.text === "string" &&
 					!!username &&
 					(value.text.match(/[\p{L}\p{N}_]+/gu) ?? []).some((word) => word.toLowerCase() === username.toLowerCase());
-				if (
-					value &&
-					(value.kind === "death" ||
-						(value.kind === "connection" && value.state === "disconnected") ||
-						(value.kind === "chat" && value.channel === "private" && value.self === false) ||
-						addressed)
-				)
+				const direct = value.kind === "chat" && value.self === false && (value.channel === "private" || addressed);
+				const key = value.kind === "chat" && value.self === false ? conversationKey(value.channel, value) : null;
+				const related = key !== null && conversations.has(key);
+				if (value.kind === "death" || direct || related) {
+					// 普通公聊不自建关联，只在已有的短会话里延续。
+					if (key && (direct || related)) conversations.set(key, now + CONVERSATION_TTL_MS);
 					options.onGameEvent?.({
 						ref: record.ref,
 						observedAt: record.fact.observedAt,
-						payload: addressed ? { ...value, addressed: true } : value,
+						payload: {
+							...(addressed ? { ...value, addressed: true } : value),
+							...(related && !addressed ? { related: true } : {}),
+						},
 					});
+				}
 			}
 		});
 		registerClose(() => importantEvents.close());
@@ -210,20 +239,6 @@ export async function openExecutionSide(
 			mintEff: () => mint("eff"),
 			assertActionAllowed,
 		});
-		// 状态帧（批37）：只读采样 + 文本投影，复用现有查询读取器（与 observe 同口径）。
-		// 不再有定时推送：状态由宿主在每次模型请求前经 `state.snapshot` 取一份当前快照。
-		const currentReader = (ref: ExactRef) => {
-			const reader = capabilities.readers.get(ref);
-			if (reader?.kind !== "current") throw new Error(`state frame requires a current reader for ${ref}`);
-			return reader;
-		};
-		const stateReaders = {
-			self: currentReader("self@1"),
-			inventory: currentReader("inventory@1"),
-			world: currentReader("world@1"),
-			ui: currentReader("ui@1"),
-			hud: currentReader("hud@1"),
-		};
 		// Library 先于 World 建：build.plan@1 的窄端口既要读库里的蓝图字节，又要经 region@1
 		// 读现场，两者在装配期互为依赖。`world: () => world` 是惰性取值（与
 		// CapabilityDeps.runtime 同一手法），调用只发生在首次 read 之后。
@@ -576,29 +591,6 @@ export async function openExecutionSide(
 				case "observe":
 					value = await world.read({ ref: p.selector as ExactRef, input: p.input ?? {} });
 					break;
-				// 请求前状态快照（批37）：一次采样同一提交边界，返回有界文本 + 可用性事实。
-				case "state.snapshot": {
-					const frame = sampleStateFrame({ facts, readers: stateReaders });
-					// 活跃任务是请求前事实，不是事件：同一次 RPC 里附上，各自标采样时间。
-					// null = 这次 Runtime 查询没读到；世界 Facts 照给，但这一段必须明说"未知"——
-					// 静默省略会被读成"没有活跃任务"，也不能拿旧缓存充当实时结果。
-					let activeRuns: RunSummary[] | null = null;
-					try {
-						if (host.state === "ready") activeRuns = (await getRuntime().list({ activeOnly: true })).items;
-					} catch {
-						// 保留 null：查询失败不是"零条"，由 formatActiveRuns 如实写出。
-					}
-					value = {
-						...frame,
-						connected: host.state === "ready",
-						activeTasks: {
-							items: activeRuns?.slice(0, MAX_ACTIVE_TASKS) ?? null,
-							omitted: Math.max(0, (activeRuns?.length ?? 0) - MAX_ACTIVE_TASKS),
-							sampledAt: new Date().toISOString(),
-						},
-					};
-					break;
-				}
 				case "read_image": {
 					// G11：只接受 map@1 实际产出的 ImageFileRef；核验 realpath/摘要后回 base64。
 					const ref = payload as unknown as Parameters<typeof readExportedImage>[1];

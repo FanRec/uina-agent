@@ -141,11 +141,6 @@ export const WORLD_HOST_EVENT_TYPES = [
 	"agent_settled",
 ] as const;
 
-export interface WorldRequestContext {
-	readonly key: string;
-	readonly read: () => Promise<string | null>;
-}
-
 /** 世界静态契约定义（World Definition）。 */
 export interface WorldDef {
 	/** 唯一世界标识（如 "jukebox", "live2d"） */
@@ -169,25 +164,11 @@ export interface WorldDef {
 	actions: Record<string, ActionDef>;
 
 	/**
-	 * 每次模型请求前的瞬态观察正文（可选）。
-	 *
-	 * read 提供给模型看的有界快照，框架把它包成瞬态观察帧追加在请求尾部：
-	 * 不落 Session 历史、不产生 Subject 输入、不唤醒模型。同步返回 null 表示此刻无需注入。
-	 * key 标识本次会话。切换会话后，旧读取结果作废。
-	 *
-	 * 实现必须**只读**：本方法在每次模型请求前运行（上下文检视也会触发），
-	 * 不得消费事件、推进投递水位、启动 Run 或产生任何外部副作用。
-	 * read 返回 null 表示取样时会话已离开。取样失败或超时由框架标为不可用。
-	 */
-	requestContext?: () => WorldRequestContext | null;
-
-	/**
 	 * 静态环境指引（可选）：世界活动且其环境认知适用时返回一段短正文，否则 null。
 	 *
-	 * 与 requestContext 的分工：那是**每次模型请求**的瞬态观察帧（坐标、库存等会变的
-	 * 事实）；这是**每个回合**一次、不随事实变化的环境认知与实践原则。框架在
-	 * turn.prepare 把非空正文追加到本轮 systemPrompt 末尾，多个启用世界各自追加、
-	 * 互不覆盖；不写 Session canonical history，不注入为用户消息。
+	 * 每个回合一次、不随事实变化的环境认知与实践原则。框架在 turn.prepare 把非空正文
+	 * 追加到本轮 systemPrompt 末尾，多个启用世界各自追加、互不覆盖；不写 Session
+	 * canonical history，不注入为用户消息。当前世界细节由世界自己的工具按需读取。
 	 *
 	 * 实现必须是同步、纯读、无副作用的 getter：不得读取世界事实、消费事件、启动 Run
 	 * 或做磁盘 IO（正文由世界在 onStart 预载到内存）。返回 null 表示本回合不适用，

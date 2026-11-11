@@ -88,6 +88,10 @@ export class ExecutorLedger {
 	async found(requestId: string, lookup: Extract<SubmissionLookup, { kind: "found" }>): Promise<void> {
 		await this.request({ op: "request_found", requestId, lookup });
 	}
+	/** 受理终局的交接义务：pending 由 confirming 回执建立，delivered 由宿主 canonical 回执结清。 */
+	async markNotice(requestId: string, state: "pending" | "delivered"): Promise<void> {
+		await this.request({ op: "request_notice", requestId, state });
+	}
 	async putAttempt(attempt: DeliveryAttempt): Promise<void> {
 		await this.request({ op: "attempt_put", attempt });
 	}

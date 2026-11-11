@@ -232,11 +232,11 @@ export class MinecraftFacade {
 		} catch (error) {
 			if (error instanceof RpcError && error.dispatch === "not_sent")
 				return reject(error.code, error.message, "not_started");
-			return this.confirming(task, String(error));
+			return this.confirming(task, String(error), requestId);
 		} finally {
 			void submission.finally(() => this.delivery.releaseRequest(requestId)).catch(() => {});
 		}
-		if (accepted.kind === "unknown") return this.confirming(task, accepted.reason);
+		if (accepted.kind === "unknown") return this.confirming(task, accepted.reason, requestId);
 		if (accepted.kind === "not_accepted")
 			return response(
 				{
@@ -259,11 +259,36 @@ export class MinecraftFacade {
 		};
 	}
 
-	private confirming(task: string, reason: string): ToolExecutionResult {
-		return response(
-			{ kind: "confirming", task, reason, nextCall: { action: "tasks", params: { op: "get", task } } },
-			"unknown",
-		);
+	/**
+	 * 受理未知。义务先落在原始请求凭证上，再让模型结束本轮：
+	 * 确定受理走原 Run 的 Completion，确定拒绝走同一 requestId 的受理终局通知。
+	 * 不再建议轮询 tasks.get，也不重派不确定的有副作用动作。
+	 */
+	private async confirming(task: string, reason: string, requestId: string | null): Promise<ToolExecutionResult> {
+		let persisted = false;
+		if (requestId) {
+			try {
+				await this.delivery.requireAcceptanceNotice(requestId);
+				persisted = true;
+			} catch {
+				// 交接义务没落账：既不能把不确定说成明确拒绝，也不能宣称"等通知"。
+				// 保持 unknown 且不让出本轮，让模型有机会用原句柄查回。
+			}
+		}
+		return {
+			...response(
+				{
+					kind: "confirming",
+					task,
+					reason,
+					note: persisted
+						? "受理未知；不要重派同一动作。确定受理或拒绝后会单独送达，只等结果时可以结束本轮。"
+						: "受理未知；不要重派同一动作。交接暂时不可用，请用原句柄查回，不要把本轮结果当成动作未执行。",
+				},
+				"unknown",
+			),
+			...(persisted ? { continuation: "yield" } : {}),
+		};
 	}
 
 	private async pendingContinuation(snapshot: Extract<RunSummary, { phase: "awaiting_decision" }>) {
@@ -273,6 +298,18 @@ export class MinecraftFacade {
 			decision: snapshot.decision,
 		});
 		return pending ? this.executor.lookup(pending.requestId) : null;
+	}
+
+	/** 续段已派发但受理未知时，取回原请求身份，让受理终局按同一身份对账。 */
+	private async pendingContinuationId(
+		snapshot: Extract<RunSummary, { phase: "awaiting_decision" }>,
+	): Promise<string | null> {
+		const [pending] = await this.executor.ledger.requests({
+			kind: "continuation",
+			run: snapshot.run,
+			decision: snapshot.decision,
+		});
+		return pending?.requestId ?? null;
 	}
 
 	private handle(requestId: string): string {
@@ -482,7 +519,11 @@ export class MinecraftFacade {
 				throw new RpcError("DECISION_STALE", "read the current task decision before continuing");
 			const pending = await this.pendingContinuation(found.snapshot);
 			if (pending?.kind === "not_found" || pending?.kind === "unavailable")
-				return this.confirming(task, "continuation acceptance is not yet confirmed");
+				return this.confirming(
+					task,
+					"continuation acceptance is not yet confirmed",
+					await this.pendingContinuationId(found.snapshot),
+				);
 			if (pending?.kind === "found") throw new RpcError("DECISION_STALE", "this decision was already accepted");
 			return this.submitRequest(
 				{

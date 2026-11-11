@@ -83,8 +83,8 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
  * 运行时注入的 mc.* 合同、schedule 语义、Body/Window 用法与场景策略由
  * describe {kind:'guide',name:'…'} 按需返回的官方只读 Guide 承载；
  * 能力/程序/蓝图的精确 schema 由 describe 的 descriptor 与 library.get 承载；
- * 当前世界事实由 requestContext 状态帧承载。
+ * 当前世界细节由 observe 按需读取；只有新建 ready visit 的 connect 回执带一次入场立足点。
  * 压缩准则：删掉的每一句都能在 Guide、descriptor、工具 schema 或错误 hint 里找回。
  */
 export const nativeGuide =
-	"Minecraft：session 入服或离开，describe 找玩法和合同，observe 查现场（如 self@1），run 执行动作或 Program，chat 聊天，tasks 接回进度，library 读写自己的资料。入服可用 target:{host,username} 或 {server}。入服后附当前状态。后台任务先回受理，结束时通知。Program 用 async function main(mc,input)，等待用 await mc.sleep(ms)。接口见 describe {kind:'guide',name:'program_api'}。";
+	"Minecraft：session 入服或离开，describe 找玩法和合同，observe 查现场（如 self@1），run 执行动作或 Program，chat 聊天，tasks 接回进度，library 读写自己的资料。入服可用 target:{host,username} 或 {server}。新入服的连接回执给一次起点；当前位置、背包和地形用 observe 查。后台任务先回受理，结束时通知。Program 用 async function main(mc,input)，等待用 await mc.sleep(ms)。接口见 describe {kind:'guide',name:'program_api'}。";

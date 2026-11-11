@@ -14,7 +14,6 @@ import { createLibrary, type FileLibrary } from "../library/index.js";
 import { readCallSource } from "../library/origin.js";
 import { readRunSnapshot } from "../program/index.js";
 import { createProgramValidator, type ProgramValidator } from "../program/validator.js";
-import { type ActiveTaskFrame, formatActiveRuns } from "../world/run-digest.js";
 import type { WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { SessionController, type SessionStatus, sessionResponse } from "./session-controller.js";
@@ -23,11 +22,14 @@ import { MC_PROTOCOL_VERSION } from "./session-identity.js";
 
 function sessionView(status: SessionStatus, full = false): ToolExecutionResult {
 	if (full) return sessionResponse(status);
-	const { state, active, operation, lastError } = status;
+	const { state, active, operation, lastError, entry, entryUnavailable } = status;
 	const value = {
 		state,
+		// 可行动资格独立显露；位置可读不等于 Owner Gate 已放行。
 		actionsAllowed: active?.actionsAllowed ?? false,
 		...(active ? { server: active.target.endpoint, username: active.actualUsername } : {}),
+		...(entry ? { entry } : {}),
+		...(entryUnavailable ? { entryUnavailable } : {}),
 		...(operation ? { operation: operation.kind } : {}),
 		...(lastError ? { lastError } : {}),
 	};
@@ -203,41 +205,9 @@ export function createMinecraftWorld(
 		executionMode: "parallel",
 		defaultState: { enabled: false },
 		/**
-		 * 请求前状态帧（批37）：模型每次决策都读一份当前观察。
-		 *
-		 * 无活动会话时返回 null——"没在玩 MC"不值得每次请求都提醒一次。
-		 * 有会话但采样失败时由伴生侧返回明确的不可用正文（断线后不沿用旧坐标）。
-		 */
-		requestContext: () => {
-			const session = connectedSession();
-			if (!session) return null;
-			return {
-				key: session.visitId,
-				read: async () => {
-					const { text, connected, activeTasks } = await session.executor.rpc<{
-						text: string;
-						connected: boolean;
-						activeTasks: ActiveTaskFrame;
-					}>("state.snapshot", {});
-					if (!connected) return null;
-					const entries = await session.executor.ledger
-						.taskEntries(activeTasks.items?.map((run) => run.rootRequestId) ?? [])
-						.catch(() => undefined);
-					const digest = formatActiveRuns(
-						activeTasks.items,
-						activeTasks.sampledAt,
-						session.profileId,
-						entries,
-						activeTasks.omitted,
-					);
-					return digest ? `${text}\n${digest}` : text;
-				},
-			};
-		},
-		/**
 		 * 静态环境认知：只在有活动 Minecraft 会话的回合注入，避免污染纯聊天。
 		 * 正文在 onStart 预载；这里同步返回，不读世界事实、不产生副作用。
-		 * 坐标/库存等会变的事实仍只由 requestContext 的瞬态状态帧提供。
+		 * 当前位置、背包、地形由 observe 按需读取；连接回执只在新建 ready visit 时给一次起点。
 		 */
 		environmentGuide: () => (connectedSession() ? environmentText : null),
 		actions: Object.fromEntries(
@@ -265,6 +235,8 @@ export function createMinecraftWorld(
 		),
 		async onStart(ctx) {
 			if (controller) throw new Error("Minecraft activation already running");
+			// 跨重启可靠投递的唯一前提：激活时就要真正 durable 的 Host 会话。
+			// 通过这里之后，ack 链不再重复检查 durability，receipt 也不需要携带该字段。
 			if (
 				!ctx.worldDataDir ||
 				!ctx.emitEvent ||

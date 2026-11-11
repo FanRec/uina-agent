@@ -101,8 +101,13 @@ export function taskView(task: string, snapshot: RunSummary, entry?: Entry) {
 			? { unknownEffectCount: snapshot.unknownEffectCount }
 			: {}),
 		...(snapshot.unknownEffectsComplete === false ? { unknownEffectsComplete: false } : {}),
-		...(snapshot.completion.scope === "execution" && snapshot.phase === "finished"
-			? { completionScope: "execution" }
+		...(snapshot.phase === "finished"
+			? {
+					completionScope: snapshot.completion.scope,
+					// execution 只证明这段程序按自己的语义跑完，不能推出玩家目标达成。
+					// 没有领域核验证据时明确 unknown，不补一个看起来合理的 goalMet。
+					...(snapshot.completion.scope === "execution" ? { goalVerification: "unknown" } : {}),
+				}
 			: {}),
 		...(snapshot.phase === "waiting" ? { waiting: snapshot.waiting } : {}),
 		...(snapshot.phase === "awaiting_decision"

@@ -26,6 +26,7 @@ function fixture() {
 	const stops: StopCommand[] = [];
 	const found: unknown[] = [];
 	const attempts: unknown[] = [];
+	const notices = new Map<string, string>();
 	const snapshot = {
 		run: "run:one",
 		rootRequestId: "root",
@@ -64,6 +65,9 @@ function fixture() {
 			putAttempt: async (attempt: unknown) => {
 				attempts.push(attempt);
 			},
+			markNotice: async (id: string, state: string) => {
+				notices.set(id, state);
+			},
 		},
 		submit: async (request: RunRequest) => {
 			submissions.push(request);
@@ -90,7 +94,19 @@ function fixture() {
 			retire: async () => ({ kind: "retired" }),
 		},
 	});
-	return { executor, facade, credentials, submissions, continuations, found, attempts, stops, accept, snapshot };
+	return {
+		executor,
+		facade,
+		credentials,
+		submissions,
+		continuations,
+		found,
+		attempts,
+		notices,
+		stops,
+		accept,
+		snapshot,
+	};
 }
 const continuation = {
 	op: "continue",
@@ -256,12 +272,9 @@ test("cancelling a continuation wait preserves late acceptance and offers origin
 		const requestId = f.continuations[0]!.requestId;
 		expect(result).toMatchObject({
 			status: "unknown",
-			details: {
-				kind: "confirming",
-				task: continuation.task,
-				nextCall: { action: "tasks", params: { op: "get", task: continuation.task } },
-			},
+			details: { kind: "confirming", task: continuation.task },
 		});
+		expect(result.details).not.toHaveProperty("nextCall");
 		const repeat = await f.facade.execute("tasks", continuation, new AbortController().signal);
 		expect(repeat).toMatchObject({ details: { kind: "confirming", task: continuation.task } });
 		expect(f.continuations).toHaveLength(1);
@@ -427,4 +440,31 @@ test("continue IPC binds origin on the execution side and excludes scheduling", 
 	const facadeInput = new Ajv({ strict: false }).compile(actionSchemas.tasks);
 	expect(facadeInput(continuation)).toBe(true);
 	expect(facadeInput({ ...continuation, entry: { ...continuation.entry, schedule: { kind: "enqueue" } } })).toBe(false);
+});
+
+test("confirming 落交接义务才让出本轮；义务写不进时保持 unknown，不谎报拒绝", async () => {
+	const f = fixture();
+	const signal = new AbortController().signal;
+	f.executor.submit = async (request) => {
+		f.submissions.push(request);
+		return { kind: "unknown", requestId: request.requestId, reason: "reply lost" };
+	};
+	try {
+		const receipt = await f.facade.execute("run", { selector: "chat@1", input: { text: "once" } }, signal);
+		const requestId = f.submissions[0]!.requestId;
+		expect(receipt).toMatchObject({ status: "unknown", details: { kind: "confirming" } });
+		expect(receipt.continuation).toBe("yield");
+		expect(f.notices.get(requestId)).toBe("pending");
+		expect(receipt.details).not.toHaveProperty("nextCall");
+
+		// 账本写不进：仍是不确定受理，不让出本轮，也不改写成明确拒绝。
+		f.executor.ledger.markNotice = async () => {
+			throw new Error("ledger unavailable");
+		};
+		const second = await f.facade.execute("run", { selector: "chat@1", input: { text: "twice" } }, signal);
+		expect(second).toMatchObject({ status: "unknown", details: { kind: "confirming" } });
+		expect(second.continuation).toBeUndefined();
+	} finally {
+		await f.facade.close();
+	}
 });

@@ -32,8 +32,8 @@ test("七份官方 Guide 与 ENV 常驻正文都在有界成本内、无过时�
 	}
 	const env = await readFile(envPath, "utf8");
 	expect(env).toContain("Minecraft");
-	expect(env).toContain("accepted 表示已接单");
-	expect(env).toContain("结果会主动送到");
+	expect(env).toContain("accepted 是受理，不是完成");
+	expect(env).toContain("Runtime 会交付结果");
 	expect(env).toContain("describe");
 	// 常驻文本只讲环境认知与实践原则，不写 API 参数、当前状态或旧等待机制。
 	expect(env).not.toContain("runs.wait");

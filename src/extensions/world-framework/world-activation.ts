@@ -1,7 +1,5 @@
 import { join } from "node:path";
 import { errorMessage } from "../../core/errors.js";
-import type { ChatMsg } from "../../core/types.js";
-import { appendEventFrame, contentAddressedEventId } from "../event-frames/index.js";
 import { ResourceScope } from "../lifecycle-scope.js";
 import type { ExtensionAPI } from "../runner.js";
 import {
@@ -10,63 +8,9 @@ import {
 	WORLD_HOST_EVENT_TYPES,
 	type WorldDef,
 	type WorldEvent,
-	type WorldRequestContext,
 	type WorldRuntime,
 } from "./types.js";
 import { createWorldTool } from "./world-tool.js";
-
-/**
- * 请求前观察正文的取用上限。采样是本地内存读，正常在毫秒级；超过这个量级说明世界侧
- * 已经卡住，此时宁可给一行"没取到"，也不能把模型请求一起挂住。
- */
-const REQUEST_CONTEXT_TIMEOUT_MS = 250;
-
-/** 取不到观察时的正文。静默消失会被读成"世界没有变化"，那比没有状态更危险。 */
-function observationUnavailable(reason: string): string {
-	return `本轮没有取到世界观察：${reason}。不要把它当成世界没有变化；需要确认时用查询重新读。`;
-}
-
-function reasonOf(error: unknown): string {
-	if ((error as { code?: string } | null)?.code === "CONTEXT_TIMEOUT") return "读取超时";
-	return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * 给正文取用套一层时间上限。超时只放弃等待，不取消底层调用：采样本身是只读的本地读取，
- * 强行中断省不下什么，却可能把世界侧留在半途。让它自然跑完、结果丢弃即可。
- *
- * 三个出口（超时、世界停用、原始结果）都走同一处清理：此前清理挂在原始 Promise 的 finally
- * 上，读取永久挂起时 abort 监听器会一直留在 scope 上，每个请求泄一份。
- */
-function withTimeout<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
-	if (signal.aborted) return Promise.reject(new Error("world deactivated"));
-	return new Promise<T>((resolve, reject) => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const settle = (): void => {
-			if (timer) clearTimeout(timer);
-			signal.removeEventListener("abort", abort);
-		};
-		const abort = (): void => {
-			settle();
-			reject(new Error("world deactivated"));
-		};
-		timer = setTimeout(() => {
-			settle();
-			reject(Object.assign(new Error(`request context exceeded ${ms}ms`), { code: "CONTEXT_TIMEOUT" }));
-		}, ms);
-		signal.addEventListener("abort", abort, { once: true });
-		void work.then(
-			(value) => {
-				settle();
-				resolve(value);
-			},
-			(error: unknown) => {
-				settle();
-				reject(error);
-			},
-		);
-	});
-}
 
 export interface WorldActivationHost {
 	readonly pi: ExtensionAPI;
@@ -79,8 +23,6 @@ export class WorldActivation {
 	readonly scope: ResourceScope;
 	readonly exposed = new Map<string, unknown>();
 	private readonly context: ServiceCompanionContext;
-	/** 上一份还在飞的采样。世界侧卡住时，不能让每个请求都再压一份上去。 */
-	private inflight: { key: string } | null = null;
 
 	constructor(
 		private readonly definition: WorldDef,
@@ -99,7 +41,6 @@ export class WorldActivation {
 	async start(): Promise<void> {
 		try {
 			await this.definition.onStart?.(this.context);
-			this.registerRequestContext();
 			this.registerEnvironmentGuide();
 			const rawTool = createWorldTool(this.definition, {
 				getRuntime: () => this.host.runtime,
@@ -123,50 +64,10 @@ export class WorldActivation {
 	}
 
 	/**
-	 * 请求前观察帧：世界提供正文，框架负责包成瞬态帧接进模型投影。
-	 *
-	 * 用 tail 相位：无论其他扩展先后注册，观察帧恒排在一切历史注入之后，作为"此刻"的
-	 * 最后一段。帧的生命周期跟随 world activation（`track`），世界停用即摘除 handler。
-	 *
-	 * 当前会话适用时才采样，读失败保留原因。离开或切换会话时丢弃旧读取。
-	 */
-	private registerRequestContext(): void {
-		const provide = this.definition.requestContext;
-		if (!provide) return;
-		const { pi } = this.host;
-		const name = this.definition.name;
-		this.track(
-			pi.onHook(
-				"turn.transformContext",
-				async (projection) => {
-					if (!this.scope.active) return;
-					const source = provide();
-					if (source == null) return;
-					const text = await this.readObservation(source);
-					if (!text || !this.scope.active || provide()?.key !== source.key) return;
-					const messages = appendEventFrame(projection.messages, {
-						// 内容寻址：同样的观察文本⇒同样的调用 ID，尾部帧对提示词前缀保持稳定。
-						eventId: contentAddressedEventId(`world:${name}:state`, text),
-						text,
-						label: `${name} 观察`,
-						observationSource: name,
-						// 世界观察是世界侧证据：即使由运行时采样、即使混着运行时任务状态，
-						// 也按较低信任等级呈现——不因为"是我自己读的"就升级成内部指令。
-						source: { kind: "runtime", type: "world.observation", ref: name, origin: "external" },
-					});
-					return { projection: { ...projection, messages: messages as ChatMsg[] } };
-				},
-				{ tail: true },
-			),
-		);
-	}
-
-	/**
 	 * 静态环境指引：世界提供短正文，框架在回合边界把它追加到本轮 systemPrompt。
 	 *
-	 * 与 requestContext 分工：那是每请求的瞬态观察帧（会变的事实），这是每回合一次的
-	 * 环境认知（不变的原则）。getter 由世界决定此刻是否适用；这里只做同步纯读，
-	 * 不读世界事实、不写 Session、不落历史。
+	 * 每个回合一次的环境认知（不变的原则），当前世界细节不由这里提供。getter 由世界
+	 * 决定此刻是否适用；这里只做同步纯读，不读世界事实、不写 Session、不落历史。
 	 *
 	 * turn.prepare 的合并规则是"后写覆盖先写"，且 host 会把上一份 systemPrompt 作为
 	 * 本 handler 的入参；因此这里**只追加**，多个启用世界（以及 MCP 等扩展）可以依次
@@ -192,27 +93,6 @@ export class WorldActivation {
 				return { systemPrompt: `${systemPrompt}\n\n[world:${name}:environment]\n${text}` };
 			}),
 		);
-	}
-
-	/** 本次请求的观察正文：正常给快照，异常给原因。同一会话只跟踪一份进行中的读取。 */
-	private async readObservation(source: WorldRequestContext): Promise<string | null> {
-		if (this.inflight?.key === source.key) return observationUnavailable("上一次读取仍未返回");
-		const flight = { key: source.key };
-		this.inflight = flight;
-		const work = Promise.resolve().then(source.read);
-		const clearFlight = () => {
-			if (this.inflight === flight) this.inflight = null;
-		};
-		void work.then(clearFlight, clearFlight);
-		let text: string | null;
-		try {
-			text = await withTimeout(work, REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
-		} catch (error) {
-			return observationUnavailable(this.scope.signal.aborted ? "世界已停用" : reasonOf(error));
-		}
-		if (text == null) return null;
-		if (text.trim() === "") return observationUnavailable("世界没有提供内容");
-		return text;
 	}
 
 	async stop(): Promise<void> {

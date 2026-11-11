@@ -1,24 +1,18 @@
-import type { RequestObservation } from "../../../core/types.js";
 import { ContextCardComponent, type PromptContextCardData } from "../../components/transcript/context-card.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import type { Component, Focusable } from "../../core/types.js";
 import { C } from "../../core/utils.js";
-import { sanitizeRenderText } from "../../format.js";
 import { hintsFor, type Keymap, resolve } from "../../keys/keymap.js";
-import { wrapLine } from "../../layout/fit.js";
 import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
 
-/** /prompt 查询面板：回合提示词与最近一次请求附带的世界观察。 */
+/** /prompt 查询面板：当前回合的系统提示词快照。 */
 export class PromptOverlay implements Component, Focusable {
 	focused = true;
 	onClose?: () => void;
 	private offset = 0;
 	private totalLines = 0;
 
-	constructor(
-		private readonly snapshot?: PromptContextCardData,
-		private readonly getObservations?: () => readonly RequestObservation[] | undefined,
-	) {}
+	constructor(private readonly snapshot?: PromptContextCardData) {}
 
 	keymap(): Keymap {
 		return {
@@ -73,16 +67,6 @@ export class PromptOverlay implements Component, Focusable {
 		const boxWidth = Math.max(1, Math.min(width - leftPad, 112));
 		const innerW = Math.max(1, panelInnerWidth(boxWidth));
 		const lines: string[] = [];
-		const observations = this.getObservations?.();
-		if (observations !== undefined) {
-			lines.push(...wrapLine(`${C.bold}最近一次模型请求 · 世界观察${C.reset}`, innerW));
-			if (observations.length === 0) lines.push(...wrapLine("未附加世界观察", innerW));
-			for (const { source, text } of observations) {
-				lines.push(...wrapLine(`${C.cyan}${sanitizeRenderText(source)}${C.reset}`, innerW));
-				lines.push(...wrapLine(sanitizeRenderText(text), innerW));
-			}
-			lines.push("");
-		}
 		if (this.snapshot) {
 			const card = new ContextCardComponent({ ...this.snapshot, id: this.snapshot.id ?? "prompt-current" });
 			card.toggle();

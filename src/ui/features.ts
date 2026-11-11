@@ -123,7 +123,7 @@ export function installUIFeatures(
 		host.showPanel(
 			"prompt",
 			(close) => {
-				const view = new PromptOverlay(host.getPromptSnapshot(), () => host.getRequestObservations());
+				const view = new PromptOverlay(host.getPromptSnapshot());
 				view.onClose = close;
 				return view;
 			},

@@ -13,6 +13,14 @@ export type RequestCredential = RequestIntent & {
 	run?: string;
 	segment?: string;
 	refusal?: { kind: "rejected" | "cancelled"; code: string; message: string };
+	/**
+	 * 受理终局的交接义务。原回执只给了 confirming 时置 pending，宿主 canonical 回执确认后
+	 * 置 delivered。delivered 是终态，旧激活重放不能把它退回 pending。
+	 * 状态就在原始请求凭证里，不另建一张平行的请求状态表。
+	 */
+	notice?: "pending" | "delivered";
+	/** 仅 notice_pending 查询投影：表内 rowid，作为有界分页的键集游标，不写回凭证。 */
+	seq?: number;
 };
 export interface DeliveryAttempt {
 	key: string;
@@ -37,7 +45,13 @@ export interface LedgerSnapshot {
 export type TaskRequestSelection =
 	| { kind: "roots"; activeOnly: boolean }
 	| { kind: "continuation"; run: string; decision: string }
-	| { kind: "unconfirmed" };
+	| { kind: "unconfirmed" }
+	/**
+	 * 受理终局已确定、但模型只见过 confirming 的请求：跨重启重新建立投递义务。
+	 * `after` 是上一页最后一条的 rowid；满页时从这里继续，前面的长期 pending
+	 * 不会把后面的义务永久饿在后面。
+	 */
+	| { kind: "notice_pending"; after?: number };
 
 export type LedgerRequest =
 	| { id: number; op: "open"; path: string; worldOwner: string; storageId: string }
@@ -51,6 +65,7 @@ export type LedgerRequest =
 	| { id: number; op: "request_list"; selection: TaskRequestSelection }
 	| { id: number; op: "request_found"; requestId: string; lookup: Extract<SubmissionLookup, { kind: "found" }> }
 	| { id: number; op: "request_refused"; requestId: string; refusal: NonNullable<RequestCredential["refusal"]> }
+	| { id: number; op: "request_notice"; requestId: string; state: NonNullable<RequestCredential["notice"]> }
 	| { id: number; op: "attempt_put"; attempt: DeliveryAttempt }
 	| { id: number; op: "attempt_list"; keys: string[] }
 	| { id: number; op: "close" };
@@ -151,12 +166,22 @@ parentPort!.on("message", (request: LedgerRequest) => {
 							AND json_extract(credential, '$.run') IS NULL AND json_extract(credential, '$.refusal') IS NULL
 							ORDER BY rowid DESC LIMIT 1`)
 									.all(selection.run, selection.decision)
-							: db
-									.prepare(`SELECT credential FROM requests
+							: selection.kind === "notice_pending"
+								? db
+										.prepare(`SELECT rowid AS seq, credential FROM requests
+									WHERE json_extract(credential, '$.notice')='pending'
+									AND json_extract(credential, '$.refusal') IS NOT NULL
+									AND rowid > ? ORDER BY rowid LIMIT 20`)
+										.all(selection.after ?? 0)
+								: db
+										.prepare(`SELECT credential FROM requests
 									WHERE json_extract(credential, '$.run') IS NULL AND json_extract(credential, '$.refusal') IS NULL
 									ORDER BY rowid`)
-									.all();
-				value = rows.map((row) => JSON.parse(String(row.credential)));
+										.all();
+				value = rows.map((row) => {
+					const credential = JSON.parse(String(row.credential));
+					return row.seq == null ? credential : { ...credential, seq: Number(row.seq) };
+				});
 			} else if (request.op === "request_found") {
 				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
 				if (row) {
@@ -164,6 +189,8 @@ parentPort!.on("message", (request: LedgerRequest) => {
 					c.run = request.lookup.snapshot.run;
 					c.segment = request.lookup.segment;
 					delete c.refusal;
+					// 已受理的请求由原 Run 的 Completion 交接，不需要另发受理终局通知。
+					delete c.notice;
 					db.prepare("UPDATE requests SET credential=? WHERE request_id=?").run(JSON.stringify(c), request.requestId);
 				}
 			} else if (request.op === "request_refused") {
@@ -172,6 +199,16 @@ parentPort!.on("message", (request: LedgerRequest) => {
 					const c = JSON.parse(String(row.credential)) as RequestCredential;
 					if (!c.run) {
 						c.refusal = request.refusal;
+						db.prepare("UPDATE requests SET credential=? WHERE request_id=?").run(JSON.stringify(c), request.requestId);
+					}
+				}
+			} else if (request.op === "request_notice") {
+				const row = db.prepare("SELECT credential FROM requests WHERE request_id=?").get(request.requestId);
+				if (row) {
+					const c = JSON.parse(String(row.credential)) as RequestCredential;
+					// 已受理走 Run Completion；已送达是终态，不能被旧激活的重放退回 pending。
+					if (!c.run && c.notice !== "delivered" && c.notice !== request.state) {
+						c.notice = request.state;
 						db.prepare("UPDATE requests SET credential=? WHERE request_id=?").run(JSON.stringify(c), request.requestId);
 					}
 				}

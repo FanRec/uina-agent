@@ -261,17 +261,6 @@ describe("external event projection", () => {
 			}),
 		).toThrow(/对话消息/);
 	});
-	it("keeps the request observation visible when the frame opens the conversation", () => {
-		const msgs = appendEventFrame([{ role: "system" as const, content: "你是 Uina。" }], {
-			eventId: "world:1",
-			text: "位置 (0, 64, 0)",
-			label: "minecraft 观察",
-			observationSource: "minecraft",
-			source: { kind: "runtime", type: "world.observation", ref: "minecraft", origin: "external" },
-		}) as ChatMsg[];
-		expect(msgs[1]!.role).toBe("user");
-		expect(msgs[1]!.context?.requestObservation).toEqual({ source: "minecraft", text: "位置 (0, 64, 0)" });
-	});
 	it("keeps a transform hook's tool narrowing and only adds the frame declaration", async () => {
 		const profile = createEventFrameProfile();
 		const harness = SubjectHarness.create({

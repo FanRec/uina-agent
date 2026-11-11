@@ -315,7 +315,7 @@ test("one unavailable report does not block other headers; unavailable content r
 		expect(JSON.parse((await events[0]!.render!())!)).toMatchObject({
 			phase: "finished",
 			outcome: "failed",
-			detail: "unavailable",
+			reportGap: expect.objectContaining({ missing: expect.any(String) }),
 			unknownEffectCount: 1,
 		});
 		// 正文读不到时仍可查已知 Effect，不重复读取同一份报告。
@@ -461,18 +461,12 @@ test("G6 退场：所有事实事件都走 minecraft_event，不再有 digest �
 		send("ev:n:2", { kind: "safety_changed", intervention: {} });
 		await until(() => events.length === 1);
 		expect(events[0]!.type).toBe("minecraft_event");
-		expect(JSON.parse(events[0]!.text!).nextCall).toEqual({
-			action: "observe",
-			params: { selector: "events@1" },
-		});
+		expect(JSON.parse(events[0]!.text!)).not.toHaveProperty("nextCall");
 		// 世界状态不再作为独立消息上行：只可能是事实事件（历史可查的那几种）。
 		send("ev:n:3", { kind: "digest", self: { dimension: "overworld" } });
 		await until(() => events.length === 2);
 		expect(events[1]!.type).toBe("minecraft_event");
-		expect(JSON.parse(events[1]!.text!).nextCall).toEqual({
-			action: "observe",
-			params: { selector: "events@1" },
-		});
+		expect(JSON.parse(events[1]!.text!)).not.toHaveProperty("nextCall");
 	} finally {
 		await pump.close();
 	}
@@ -540,6 +534,7 @@ test("需要立即重新决策的事件走 urgent；其余事实排队等下一�
 			channel: "public",
 			sender: "Friend",
 			text: "@Uina come see this",
+			observedAt: "t",
 			ref: "ev:3",
 		});
 		expect((await deliver({ kind: "safety_changed", ended: "blocked" })).delivery).toBe("urgent");
@@ -767,7 +762,7 @@ test("degraded completion keeps truncation marks and the run's own error", () =>
 	} as unknown as CompletionView;
 	const projected = JSON.parse(formatCompletion(record)) as Record<string, unknown>;
 	expect(projected).toMatchObject({
-		detail: "record",
+		reportGap: expect.objectContaining({ record: "comp:proj:1" }),
 		outcome: "failed",
 		progressComplete: false,
 		unknownEffectsComplete: false,
@@ -782,7 +777,10 @@ test("degraded completion keeps truncation marks and the run's own error", () =>
 	} as unknown as CompletionView;
 	const lost = JSON.parse(formatCompletion(unavailable)) as Record<string, unknown>;
 	// 正文读不到由 detail 表达，不覆盖 run 自己的错误，也不再指 record。
-	expect(lost).toMatchObject({ detail: "unavailable", error: { code: "TIMEOUT" } });
+	expect(lost).toMatchObject({
+		reportGap: expect.objectContaining({ missing: expect.any(String) }),
+		error: { code: "TIMEOUT" },
+	});
 	expect(lost.nextCall).toMatchObject({
 		action: "tasks",
 		params: { op: "trace", task: "task:local:req-proj", record: "eff:1" },
@@ -823,7 +821,7 @@ test("awaiting_decision hands out the decision, never a record pointer", () => {
 		reason: "need a plan",
 	});
 	// 先查当前决策，再选择续段入口。
-	expect(projected.nextCall).toMatchObject({ action: "tasks", params: { op: "get" } });
+	expect(projected).not.toHaveProperty("nextCall");
 	expect(projected).not.toHaveProperty("outcome");
 });
 

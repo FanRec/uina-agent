@@ -18,7 +18,6 @@ import type {
 	Model,
 	ModelStreamFn,
 	RequestInspection,
-	RequestObservation,
 	RequestProjection,
 	RequestUsage,
 	ThinkingLevel,
@@ -223,7 +222,6 @@ export class Subject {
 	private currentCallUsage?: RequestUsage;
 	private latestUsageSeq = 0;
 	private currentContextSnapshot?: ContextSnapshot;
-	private lastRequestObservations?: readonly RequestObservation[];
 	private contextInspectionSeq = 0;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
@@ -533,12 +531,6 @@ export class Subject {
 	}
 
 	private contextSnapshot(inspection: RequestInspection, basis: ContextSnapshot["basis"]): ContextSnapshot {
-		const requestObservations =
-			basis === "active_request"
-				? inspection.projection.messages.flatMap(({ context }) =>
-						context?.requestObservation ? [context.requestObservation] : [],
-					)
-				: this.lastRequestObservations;
 		return {
 			projectionId: inspection.projection.projectionId,
 			modelKey: inspection.projection.modelKey,
@@ -549,12 +541,10 @@ export class Subject {
 			availableInputBudget: inspection.inputBudget,
 			measurementKind: inspection.measurement.kind,
 			segments: inspection.measurement.segments,
-			...(requestObservations === undefined ? {} : { requestObservations }),
 		};
 	}
 
 	private publishContextSnapshot(snapshot: ContextSnapshot): void {
-		if (snapshot.basis === "active_request") this.lastRequestObservations = snapshot.requestObservations;
 		this.currentContextSnapshot = snapshot;
 		void this.dispatch({ type: "context_update", snapshot });
 	}
@@ -712,7 +702,6 @@ export class Subject {
 			);
 			committed = true;
 			this.history = history;
-			this.lastRequestObservations = undefined;
 			// 历史刚被替换：先失效 usage 缓存，再广播。
 			this.invalidateContext();
 			await this.dispatch({

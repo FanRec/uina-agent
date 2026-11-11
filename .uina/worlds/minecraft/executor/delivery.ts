@@ -6,10 +6,10 @@ import { randomUUID } from "node:crypto";
 import type { HostDeliveryPort, HostDeliveryState } from "../../../../src/core/types.js";
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import type { CompletionView, DeliveryRef, DeliveryState, Entry } from "../contracts/runtime.js";
-import { constructionDecisionEvidence, taskHandle, taskView } from "../contracts/task.js";
+import { constructionDecisionEvidence, taskHandle, taskIdentity, taskView } from "../contracts/task.js";
 import type { JsonValue } from "../contracts/values.js";
 import type { MinecraftExecutor } from "./index.js";
-import type { DeliveryAttempt } from "./ledger-worker.js";
+import type { DeliveryAttempt, RequestCredential } from "./ledger-worker.js";
 
 /** minecraft_event 投递失败的补发等待；幂等 id 下重试一次的重复风险低于静默丢失。 */
 const EVENT_RETRY_MS = 1000;
@@ -25,6 +25,18 @@ const DELIVERY_BATCH = 8;
  * 一轮看完。
  */
 const SCAN_BUDGET = 96;
+/** 受理终局每轮处理的条数上限；与 ledger 的 `LIMIT 20` 一致，满页时保留 rowid 游标。 */
+const ACCEPTANCE_PAGE = 20;
+
+/**
+ * 受理终局与完成报告共用 Host 的批量 receipt 通道，但对账对象不同：
+ * `acceptance:<requestId>` 结算原始请求凭证，`completionRef` 结算 Runtime 固定报告。
+ * 前缀让 ack 能分清该结清哪一份义务，不需要伪造一个 completionRef。
+ */
+const ACCEPTANCE_PREFIX = "acceptance:";
+const acceptanceKey = (requestId: string): string => `${ACCEPTANCE_PREFIX}${requestId}`;
+const acceptanceRequestId = (key: string): string | null =>
+	key.startsWith(ACCEPTANCE_PREFIX) ? key.slice(ACCEPTANCE_PREFIX.length) : null;
 
 type EventNotice = Parameters<NonNullable<ServiceCompanionContext["emitEvent"]>>[0];
 /** 已备好 attempt、等着和同批一起交出去的一条完成通知。 */
@@ -63,8 +75,13 @@ export class DeliveryPump {
 	private committed = 0;
 	private retired = 0;
 	private pendingCount: number | null = null;
+	/** 诊断用：受理仍未知的请求数、仍有终局交接义务的条数。两者都不等于"模型已看到"。 */
+	private unconfirmedRequests = 0;
+	private pendingNotices = 0;
 	/** 上一轮有界扫描停在哪（rowid 键集）；扫到末尾即清空，下一轮从头开始。 */
 	private scanCursor: string | undefined;
+	/** 受理终局的分页游标（表内 rowid）；满页时从下一条继续，避免长期 pending 饿死后面。 */
+	private acceptanceCursor: number | null = null;
 	private scannedThisRound = 0;
 	private failures = 0;
 	private readonly activation = `delivery:${randomUUID()}`;
@@ -114,6 +131,14 @@ export class DeliveryPump {
 		const skipped = this.heldRequests.get(requestId);
 		this.heldRequests.delete(requestId);
 		if (skipped) this.wake(0);
+	}
+	/**
+	 * 原工具回执只给了 confirming：先把交接义务写进原始请求凭证，再让模型结束本轮。
+	 * 义务与请求同寿命，重启后由 notice_pending 重建；确定受理时由原 Run 的 Completion 交接。
+	 */
+	async requireAcceptanceNotice(requestId: string): Promise<void> {
+		await this.executor.ledger.markNotice(requestId, "pending");
+		this.wake(0);
 	}
 	/** 即发即弃但失败补发一次（幂等 id）；仍失败只存诊断——证据本体已持久，events@1 可回放。 */
 	private emitNotice(notice: EventNotice): void {
@@ -179,7 +204,9 @@ export class DeliveryPump {
 		const input = this.inputs.get(key);
 		this.inputs.delete(key);
 		if (input?.attempt === r.attempt) this.committed++;
-		await this.executor.rpc("runtime.settleDelivery", { ref: key, receipt: r });
+		const requestId = acceptanceRequestId(key);
+		if (requestId) await this.executor.ledger.markNotice(requestId, "delivered");
+		else await this.executor.rpc("runtime.settleDelivery", { ref: key, receipt: r });
 	}
 	reconcile(): Promise<void> {
 		if (this.stopped) return Promise.resolve();
@@ -202,22 +229,104 @@ export class DeliveryPump {
 	private async drain(): Promise<void> {
 		if (this.ctx.signal.aborted || this.stopped) return;
 		await this.recoverRequests();
+		// 完成报告先扫：它是主路径，受理终局扫描失败不能拖住它。
 		const scan = await this.scan(this.ctx.delivery!);
 		this.pendingCount = scan.backlog;
+		const acceptance = await this.scanAcceptance(this.ctx.delivery!).catch((error: unknown) => ({
+			notices: [] as EventNotice[],
+			failure: new Error(`受理终局扫描失败: ${error instanceof Error ? error.message : String(error)}`),
+		}));
 		// 已停用/已取消：这一批不再交出，尝试记录留在账本里，下次启动重投。
 		if (this.stopped || this.ctx.signal.aborted) return;
 		// 先交出能交的，再报对账失败：一条查不到回执不该拖住同一轮里别的完成通知。
-		if (scan.ready.length > 0) {
+		if (scan.ready.length > 0 || acceptance.notices.length > 0) {
 			// 完成通知只走批量入口。没有它必须让本轮对账显式失败：往 this.error 里写一句
 			// 会被 reconcile 的成功分支立刻清掉，诊断永远看不到这批事件根本没交出去。
 			if (!this.ctx.emitEvents) throw new Error("宿主没有批量投递入口，完成通知无法交付");
-			this.deliver(scan.ready);
+			this.deliver(scan.ready, acceptance.notices);
 		}
 		if (scan.unconfirmed) throw scan.unconfirmed;
+		if (acceptance.failure) throw acceptance.failure;
+	}
+	/**
+	 * 受理终局的持久义务。原回执只见 confirming 时，确定拒绝/受理前未成立的结论必须
+	 * 主动交到模型面前，不能只写在账本里等模型反复 tasks.get。
+	 *
+	 * 复用与 Completion 相同的 Host receipt 通道与 delivery_attempts，但结算落在原始请求
+	 * 凭证上（ack 按 key 前缀分流）。key 只由 requestId 派生，重复恢复与 Host 重放不会
+	 * 生成新的动作或第二条义务；证据本体是凭证，不依赖进程内 Map 存活。
+	 */
+	private async scanAcceptance(port: HostDeliveryPort): Promise<{ notices: EventNotice[]; failure: Error | null }> {
+		const credentials: RequestCredential[] = await this.executor.ledger.requests({
+			kind: "notice_pending",
+			after: this.acceptanceCursor ?? 0,
+		});
+		this.pendingNotices = credentials.length;
+		// 满页保留 rowid 游标，下一轮从下一条继续；不满页说明已到末尾，回到开头。
+		this.acceptanceCursor = credentials.length < ACCEPTANCE_PAGE ? null : (credentials.at(-1)?.seq ?? null);
+		const notices: EventNotice[] = [];
+		let failure: Error | null = null;
+		for (const credential of credentials) {
+			if (this.stopped || this.ctx.signal.aborted) break;
+			const key = acceptanceKey(credential.requestId);
+			try {
+				let host = await port.inspect(key);
+				this.lastCheckedAt = new Date().toISOString();
+				const prior = (await this.executor.ledger.attempts([key])).get(key);
+				const priorActivation = await this.retirePriorActivation(port, key, prior, host);
+				if (priorActivation.done) continue;
+				host = priorActivation.host;
+				if (host.kind === "committed") {
+					await this.ack(key, host);
+					continue;
+				}
+				if (host.kind === "pending") {
+					this.hold(key, host);
+					continue;
+				}
+				if (host.kind === "unavailable") {
+					failure ??= new Error(`${key}: ${host.reason}`);
+					continue;
+				}
+				if (this.emitting) continue;
+				this.inputs.delete(key);
+				const attempt = await this.prepare(key);
+				const refusal = credential.refusal!;
+				const notice: EventNotice = {
+					id: attempt.attempt,
+					type: "minecraft_acceptance",
+					channel: "world",
+					origin: "internal",
+					receipt: { key: attempt.key, attempt: attempt.attempt },
+					text: JSON.stringify({
+						kind: "acceptance_result",
+						task: taskHandle(this.profileId ?? "local", credential.requestId),
+						...taskIdentity(credential.request.entry),
+						outcome: refusal.kind === "cancelled" ? "cancelled" : "not_started",
+						reason: { code: refusal.code, message: refusal.message },
+						scope: "no background run was created",
+					}),
+					data: { requestId: credential.requestId },
+				};
+				this.inputs.set(attempt.key, {
+					channel: "input",
+					attempt: attempt.attempt,
+					createdAt: attempt.createdAt,
+					host: { kind: "absent" },
+				});
+				notices.push(notice);
+			} catch (error) {
+				// 单条不可读不阻塞其他受理终局；诊断保留第一条原因，义务仍在凭证里。
+				failure ??= new Error(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return { notices, failure };
 	}
 	/** 恢复只查原始意图，绝不重发动作。 */
 	private async recoverRequests(): Promise<void> {
-		for (const c of await this.executor.ledger.requests({ kind: "unconfirmed" }))
+		const credentials = await this.executor.ledger.requests({ kind: "unconfirmed" });
+		this.unconfirmedRequests = credentials.length;
+		for (const c of credentials)
 			if (!c.run && !c.refusal) {
 				const found = await this.executor.lookup(c.requestId);
 				if (found.kind === "found") await this.executor.ledger.found(c.requestId, found);
@@ -287,6 +396,38 @@ export class DeliveryPump {
 		this.scannedThisRound = inspected;
 		return { backlog: backlog ?? inspected, unconfirmed, ready };
 	}
+	/** 旧激活留下的在途输入：退役后按宿主最新状态继续，退役不了就本轮跳过。 */
+	private async retirePriorActivation(
+		port: HostDeliveryPort,
+		key: string,
+		prior: DeliveryAttempt | undefined,
+		host: HostDeliveryState,
+	): Promise<{ host: HostDeliveryState; done: boolean }> {
+		if (
+			host.kind !== "pending" ||
+			!prior ||
+			prior.channel !== host.channel ||
+			prior.activation === this.activation ||
+			host.attempt !== prior.attempt
+		)
+			return { host, done: false };
+		const retired = await port.retire(key, prior.attempt);
+		if (retired.kind === "retired") {
+			this.inputs.delete(key);
+			this.retired++;
+			return { host, done: true };
+		}
+		let next: HostDeliveryState;
+		if (retired.kind === "changed") next = retired.state;
+		else if (retired.kind === "committed") next = { kind: "committed", receipt: retired.receipt };
+		else next = { kind: "unavailable", reason: retired.reason };
+		if (next.kind === "absent") {
+			this.inputs.delete(key);
+			return { host: next, done: true };
+		}
+		return { host: next, done: false };
+	}
+
 	private async inspectDelivery(
 		port: HostDeliveryPort,
 		ref: DeliveryRef,
@@ -298,24 +439,9 @@ export class DeliveryPump {
 		this.lastCheckedAt = new Date().toISOString();
 		const known = this.inputs.get(key);
 		if (known) known.host = host;
-		if (
-			host.kind === "pending" &&
-			prior?.channel === host.channel &&
-			prior.activation !== this.activation &&
-			host.attempt === prior.attempt
-		) {
-			const retired = await port.retire(key, prior.attempt);
-			if (retired.kind === "retired") {
-				this.inputs.delete(key);
-				this.retired++;
-				return;
-			}
-			host = retired.kind === "changed" ? retired.state : retired;
-			if (host.kind === "absent") {
-				this.inputs.delete(key);
-				return;
-			}
-		}
+		const priorActivation = await this.retirePriorActivation(port, key, prior, host);
+		if (priorActivation.done) return;
+		host = priorActivation.host;
 		if (host.kind === "committed") {
 			await this.ack(key, host);
 			return;
@@ -337,11 +463,11 @@ export class DeliveryPump {
 	 *
 	 * emitEvents 可能覆盖一整个模型回合，绝不在 drain 里 await 它。
 	 */
-	private deliver(ready: readonly Deliverable[]): void {
+	private deliver(ready: readonly Deliverable[], notices: readonly EventNotice[] = []): void {
 		if (this.emitting) return;
 		this.emitting = true;
 		let entries: Promise<ReadonlyMap<string, Entry>> | undefined;
-		const events = ready.map(({ ref, view, attempt }) => ({
+		const completionEvents = ready.map(({ ref, view, attempt }) => ({
 			id: attempt.attempt,
 			type: "minecraft_completion",
 			channel: "world" as const,
@@ -361,6 +487,9 @@ export class DeliveryPump {
 			},
 			data: view,
 		}));
+		// 两类事实一次交出；受理终局由 scanAcceptance 构造，receipt 必然存在。
+		const events = [...completionEvents, ...notices];
+		const keys = [...ready.map(({ attempt }) => attempt.key), ...notices.map((notice) => notice.receipt!.key)];
 		let delivered = 0;
 		// 先记在途，再交出：诊断在整个交付窗口里都能看到这批去了哪里。
 		for (const { attempt } of ready)
@@ -373,7 +502,7 @@ export class DeliveryPump {
 		void Promise.resolve()
 			.then(() => this.ctx.emitEvents!(events))
 			.then((submissions) => {
-				for (const [index, item] of ready.entries()) {
+				for (const [index, key] of keys.entries()) {
 					const submission = submissions[index];
 					if (submission?.accepted) {
 						delivered++;
@@ -381,7 +510,7 @@ export class DeliveryPump {
 					}
 					// 宿主没接手：明确拒收与"少回一条"都算未交出。都清掉在途记录，
 					// 下一次唤醒用新 attempt 重投，不留一个永远退不了的输入。
-					this.inputs.delete(item.attempt.key);
+					this.inputs.delete(key);
 					this.error = {
 						code: "DELIVERY_UNCONFIRMED",
 						message: submission ? submission.reason : "宿主批量回执缺少对应条目",
@@ -407,6 +536,10 @@ export class DeliveryPump {
 		return {
 			observedAt: new Date().toISOString(),
 			pendingCount: this.pendingCount,
+			acceptance: {
+				unconfirmedRequests: this.unconfirmedRequests,
+				pendingNotices: this.pendingNotices,
+			},
 			scan: { inspected: this.scannedThisRound, budget: SCAN_BUDGET, resumable: this.scanCursor != null },
 			activeInputs: [...this.inputs].map(([key, input]) => ({
 				key,
@@ -468,6 +601,7 @@ function gameEventView(event: { ref: string; observedAt: string; payload: JsonVa
 		channel?: string;
 		sender?: { name?: string | null };
 		text?: string;
+		related?: boolean;
 	} | null;
 	if (payload?.kind === "chat")
 		return {
@@ -475,9 +609,12 @@ function gameEventView(event: { ref: string; observedAt: string; payload: JsonVa
 			channel: payload.channel,
 			sender: payload.sender?.name ?? null,
 			text: payload.text,
+			observedAt: event.observedAt,
 			ref: event.ref,
+			...(payload.related === true ? { related: true } : {}),
 		};
-	return { ...event, nextCall: { action: "observe", params: { selector: "events@1" } } };
+	// 事件自带 ref 与 observedAt；历史完整留在 events@1，按需由模型自己查询。
+	return event;
 }
 
 /** User text is projected from the fixed report. The structured receipt remains internal. */
@@ -485,13 +622,24 @@ export function formatCompletion(view: CompletionView, profileId = "local", entr
 	const task = taskHandle(profileId, view.snapshot.rootRequestId);
 	const report = view.content.kind === "inline" ? view.content.report : undefined;
 	const effect = view.snapshot.unknownEffects[0];
+	// nextCall 只用来跨过具体的证据缺口：未知写入指到精确 Effect，报告过大指到权威 record。
+	// 一条自足的结算、已有 decision/reason 的待决定，都不再附泛用 tasks.get。
 	const nextCall = effect
 		? { action: "tasks", params: { op: "trace", task, record: effect } }
 		: view.snapshot.unknownEffectCount > 0 || view.snapshot.unknownEffectsComplete === false
 			? { action: "tasks", params: { op: "trace", task } }
-			: view.snapshot.phase === "awaiting_decision" || view.content.kind !== "inline"
-				? { action: "tasks", params: { op: "get", task } }
+			: view.content.kind === "record"
+				? { action: "tasks", params: { op: "trace", task, record: view.completionRef } }
 				: undefined;
+	// 报告不可读时保留权威 Header 身份，并说清缺什么；不把它写成"已完成/已回滚"。
+	const reportGap =
+		view.content.kind === "inline"
+			? undefined
+			: {
+					record: view.completionRef,
+					missing: view.content.kind === "record" ? "完成报告过大，正文未展开" : "完成报告暂不可读",
+					...(view.content.kind === "unavailable" ? { error: view.content.error.code } : {}),
+				};
 	const construction =
 		report?.reportKind === "decision" &&
 		entry?.kind === "call" &&
@@ -502,8 +650,9 @@ export function formatCompletion(view: CompletionView, profileId = "local", entr
 	return JSON.stringify({
 		kind: "result",
 		...taskView(task, view.snapshot, entry),
+		record: view.completionRef,
 		...(report?.reportKind === "terminal" ? { value: report.snapshot.value } : {}),
-		...(view.content.kind !== "inline" ? { detail: view.content.kind } : {}),
+		...(reportGap ? { reportGap } : {}),
 		...(nextCall ? { nextCall } : {}),
 		...construction,
 	});

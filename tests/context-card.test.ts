@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { RequestObservation } from "../src/core/types.js";
 import { ContextCardComponent, type ContextCardData } from "../src/ui/components/transcript/context-card.js";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { PromptOverlay } from "../src/ui/features/overlays/prompt-overlay.js";
@@ -52,17 +51,5 @@ describe("ContextCardComponent", () => {
 		const rendered = new PromptOverlay(prompt).render(100).join("\n");
 		expect(stripAnsi(rendered)).toContain("BASE PROMPT");
 		expect(stripAnsi(rendered)).toContain("keep the user context");
-	});
-
-	it("/prompt 显示最近一次请求的观察正文，并随新请求清空", () => {
-		let observations: RequestObservation[] = [{ source: "minecraft", text: "overworld (10,64,-4)\n生命16/20" }];
-		const overlay = new PromptOverlay(prompt, () => observations);
-		const render = () => stripAnsi(overlay.render(80).join("\n"));
-		expect(render()).toContain("最近一次模型请求 · 世界观察");
-		expect(render()).toContain("overworld (10,64,-4)");
-		expect(render()).toContain("生命16/20");
-		observations = [];
-		expect(render()).toContain("未附加世界观察");
-		expect(render()).not.toContain("overworld");
 	});
 });
