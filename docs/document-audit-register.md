@@ -30,7 +30,7 @@
 | `docs/archive/proposals/embodiment-voice-live2d-refactor-plan.md` | 已归档 | Voice/Live2D 重构计划 | 主要接线已在当前代码中，旧计划状态失实 | `.uina/extensions/embodiment`、Voice/Live2D 当前合同 | 保留历史实施顺序 |
 | `docs/archive/proposals/embodiment-voice-live2d-refactor-report.md` | 已归档 | 重构点时报告 | “未提交”及未完成清单与后续记录冲突；测试数为历史快照 | Voice/Live2D 当前合同；本轮未重跑其全部测试 | 归档历史结果，不表示当前工作树状态 |
 | `docs/archive/proposals/extensions-design.md` | 已归档 | 早期扩展设计 | 旧事件词汇及把 TTS SpeechRecord 放入 Core 的设想与当前实现不符 | `docs/extensions.md`、`extensions-development.md`、current-runtime | 当前合同从根目录文档读取 |
-| `docs/proposals/runtime/external-event-frame-design.md` | 已修订 | 已实现的事件帧投影合同 | 源码/本地测试存在；`verify:cli` smoke 不证明真实 Provider 或认知收益；本轮未跑相关测试 | `src/extensions/event-frames/`、Host、现有 event-frame tests | 移入 Runtime 提案目录；归档实施计划并区分本地协议与模型质量证据 |
+| `docs/proposals/runtime/external-event-frame-design.md` | 已修订 | 已实现的事件帧投影合同（2026-11-09 改为两消息帧） | 源码/本地测试存在；2026-11-09 删除解释性 user 通知、调用参数与 JSON 回执，`tests/event-frame-*.test.ts` 全绿（含新增 `tests/event-frame-providers.test.ts` 断言三条 Provider 请求体）；真实端点与模型认知收益仍未验证 | `src/extensions/event-frames/`、`src/agent/loop.ts`、`tests/event-frame-*.test.ts` | 移入 Runtime 提案目录；归档实施计划并区分本地协议与模型质量证据 |
 | `docs/archive/proposals/external-event-frame-plan.md` | 已归档 | 已执行的外部事件帧实施计划 | 目标已被设计规格和源码覆盖 | 当前设计规格、current-runtime | 归档并修复链接 |
 | `docs/archive/proposals/foundation-correction-plan.md` | 已归档 | S1–S4 已完成计划与交付记录 | 与历史 delivery review 重复；测试/DeepSeek 结果只对应当时 | `docs/history/reviews/2026-09-05-plan-delivery.md`、current-runtime | 历史路径修复；不作为当前验证 |
 | `docs/archive/proposals/lifecycle-resource-scope-plan.md` | 已归档 | ResourceScope/World 停用次序计划 | `WorldActivation.stop()` 当前先 close scope 再 onStop；本轮未执行其 tests | `src/extensions/world-framework/world-activation.ts`；tests 存在未复跑 | 归档已实现计划，范围以源码为准 |

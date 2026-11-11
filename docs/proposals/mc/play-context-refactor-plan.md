@@ -6,7 +6,7 @@
 
 Uina 应能选择玩什么，把已想清楚的步骤交给能力或 Program，在等结果时结束当前轮，之后凭新事实接着玩。她也可以回复朋友、做直播旁白、改主意或休息。Minecraft World 的职责是给她可靠的游戏事实和可执行的动作。
 
-当前在连接期间，**每次模型请求**都会触发 `state.snapshot`，采集身体、背包、世界、界面和 HUD，并读活跃任务。框架把正文追加成一条提示、一个合成工具调用和一条工具回执。同一个回合里多次调用工具会多次付出采样、投影和输入开销。即使这一轮只在聊天，规则也一样。`/prompt` 目前能核对其中的正文。 [现行注入](../../../.uina/worlds/minecraft/worlddef/index.ts#L211) · [采样与任务查询](../../../.uina/worlds/minecraft/companion/side.ts#L580) · [三消息组](../../../src/extensions/event-frames/projection.ts#L97)
+当前在连接期间，**每次模型请求**都会触发 `state.snapshot`，采集身体、背包、世界、界面和 HUD，并读活跃任务。框架把正文追加成一个合成工具调用和一条工具回执（2026-11-09 起是两消息帧，此前还有一条解释性 user 提示）。同一个回合里多次调用工具会多次付出采样、投影和输入开销。即使这一轮只在聊天，规则也一样。`/prompt` 目前能核对其中的正文。 [现行注入](../../../.uina/worlds/minecraft/worlddef/index.ts#L211) · [采样与任务查询](../../../.uina/worlds/minecraft/companion/side.ts#L580) · [两消息帧](../../../src/extensions/event-frames/projection.ts)
 
 已有证据说明快照价值取决于时机。一次自由游玩里，Uina 入服发现自己在 `y=-60`，自行选择 `surface@1`。固定探索的早期样本里，她有时比完成通知更早查到任务终态。后来的实测已分开核对持久报告、Host 接收和请求投影，投递修复后受控场景能及时接回。前者要求保住入服时的发现机会，后者要求测清等待和投递，不能把反复查询一概归因于 Guide。 [V2 游玩节奏记录](archive/world-refactor-v2.md#游玩节奏与完成投递)
 

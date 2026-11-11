@@ -81,7 +81,7 @@ TUI 输入框下的 `上次世界观察 N /prompt` 指向最近一次实际模�
 
 队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次。普通无 receipt 输入不承诺 producer 对账；带 receipt 的输入可经来源绑定的 HostDeliveryPort 查询持久提交事实，交付重试不能据此重跑外部动作。`input_accepted` 表示已受理进入直接启动或队列；`input_settled` 表示输入已进入 canonical history 或永久退役（不表示模型已回复或外部副作用成功）。World 可用该事实回收 deferred 输入占位，避免把 render 当作提交确认。
 
-Host 默认装配事件帧 profile：未显式传入 `projection`/`systemPrompt` 时，模型请求中的外部输入（用户输入、runtime 来源且 `origin: external` 的观察）以 `external_event_frame` 三消息组（通知、合成调用、回执）呈现，内部 runtime 消息以带来源标注的 user 消息呈现且不重复加内部分类前缀；每请求执行帧协议校验，请求级预算门仍归 Subject。`examples/file-events.mts` 的文件变化观察标 `origin: external`。设计见 [外部事件帧设计](proposals/runtime/external-event-frame-design.md)。
+Host 默认装配事件帧 profile：未显式传入 `projection`/`systemPrompt` 时，模型请求中的外部输入（用户输入、`origin: external` 的观察）以 `external_event_frame` 两消息帧呈现——一条参数为空的合成调用加一条工具回执，回执第一行是来源标签与当地时间，正文紧随其后。不再有"正文在下一条回执中"的解释性 user 通知；`eventId`、来源细目只留在消息 `context` 里，不进正文。内部 runtime 消息仍投影为 user 消息，前缀只写 `[内部信息 · kind/type]`，不铺来源 JSON。`external_event_frame` 只在含帧的请求里声明；模型若仍生成同名调用，运行时丢弃该调用且保留同响应的正文与真实调用，不执行、不生成回执、不追加模型轮次。帧落在对话首位时降级为单条带来源标题的 user 消息（Anthropic 拒绝以 assistant 开场）。每请求执行帧协议校验，请求级预算门仍归 Subject。`examples/file-events.mts` 的文件变化观察标 `origin: external`。设计见 [外部事件帧设计](proposals/runtime/external-event-frame-design.md)。
 
 header 为 v4，且只接受 v4：v3 及更早版本明确拒绝，没有迁移链，也没有旧版本 reader——旧 journal 直接开新会话。不会自动猜测修复非法生命周期记录，也无法补回已丢失的输入。
 
@@ -141,7 +141,7 @@ Minecraft 批11–13 已实现并真服验收：批11 领域记录（G1 关闭�
 
 批20（2026-11-03）关闭横向缺口 G6/G7/G8：G6 节流 digest 推送（`world/digest.ts` 按查询依赖采样、10s 前缘节流、内容哈希去重、独立事件类型 `minecraft_digest`、主脑忙时只保最新一份）；G7 `inventory@1 {since}` 增量游标（协议槽位变更标记 → 差量 + 变化后总数）；G8 `run {wait}` 按调用短窗覆盖（0 只受理不等）。真服 `pnpm dev:mc:digest` 7/7；tests/mc 771 项全绿。剩余横向缺口 G9/G10（运行时调度）、G12/G13（认证与平台）、G14–G17（复验与终态报告）、G24（tunnel 上行净空）登记于 [known-gaps](proposals/mc/known-gaps.md)。
 
-Minecraft 状态由 `world/state-frame.ts` 采样，经 `state.snapshot` 只读 RPC 和 `WorldDef.requestContext` 附在当前模型请求尾部。只对已连接的会话附加，退游或换服作废旧会话的在途读取。Driver 在 RPC 返回时提供连接事实。仍在会话中而取样失败、空白或超过 250ms 时，请求附一条不可用说明。观察帧不写入会话历史，不唤醒主体。死亡、断线、私聊、任务完成等事件经各自的事件投递路径送达。批37真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧均为身体当前所在格）。
+Minecraft 状态由 `world/state-frame.ts` 采样，经 `state.snapshot` 只读 RPC 和 `WorldDef.requestContext` 以一条 `external_event_frame` 两消息帧（来源标 `world.observation`、`origin: external`）附在当前模型请求尾部。只对已连接的会话附加，退游或换服作废旧会话的在途读取。Driver 在 RPC 返回时提供连接事实。仍在会话中而取样失败、空白或超过 250ms 时，请求附一条写明原因的不可用帧（`本轮没有取到世界观察：…`），不让观察静默消失。观察帧不写入会话历史，不唤醒主体。死亡、断线、私聊、任务完成等事件经各自的事件投递路径送达。批37真服 `pnpm dev:mc:state-frame` 7/7（含走路 20s 零事件、每帧均为身体当前所在格）。
 
 隔离 Paper 1.21.11 使用受控 Provider，`pnpm dev:mc:native --rhythm-flow` 与 `node dist/.uina/worlds/minecraft/dev/native-host.js --rhythm-flow` 均通过 9 项检查，覆盖入服前、在服、主动退出、重连和服务端踢出，并逐请求核对 Host 快照与模型收到的观察正文。TUI 的观察入口与面板正文由终端渲染测试核对。
 
