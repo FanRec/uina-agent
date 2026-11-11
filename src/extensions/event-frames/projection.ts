@@ -148,11 +148,6 @@ export function eventFrameMessages(options: EventFrameOptions): ChatMsg[] {
 	];
 }
 
-/** 前面只有 system：首条消息必须是 user，Anthropic 明确拒绝以 assistant 开场的 messages。 */
-function hasConversation(messages: readonly ChatMsg[]): boolean {
-	return messages.some((message) => message.role !== "system");
-}
-
 /**
  * 帧落到对话首位时的形状：一条带来源标题的 user 消息。
  *
@@ -172,8 +167,10 @@ function leadingFrameMessage(options: EventFrameOptions): ChatMsg {
 	};
 }
 
+/** 只有 system 时不能用帧：Provider 剥掉 system 后，这两条就成了以 assistant 开场。 */
 function placeFrame(placed: readonly ChatMsg[], options: EventFrameOptions): ChatMsg[] {
-	return hasConversation(placed) ? eventFrameMessages(options) : [leadingFrameMessage(options)];
+	const started = placed.some((message) => message.role !== "system");
+	return started ? eventFrameMessages(options) : [leadingFrameMessage(options)];
 }
 
 /** 把一份帧接到消息尾部：首位降级、其余保持合成回执。
@@ -182,8 +179,8 @@ export function appendEventFrame<T extends { role: string }>(
 	messages: readonly T[],
 	options: EventFrameOptions,
 ): readonly T[] {
-	const placed = placeFrame(messages as unknown as readonly ChatMsg[], options);
-	return [...messages, ...(placed as unknown as T[])];
+	const frame = placeFrame(messages as unknown as readonly ChatMsg[], options);
+	return [...messages, ...(frame as unknown as T[])];
 }
 
 /** 没有稳定身份就不能合成回执：帧组的原子性、去重与恢复都靠它。 */

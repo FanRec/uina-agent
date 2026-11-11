@@ -55,9 +55,8 @@ export interface EventFrameValidationRequest {
  * journal 保留），本函数只负责帧结构与协议完整性。
  */
 export function assertEventFrameContext(messages: readonly ChatMsg[], request?: EventFrameValidationRequest): void {
+	// 组 id 同时就是合成调用 id：一个集合同时用于去重、配对与"有没有帧"的判定。
 	const groups = new Set<string>();
-	const frameIds = new Set<string>();
-	let frames = 0;
 	// Provider 侧会剥掉 system，所以"前面有 system"不算开场：帧之前必须已经有一条对话消息。
 	let started = false;
 	for (let i = 0; i < messages.length; i++) {
@@ -71,8 +70,6 @@ export function assertEventFrameContext(messages: readonly ChatMsg[], request?: 
 		if (!g || g.index !== 0 || g.size !== EVENT_FRAME_SIZE || groups.has(g.id))
 			throw new Error("外部事件帧分组不完整或重复");
 		groups.add(g.id);
-		frameIds.add(g.id);
-		frames++;
 		const batch = messages.slice(i, i + EVENT_FRAME_SIZE);
 		if (
 			batch.length !== EVENT_FRAME_SIZE ||
@@ -109,14 +106,14 @@ export function assertEventFrameContext(messages: readonly ChatMsg[], request?: 
 		if (call.content !== "") throw new Error("外部事件帧的合成调用不得携带正文");
 		i += EVENT_FRAME_SIZE - 1;
 	}
-	if (frames > 0 && request && !request.tools.some((tool) => tool.function.name === EVENT_FRAME_TOOL_NAME))
+	if (groups.size > 0 && request && !request.tools.some((tool) => tool.function.name === EVENT_FRAME_TOOL_NAME))
 		throw new Error("上下文含外部事件帧但请求未声明 external_event_frame");
 	const pending = new Set<string>();
 	for (const m of messages) {
 		if (m.role === "assistant" && m.tool_calls?.length) {
 			if (pending.size) throw new Error("上下文存在未配对工具调用");
 			for (const c of m.tool_calls) {
-				if (pending.has(c.id) || (frameIds.has(c.id) && !isEventFrame(m))) throw new Error("上下文工具调用 ID 冲突");
+				if (pending.has(c.id) || (groups.has(c.id) && !isEventFrame(m))) throw new Error("上下文工具调用 ID 冲突");
 				pending.add(c.id);
 			}
 		} else if (m.role === "tool") {
