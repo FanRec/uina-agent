@@ -116,11 +116,10 @@ async function main(): Promise<void> {
 			const started = Date.now();
 			const value = valueOf<{
 				dug: number;
-				stopped?: string;
 				path: { at: { x: number; y: number; z: number }; name: string }[];
 			}>(await s.call("tunnel@1", { to: { x: x0 + 4, y: 202, z: z0 }, maxTimeMs: 150000 }, 240000));
 			const elapsed = Date.now() - started;
-			if (value.stopped != null) throw new Error(`tunnel stopped early: ${value.stopped}`);
+			// tunnel 严格完成合同：受阻即失败上抛，不再有 stopped 正常返回。
 			if (value.dug < 8) throw new Error(`ascending corridor dug only ${value.dug} cells`);
 			const pos = await serverPos();
 			if (Math.abs(pos.x - (x0 + 4)) > 1.5 || Math.abs(pos.y - 202) > 1.5 || Math.abs(pos.z - z0) > 1.5) {

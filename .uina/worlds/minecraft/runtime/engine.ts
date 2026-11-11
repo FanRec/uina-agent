@@ -22,9 +22,9 @@ import type {
 	ProtocolWriteBinding,
 	ProtocolWritePort,
 } from "../contracts/capabilities.js";
-import type { RecoveryIdentity } from "../contracts/protocol.js";
 import type { ProgramPort, ResolvedProgram } from "../contracts/program.js";
 import { createDecisionError, getDecisionRequest } from "../contracts/program.js";
+import type { RecoveryIdentity } from "../contracts/protocol.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -48,12 +48,12 @@ import type {
 	DecisionRequest,
 	DurableSuspendRequest,
 	DurableWait,
-	ProgramCheckpoint,
-	ProgramRecovery,
 	EffectReceipt,
 	ExactRef,
 	JsonSchema,
 	JsonValue,
+	ProgramCheckpoint,
+	ProgramRecovery,
 	Progress,
 	Ref,
 } from "../contracts/values.js";
@@ -63,7 +63,7 @@ import { type BodyGrant, BodyLeaseQueue } from "./body-queue.js";
 import { toCallFailure } from "./failure.js";
 import { RuntimeOwner } from "./owner.js";
 import { createProgramHost } from "./program-host.js";
-import { RecordQueue } from "./records.js";
+import { assessEffectFacts, RecordQueue } from "./records.js";
 import { RuntimeRefs } from "./refs.js";
 import { callRowOf, canonicalJson, projectSummary, runRowOf, segmentRowOf, sha256Hex, summaryFromRow } from "./rows.js";
 import type { ApplyItem, RecoveredRows, RunRow, StopIntentRow } from "./runtime-db-worker.js";
@@ -75,6 +75,7 @@ import type {
 	CallFrame,
 	CallState,
 	ResolvedInvocation,
+	ResourceTeardown,
 	RunState,
 	RunWaiter,
 	SubmissionState,
@@ -2030,13 +2031,43 @@ export class RuntimeEngine {
 		}
 		if (callState.parent == null) state.interruptedChildren = strays.map((child) => child.call);
 		callState.abort.abort();
-		await Promise.allSettled([...callState.resources].map((close) => close()));
+		// §5.2 资源按真实退出原因收尾，不从 abort 布尔反推；§5.3.5 拒绝结果必须消费。
+		const teardown: ResourceTeardown = {
+			reason: cancelled ? "cancelled" : parked ? "parked" : threw == null ? "returned" : "threw",
+		};
+		const releaseSettled = await Promise.allSettled([...callState.resources].map((close) => close(teardown)));
+		const cleanupFailures = releaseSettled
+			.filter((item): item is PromiseRejectedResult => item.status === "rejected")
+			.map((item) => item.reason);
 		await Promise.all(strays.map((child) => child.settled));
 		// §5.5 step 4：不可变完成截面入队（不逐 Call 等盘）
 		const interrupted = callState.closedByParent != null || state.stopped;
 		callState.execution = interrupted ? "interrupted" : parked ? "threw" : threw == null ? "returned" : "threw";
 		callState.decisionRequest = decision;
 		callState.effects = this.queue.effectsForCall(callState.call);
+		if (cleanupFailures.length > 0) {
+			const detail = cleanupFailures
+				.slice(0, 2)
+				.map((err) => (err instanceof Error ? err.message : String(err)))
+				.join("; ");
+			if (parked) {
+				// 决策/挂起路径不能被清理错误改写；诊断如实上报，泄漏防线仍由屏障保证。
+				console.error(`[mc-runtime] call ${callState.call} cleanup failed while parked: ${detail}`);
+			} else if (threw == null) {
+				// 没有主错误时，清理失败按对执行的实际影响报告，不凭空创建世界 Effect。
+				threw = callFailure({
+					code: "CLEANUP_FAILED",
+					source: "environment",
+					message: `resource cleanup failed: ${detail}`,
+					dispatch: callState.effects.length > 0 ? "sent" : "not_sent",
+					effects: [...callState.effects],
+					recoverable: true,
+				});
+			} else {
+				// 主因优先，清理失败附在诊断里，不覆盖也不吞掉（§5.3.3）。
+				threw = callFailure({ ...failureData(threw), message: `${threw.message}; cleanup: ${detail}` });
+			}
+		}
 		if (interrupted) {
 			callState.outcome = "cancelled";
 			if (threw != null) callState.error = failureData(threw);
@@ -2089,14 +2120,40 @@ export class RuntimeEngine {
 		const child = this.createCallState(parent.run, parent.segment, call, record, parent, callable, input);
 		parent.children.add(child);
 		this.queue.enqueueAll([this.callMutation(child)]);
-		if (lease == null) return this.executeCallBody(child, state, null);
+		if (lease == null) return this.deliverChild(child, this.executeCallBody(child, state, null));
 		const previous = lease.activeCall;
 		lease.activeCall = child.call;
 		try {
-			return await this.executeCallBody(child, state, lease);
+			return await this.deliverChild(child, this.executeCallBody(child, state, lease));
 		} finally {
 			lease.activeCall = previous;
 		}
+	}
+
+	/**
+	 * 子调用向父的结果交付边界（§4）：普通 resolve 只代表**已确认的成功**。
+	 * 子调用谱系仍有未决写入时，业务值不得沿普通成功 Promise 交付——父要么显式
+	 * 处理 EFFECT_UNCONFIRMED 并查证，要么让它如实失败。业务失败、Stop/Safety
+	 * 控制信号、mc.decide 与持久挂起按原合同透传，不被本边界包装（§4.1 表）。
+	 * 子历史不倒写：leaf 记录保持原 outcome/value/effects。
+	 */
+	private async deliverChild(child: CallState, settled: Promise<JsonValue>): Promise<JsonValue> {
+		// settled 的拒绝（业务失败/Stop/Safety/decide/suspend）原样向上传播，不在此包装。
+		const value = await settled;
+		const lineage = this.unresolvedLineage(child);
+		if (lineage.refs.length > 0) {
+			throw callFailure({
+				code: "EFFECT_UNCONFIRMED",
+				source: "environment",
+				message: `${child.callable.ref} returned, but its effects are not confirmed; the returned value must not be relied on for further writes`,
+				hint: "read authoritative state or verify the recorded effect before any dependent write; do not blindly replay",
+				dispatch: lineage.dispatch,
+				effects: lineage.refs,
+				progress: child.progress,
+				recoverable: true,
+			});
+		}
+		return value;
 	}
 
 	private createCallState(
@@ -2654,17 +2711,37 @@ export class RuntimeEngine {
 
 	// ---- 五态与效果归属 ----
 
+	/**
+	 * 唯一 Effect 当前判定（assessEffectFacts）：只统计仍待对账的世界写入/清理
+	 * 后果。确认的业务失败（not_met 且已闭合）不再是未知；迟到的合格 receipt 或
+	 * 核验可以关闭早先的 unknown——查询当前事实而不是照抄子调用旧 outcome。
+	 */
 	private callHasUnknownEffects(callState: CallState): boolean {
-		// Query current receipts instead of child outcomes: a handled failure does not erase
-		// its effects, and a later confirmed receipt may resolve an earlier unknown one.
-		for (const effect of this.queue.effectsForCall(callState.call)) {
-			const attribution = this.queue.effectRecord(effect);
-			if (attribution != null && attribution.latest.completion !== "met") return true;
-		}
-		for (const child of callState.children) {
-			if (this.callHasUnknownEffects(child)) return true;
-		}
-		return false;
+		return this.unresolvedLineage(callState).refs.length > 0;
+	}
+
+	/** 本调用谱系（含子孙）当前未决的效果 refs 与聚合派发状态。 */
+	private unresolvedLineage(callState: CallState): {
+		refs: Ref[];
+		dispatch: CallFailureData["dispatch"];
+	} {
+		const refs: Ref[] = [];
+		let unknown = false;
+		let sent = false;
+		const visit = (state: CallState): void => {
+			for (const effect of this.queue.effectsForCall(state.call)) {
+				const attribution = this.queue.effectRecord(effect);
+				if (attribution == null) continue;
+				const assessment = assessEffectFacts(attribution.facts, attribution.verifications);
+				if (!assessment.unresolved) continue;
+				refs.push(effect);
+				if (assessment.dispatch === "unknown") unknown = true;
+				else if (assessment.dispatch === "sent") sent = true;
+			}
+			for (const child of state.children) visit(child);
+		};
+		visit(callState);
+		return { refs, dispatch: unknown ? "unknown" : sent ? "sent" : "not_sent" };
 	}
 
 	private runMutation(state: RunState): ApplyItem["mutation"] {

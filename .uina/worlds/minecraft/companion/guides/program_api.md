@@ -15,6 +15,24 @@ Program 是普通 JavaScript：`async function main(mc, input) { ... }`。不能
 5. 顶层 `run` 只回受理结果。任务完成由 `minecraft_completion` 独立投递，`tasks.get` 可查当前结果。Program 内 `await mc.call(...)` 等待子动作结果。
 
 子动作失败会抛带 `code / message / source / dispatch / effects / progress / hint / recoverable` 的 Error。
+
+**未知效果不交付业务值**：子调用正常返回只代表已确认的成功；效果还没对账完（挖了没确认、点击没确认）会抛 `EFFECT_UNCONFIRMED`（`effects` 是待对账的效果引用，`progress` 是真实进度）。catch 后先读世界事实或用 `mc.verify` 核验原效果，再决定换路、交还或继续；不要原样重放原操作。
+
+```js
+async function main(mc, input) {
+  const at = input.at;
+  try {
+    await mc.call('mine@1', { at });
+  } catch (error) {
+    if (error.code !== 'EFFECT_UNCONFIRMED') throw error;
+    const seen = await mc.read('block@1', { at });
+    if (!seen.value || !seen.value.block) mc.decide('目标方块无法可靠观察', { at, effects: error.effects });
+    if (seen.value.block.name !== 'air') mc.decide('方块还在，需要换方案', { at, effects: error.effects });
+    // 只确认"当前是空气"；旧 mine 效果的历史结论不因此改写。
+  }
+  return { checkedAt: at };
+}
+```
 `recoverable:true` 只表示"存在合理的后续路径"，**不是**自动重试授权：`dispatch:'sent'` 或 `effects` 非空时先重新读世界事实，不原样重跑。
 
 ## 目标与进度

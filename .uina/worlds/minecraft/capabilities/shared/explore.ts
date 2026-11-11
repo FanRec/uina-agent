@@ -275,3 +275,48 @@ export function pickFrontier(
 export function matchesTargetName(actual: string, wanted: string): boolean {
 	return stripNamespace(actual) === stripNamespace(wanted);
 }
+
+// ---- 跨侦察动作共享的会话步骤（explore@1 与 survey@1 同源；不复制寻路） ----
+
+/** 每站观察盒读数：以脚底格为原点的 region 体素切片。 */
+export async function observeAround(
+	world: import("../../contracts/world.js").WorldPort,
+	self: { place: { position: Vec3 } },
+): Promise<RegionSample> {
+	const at = {
+		x: Math.floor(self.place.position.x) - OBSERVE_HALF,
+		y: Math.floor(self.place.position.y) - OBSERVE_VERTICAL,
+		z: Math.floor(self.place.position.z) - OBSERVE_HALF,
+	};
+	const observation = (await world.read<RegionSample>({
+		ref: "region@1",
+		input: { at, size: { x: OBSERVE_HALF * 2 + 1, y: OBSERVE_VERTICAL * 2 + 1, z: OBSERVE_HALF * 2 + 1 } },
+	})) as { value: RegionSample };
+	return observation.value;
+}
+
+/**
+ * route.plan 只读估价：可达给路径距离，计划判定不可达给 "unreachable"（真实
+ * 证据），读取异常给 null（无证据——goto 是真裁决）。估价只做排序与派发门槛。
+ */
+export async function estimateRoute(
+	world: import("../../contracts/world.js").WorldPort,
+	at: Vec3,
+): Promise<number | "unreachable" | null> {
+	try {
+		const observation = (await world.read<{ ok: boolean; distance: number }>({
+			ref: "route.plan@1",
+			input: {
+				at: { x: at.x, y: at.y, z: at.z },
+				tolerance: LEG_TOLERANCE,
+				digThrough: false,
+				placeToReach: false,
+				sprint: true,
+			},
+		})) as { value: { ok: boolean; distance: number } };
+		if (!observation.value.ok) return "unreachable";
+		return Number.isFinite(observation.value.distance) ? observation.value.distance : null;
+	} catch {
+		return null;
+	}
+}

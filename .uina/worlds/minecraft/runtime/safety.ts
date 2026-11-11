@@ -5,6 +5,7 @@ import type { Ref } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
 import type { BodyLeaseQueue } from "./body-queue.js";
 import type { RecordQueue } from "./records.js";
+import { assessEffectFacts } from "./records.js";
 import type { RuntimeRefs } from "./refs.js";
 import type { EffectRow } from "./runtime-db-worker.js";
 
@@ -220,7 +221,13 @@ function recoveredEffects(record: SafetyInterventionRecord, rows: EffectRow[]) {
 	const effects = [...new Set([...record.effects, ...owned.map((row) => row.effect)])];
 	const unknownEffects = effects.filter((effect) => {
 		const row = owned.find((row) => row.effect === effect);
-		return !row || (JSON.parse(row.facts) as DriverExecutionFact[]).at(-1)?.completion !== "met";
+		// 与运行期同一判定：只剩 intent、清理未静止、无合格核验的都仍是未决（§3.4）。
+		if (!row) return true;
+		const facts = JSON.parse(row.facts) as DriverExecutionFact[];
+		const verifications = JSON.parse(
+			row.verifications ?? "[]",
+		) as import("../contracts/runtime.js").EffectVerification[];
+		return assessEffectFacts(facts, verifications).unresolved;
 	});
 	return { effects, unknownEffects };
 }

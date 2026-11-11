@@ -5,8 +5,9 @@
  * 完成 = 通道连通且自己走过去了（每段腿真实位移）；dug 只计服务端确认的破坏格，
  * path 记已挖格与其原名。规划（L 形 + 台阶 + 竖井）在 shared/spatial.ts 纯函数层；
  * 这里只做执行：withBody 挖 ↔ navigate 走的顶层交替拍（fight 同模式，不嵌套租赁）。
- * 裁决（changelog 批13）：走廊遇流体 → UNREACHABLE；当前库存无法采收（基岩/缺工具）
- * → 返回 stopped:"unbreakable" 保留已挖部分；挖了未确认 → TARGET_NOT_MET 带效果。
+ * 裁决（§6.2 严格完成合同）：正常返回 = 通道连通且确实走通终点；遇流体/未加载
+ * → UNREACHABLE；库存采掘要求不满足 → MISSING_TOOL；无任何已知工具可采（基岩）
+ * → UNREACHABLE；挖了未确认 → TARGET_NOT_MET 带效果。部分进度只活在失败 progress 里。
  */
 
 import type { SelfState } from "../../contracts/body.js";
@@ -17,7 +18,7 @@ import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import { type GoalOutstanding, goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
-import { POS_SCHEMA, GOAL_SUMMARY_SCHEMA } from "../shared/schema.js";
+import { GOAL_SUMMARY_SCHEMA, POS_SCHEMA } from "../shared/schema.js";
 import { isGravityBlock, planCorridor, type TunnelColumn, type TunnelProfile } from "../shared/spatial.js";
 import { fail, resolveGrid, resolvePoint, stripNamespace } from "../shared/targets.js";
 import { readBlockAt } from "../shared/views.js";
@@ -76,11 +77,6 @@ const descriptor: CallableDescriptor = {
 				},
 			},
 			goal: GOAL_SUMMARY_SCHEMA,
-			stopped: {
-				type: "string",
-				enum: ["unbreakable"],
-				description: "stopped early: no inventory tool can harvest a corridor cell",
-			},
 		},
 		required: ["dug", "path", "goal"],
 		additionalProperties: false,
@@ -89,16 +85,16 @@ const descriptor: CallableDescriptor = {
 	completion: {
 		scope: "capability",
 		description:
-			"the corridor is connected and was walked through end to end; dug counts only server-confirmed breaks; stopped:'unbreakable' keeps the dug prefix",
+			"the corridor is connected and was walked through end to end; dug counts only server-confirmed breaks; early stops are failures (MISSING_TOOL / UNREACHABLE / TARGET_NOT_MET), never a normal return",
 	},
 	errors: [
 		{
 			code: "UNREACHABLE",
 			meaning:
-				"corridor crosses fluid or unloaded chunks, a planned floor has no support (existing carve-out), or a leg could not advance",
+				"corridor crosses fluid or unloaded chunks, a planned floor has no support (existing carve-out), a leg could not advance, or a cell no known tool can harvest",
 		},
 		{ code: "TARGET_NOT_MET", meaning: "a corridor cell was dispatched but the server did not confirm the break" },
-		{ code: "MISSING_TOOL", meaning: "harvest requirements known but no inventory tool matches a requested tool" },
+		{ code: "MISSING_TOOL", meaning: "harvest requirements known but no inventory tool matches a corridor cell" },
 		{ code: "WRONG_STATE", meaning: "target in another dimension, or block harvest requirements unknown" },
 		{ code: "TIMEOUT", meaning: "budget exhausted before the corridor was walked through (progress keeps dug)" },
 		{ code: "INTERRUPTED", meaning: "the run was stopped or safety took over (progress keeps dug)" },
@@ -110,11 +106,9 @@ const descriptor: CallableDescriptor = {
 		{
 			input: { to: { x: 24, y: 64, z: 0 } },
 			output: {
-				value: {
-					dug: 6,
-					path: [{ at: { x: 12, y: 64, z: 0 }, name: "stone" }],
-					goal: { state: "satisfied", completed: 7, remaining: 0, blocked: 0, uncertain: 0, total: 7 },
-				},
+				dug: 6,
+				path: [{ at: { x: 12, y: 64, z: 0 }, name: "stone" }],
+				goal: { state: "satisfied", completed: 7, remaining: 0, blocked: 0, uncertain: 0, total: 7 },
 			},
 		},
 	],
@@ -192,7 +186,6 @@ export const tunnelModule: MinecraftCapabilityModule = {
 					const owner = { kind: "run", run: ctx.run, segment: ctx.segment, callId: ctx.callId } as const;
 					let dug = 0;
 					const path: { at: Vec3; name: string }[] = [];
-					let stopped: "unbreakable" | null = null;
 
 					// 目标对账（capabilities §2.15）：通道目标是"这些格变成空气 + 真的走通"。
 					// 计划在开工时固定；支撑探测格在执行中才发现，注册时一并计入总量。
@@ -432,15 +425,36 @@ export const tunnelModule: MinecraftCapabilityModule = {
 												progress: progressOf("digging"),
 												recoverable: true,
 											});
-										case "unbreakable":
+										case "unbreakable": {
 											held.set(key, {
 												kind: "blocked",
 												at: position,
 												target: "air",
-												reason: "cannot harvest with the current inventory",
+												reason:
+													result.names.length > 0
+														? `cannot harvest with the current inventory (accepted: ${result.names.join(", ")})`
+														: "no known tool can harvest this block",
 											});
-											stopped = "unbreakable";
-											break;
+											const where = `${position.x},${position.y},${position.z}`;
+											if (result.names.length > 0) {
+												fail("MISSING_TOOL", `no inventory tool can harvest corridor cell ${where}`, {
+													hint: `accepted tools: ${result.names.join(", ")}`,
+													dispatch: "not_sent",
+													progress: progressOf("digging"),
+													recoverable: true,
+												});
+											}
+											fail(
+												"UNREACHABLE",
+												`corridor cell ${where} cannot be harvested by any known tool; the corridor cannot cross it`,
+												{
+													hint: "permanent obstruction (e.g. bedrock); route around it or pick another target",
+													dispatch: "not_sent",
+													progress: progressOf("digging"),
+													recoverable: true,
+												},
+											);
+										}
 										case "unreachable":
 											held.set(key, {
 												kind: "blocked",
@@ -468,13 +482,10 @@ export const tunnelModule: MinecraftCapabilityModule = {
 												recoverable: true,
 											});
 									}
-									if (stopped != null) return;
 								}
-								if (stopped != null) return;
 								cursor += 1;
 							}
 						});
-						if (stopped != null) break;
 						// 走拍：目标 = 已挖到的最远列脚位。goto 先行（会爬台阶/转弯），但
 						// "空路径假成功"（经验 19/22）与 NoPath 都要用实际落点复核，未到位再 drive 步进。
 						// 目标至少跨 2 列（有余量时）：GoalNear 的 range-1 邻域包含"目标正下方一格"，
@@ -594,7 +605,6 @@ export const tunnelModule: MinecraftCapabilityModule = {
 						dug,
 						path,
 						goal: snapshot("done").goal,
-						...(stopped != null ? { stopped } : {}),
 					});
 				},
 		},

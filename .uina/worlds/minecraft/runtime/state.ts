@@ -37,6 +37,15 @@ export interface BodyLease {
 	closed: boolean;
 }
 
+/**
+ * Call 收尾时传给资源关闭的**真实退出原因**（§5.2）：returned=正常返回、
+ * threw=主业务失败、cancelled=Stop/Safety/父关闭、parked=决策/挂起。
+ * 资源关闭不得用 abort 后的布尔值反推原因——abort 只负责封闭准入与撤销在途写入资格。
+ */
+export interface ResourceTeardown {
+	reason: "returned" | "threw" | "cancelled" | "parked";
+}
+
 export interface CallFrame {
 	call: CallState;
 	bodyLease: BodyLease | null;
@@ -50,7 +59,8 @@ export interface CallState {
 	record: Ref;
 	callable: ResolvedInvocation;
 	diagnostic?: ProgramDiagnostic;
-	resources: Set<() => Promise<void>>;
+	/** 资源关闭器按真实退出原因收尾（§5.2）；无参关闭器兼容旧注册。 */
+	resources: Set<(teardown: ResourceTeardown) => Promise<void>>;
 	input: JsonValue;
 	execution: "running" | "returned" | "threw" | "interrupted";
 	outcome: Outcome | null;

@@ -12,15 +12,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
+import { DIG_VERIFIER_REF, digVerifier } from "../../.uina/worlds/minecraft/capabilities/shared/verify.js";
 import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type { DriverExecutionFact, EffectVerification } from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
-import { RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
+import { assessEffectFacts, RecordQueue } from "../../.uina/worlds/minecraft/runtime/records.js";
 import { RuntimeRefs } from "../../.uina/worlds/minecraft/runtime/refs.js";
-import { DIG_VERIFIER_REF, digVerifier } from "../../.uina/worlds/minecraft/capabilities/shared/verify.js";
 import { nativeCallable } from "./mc-native-fixture.js";
 
 /** verify 回归的固定 descriptor 口径（capability scope 的 completion）。 */
@@ -43,23 +43,33 @@ function digReceipt(effect: string, completion: DriverExecutionFact["completion"
 		dispatch: "sent",
 		completion,
 		evidence: [],
-		detail: { target: { x: 10, y: 64, z: 10 } },
+		detail: { target: { x: 10, y: 64, z: 10 }, dimension: "overworld" },
 	};
 }
 
-/** world stub：block@1 按脚本回答（air/stone/null=未加载）。 */
-function worldWith(block: { name: string } | null): WorldPort {
+/** world stub：block@1 按脚本回答（air/stone/null=未加载）；self@1 报告当前维度。 */
+function worldWith(block: { name: string } | null, dimension = "overworld"): WorldPort {
 	return {
-		read: async () =>
-			({
-				value: { block: block == null ? null : { name: block.name } },
-				observedAt: "2026-10-31T00:00:00.000Z",
-				source: "server",
-				coverage: "complete",
-				unknown: [],
-				evidence: ["ev:t:1"],
-				cursor: null,
-			}) as never,
+		read: async ({ ref }: { ref: string }) =>
+			ref === "self@1"
+				? ({
+						value: { place: { dimension } },
+						observedAt: "2026-10-31T00:00:00.000Z",
+						source: "server",
+						coverage: "complete",
+						unknown: [],
+						evidence: ["ev:t:1"],
+						cursor: null,
+					} as never)
+				: ({
+						value: { block: block == null ? null : { name: block.name } },
+						observedAt: "2026-10-31T00:00:00.000Z",
+						source: "server",
+						coverage: "complete",
+						unknown: [],
+						evidence: ["ev:t:1"],
+						cursor: null,
+					} as never),
 	} as unknown as WorldPort;
 }
 
@@ -123,7 +133,7 @@ function harness(options: HarnessOptions, build: (queue: RecordQueue) => NativeC
 }
 
 describe("ctx.verify registry (G4)", () => {
-	test("a real unknown dig effect is re-checked to met and appended without rewriting history", async () => {
+	test("an in-flight unknown dig re-checked to met settles the call on current facts without rewriting facts", async () => {
 		const h = harness(
 			{ world: worldWith({ name: "air" }), verifiers: new Map([[DIG_VERIFIER_REF, digVerifier()]]) },
 			(queue) => [
@@ -136,8 +146,9 @@ describe("ctx.verify registry (G4)", () => {
 			],
 		);
 		const summary = await h.finish(await h.submit("digu@1"));
-		// 核验返回 met，但 Run 的结算不随之改写：unknown 效果仍按 unknown 结算。
-		expect(summary.outcome).toBe("unknown");
+		// 进行中调用的当前判定：锚定核验关闭未决后按可信事实结算（历史 facts 不改写）。
+		expect(summary.outcome).toBe("succeeded");
+		expect(summary.unknownEffects).toEqual([]);
 		const attribution = h.queue.effectRecord("eff:verify-dig");
 		expect(attribution).not.toBeNull();
 		expect(attribution!.facts).toHaveLength(1);
@@ -147,9 +158,35 @@ describe("ctx.verify registry (G4)", () => {
 			verifier: "verify/dig@1",
 			completion: "met",
 			reason: "cell 10,64,10 is air",
+			factsAnchor: 1,
 		});
 		// 追加写成了新的 effect_verification 截面（含 facts + verifications）。
 		expect(h.rows.verification).toHaveLength(1);
+	});
+
+	test("a verification appended after a run closed never rewrites that run's recorded outcome", async () => {
+		const h = harness(
+			{ world: worldWith({ name: "air" }), verifiers: new Map([[DIG_VERIFIER_REF, digVerifier()]]) },
+			(queue) => [
+				callable("digonce@1", async (ctx) =>
+					ctx.withBody(async () => {
+						queue.record(digReceipt("eff:verify-history", "unknown"));
+						return "done";
+					}),
+				),
+				callable("reverify@1", async (ctx) =>
+					ctx.withBody(async () => (await ctx.verify("eff:verify-history", "verify/dig@1", {})) as never),
+				),
+			],
+		);
+		const first = await h.finish(await h.submit("digonce@1"));
+		expect(first.outcome).toBe("unknown");
+		// 结算之后再追加合格核验：原 Run 截面保持 unknown，不倒写。
+		await h.finish(await h.submit("reverify@1"));
+		expect(h.queue.effectRecord("eff:verify-history")!.verifications).toHaveLength(1);
+		const settled = h.engine.read(first.run);
+		expect(settled.phase).toBe("finished");
+		expect(settled.phase === "finished" && settled.outcome).toBe("unknown");
 	});
 
 	test("unloaded cells stay unknown and a still-solid cell is not_met", async () => {
@@ -165,6 +202,67 @@ describe("ctx.verify registry (G4)", () => {
 		const unloaded = h.queue.effectRecord("eff:verify-unloaded")!.verifications[0]!;
 		expect(unloaded.completion).toBe("unknown");
 		expect(unloaded.reason).toContain("not loaded");
+	});
+
+	test("a conflicting late driver fact invalidates an anchored verification (E07)", async () => {
+		const h = harness(
+			{ world: worldWith({ name: "air" }), verifiers: new Map([[DIG_VERIFIER_REF, digVerifier()]]) },
+			(queue) => [
+				callable("latefact@1", async (ctx) =>
+					ctx.withBody(async () => {
+						queue.record(digReceipt("eff:verify-late", "unknown"));
+						await ctx.verify("eff:verify-late", "verify/dig@1", {});
+						// 核验之后又到的冲突事实：锚点失效，核验退回历史诊断。
+						queue.record(digReceipt("eff:verify-late", "unknown"));
+						return "done";
+					}),
+				),
+			],
+		);
+		const summary = await h.finish(await h.submit("latefact@1"));
+		expect(summary.outcome).toBe("unknown");
+		expect(summary.unknownEffects).toEqual(["eff:verify-late"]);
+		const attribution = h.queue.effectRecord("eff:verify-late")!;
+		expect(attribution.facts).toHaveLength(2);
+		expect(attribution.verifications).toHaveLength(1);
+		expect(attribution.verifications[0]!.factsAnchor).toBe(1);
+	});
+
+	test("a cross-dimension or identity-less dig effect is never confirmed by a same-coordinate read (E08)", async () => {
+		const h = harness(
+			{
+				world: worldWith({ name: "air" }, "the_nether"),
+				verifiers: new Map([[DIG_VERIFIER_REF, digVerifier()]]),
+			},
+			(queue) => [
+				callable("elsewhere@1", async (ctx) =>
+					ctx.withBody(async () => {
+						// 事实记录于 overworld，当前维度是 the_nether。
+						queue.record(digReceipt("eff:verify-dim", "unknown"));
+						return (await ctx.verify("eff:verify-dim", "verify/dig@1", {})) as never;
+					}),
+				),
+			],
+		);
+		const summary = await h.finish(await h.submit("elsewhere@1"));
+		expect(summary.outcome).toBe("unknown");
+		const verification = h.queue.effectRecord("eff:verify-dim")!.verifications[0]!;
+		expect(verification.completion).toBe("unknown");
+		expect(verification.reason).toContain("overworld");
+	});
+
+	test("verifications without a fact anchor stay diagnostic and never close uncertainty (E08)", async () => {
+		const facts = [digReceipt("eff:legacy", "unknown")];
+		const legacy: EffectVerification = {
+			record: "rec:legacy",
+			observedAt: "2026-10-31T00:00:00.000Z",
+			verifier: "verify/dig@1",
+			completion: "met",
+			evidence: [],
+		};
+		// 旧格式核验无锚点：只做诊断，不把 unknown 关掉。
+		expect(assessEffectFacts(facts, [legacy]).unresolved).toBe(true);
+		expect(assessEffectFacts(facts, [{ ...legacy, factsAnchor: facts.length }]).unresolved).toBe(false);
 	});
 
 	test("an unregistered verifier fails NOT_FOUND with the registered list in hint", async () => {
@@ -231,13 +329,15 @@ import assert from "node:assert/strict";
 import { MinecraftRuntime } from ${JSON.stringify(runtimeUrl)};
 import { buildVerifiers } from ${JSON.stringify(verifierUrl)};
 const descriptor = ref => ({ref,summary:"verify",input:{},output:{},access:"act",implementation:"native",completion:{scope:"capability",description:"observed result"},errors:[],requires:[],examples:[]});
-// world stub：第一轮 block@1 回 air（核验 met），第二轮回 stone（核验 not_met）。
+// world stub：第一轮 block@1 回 air（核验 met），第二轮回 stone（核验 not_met）；self@1 报维度。
 let blockName = "air";
-const world = { read: async () => ({ value: { block: { name: blockName } }, observedAt: "2026-10-31T00:00:00.000Z", source: "server", coverage: "complete", unknown: [], evidence: ["ev:t:1"], cursor: null }) };
+const world = { read: async ({ ref }) => ref === "self@1"
+ ? { value: { place: { dimension: "overworld" } }, observedAt: "2026-10-31T00:00:00.000Z", source: "server", coverage: "complete", unknown: [], evidence: ["ev:t:1"], cursor: null }
+ : { value: { block: { name: blockName } }, observedAt: "2026-10-31T00:00:00.000Z", source: "server", coverage: "complete", unknown: [], evidence: ["ev:t:1"], cursor: null } };
 let runtime;
 const callables = [
  {descriptor:descriptor("digu@1"),invoke:ctx=>ctx.withBody(async()=>{
-   runtime.sink.record({effect:"eff:verify-persist",operation:"op:verify",contract:"body.dig@1",observedAt:"2026-10-31T00:00:00.000Z",kind:"receipt",dispatch:"sent",completion:"unknown",evidence:[],detail:{target:{x:10,y:64,z:10}}});
+   runtime.sink.record({effect:"eff:verify-persist",operation:"op:verify",contract:"body.dig@1",observedAt:"2026-10-31T00:00:00.000Z",kind:"receipt",dispatch:"sent",completion:"unknown",evidence:[],detail:{target:{x:10,y:64,z:10},dimension:"overworld"}});
    return await ctx.verify("eff:verify-persist","verify/dig@1");
  })},
  {descriptor:descriptor("reverify@1"),invoke:async ctx=>await ctx.verify("eff:verify-persist","verify/dig@1")}

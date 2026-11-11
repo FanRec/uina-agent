@@ -27,7 +27,7 @@ test("one discovery view ranks all kinds, pages stably, and keeps exact descript
 		await library.save({ name: `echo_${i}`, summary: "echo", source: "async function main(){}" });
 	const catalog = CapabilityCatalog.create([]).allDescriptors();
 	const first = await describeDirectory(catalog, library, { query: "echo" });
-	expect(first).toMatchObject({ next: "10" });
+	expect(first).toMatchObject({ next: "5" });
 	expect("items" in first && first.items.slice(0, 2)).toMatchObject([
 		{ kind: "experience", name: "echo" },
 		{ kind: "program", name: "echo" },
@@ -69,29 +69,40 @@ test("describe without arguments lists every capability ref in one response", as
 		families: { kind: string; count: number }[];
 	};
 	// 模型通过一次目录查询取得全部确切 selector。
-	expect(overview.reads.length + overview.acts.length).toBe(55);
-	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 55 }]));
+	expect(overview.reads.length + overview.acts.length).toBe(56);
+	expect(overview.families).toEqual(expect.arrayContaining([{ kind: "capability", count: 56 }]));
 	expect(JSON.stringify(overview).length).toBeLessThanOrEqual(1600);
 });
 
 test.each([
-	["原木", "collect@1", "run", "describe"],
-	["采集", "collect@1", "run", "describe"],
-	["WOOD", "collect@1", "run", "describe"],
-	["collect，采集 原木 log", "collect@1", "run", "describe"],
-	["想找个高处看看", "explore@1", "run", "describe"],
-	["想继续施工", "build.resume@1", "run", "describe"],
-	["施工差异", "build.plan@1", "observe", "describe"],
-	["self", "self@1", "observe", "observe"],
-])("discover %s as %s", async (query, name, use, action) => {
+	["原木", "collect@1", "run"],
+	["采集", "collect@1", "run"],
+	["WOOD", "collect@1", "run"],
+	["collect，采集 原木 log", "collect@1", "run"],
+	["想找个高处看看", "explore@1", "run"],
+	["想继续施工", "build.resume@1", "run"],
+	["施工差异", "build.plan@1", "observe"],
+	["self", "self@1", "observe"],
+])("discover %s as %s", async (query, name, use) => {
 	const library = { list: async () => [], get: async () => null } as never;
 	const result = await describeDirectory(createCapabilityCatalog().allDescriptors(), library, { query });
 	expect("items" in result && result.items[0]).toMatchObject({
 		name,
 		use,
-		nextCall: { action, params: { selector: name } },
-		...(name === "collect@1" ? { required: ["item"], defaults: { count: 1 } } : {}),
 	});
+	const candidate = ("items" in result ? result.items[0] : null) as {
+		inputExample?: unknown;
+		defaults?: unknown;
+		nextCall?: unknown;
+	} | null;
+	if (name === "collect@1") {
+		// schema 同源默认值 + 同源示例输入：候选已给出正确调用形状，不再中转 describe。
+		expect(candidate?.defaults).toEqual({ count: 1 });
+		expect(candidate?.inputExample).toEqual({ item: "oak_log", count: 8 });
+	}
+	if (name !== "build.resume@1" && name !== "build.plan@1") {
+		expect(candidate?.nextCall).toBeUndefined();
+	}
 });
 
 test("input examples explain complex shapes without dispatching them", async () => {
@@ -107,7 +118,8 @@ test("input examples explain complex shapes without dispatching them", async () 
 		} | null;
 		expect(candidate?.inputExample).toBeDefined();
 		expect(ajv.compile(descriptors.find((d) => d.ref === selector)!.input)(candidate?.inputExample)).toBe(true);
-		expect(candidate?.nextCall).toEqual({ action: "describe", params: { selector } });
+		// 示例即调用形状：不再强制一次 describe。
+		expect(candidate?.nextCall).toBeUndefined();
 	}
 });
 

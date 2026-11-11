@@ -16,6 +16,7 @@ import { matchesItem } from "../contracts/items.js";
 import type { HandleRef, ProgramHostApi } from "../contracts/program.js";
 import { callFailure, type JsonValue, plain, type Vec3 } from "../contracts/values.js";
 import type { WorldWatch } from "../contracts/world.js";
+import type { ResourceTeardown } from "./state.js";
 
 type BodyHandle = { kind: "body"; scope: BodyCallScope; release(): void; closed: Promise<void> };
 type WindowHandle = {
@@ -49,7 +50,7 @@ function decodeVersion(token: string): import("../contracts/values.js").Observat
 }
 export function createProgramHost(
 	ctx: CallContext,
-	resources: Set<() => Promise<void>>,
+	resources: Set<(teardown: ResourceTeardown) => Promise<void>>,
 	access: (selector: string) => "read" | "act" | undefined,
 ): ProgramHostApi {
 	const lifetime = new AbortController();
@@ -64,28 +65,55 @@ export function createProgramHost(
 		if (!h) return fail("ACCESS_DENIED", "handle does not belong to this call");
 		return h;
 	}
-	const closeHandle = async ({ handle }: { handle: string }): Promise<null> => {
+	/**
+	 * Handle 退役模式（§5.2/§5.3）：normal=Guest 自己关闭（按原合同，失败如实上抛，
+	 * 不偷偷强制成功）；teardown=调用收尾（先普通关闭，失败即受控强制退役——控制
+	 * 关闭有保证，游戏结果不保证，未知后果由 body.window.close@1 Effect 记录）；
+	 * force=Stop/Safety 屏障（直接强制退役，撤销写入资格优先）。
+	 */
+	type RetireMode = "normal" | "teardown" | "force";
+	const closeHandle = async ({ handle }: { handle: string }): Promise<null> => retireHandle(handle, "normal");
+	const retireHandle = async (handle: string, mode: RetireMode): Promise<null> => {
 		const h = handles.get(handle);
 		if (!h) return null;
-		if (h.kind === "body") {
-			h.release();
-			try {
+		let retired = false;
+		try {
+			if (h.kind === "body") {
+				h.release();
 				await h.closed;
-			} finally {
-				handles.delete(handle);
+				retired = true;
+			} else if (h.kind === "stream") {
+				await h.stream.close();
+				retired = true;
+			} else if (mode === "force") {
+				await h.window.close({ force: true });
+				retired = true;
+			} else if (mode === "teardown") {
+				try {
+					await h.window.close({ force: false });
+					retired = true;
+				} catch {
+					// 正常关闭失败（光标不空/快照未知/已退役）：仍不得泄漏活动窗口与写入
+					// 资格，进入受控强制退役；其真实不确定性由 retire 的关闭 Effect 承载。
+					// 强制退役自身的失败如实上抛，由收尾的 allSettled 消费进诊断。
+					await h.window.close({ force: true });
+					retired = true;
+				}
+			} else {
+				await h.window.close({ force: false });
+				retired = true;
 			}
-		} else if (h.kind === "stream") {
-			await h.stream.close();
-			handles.delete(handle);
-		} else {
-			await h.window.close({ force: ctx.signal.aborted });
-			handles.delete(handle);
+		} finally {
+			// Guest 正常关闭失败时保留 handle（可换法重试或留给收尾强制退役）；
+			// 收尾/屏障路径无论如何都摘除，不让活动写入资格泄漏。
+			if (retired || mode !== "normal") handles.delete(handle);
 		}
 		return null;
 	};
-	const close = async () => {
+	const close = async (teardown?: { reason: string }): Promise<void> => {
 		lifetime.abort();
-		await Promise.allSettled([...handles.keys()].map((handle) => closeHandle({ handle })));
+		const mode: RetireMode = teardown?.reason === "cancelled" ? "force" : teardown != null ? "teardown" : "normal";
+		await Promise.allSettled([...handles.keys()].map((handle) => retireHandle(handle, mode)));
 	};
 	resources.add(close);
 	const api: ProgramHostApi = {

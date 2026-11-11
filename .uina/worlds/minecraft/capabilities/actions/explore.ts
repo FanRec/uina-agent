@@ -23,14 +23,14 @@ import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
 import {
 	type Direction,
-	type RegionSample,
+	estimateRoute,
 	LEG_MAX_TIME_MS,
 	LEG_TOLERANCE,
 	matchesTargetName,
-	OBSERVE_HALF,
-	OBSERVE_VERTICAL,
 	ObservationMap,
+	observeAround as observeAroundBox,
 	pickFrontier,
+	type RegionSample,
 	ROUTE_CHECK_TOP,
 	rankFrontiers,
 	SCAN_RADIUS,
@@ -130,15 +130,13 @@ const descriptor: CallableDescriptor = {
 		{
 			input: { until: { block: "diamond_ore" }, maxTimeMs: 60000 },
 			output: {
-				value: {
-					found: {
-						kind: "block",
-						at: { position: { x: 130, y: 12, z: -44 }, dimension: "overworld" },
-						name: "diamond_ore",
-					},
-					traveled: 48,
-					scanned: 3,
+				found: {
+					kind: "block",
+					at: { position: { x: 130, y: 12, z: -44 }, dimension: "overworld" },
+					name: "diamond_ore",
 				},
+				traveled: 48,
+				scanned: 3,
 			},
 		},
 	],
@@ -216,47 +214,9 @@ async function scanCurrent(
 	return null;
 }
 
-/** 每站观察盒：以脚底格为原点的体素读，更新稀疏覆盖图。 */
-async function observeAround(ctx: CallContext, self: SelfState): Promise<RegionSample> {
-	const at = {
-		x: Math.floor(self.place.position.x) - OBSERVE_HALF,
-		y: Math.floor(self.place.position.y) - OBSERVE_VERTICAL,
-		z: Math.floor(self.place.position.z) - OBSERVE_HALF,
-	};
-	return readValue<RegionSample>(
-		ctx.world,
-		"region@1",
-		{ at, size: { x: OBSERVE_HALF * 2 + 1, y: OBSERVE_VERTICAL * 2 + 1, z: OBSERVE_HALF * 2 + 1 } },
-		ctx.signal,
-		"coverage observation",
-	);
-}
-
-/**
- * route.plan 只读估价：可达给路径距离，计划判定不可达给 "unreachable"（真实
- * 证据），读取异常给 null（无证据——goto 是真裁决）。估价只做排序与派发门槛
- * （01-DESIGN §6：不通过规划器执行动作）。
- */
-async function estimateRoute(ctx: CallContext, at: Vec3): Promise<number | "unreachable" | null> {
-	try {
-		const value = await readValue<{ ok: boolean; distance: number }>(
-			ctx.world,
-			"route.plan@1",
-			{
-				at: { x: at.x, y: at.y, z: at.z },
-				tolerance: LEG_TOLERANCE,
-				digThrough: false,
-				placeToReach: false,
-				sprint: true,
-			},
-			ctx.signal,
-			"route estimate",
-		);
-		if (!value.ok) return "unreachable";
-		return Number.isFinite(value.distance) ? value.distance : null;
-	} catch {
-		return null;
-	}
+/** 每站观察盒：以脚底格为原点的体素读，更新稀疏覆盖图（与 survey 同源的共享步骤）。 */
+function observeAround(ctx: CallContext, self: SelfState): Promise<RegionSample> {
+	return observeAroundBox(ctx.world, self);
 }
 
 function interrupted(traveled: number, scanned: number): never {
@@ -351,7 +311,7 @@ export const exploreModule: MinecraftCapabilityModule = {
 							const top = ranked.slice(0, ROUTE_CHECK_TOP);
 							const estimates: (number | "unreachable" | null)[] = [];
 							for (const candidate of top) {
-								estimates.push(await estimateRoute(ctx, candidate.at));
+								estimates.push(await estimateRoute(ctx.world, candidate.at));
 							}
 							const target = pickFrontier(top, estimates);
 							if (target == null) {

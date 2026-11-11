@@ -23,6 +23,96 @@ import type { ApplyItem } from "./runtime-db-worker.js";
 
 type Mutation = ApplyItem["mutation"];
 
+/**
+ * 需要额外清理屏障的合同：写源静止是"派发后无残留写入"的必要证据。
+ * 现有 Driver 只有受控导航声明这个合同（§3.2 小范围策略，与 Driver 同源，不外推）。
+ */
+const CLEANUP_BARRIER_CONTRACTS = new Set<string>(["body.goto@1"]);
+/** 关闭操作本身就是该 Effect 的业务（body.window.close@1）：cleanup completion 即该操作的结论。 */
+const STANDALONE_CLOSE_CONTRACTS = new Set<string>(["body.window.close@1"]);
+
+/**
+ * 唯一的 Effect 当前判定（§3）：
+ * - `completion` 是**业务操作**的结论——取 receipt；独立关闭操作取其 cleanup；
+ *   只有持久意图而未派发的按确定未达成记 not_met；操作已收尾（cleanup met）却无
+ *   met 回执的同样是 not_met（清理成功不冒充业务成功）。
+ * - `unresolved` 是**与世界相关的写入/清理后果**是否仍待对账——业务失败不清空
+ *   它，业务成功也不遮蔽它（E06a：receipt met + cleanup unknown 仍是未决）。
+ * 纯函数投影：不改写 facts / verifications / latest，历史截面不受影响。
+ */
+export interface EffectAssessment {
+	dispatch: EffectReceipt["dispatch"];
+	completion: EffectReceipt["completion"];
+	unresolved: boolean;
+	/** 仅供诊断，不是另一个权威结算状态。 */
+	reason: string;
+}
+
+export function assessEffectFacts(
+	facts: readonly DriverExecutionFact[],
+	verifications: readonly EffectVerification[],
+): EffectAssessment {
+	const contract = facts[0]?.contract ?? "";
+	let receipt: DriverExecutionFact | null = null;
+	let cleanup: DriverExecutionFact | null = null;
+	let sent = false;
+	let unknownDispatch = false;
+	for (const fact of facts) {
+		if (fact.kind === "receipt") receipt = fact;
+		if (fact.kind === "cleanup") cleanup = fact;
+		if (fact.dispatch === "sent") sent = true;
+		else if (fact.dispatch === "unknown") unknownDispatch = true;
+	}
+	const mayHaveSent = sent || unknownDispatch;
+	const dispatch: EffectReceipt["dispatch"] = !mayHaveSent ? "not_sent" : unknownDispatch ? "unknown" : "sent";
+	// 可信的"未派发即闭合"：Driver 亲自补的 not_sent cleanup（closeIntent / goto 未派发
+	// 结算）。intent 自身的 dispatch 恒为 unknown（"可能已发出"），不能用它反推没发过。
+	const closedWithoutSend = cleanup != null && cleanup.dispatch === "not_sent";
+
+	// 业务结论：receipt 是权威；独立关闭操作的 cleanup 就是它的 receipt。
+	let completion: EffectReceipt["completion"];
+	let reason: string;
+	if (receipt != null) {
+		completion = receipt.completion;
+		reason = `receipt ${receipt.completion}`;
+	} else if (STANDALONE_CLOSE_CONTRACTS.has(contract)) {
+		completion = cleanup?.completion ?? "unknown";
+		reason = `standalone close operation ${completion}`;
+	} else if (closedWithoutSend || !mayHaveSent) {
+		completion = "not_met";
+		reason = "durable intent closed before any dispatch; nothing was written";
+	} else if (cleanup != null && cleanup.completion === "met") {
+		// 操作已收尾却没有任何 met 回执：确定没有达成（如 goto NoPath 后 cleanup met）。
+		completion = "not_met";
+		reason = "operation ended (cleanup settled) without a met receipt";
+	} else {
+		completion = "unknown";
+		reason = "dispatched but no conclusive receipt";
+	}
+
+	// 写入对账：cleanup 记录"写源是否静止"；导航合同额外要求派发后的静止证明。
+	const cleanupSettled = cleanup == null || cleanup.dispatch === "not_sent" || cleanup.completion === "met";
+	const barrierOk =
+		!CLEANUP_BARRIER_CONTRACTS.has(contract) ||
+		(cleanup != null && cleanup.dispatch !== "unknown" && cleanup.completion === "met");
+
+	// 合格 verifier 参与当前判定（§3.5）：锚定追加时的 fact 前缀；之后又到新事实
+	// 即失效。无锚点的旧记录只做历史诊断，不参与关闭。
+	const anchored = [...verifications]
+		.reverse()
+		.find(
+			(entry) => (entry.completion === "met" || entry.completion === "not_met") && entry.factsAnchor === facts.length,
+		);
+	let unresolved: boolean;
+	if (closedWithoutSend || !mayHaveSent) unresolved = false;
+	else if (anchored != null) unresolved = false;
+	else if (completion === "unknown") unresolved = true;
+	else unresolved = !cleanupSettled || !barrierOk;
+	if (anchored != null) reason += `; qualified verification ${anchored.completion} closed the uncertainty`;
+	else if (unresolved) reason += "; unresolved world-write reconciliation";
+	return { dispatch, completion, unresolved, reason };
+}
+
 interface QueueItem {
 	ticket: RecordTicket;
 	mutation: Mutation;
@@ -179,11 +269,11 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 	// ---- 引擎查询 ----
 
 	/**
-	 * 终态是"明确没发出"的效果不可能改变外部世界，不算未知效果（§5.3 写前意图
-	 * 的终态收口）；其余未达到 met 的效果都仍须对账（§5.6）。
+	 * 唯一当前判定（assessEffectFacts）：只有仍待对账的世界写入/清理后果才算
+	 * 未决；确定未派发不算，确认的业务失败（not_met 且已闭合）也不算（§3.3）。
 	 */
 	private unresolved(entry: EffectAttribution): boolean {
-		return entry.latest.dispatch !== "not_sent" && entry.latest.completion !== "met";
+		return assessEffectFacts(entry.facts, entry.verifications).unresolved;
 	}
 
 	/** 某 run 名下各效果的最新判断；只有可能影响过外部世界的未确认效果才算未知。 */
@@ -234,12 +324,14 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 
 	/**
 	 * ctx.verify 的追加路径（G4）：核验判断 append-only 入 attribution 并落库为新的
-	 * 不可变截面；原 completion 与既有 facts 不改写。
+	 * 不可变截面；原 completion 与既有 facts 不改写。核验记录锚定它所依据的 fact
+	 * 前缀（§3.5.3）：此后又到达的新 Driver fact 会使该核验不再参与当前判定。
 	 */
 	appendVerification(effect: Ref, verification: EffectVerification): void {
 		const attribution = this.effectOwner.get(effect);
 		if (attribution == null) throw new Error(`cannot verify unknown effect ${effect}`);
-		attribution.verifications.push(verification);
+		const anchored: EffectVerification = { factsAnchor: attribution.facts.length, ...verification };
+		attribution.verifications.push(anchored);
 		attribution.record = this.mintRecord();
 		this.enqueue({
 			kind: "effect_verification",

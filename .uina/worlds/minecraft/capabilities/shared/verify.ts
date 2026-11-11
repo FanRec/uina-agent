@@ -15,10 +15,14 @@ export const DIG_VERIFIER_REF = "verify/dig@1";
 
 interface DigTargetDetail {
 	target?: { x: number; y: number; z: number };
+	dimension?: string;
 }
 
 /** 最新一条带目标格的 dig 事实（receipt 优先于 dispatch，晚到截面覆盖早截面）。 */
-function digTargetOf(facts: { contract: string; kind: string; detail?: unknown }[]): Vec3 | null {
+function digFactOf(facts: { contract: string; kind: string; detail?: unknown }[]): {
+	target: Vec3;
+	dimension: string | null;
+} | null {
 	for (let i = facts.length - 1; i >= 0; i--) {
 		const fact = facts[i];
 		if (fact.contract !== "body.dig@1" || fact.kind !== "receipt") continue;
@@ -30,13 +34,17 @@ function digTargetOf(facts: { contract: string; kind: string; detail?: unknown }
 			typeof target.y === "number" &&
 			typeof target.z === "number"
 		) {
-			return { x: target.x, y: target.y, z: target.z };
+			return { target: { x: target.x, y: target.y, z: target.z }, dimension: detail?.dimension ?? null };
 		}
 	}
 	return null;
 }
 
-/** dig 效果核验：目标格现在是空气吗？未加载 → unknown；仍为方块 → not_met。 */
+/**
+ * dig 效果核验：目标格现在是空气吗？未加载 → unknown；仍为方块 → not_met。
+ * 世界身份资格（§3.5.4）：事实带维度且与当前维度不一致时不给终态判断（跨维度
+ * 的同坐标空气不能确认原效果）；旧格式事实没有维度身份，同样只做诊断观察。
+ */
 export function digVerifier(): EffectVerifier {
 	return {
 		check: async (effect, world) => {
@@ -51,12 +59,29 @@ export function digVerifier(): EffectVerifier {
 					recoverable: false,
 				});
 			}
-			const target = digTargetOf(digFacts);
-			if (target == null) {
+			const dig = digFactOf(digFacts);
+			if (dig == null) {
 				return {
 					completion: "unknown",
 					evidence: [],
 					reason: "dig effect facts carry no target position (older session format)",
+				};
+			}
+			const { target } = dig;
+			const self = await readObservation<{ place: { dimension?: string } }>(world, "self@1", {});
+			const currentDimension = self.value?.place?.dimension ?? null;
+			if (dig.dimension != null && currentDimension != null && dig.dimension !== currentDimension) {
+				return {
+					completion: "unknown",
+					evidence: self.evidence ?? [],
+					reason: `effect was recorded in ${dig.dimension}, current dimension is ${currentDimension}; a same-coordinate read cannot confirm it`,
+				};
+			}
+			if (dig.dimension == null) {
+				return {
+					completion: "unknown",
+					evidence: [],
+					reason: "dig effect facts carry no dimension identity (older session format); this read is diagnostic only",
 				};
 			}
 			// Vec3 没有索引签名，过 JsonValue 边界要拷成纯值。

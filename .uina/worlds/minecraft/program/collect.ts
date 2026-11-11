@@ -21,10 +21,14 @@ export const collectProgram = `async function main(mc, input) {
   let bag = await inventory(tool);
   const tools = tool == null ? bag.slots : bag.matchingSlots;
   if (tool != null && !tools.length) mc.fail("MISSING_MATERIAL", "requested tool is not in the inventory");
-  const harvestable = sources.filter(source => source.harvest.kind === "any" ||
+  const knownHarvestable = sources.filter(source => source.harvest.kind === "any" ||
     (source.harvest.kind === "tools" && tools.some(slot => source.harvest.names.includes(slot.name))));
+  const unknownHarvest = sources.filter(source => source.harvest.kind === "unknown");
+  // 只有"知识明确要求工具且背包不满足"才是缺工具；采掘要求 unknown 的来源不能
+  // 预判，留给 mine@1 如实 WRONG_STATE，不诬称确认缺工具（§6.3）。
+  const harvestable = knownHarvestable.length ? knownHarvestable : unknownHarvest;
   if (!harvestable.length) {
-    const required = [...new Set(sources.flatMap(source => source.harvest.names ?? []))];
+    const required = [...new Set(sources.filter(source => source.harvest.kind === "tools").flatMap(source => source.harvest.names ?? []))];
     mc.fail("MISSING_TOOL", "no inventory tool can harvest any source block of " + item,
       "required: " + (required.join(", ") || "unknown"));
   }
@@ -107,8 +111,10 @@ export const collectProgram = `async function main(mc, input) {
           frontier.push(position);
         }
       }
-      if (!frontier.length) fail("NOT_FOUND", "no " + blockNames.join("/") + " left within " + radius + " blocks",
-        "widen radius, or move to where the block occurs");
+      if (!frontier.length) fail("NOT_FOUND",
+        "no " + blockNames.join("/") + " found within " + radius + " blocks of the current position" +
+          (info.sourcesComplete === false ? " (known source list for this item is incomplete; modded sources may be missing)" : ""),
+        "widen radius, move to where the block occurs, or check the item's known sources");
     }
     frontier.sort((a, b) => distance(a, here) - distance(b, here));
     const [first] = frontier;

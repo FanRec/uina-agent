@@ -109,13 +109,11 @@ const descriptor: CallableDescriptor = {
 		{
 			input: { region: { from: { x: 0, y: 63, z: 0 }, to: { x: 3, y: 64, z: 3 } } },
 			output: {
-				value: {
-					dug: 32,
-					kept: [{ at: { x: 1, y: 63, z: 1 }, name: "chest" }],
-					drops: { cobblestone: 20 },
-					remaining: [],
-					goal: { state: "satisfied", completed: 64, remaining: 0, blocked: 0, uncertain: 0, total: 64 },
-				},
+				dug: 32,
+				kept: [{ at: { x: 1, y: 63, z: 1 }, name: "chest" }],
+				drops: { cobblestone: 20 },
+				remaining: [],
+				goal: { state: "satisfied", completed: 64, remaining: 0, blocked: 0, uncertain: 0, total: 64 },
 			},
 		},
 	],

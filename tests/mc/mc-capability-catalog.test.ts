@@ -1,7 +1,7 @@
 /**
  * 能力目录（catalog.ts）合同：静态可发现、结构校验拒绝激活、模块化注入。
  *
- * 内置 55 项（18 查询 + 37 动作）由 mc-capability-queries.test.ts 的目录完整性
+ * 内置 56 项（18 查询 + 38 动作）由 mc-capability-queries.test.ts 的目录完整性
  * 断言守护；这里只测目录自身的机制：离线 descriptors、id/ref 唯一、schema 门、
  * 外部模块注入（不改 central array）与 bind 产出。
  */
@@ -9,8 +9,8 @@
 import { describe, expect, test } from "vitest";
 import type { MinecraftCapabilityModule } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
 import { CapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/catalog.js";
-import { builtinModules, createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import type { CapabilityDeps } from "../../.uina/worlds/minecraft/capabilities/deps.js";
+import { builtinModules, createCapabilityCatalog } from "../../.uina/worlds/minecraft/capabilities/index.js";
 import { self } from "./mc-capability-harness.js";
 
 const noopDeps = {} as CapabilityDeps;
@@ -42,24 +42,24 @@ function testModule(overrides: Partial<MinecraftCapabilityModule> = {}): Minecra
 }
 
 describe("能力目录", () => {
-	test("离线列出全部 55 项 descriptor：不触发 bind、不依赖 deps", () => {
+	test("离线列出全部 56 项 descriptor：不触发 bind、不依赖 deps", () => {
 		const descriptors = createCapabilityCatalog().allDescriptors();
 		const refs = descriptors.map((d) => d.ref).sort();
-		expect(refs).toHaveLength(55);
-		expect(refs.filter((ref) => ref.endsWith("@1"))).toHaveLength(55);
+		expect(refs).toHaveLength(56);
+		expect(refs.filter((ref) => ref.endsWith("@1"))).toHaveLength(56);
 		const queries = descriptors.filter((d) => d.access === "read");
 		const actions = descriptors.filter((d) => d.access === "act");
 		expect(queries).toHaveLength(18);
-		expect(actions).toHaveLength(37);
+		expect(actions).toHaveLength(38);
 	});
 
-	test("bind 产出与目录同源：18 查询 / 37 动作 / refs 只含动作", () => {
+	test("bind 产出与目录同源：18 查询 / 38 动作 / refs 只含动作", () => {
 		const built = createCapabilityCatalog().bind(noopDeps);
 		expect(built.queries).toHaveLength(18);
-		expect(built.callables).toHaveLength(35);
+		expect(built.callables).toHaveLength(36);
 		expect(built.programs.map(({ descriptor }) => descriptor.ref)).toEqual(["collect@1", "build.resume@1"]);
-		expect(built.refs).toHaveLength(37);
-		expect(new Set(built.refs).size).toBe(37);
+		expect(built.refs).toHaveLength(38);
+		expect(new Set(built.refs).size).toBe(38);
 		// query reader 与 descriptor 同一清单：self@1 有 reader，events@1 由 World 读取。
 		expect(built.readers.has("self@1")).toBe(true);
 		expect(built.readers.has("events@1")).toBe(false);
@@ -135,7 +135,7 @@ describe("能力目录", () => {
 		const built = catalog.bind(noopDeps);
 		expect(built.queries).toHaveLength(19);
 		// testModule 只注入一个查询：动作数不变。
-		expect(built.callables).toHaveLength(35);
+		expect(built.callables).toHaveLength(36);
 		expect(built.programs.map(({ descriptor }) => descriptor.ref)).toEqual(["collect@1", "build.resume@1"]);
 		const reader = built.readers.get("test.echo@1");
 		expect(reader?.kind).toBe("static");

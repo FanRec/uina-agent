@@ -14,7 +14,7 @@ import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
 import { isLiquidBlock } from "../shared/spatial.js";
-import { canHarvest, chooseTool } from "../shared/tools.js";
+import { canHarvest, chooseTool, harvestRequirement } from "../shared/tools.js";
 import { readBlockAt, readInventory } from "../shared/views.js";
 import { placeOf } from "./place-cell.js";
 
@@ -23,7 +23,8 @@ export type DigCellResult =
 	| { kind: "open" }
 	| { kind: "not_loaded" }
 	| { kind: "liquid" }
-	| { kind: "unbreakable" }
+	/** 采掘要求已知而当前库存不满足；names 为空表示已知没有任何工具采得动（如基岩）。 */
+	| { kind: "unbreakable"; names: string[] }
 	| { kind: "unreachable"; distance: number }
 	| { kind: "not_met"; dispatch: EffectReceipt["dispatch"]; effect: Ref };
 
@@ -53,7 +54,13 @@ export async function digCell(
 	const knowledge: RegistryKnowledge | null = deps.knowledge();
 	const inventory = await readInventory(scope.world);
 	// 知识缺失不是"挖不动"：交给 chooseTool 如实 WRONG_STATE（与 mine@1 同口径）。
-	if (knowledge != null && !canHarvest(knowledge, inventory, block.name)) return { kind: "unbreakable" };
+	if (knowledge != null && !canHarvest(knowledge, inventory, block.name)) {
+		const requirement = harvestRequirement(knowledge, block.name);
+		return {
+			kind: "unbreakable",
+			names: requirement.kind === "tools" ? [...requirement.names] : [],
+		};
+	}
 	const tool = chooseTool(knowledge, inventory, block.name);
 	if (tool != null && heldItemName(inventory) !== tool) {
 		const selector: ItemSelector = { name: tool, substitutions: [] };

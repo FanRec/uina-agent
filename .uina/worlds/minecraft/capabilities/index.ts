@@ -31,6 +31,7 @@ import { ridingModule } from "./actions/riding.js";
 import { smeltModule } from "./actions/smelt.js";
 import { stationsModule } from "./actions/stations.js";
 import { surfaceModule } from "./actions/surface.js";
+import { surveyModule } from "./actions/survey.js";
 import { transitModule } from "./actions/transit.js";
 import { tunnelModule } from "./actions/tunnel.js";
 import { uiActModule } from "./actions/ui.js";
@@ -88,6 +89,7 @@ export const builtinModules: readonly MinecraftCapabilityModule[] = [
 	rememberModule,
 	forgetModule,
 	exploreModule,
+	surveyModule,
 	surfaceModule,
 	tunnelModule,
 	excavateModule,

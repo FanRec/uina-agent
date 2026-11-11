@@ -3,7 +3,6 @@ import type { AddonStatus, DirectorySnapshot } from "../contracts/addons.js";
 import type { CallableDescriptor, QueryDescriptor, SearchSummary } from "../contracts/capabilities.js";
 import type { LibraryKind, LibraryPort } from "../contracts/library.js";
 import { RpcError } from "../executor/ipc.js";
-import { COLLECT_DEFAULT_COUNT } from "../program/collect.js";
 import { findGuide, guideSummaries, readGuide } from "./guides/index.js";
 
 export interface DescribeParams {
@@ -23,23 +22,46 @@ const normalize = (value: string) =>
 		.trim();
 
 // Search vocabulary is presentation data. It must not change a frozen capability contract.
+// 只收"真实任务会这么说"的少量别名（§7.3）；回家先查 places@1，不承诺一步到位。
 const aliases = new Map([
 	["collect@1", ["采集", "原木", "木头", "砍树", "收集资源", "gather resources", "wood", "log", "chop tree"]],
-	["explore@1", ["探索", "找个高处看看", "看看附近", "探路", "scout", "look around"]],
+	["explore@1", ["探索", "找个高处看看", "看看附近", "找铁矿", "探路", "scout", "look around"]],
+	["survey@1", ["随便逛逛", "逛一逛", "去北边逛逛", "侦察", "看看周围有什么", "scout around"]],
+	["tunnel@1", ["挖隧道", "挖通道", "挖楼梯", "挖一条到那边的楼梯", "dig a corridor"]],
+	["excavate@1", ["清空区域", "挖掉一片", "clear an area"]],
+	["surface@1", ["从洞里出来", "出去", "回到地面", "get out"]],
+	["goto@1", ["走过去", "过去", "走到", "go to"]],
+	["places@1", ["回家", "家在哪", "home"]],
+	["inventory@1", ["背包有多少", "背包里有什么", "inventory"]],
+	["recipe@1", ["制作配方", "怎么做", "recipe"]],
 	["build@1", ["建造", "盖房子", "建避难所", "construction", "shelter"]],
 	["build.plan@1", ["施工差异", "检查建造", "建造计划", "construction plan"]],
 	["build.resume@1", ["恢复施工", "继续施工", "续建", "resume construction", "resume"]],
 ]);
 
-// These shapes caused actual model retries. Show one catalog example without proposing it as an action.
-const quickInputRefs = new Set(["blocks@1", "explore@1", "region@1"]);
+/** 同源默认值投影：只收 schema 里声明的 default，不为个别能力手写特例（§7.2）。 */
+function schemaDefaults(input: unknown): Record<string, import("../contracts/values.js").JsonValue> {
+	const out: Record<string, import("../contracts/values.js").JsonValue> = {};
+	const properties = (input as { type?: string; properties?: Record<string, { default?: unknown }> } | undefined)
+		?.properties;
+	if (properties == null || typeof properties !== "object") return out;
+	for (const [key, schema] of Object.entries(properties)) {
+		if (schema != null && typeof schema === "object" && "default" in schema) {
+			out[key] = schema.default as import("../contracts/values.js").JsonValue;
+		}
+	}
+	return out;
+}
 
 function searchResult(item: SearchSummary, descriptor?: QueryDescriptor | CallableDescriptor) {
 	const { name, kind, summary, reason } = item;
 	const base = { name, kind, summary, ...(reason ? { reason } : {}) };
 	if (kind === "capability") {
 		const input = descriptor?.input;
-		const inputExample = quickInputRefs.has(name) ? descriptor?.examples[0]?.input : undefined;
+		// 同源调用形状（§7.2）：必需参数 + schema 默认值 + descriptor 自带的有效示例。
+		// 候选已能直接调用（无参可调或有示例输入）时不再中转一次 describe。
+		const inputExample = descriptor?.examples.find((entry) => entry.input != null)?.input;
+		const defaults = schemaDefaults(input);
 		const use = item.access === "read" ? "observe" : "run";
 		const required = Array.isArray(input?.required) ? input.required.filter((key) => typeof key === "string") : [];
 		// Only a plain object schema with no required fields proves that {} is valid.
@@ -49,13 +71,14 @@ function searchResult(item: SearchSummary, descriptor?: QueryDescriptor | Callab
 			Object.keys(input).every((key) =>
 				["type", "properties", "required", "additionalProperties", "description", "title"].includes(key),
 			);
+		const directlyCallable = emptyAllowed || inputExample !== undefined;
 		return {
 			...base,
 			use,
 			...(required.length ? { required } : {}),
-			...(name === "collect@1" ? { defaults: { count: COLLECT_DEFAULT_COUNT } } : {}),
+			...(Object.keys(defaults).length ? { defaults } : {}),
 			...(inputExample !== undefined ? { inputExample } : {}),
-			nextCall: { action: emptyAllowed ? use : "describe", params: { selector: name } },
+			...(directlyCallable ? {} : { nextCall: { action: "describe", params: { selector: name } } }),
 		};
 	}
 	if (kind === "program") return { ...base, use: "run", nextCall: { action: "describe", params: { selector: name } } };
@@ -264,10 +287,11 @@ export async function describeDirectory(
 	const offset = Number(params.cursor ?? 0);
 	if (!Number.isSafeInteger(offset)) throw new RpcError("CURSOR_INVALID", "invalid catalogue cursor");
 	const byRef = new Map<string, QueryDescriptor | CallableDescriptor>(descriptors.map((d) => [d.ref, d]));
-	const page = found.slice(offset, offset + 10).map(({ item }) => searchResult(item, byRef.get(item.name)));
+	// 首屏按模型阅读效率收敛到 5 项（§7.3）；翻页仍走稳定排序 + cursor。
+	const page = found.slice(offset, offset + 5).map(({ item }) => searchResult(item, byRef.get(item.name)));
 	return {
 		items: page,
-		...(found.length > offset + 10 ? { next: String(offset + 10) } : {}),
+		...(found.length > offset + 5 ? { next: String(offset + 5) } : {}),
 		// 空结果不说"没找到"，直接给下一步：模型不会反复换关键词试探。
 		...(page.length === 0 ? { hint: "no match; describe {} lists all capability refs" } : {}),
 	};

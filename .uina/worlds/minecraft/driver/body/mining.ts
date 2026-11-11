@@ -39,6 +39,8 @@ export async function runMining(
 					completionContract: "only a matching server block update confirms the target state",
 					finished: finishSent,
 					target: { x: target.block.x, y: target.block.y, z: target.block.z },
+					// 世界身份（§3.5.4）：核验器据此拒绝跨维度/异世界的同坐标空气冒充确认。
+					dimension: deps.bot.game?.dimension ?? null,
 				});
 			if (error !== undefined) reject(error);
 			else resolve({ effect, dispatch, completion, evidence: [] });
@@ -144,6 +146,7 @@ export async function runMining(
 				await deps.recorder.beforeWrite(effect, operation, "body.dig@1", {
 					target: { x: target.block.x, y: target.block.y, z: target.block.z },
 					predictedMs: waitMs,
+					dimension: deps.bot.game?.dimension ?? null,
 				});
 				deps.guard();
 				// 意图等盘期间目标可能已经被挖掉或换掉：不往不存在的方块上发 startDig。

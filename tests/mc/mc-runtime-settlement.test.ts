@@ -104,6 +104,136 @@ function failure(): Error {
 	});
 }
 
+function fact(
+	partial: Partial<DriverExecutionFact> & { kind: DriverExecutionFact["kind"]; effect?: string },
+): DriverExecutionFact {
+	return {
+		effect: "eff:settlement",
+		operation: "op:settlement",
+		contract: "body.window.click@1",
+		observedAt: "2026-10-25T00:00:00.000Z",
+		dispatch: "sent",
+		completion: "unknown",
+		evidence: [],
+		...partial,
+	};
+}
+
+describe("Effect current assessment matrix", () => {
+	test("E02: a trusted intent closed before dispatch is not an unresolved write", async () => {
+		const h = harness((queue) => [
+			callable("closed@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(fact({ kind: "intent", dispatch: "unknown", completion: "unknown" }));
+					queue.record(fact({ kind: "cleanup", dispatch: "not_sent", completion: "not_met" }));
+					return "closed";
+				}),
+			),
+		]);
+		expect(await h.finish(await h.submit("closed@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
+	});
+
+	test("E03: a conclusive not_met receipt is a confirmed business closure, not an unknown write", async () => {
+		const h = harness((queue) => [
+			callable("notmet@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(fact({ kind: "receipt", completion: "not_met" }));
+					return "reported";
+				}),
+			),
+		]);
+		expect(await h.finish(await h.submit("notmet@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
+	});
+
+	test("E04: not_met with a still-uncertain cleanup consequence stays unresolved", async () => {
+		const h = harness((queue) => [
+			callable("partial@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(fact({ kind: "receipt", completion: "not_met" }));
+					queue.record(fact({ kind: "cleanup", dispatch: "sent", completion: "unknown" }));
+					return "reported";
+				}),
+			),
+		]);
+		expect(await h.finish(await h.submit("partial@1"))).toMatchObject({
+			outcome: "unknown",
+			unknownEffects: ["eff:settlement"],
+		});
+	});
+
+	test("E06a: a met receipt does not mask an unsettled cleanup on the same effect", async () => {
+		const h = harness((queue) => [
+			callable("goto@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(fact({ kind: "receipt", completion: "met" }));
+					queue.record(fact({ kind: "cleanup", dispatch: "sent", completion: "unknown", contract: "body.goto@1" }));
+					return "arrived";
+				}),
+			),
+		]);
+		expect(await h.finish(await h.submit("goto@1"))).toMatchObject({
+			outcome: "unknown",
+			unknownEffects: ["eff:settlement"],
+		});
+	});
+
+	test("E06b: a failed navigation with settled cleanup is conclusively not_met, not unknown", async () => {
+		const h = harness((queue) => [
+			callable("nopath@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(fact({ kind: "dispatch", dispatch: "sent", completion: "unknown", contract: "body.goto@1" }));
+					queue.record(fact({ kind: "cleanup", dispatch: "sent", completion: "met", contract: "body.goto@1" }));
+					throw failure();
+				}),
+			),
+		]);
+		// 业务确定未达成（无 met 回执 + 操作已收尾），写入已静止：失败但不列未决。
+		expect(await h.finish(await h.submit("nopath@1"))).toMatchObject({
+			outcome: "failed",
+			unknownEffects: [],
+			error: { code: "TARGET_NOT_MET" },
+		});
+	});
+
+	test("E06c: a standalone window-close effect settles by its own cleanup completion", async () => {
+		const h = harness((queue) => [
+			callable("closeok@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(
+						fact({
+							effect: "eff:close-ok",
+							kind: "cleanup",
+							dispatch: "sent",
+							completion: "met",
+							contract: "body.window.close@1",
+						}),
+					);
+					return null;
+				}),
+			),
+			callable("closeunknown@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(
+						fact({
+							effect: "eff:close-unknown",
+							kind: "cleanup",
+							dispatch: "sent",
+							completion: "unknown",
+							contract: "body.window.close@1",
+						}),
+					);
+					return null;
+				}),
+			),
+		]);
+		expect(await h.finish(await h.submit("closeok@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
+		expect(await h.finish(await h.submit("closeunknown@1"))).toMatchObject({
+			outcome: "unknown",
+			unknownEffects: ["eff:close-unknown"],
+		});
+	});
+});
+
 describe("Runtime effect settlement", () => {
 	test("a returned value with an unknown direct effect stays unknown in Run and Call records", async () => {
 		let call = "";
@@ -146,15 +276,42 @@ describe("Runtime effect settlement", () => {
 			}),
 		]);
 		const summary = await h.finish(await h.submit("root@1"));
-		expect(summary).toMatchObject({ outcome: "unknown", unknownEffectCount: 1 });
+		// 子调用交付边界：leaf 的 unknown 业务值不再沿普通成功 Promise 交付，中层与
+		// 根默认不隐式继续；leaf 的历史记录（unknown + value + owner）不倒写。
+		expect(summary).toMatchObject({ outcome: "failed", unknownEffects: ["eff:settlement"] });
+		expect(summary.error?.code).toBe("EFFECT_UNCONFIRMED");
 		const root = h.calls().find((call) => call.parent === null)!;
 		const middle = h.calls().find((call) => call.parent === root.call)!;
 		const leaf = h.calls().find((call) => call.parent === middle.call)!;
-		for (const call of [root, middle, leaf]) expect(call.outcome).toBe("unknown");
+		expect(leaf.outcome).toBe("unknown");
+		expect(callFromRow(leaf)).toMatchObject({ effects: ["eff:settlement"], value: "leaf value" });
+		expect(middle.outcome).toBe("failed");
+		expect(JSON.parse(middle.error!).code).toBe("EFFECT_UNCONFIRMED");
+		expect(root.outcome).toBe("failed");
+		expect(JSON.parse(root.error!).code).toBe("EFFECT_UNCONFIRMED");
 		expect(callFromRow(root)).toMatchObject({ effects: [] });
 		expect(callFromRow(middle)).toMatchObject({ effects: [] });
 		expect(callFromRow(leaf)).toMatchObject({ effects: ["eff:settlement"] });
 		expect(h.queue.effectRecord("eff:settlement")?.owner).toMatchObject({ callId: leaf.call });
+	});
+
+	test("an unhandled child domain failure keeps its original code while its unknown effect still fails the parent", async () => {
+		const h = harness((queue) => [
+			callable("leaf@1", async (ctx) =>
+				ctx.withBody(async () => {
+					queue.record(receipt());
+					throw failure();
+				}),
+			),
+			callable("root@1", async (ctx) => ctx.call("leaf@1", {})),
+		]);
+		const summary = await h.finish(await h.submit("root@1"));
+		// 确定的业务失败按原错误透传，不被通用 unknown 包装覆盖；未决效果仍如实列出。
+		expect(summary.outcome).toBe("failed");
+		expect(summary.error?.code).toBe("TARGET_NOT_MET");
+		expect(summary.unknownEffects).toEqual(["eff:settlement"]);
+		const child = h.calls().find((call) => call.ref === "leaf@1")!;
+		expect(child.outcome).toBe("failed");
 	});
 
 	test("handling a failed child does not erase its unknown effect", async () => {
@@ -278,7 +435,7 @@ describe("Runtime effect settlement", () => {
 		expect(await h.finish(await h.submit("confirmed@1"))).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
 	});
 
-	test("the parent uses a later confirmed child receipt rather than copying the child's old outcome", async () => {
+	test("the parent catches EFFECT_UNCONFIRMED and a later confirmed receipt lets it settle on current facts", async () => {
 		const h = harness((queue) => [
 			callable("leaf@1", async (ctx) =>
 				ctx.withBody(async () => {
@@ -287,7 +444,13 @@ describe("Runtime effect settlement", () => {
 				}),
 			),
 			callable("root@1", async (ctx) => {
-				await ctx.call("leaf@1", {});
+				try {
+					await ctx.call("leaf@1", {});
+					throw new Error("leaf delivery must reject with EFFECT_UNCONFIRMED");
+				} catch (error) {
+					if ((error as { code?: string }).code !== "EFFECT_UNCONFIRMED") throw error;
+				}
+				// 显式查证（夹具以"更晚的已确认 receipt"承担权威证据）：父按当前事实结算。
 				await ctx.withBody(async () => {
 					queue.record(receipt("met"));
 				});
@@ -297,6 +460,7 @@ describe("Runtime effect settlement", () => {
 		const summary = await h.finish(await h.submit("root@1"));
 		expect(summary).toMatchObject({ outcome: "succeeded", unknownEffects: [] });
 		const child = h.calls().find((call) => call.ref === "leaf@1")!;
+		// 子历史不倒写：leaf 仍是 unknown，owner 不变。
 		expect(child.outcome).toBe("unknown");
 		expect(h.queue.effectRecord("eff:settlement")?.owner).toMatchObject({ callId: child.call });
 	});
@@ -382,18 +546,18 @@ const owner=await runtime.attach({worldOwner:"owner:settlement",activation:"act:
 await runtime.setOwnerGate({requestId:"enable",attachment:owner.attachment,gate:"disabled",closed:false,expectedRevision:owner.gateRevision});
 let run, before, records, effect;
 try {
- const accepted=await runtime.submit({worldOwner:"owner:settlement",activation:"act:settlement"},{requestId:"req:sqlite",entry:{kind:"call",selector:"root@1",input:{}},schedule:{kind:"enqueue"}});
- assert.equal(accepted.kind,"accepted");run=accepted.snapshot.run;
- const reply=await runtime.wait(run,{timeoutMs:2000});assert.equal(reply.kind,"result");assert.equal(reply.snapshot.outcome,"unknown");
- before=(await runtime.read(run));records=(await runtime.readRecord(before.record)).record;
- effect=(await runtime.readRecord("eff:settlement")).record;assert.equal(effect.value.latest.completion,"unknown");assert.deepEqual(records.value.value,{removed:2});
+	 const accepted=await runtime.submit({worldOwner:"owner:settlement",activation:"act:settlement"},{requestId:"req:sqlite",entry:{kind:"call",selector:"root@1",input:{}},schedule:{kind:"enqueue"}});
+	 assert.equal(accepted.kind,"accepted");run=accepted.snapshot.run;
+	 const reply=await runtime.wait(run,{timeoutMs:2000});assert.equal(reply.kind,"result");assert.equal(reply.snapshot.outcome,"failed");
+	 before=(await runtime.read(run));records=(await runtime.readRecord(before.record)).record;
+	 effect=(await runtime.readRecord("eff:settlement")).record;assert.equal(effect.value.latest.completion,"unknown");assert.ok(!("value" in records.value));
 } finally { await runtime.close(); }
 runtime=(await MinecraftRuntime.open({...options,namespace:"restart"})).runtime;
-try {
- assert.deepEqual((await runtime.read(run)),before);assert.deepEqual((await runtime.readRecord(before.record)).record,records);assert.deepEqual((await runtime.readRecord("eff:settlement")).record,effect);
- const {DatabaseSync}=await import("node:sqlite");const db=new DatabaseSync(options.dbPath);
- try {const calls=db.prepare("SELECT outcome,effects,value FROM calls ORDER BY parent IS NOT NULL").all();assert.equal(calls.length,2);assert.deepEqual(calls.map(c=>c.outcome),["unknown","unknown"]);assert.deepEqual(calls.map(c=>JSON.parse(c.effects)),[[],["eff:settlement"]]);assert.deepEqual(calls.map(c=>JSON.parse(c.value)),[{removed:2},{removed:2}]);} finally {db.close();}
-} finally {await runtime.close();}
+ try {
+  assert.deepEqual((await runtime.read(run)),before);assert.deepEqual((await runtime.readRecord(before.record)).record,records);assert.deepEqual((await runtime.readRecord("eff:settlement")).record,effect);
+  const {DatabaseSync}=await import("node:sqlite");const db=new DatabaseSync(options.dbPath);
+  try {const calls=db.prepare("SELECT outcome,effects,value FROM calls ORDER BY parent IS NOT NULL").all();assert.equal(calls.length,2);assert.deepEqual(calls.map(c=>c.outcome),["failed","unknown"]);assert.deepEqual(calls.map(c=>JSON.parse(c.effects)),[[],["eff:settlement"]]);assert.deepEqual(calls.map(c=>JSON.parse(c.value)),[null,{removed:2}]);} finally {db.close();}
+ } finally {await runtime.close();}
 console.log("runtime settlement SQLite integration passed");
 `,
 		);

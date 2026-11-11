@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import { key, makeHarness, type HarnessHooks, type HarnessState } from "./mc-capability-harness.js";
+import { type HarnessHooks, type HarnessState, key, makeHarness } from "./mc-capability-harness.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -222,7 +222,7 @@ describe("tunnel@1", () => {
 		});
 	});
 
-	test("harvest-impossible blocks stop the tunnel with the dug prefix kept", async () => {
+	test("harvest-impossible blocks fail the tunnel with the dug prefix kept in progress (§6.2 strict completion)", async () => {
 		const state: HarnessState = { blocks: new Map(), inventory: { slots: [], counts: {} } };
 		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
 		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
@@ -230,8 +230,12 @@ describe("tunnel@1", () => {
 		const h = makeHarness(state, {
 			onDig: (target) => state.blocks.set(key(target.block), { name: "air", properties: {} }),
 		});
-		const value = await invoke<{ dug: number; stopped?: string }>(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } });
-		expect(value).toMatchObject({ dug: 0, stopped: "unbreakable" });
+		// 采掘要求已知而库存不满足：不再用 stopped 正常返回，MISSING_TOOL 失败并保留前缀。
+		await expect(invoke(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } })).rejects.toMatchObject({
+			code: "MISSING_TOOL",
+			message: expect.stringContaining("11,65,10"),
+			progress: expect.objectContaining({ dug: 0 }),
+		});
 		expect(h.calls).not.toContain("dig");
 	});
 

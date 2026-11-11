@@ -284,6 +284,12 @@ export interface EffectVerification {
 	completion: "met" | "not_met" | "unknown";
 	evidence: Ref[];
 	reason?: string;
+	/**
+	 * 核验所依据的 Driver fact 前缀长度（§3.5.3）：仅当它仍等于当前 facts.length
+	 * 时才参与当前判定；之后到达的新事实使核验退回历史诊断。旧格式无此字段，
+	 * 只做诊断，不猜顺序。
+	 */
+	factsAnchor?: number;
 }
 
 /**

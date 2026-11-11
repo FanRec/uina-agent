@@ -59,7 +59,7 @@ const descriptor: CallableDescriptor = {
 	completion: {
 		scope: "capability",
 		description:
-			"escaped=true requires the standable+skyOpen+onGround probe at the final spot; budget exhaustion raises TIMEOUT and dead ends raise UNREACHABLE, both keeping attempts/dug progress",
+			"escaped=true requires the standable+skyOpen+onGround probe at the final spot; dimensions without a verifiable sky criterion (nether) are rejected up front with WRONG_STATE; budget exhaustion raises TIMEOUT and dead ends raise UNREACHABLE, both keeping attempts/dug progress",
 	},
 	errors: [
 		{
@@ -67,6 +67,11 @@ const descriptor: CallableDescriptor = {
 			meaning: "budget exhausted before reaching a sky-open standable spot (progress keeps attempts/dug)",
 		},
 		{ code: "UNREACHABLE", meaning: "legs keep failing (no sky access, blocked shaft, or no placeable blocks)" },
+		{
+			code: "WRONG_STATE",
+			meaning:
+				"the current dimension has no verifiable sky-open exit criterion (nether roof is bedrock); rejected before any movement",
+		},
 		{ code: "INTERRUPTED", meaning: "the run was stopped or safety took over (progress keeps attempts/dug)" },
 		{ code: "CONTROL_CONFLICT", meaning: "another controlled navigation holds the client" },
 		{ code: "DISCONNECTED", meaning: "the connection ended during the escape" },
@@ -111,6 +116,7 @@ export async function escapeToSurface(
 	deps: CapabilityDeps,
 	ctx: CallContext,
 	deadline: number,
+	options?: { verifyDimension?: boolean },
 ): Promise<{ at: Vec3; reason: string | null }> {
 	const probe = deps.surface();
 	if (probe == null) {
@@ -122,6 +128,7 @@ export async function escapeToSurface(
 		let attempts = 0;
 		let dug = 0;
 		let consecutiveFailures = 0;
+		let dimensionChecked = false;
 		let self: SelfState;
 		for (;;) {
 			if (ctx.signal.aborted) {
@@ -143,9 +150,20 @@ export async function escapeToSurface(
 			if (self.onGround && (await probe.standable(here)) === true && (await probe.skyOpen(here)) === true) {
 				return { at: here, reason };
 			}
-			// 下界没有正常意义的"露天"（顶部基岩层）：跳过无意义的天空出口大扫描，
-			// 直接走向上游/竖井上升的脱困腿。
-			const skySearch = !(self.place.dimension ?? "").includes("nether");
+			// §6.5 支持范围前置：nether 这类"露天"不可验证的维度（顶部基岩层），在派发
+			// 任何移动前以 WRONG_STATE 拒绝，不空转烧预算。combat 撤退复用本会话时不开
+			// 这个开关，保留原语义。
+			if (options?.verifyDimension === true && !dimensionChecked) {
+				dimensionChecked = true;
+				if ((self.place.dimension ?? "").includes("nether")) {
+					fail("WRONG_STATE", `surface has no verifiable sky-open exit in ${self.place.dimension}`, {
+						hint: "escape the nether through a portal; surface@1 only covers dimensions with a real sky",
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
+			}
+			const skySearch = true;
 			const remaining = deadline - Date.now();
 			const plan: LegPlan | null =
 				self.inWater === true
@@ -298,7 +316,7 @@ export const surfaceModule: MinecraftCapabilityModule = {
 				async (ctx: CallContext, input: JsonValue): Promise<JsonValue> => {
 					const raw = input as unknown as SurfaceInput;
 					const deadline = Date.now() + (raw.maxTimeMs ?? 120000);
-					const outcome = await escapeToSurface(deps, ctx, deadline);
+					const outcome = await escapeToSurface(deps, ctx, deadline, { verifyDimension: true });
 					const final = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 					return plain({
 						at: { position: outcome.at, dimension: final.place.dimension },
