@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { errorMessage } from "../../core/errors.js";
 import type { ChatMsg } from "../../core/types.js";
-import { appendTailFrame, buildEventFrameGroup, contentAddressedEventId } from "../event-frames/index.js";
+import { appendEventFrame, contentAddressedEventId } from "../event-frames/index.js";
 import { ResourceScope } from "../lifecycle-scope.js";
 import type { ExtensionAPI } from "../runner.js";
 import {
@@ -20,16 +20,6 @@ import { createWorldTool } from "./world-tool.js";
  * 已经卡住，此时宁可给一行"没取到"，也不能把模型请求一起挂住。
  */
 const REQUEST_CONTEXT_TIMEOUT_MS = 250;
-
-/** 请求前观察帧的通知文案：说清"是什么"（本轮快照或本轮缺失）、"不是什么"（输入/委托）。 */
-function observationNotice(worldName: string, available: boolean): string {
-	const tail = available
-		? "正文在随后的 external_event_frame 回执中。"
-		: "正文说明为什么没有取到。不要把它当成世界没有变化。";
-	return `[${worldName} 观察] ${
-		available ? "你此刻所在世界的最新可用快照" : "本轮没有取到世界状态"
-	}（环境感知信息，非用户输入，不是新的委托，无需专门回应）；${tail}`;
-}
 
 /** 取不到观察时的正文。静默消失会被读成"世界没有变化"，那比没有状态更危险。 */
 function observationUnavailable(reason: string): string {
@@ -152,21 +142,19 @@ export class WorldActivation {
 					if (!this.scope.active) return;
 					const source = provide();
 					if (source == null) return;
-					const observation = await this.readObservation(source);
-					if (!observation || !this.scope.active || provide()?.key !== source.key) return;
-					const { text, available } = observation;
-					const appended = appendTailFrame(
-						projection.messages,
-						buildEventFrameGroup({
-							eventId: contentAddressedEventId(`world:${name}:state`, text),
-							text,
-							observationSource: name,
-							notice: observationNotice(name, available),
-							source: { kind: "runtime", type: "runtime.observation", origin: "internal" },
-						}),
-					);
-					if (!appended) return;
-					return { projection: { ...projection, messages: appended.messages as ChatMsg[] } };
+					const text = await this.readObservation(source);
+					if (!text || !this.scope.active || provide()?.key !== source.key) return;
+					const messages = appendEventFrame(projection.messages, {
+						// 内容寻址：同样的观察文本⇒同样的调用 ID，尾部帧对提示词前缀保持稳定。
+						eventId: contentAddressedEventId(`world:${name}:state`, text),
+						text,
+						label: `${name} 观察`,
+						observationSource: name,
+						// 世界观察是世界侧证据：即使由运行时采样、即使混着运行时任务状态，
+						// 也按较低信任等级呈现——不因为"是我自己读的"就升级成内部指令。
+						source: { kind: "runtime", type: "world.observation", ref: name, origin: "external" },
+					});
+					return { projection: { ...projection, messages: messages as ChatMsg[] } };
 				},
 				{ tail: true },
 			),
@@ -207,9 +195,8 @@ export class WorldActivation {
 	}
 
 	/** 本次请求的观察正文：正常给快照，异常给原因。同一会话只跟踪一份进行中的读取。 */
-	private async readObservation(source: WorldRequestContext): Promise<{ text: string; available: boolean } | null> {
-		if (this.inflight?.key === source.key)
-			return { text: observationUnavailable("上一次读取仍未返回"), available: false };
+	private async readObservation(source: WorldRequestContext): Promise<string | null> {
+		if (this.inflight?.key === source.key) return observationUnavailable("上一次读取仍未返回");
 		const flight = { key: source.key };
 		this.inflight = flight;
 		const work = Promise.resolve().then(source.read);
@@ -221,12 +208,11 @@ export class WorldActivation {
 		try {
 			text = await withTimeout(work, REQUEST_CONTEXT_TIMEOUT_MS, this.scope.signal);
 		} catch (error) {
-			const reason = this.scope.signal.aborted ? "世界已停用" : reasonOf(error);
-			return { text: observationUnavailable(reason), available: false };
+			return observationUnavailable(this.scope.signal.aborted ? "世界已停用" : reasonOf(error));
 		}
 		if (text == null) return null;
-		if (text.trim() === "") return { text: observationUnavailable("世界没有提供内容"), available: false };
-		return { text, available: true };
+		if (text.trim() === "") return observationUnavailable("世界没有提供内容");
+		return text;
 	}
 
 	async stop(): Promise<void> {

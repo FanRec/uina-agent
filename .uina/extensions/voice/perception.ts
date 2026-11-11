@@ -1,10 +1,6 @@
 import type { ChatMsg, RequestProjection } from "../../../src/core/types.js";
 import type { DeepReadonly } from "../../../src/runtime/events.js";
-import {
-	buildEventFrameGroup,
-	appendTailFrame,
-	contentAddressedEventId,
-} from "../../../src/extensions/event-frames/index.js";
+import { appendEventFrame, contentAddressedEventId } from "../../../src/extensions/event-frames/index.js";
 
 export type VoiceFact =
 	| { readonly kind: "interrupted"; readonly summary: string }
@@ -39,13 +35,8 @@ export class VoicePerception {
 	prepare(projection: DeepReadonly<RequestProjection>): void {
 		this.prepared = new Map();
 		for (const message of projection.messages) {
-			try {
-				const frame = JSON.parse(message.content) as { eventId?: string };
-				for (const [cause, version] of this.projections.get(frame.eventId ?? "") ?? [])
-					this.prepared.set(cause, version);
-			} catch {
-				/* Ordinary text is not an observation frame. */
-			}
+			for (const [cause, version] of this.projections.get(message.context?.input?.eventId ?? "") ?? [])
+				this.prepared.set(cause, version);
 		}
 	}
 
@@ -68,22 +59,19 @@ export class VoicePerception {
 		const text = `[声音] ${[...summaries].map(([summary, count]) => (count > 1 ? `${count} 段发声出现同一情况：${summary}` : summary)).join("；")}`;
 		const versions = new Map([...this.candidates].map(([cause, candidate]) => [cause, candidate.version]));
 		const eventId = contentAddressedEventId("voice:perception", JSON.stringify([...versions]) + text);
-		const tailFrames = buildEventFrameGroup({
-			eventId,
-			text,
-			notice: "[声音观察] 这是本次交流的背景，不是用户请求，无需专门回应。",
-			source: { kind: "runtime", type: "runtime.perception", origin: "internal" },
-		});
-		const appended = appendTailFrame(projection.messages, tailFrames);
-		if (!appended) return projection as unknown as RequestProjection;
 		this.projections.set(eventId, versions);
-
 		return {
 			projectionId: projection.projectionId,
 			modelKey: projection.modelKey,
 			thinkingLevel: projection.thinkingLevel,
 			tools: structuredClone(projection.tools),
-			messages: appended.messages as ChatMsg[],
+			messages: appendEventFrame(projection.messages, {
+				eventId,
+				text,
+				// 发声状态是运行时自己的情况：标签说清楚，别让它读成用户说了什么。
+				label: "声音观察 · 运行时",
+				source: { kind: "runtime", type: "runtime.perception", origin: "internal" },
+			}) as ChatMsg[],
 		};
 	}
 }

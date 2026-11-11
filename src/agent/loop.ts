@@ -1396,7 +1396,7 @@ export class Subject {
 				return { kind: "aborted" };
 			}
 
-			const streamResult = collector.validateAndFinalize();
+			const streamResult = this.dropReservedCalls(collector.validateAndFinalize());
 
 			if (streamResult.finishReason !== "tool_calls") {
 				await this.recordTerminalAssistant(streamResult);
@@ -1511,7 +1511,7 @@ export class Subject {
 			projectionId: randomUUID(),
 			modelKey: modelKey(model),
 			messages,
-			tools: this.declaredTools(),
+			tools: this.declaredTools(messages),
 			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 		});
 		if (!runTransforms) return base;
@@ -1529,12 +1529,36 @@ export class Subject {
 		) {
 			throw new Error(`turn.transformContext 返回模型不支持的 thinking level: ${transformed.thinkingLevel}`);
 		}
-		return immutableProjection(transformed);
+		// 声明跟随最终投影：帧可能由尾部注入在这一步之后才出现，工具表必须与之一致。
+		return immutableProjection({ ...transformed, tools: this.declaredTools(transformed.messages) });
 	}
 
-	/** 下一次模型请求会声明的工具。压缩预算与请求门共用这一份，不能只数可执行工具。 */
-	declaredTools(): import("../core/types.js").ToolDef[] {
-		return requestToolDefs(this.tools.defs(), this.projection.contextTools);
+	/** 下一次模型请求会声明的工具：可执行工具 + 这份投影需要的上下文工具。
+	 * 压缩预算与请求门共用这一份，不能只数可执行工具。 */
+	declaredTools(messages: readonly ChatMsg[]): import("../core/types.js").ToolDef[] {
+		const contextTools = this.projection.contextToolsRequired(messages) ? this.projection.contextTools : [];
+		return requestToolDefs(this.tools.defs(), contextTools);
+	}
+
+	/**
+	 * 保留名隔离：模型可能照抄历史里的 external_event_frame 调用。它没有执行体——照常执行会
+	 * 伪造一条工具事实，补一条回执会伪造一次失败，再请求一轮则是凭空多出来的回合。
+	 * 这里一次性丢弃：正文与同次响应的真实工具调用原样保留；只剩保留调用时按正常收尾结束回合。
+	 *
+	 * 判据是策略登记的保留名，不是本次是否声明过：模型可能在没声明的请求里照抄历史的名字。
+	 */
+	private dropReservedCalls(result: StreamCollectorResult): StreamCollectorResult {
+		const reserved = new Set(this.projection.contextTools.map((tool) => tool.function.name));
+		if (reserved.size === 0) return result;
+		const kept = result.toolCalls.filter((call) => !reserved.has(call.name));
+		if (kept.length === result.toolCalls.length) return result;
+		const dropped = result.toolCalls.filter((call) => reserved.has(call.name)).map((call) => call.name);
+		console.warn(`[Subject] 丢弃模型生成的保留调用: ${dropped.join(", ")}`);
+		return {
+			...result,
+			toolCalls: kept,
+			finishReason: kept.length > 0 ? result.finishReason : "stop",
+		};
 	}
 
 	private async handleStreamError(collector: TurnStreamCollector, error: unknown): Promise<void> {
@@ -1683,14 +1707,8 @@ export class Subject {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
-			const tool = this.projection.contextTools.some((t) => t.function.name === call.name)
-				? {
-						name: call.name,
-						args,
-						error:
-							"external_event_frame 回执由运行时在事件就绪后自动投递到上下文，不可主动获取；不要编造 eventId 或猜测事件内容，不要向用户复述此事，直接继续。",
-					}
-				: call.argsValid === false
+			const tool =
+				call.argsValid === false
 					? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
 					: this.tools.prepare(call.name, args);
 			prepared.push({ call, tool });

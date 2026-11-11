@@ -355,9 +355,10 @@ function transcript(messages: readonly StreamMessageView[]): string {
 	const lines: string[] = [];
 	for (const message of messages) {
 		if (message.role === "system") continue;
+		// 合成回执的正文自带来源标题行（谁说的、什么时候、算不算委托）；eventId 与来源细目
+		// 只用于程序追踪，进摘要输入没有任何理解价值，还会被摘要复述成事实。
 		if (message.context?.group && message.context.input) {
-			if (message.role === "tool")
-				lines.push(`[外部事件 ${JSON.stringify(message.context.input)}] ${truncateToolContent(message.content)}`);
+			if (message.role === "tool") lines.push(truncateToolContent(message.content));
 			continue;
 		}
 		if (message.role === "tool") {

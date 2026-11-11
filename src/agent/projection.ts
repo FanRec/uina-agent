@@ -18,8 +18,12 @@ export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[]
  * 历史/形塑解释"。
  */
 export interface ProjectionPolicy {
-	/** Function declarations used by projected history; never executable. */
+	/** 只作上下文协议标记的工具声明：永不进入 Broker，永不可执行。
+	 * 它同时是本策略的保留名集合——模型生成的同名调用由 Subject 丢弃，不落成工具事实。 */
 	contextTools?: readonly import("../core/types.js").ToolDef[];
+	/** 声明在哪些投影里必须出现；缺省每次都声明。
+	 * 按需声明，是为了让模型在没有对应上下文时不背着一份"存在但不可调用"的工具表。 */
+	contextToolsRequired?: (messages: readonly ChatMsg[]) => boolean;
 	/** Final validation after context transformations; does not alter history. */
 	validateContext?: (
 		messages: readonly ChatMsg[],
@@ -61,6 +65,7 @@ export function requestToolDefs(executable: readonly ToolDef[], contextTools: re
 export function resolveProjectionPolicy(policy?: ProjectionPolicy): ResolvedProjection {
 	return {
 		contextTools: structuredClone(policy?.contextTools ?? []),
+		contextToolsRequired: policy?.contextToolsRequired ?? (() => true),
 		validateContext: policy?.validateContext ?? (() => {}),
 		projectHistory: policy?.projectHistory
 			? protectCanonicalContinuity(policy.projectHistory)
