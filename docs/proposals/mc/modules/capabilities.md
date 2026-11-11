@@ -564,6 +564,7 @@ type ExploreTarget =
 - 采掘要求未知不等于缺工具：已知要求（tools）而库存不满足才报 `MISSING_TOOL`；只剩 `harvest.kind:"unknown"` 源时不假报缺工具，保留候选交给 `mine@1`，由它对采掘要求未知的方块如实抛 `WRONG_STATE`（"harvest requirements unknown"），collect 原样上抛。
 - `NOT_FOUND` 的提示要分开三种原因：物品名解析不到、静态知识没有对应方块来源、当前已观察半径内没有候选。错误码可以保持，事实范围必须说清，否则模型会去改物品名而不是扩大范围。
 - 固定来源范围（`sourceBounds`）是独立的通用采集需求，本轮不随备料 Program 扩张 Collect 接口。若实施，候选发现本身必须以固定中心搜索并说明覆盖；只按当前站位搜索再过滤 xz 距离不算固定范围。
+- 站立支撑块默认不可直接采挖：唯一候选是脚下方块时按 `NOT_FOUND` 如实失败（带已采数量与阻碍位置），有其他候选时优先采其他；有意向下开凿用 `mine@1`/`tunnel@1`。
 - 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
 - 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name], goal }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
 - 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/TARGET_NOT_MET/INTERRUPTED，progress 为 `{goal, mined, acquired, collected, toolsUsed, candidates:{attempted,skipped,blocked,uncertain}}`（§2.15）；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。`goal` 按**最终取得物品**记账（`total = count`、`completed = acquired`），候选格的成败单独放 `candidates`，两种单位不混在一个计数里。

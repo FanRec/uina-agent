@@ -203,3 +203,95 @@ test("P01: EFFECT_UNCONFIRMED re-reads inventory and decides instead of replayin
 	// 同一写入只派发一次：不盲重派。
 	expect(attempts.filter((entry) => entry === "craft@1:stone_pickaxe")).toHaveLength(1);
 });
+
+test("B2: a partial ingredient shortfall is recomputed against the absolute plan.need target", async () => {
+	// 已有 1 木棍；steps[].count=1 是缺口，绝对目标 need.stick=2 → 还需补 1。
+	const inv = { stick: 1, stone_pickaxe: 0 };
+	const seen: string[] = [];
+	const result = await runPrepare(
+		{
+			counts: () => ({ ...inv }),
+			onCall: (selector, input) => {
+				seen.push(`${selector}:${input.item}:${String(input.count)}`);
+				if (selector === "craft@1" && input.item === "stick") inv.stick += Number(input.count);
+				if (selector === "craft@1" && input.item === "stone_pickaxe") {
+					inv.stick -= 2;
+					inv.stone_pickaxe = 1;
+				}
+			},
+		},
+		[{ item: "stone_pickaxe", count: 1 }],
+	);
+	expect(result.kind).toBe("returned");
+	expect(seen).toContain("craft@1:stick:1");
+	expect(inv.stick).toBe(0);
+});
+
+test("B2: an exhausted ingredient key disappears and the next goal recomputes from the authoritative balance", async () => {
+	// 石镐合成把圆石耗到 0（键从计数里消失）；第二个目标圆石 3 必须按权威余额重算。
+	const inv: Record<string, number> = { cobblestone: 3, stone_pickaxe: 0 };
+	const seen: string[] = [];
+	const result = await runPrepare(
+		{
+			counts: () => ({ ...inv }),
+			onCall: (selector, input) => {
+				seen.push(`${selector}:${input.item}:${String(input.count)}`);
+				if (selector === "craft@1" && input.item === "stick") inv.stick = (inv.stick ?? 0) + Number(input.count);
+				if (selector === "craft@1" && input.item === "cobblestone") {
+					inv.cobblestone = (inv.cobblestone ?? 0) + Number(input.count);
+				}
+				if (selector === "craft@1" && input.item === "stone_pickaxe") {
+					inv.cobblestone -= 3;
+					inv.stick = (inv.stick ?? 0) - 2;
+					inv.stone_pickaxe = 1;
+					if (inv.cobblestone <= 0) delete inv.cobblestone;
+					if (inv.stick <= 0) delete inv.stick;
+				}
+			},
+		},
+		[
+			{ item: "stone_pickaxe", count: 1 },
+			{ item: "cobblestone", count: 3 },
+		],
+	);
+	expect(result.kind).toBe("returned");
+	// 旧实现保留消失前的旧余额会少做 3 个圆石；新实现补齐。
+	expect(seen).toContain("craft@1:cobblestone:3");
+	expect(result.kind === "returned" && result.value.prepared).toEqual([
+		{ item: "stone_pickaxe", count: 1 },
+		{ item: "cobblestone", count: 3 },
+	]);
+});
+
+test("B2: a batch yield larger than the shortfall still satisfies the goal with one craft", async () => {
+	// 木棍一次产出 4 根 > 缺口 2：只派发一次 craft，最终 4 ≥ 2。
+	const inv: Record<string, number> = { stone_pickaxe: 0 };
+	const seen: string[] = [];
+	const result = await runPrepare(
+		{
+			counts: () => ({ ...inv }),
+			onCall: (selector, input) => {
+				seen.push(`${selector}:${input.item}:${String(input.count)}`);
+				if (selector === "craft@1" && input.item === "stone_pickaxe") {
+					inv.cobblestone = (inv.cobblestone ?? 0) - 3;
+					inv.stick = (inv.stick ?? 0) - 2;
+					inv.stone_pickaxe = 1;
+				}
+				if (selector === "craft@1" && input.item === "stick") {
+					inv.stick = (inv.stick ?? 0) + 4; // 一次合成批量产出 4
+				}
+			},
+		},
+		[
+			{ item: "stone_pickaxe", count: 1 },
+			{ item: "stick", count: 2 },
+		],
+	);
+	expect(result.kind).toBe("returned");
+	expect(seen.filter((entry) => entry.startsWith("craft@1:stick"))).toHaveLength(1);
+	// 终值按真实消耗计：批量产 4 根，石镐吃掉 2 根，剩 2 ≥ 目标 2。
+	expect(result.kind === "returned" && result.value.prepared).toEqual([
+		{ item: "stone_pickaxe", count: 1 },
+		{ item: "stick", count: 2 },
+	]);
+});

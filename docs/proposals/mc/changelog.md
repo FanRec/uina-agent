@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-11-12 · 执行正确性收口与两处玩法修复（第二轮）
+
+- **F1**：`program-host.close()` 收集全部句柄关闭结果并上抛首因（原来 allSettled 吞掉，外层 CLEANUP_FAILED 结算永远看不到这一路）；body scope 的结束结果在收尾/屏障路径下是控制退役自身的后果，不重复计为清理失败，Guest 正常关闭路径的原合同不变。验收：双窗口一败一成的单元契约测试（全部尝试、失败可见），safety 撤销两测试不退化。
+- **F2**：`ctx.verify` 只消费启动时的不可变事实快照，anchor 在启动前定死、入账不重写成最新长度；核验期间又到的 Driver fact 使核验退回历史诊断，返回给调用方的当前判定按最新事实投影重算。验收：核验中注入晚到事实的竞态测试（旧 met 不结清新事实、不返回给 Program 当成功依据）。
+- **F3**：`assessEffectFacts` 明确分开业务结论与写入对账——合格核验只关闭业务不确定性，`body.goto@1` 的清理静止证明不被任何业务 met 覆盖；`not_sent` 照常闭合。验收矩阵三条（met+cleanup unknown+verify met 仍未决；unknown+cleanup met+verify met 结清；not_sent 不制造未知）。
+- **F4（G39 关闭）**：逐段插桩全量复现——插桩副本 14s 完成（PowerShell 3.5s），同场景并发的原版 120s 超时；真实根因是测试的无界同步 `spawnSync PowerShell Get-CimInstance`（旧"IPC 无超时"归因被推翻：RPC 5s/握手 10s/close 竞速全有界）。修复：`MinecraftExecutor.companionPid()` 暴露所有权层持有的精确 pid，测试按身份击杀，删除 PowerShell 依赖。
+- **B1**：collect 不再把脚下唯一候选当普通目标——站立支撑块默认不可直接采挖，唯一候选即脚下时按 `NOT_FOUND` 如实失败（带进度），有其他候选时照常采集。先红后绿测试两条。
+- **B2**：备料示例库存核算修正——refresh 用权威计数整体替换（耗尽后键消失不再留旧余额），`plan.steps[].count` 按缺口语义换算成 `plan.need` 绝对目标（不把缺口当总目标少制作），plan 缺字段交还主脑不猜数量。验收矩阵：部分材料补足、耗尽键消失、批量产出大于缺口、未决不重派。
+- **未验证**：T1–T3 真服端到端（真实 Minecraft + 真实 Uina）在本环境无法执行，本轮只完成其前置修复与自动化回归；C1/C2 按方案无运行证据不实施。
+
+
 ## 2026-11-12 · 完成语义重构落地（对照设计包评审文档）
 
 按《Uina Minecraft World — 可组合行动能力体系》施工版完成 S0–S6 全部源码改造；本条记录落地事实与对 11-11 裁决的三处修正。

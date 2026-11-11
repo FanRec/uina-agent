@@ -2290,8 +2290,13 @@ export class RuntimeEngine {
 				recoverable: false,
 			});
 		}
+		// F2：核验只消费启动时的不可变事实快照，anchor 在启动前定死；入账后不重写成
+		// 最新长度。核验期间又到的 Driver fact 使本次核验退回历史诊断——返回给调用方
+		// 的当前判定按最新事实投影重新计算，不把已失效的 met 交给 Program 当成功依据。
+		const factsSnapshot = [...attribution.facts];
+		const anchor = factsSnapshot.length;
 		const verdict = await impl.check(
-			{ effect, operation: attribution.operation, facts: attribution.facts },
+			{ effect, operation: attribution.operation, facts: factsSnapshot },
 			this.opts.world,
 			input,
 		);
@@ -2302,12 +2307,16 @@ export class RuntimeEngine {
 			completion: verdict.completion,
 			evidence: verdict.evidence,
 			...(verdict.reason != null ? { reason: verdict.reason } : {}),
+			factsAnchor: anchor,
 		};
 		this.queue.appendVerification(effect, verification);
+		const current = this.queue.effectRecord(effect);
+		const assessment = current == null ? null : assessEffectFacts(current.facts, current.verifications);
+		const stale = current == null || current.facts.length !== anchor;
 		return {
 			effect,
-			dispatch: attribution.latest.dispatch,
-			completion: verdict.completion,
+			dispatch: assessment?.dispatch ?? "unknown",
+			completion: stale ? (assessment?.completion ?? "unknown") : verdict.completion,
 			evidence: verdict.evidence,
 		};
 	}

@@ -213,3 +213,73 @@ test("formal Runtime executes code and named children, preserves snapshots acros
 		await program.close();
 	}
 }, 15000);
+
+test("F1: handle close failures surface to the runtime teardown; every handle still gets its close attempt", async () => {
+	const { createProgramHost } = await import("../../.uina/worlds/minecraft/runtime/program-host.js");
+	const closedWindows: string[] = [];
+	const failingWindow = {
+		snapshot: async () => {
+			throw new Error("unused");
+		},
+		click: async () => {
+			throw new Error("unused");
+		},
+		close: async (options?: { force?: boolean }) => {
+			closedWindows.push(`failing:${String(options?.force === true)}`);
+			// 正常与强制关闭都失败：真正的关闭器故障，必须让收尾看见。
+			throw Object.assign(new Error("window is wedged"), { code: "CURSOR_NOT_EMPTY" });
+		},
+	};
+	const healthyWindow = {
+		snapshot: async () => {
+			throw new Error("unused");
+		},
+		click: async () => {
+			throw new Error("unused");
+		},
+		close: async (options?: { force?: boolean }) => {
+			closedWindows.push(`healthy:${String(options?.force === true)}`);
+		},
+	};
+	const fakeScope = {
+		player: {
+			openContainer: async (target: unknown) =>
+				(target as { block: { x: number } }).block.x === 1 ? failingWindow : healthyWindow,
+		},
+	} as never;
+	const resources = new Set<(teardown: { reason: string }) => Promise<void>>();
+	const host = createProgramHost(
+		{
+			signal: new AbortController().signal,
+			withBody: async (work: (scope: unknown) => Promise<unknown>) => work(fakeScope),
+			world: { read: async () => ({ value: { place: { position: { x: 0, y: 0, z: 0 } } } }) },
+		} as never,
+		resources as never,
+		() => "act",
+	);
+	const bodyHandle = (await host.acquireBody({})) as { handle: string };
+	const bad = (await host.handleOp({
+		handle: bodyHandle.handle,
+		op: "openContainer",
+		args: { target: { x: 1, y: 0, z: 0 } },
+	})) as { handle: string; kind: string };
+	const good = (await host.handleOp({
+		handle: bodyHandle.handle,
+		op: "openContainer",
+		args: { target: { x: 2, y: 0, z: 0 } },
+	})) as { handle: string; kind: string };
+	expect(bad.kind).toBe("window");
+	expect(good.kind).toBe("window");
+
+	const closer = [...resources][0]!;
+	let captured: unknown = null;
+	try {
+		await closer({ reason: "returned" });
+	} catch (error) {
+		captured = error;
+	}
+	// 两个窗口都拿到了关闭尝试（故障窗口先普通后强制；并发下顺序不定）；健康窗口正常关闭。
+	expect([...closedWindows].sort()).toEqual(["failing:false", "failing:true", "healthy:false"].sort());
+	expect((captured as { message?: string } | null)?.message).toContain("handle close failed");
+	expect((captured as { message?: string } | null)?.message).toContain("window is wedged");
+});

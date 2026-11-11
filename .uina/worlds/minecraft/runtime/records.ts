@@ -103,13 +103,22 @@ export function assessEffectFacts(
 		.find(
 			(entry) => (entry.completion === "met" || entry.completion === "not_met") && entry.factsAnchor === facts.length,
 		);
+	// F3：业务结论与写入对账是两个问题。合格核验只关闭它能证明的业务不确定性；
+	// 声明了清理屏障的合同仍必须满足 cleanup 静止证明——任何业务 met 都不得覆盖
+	// 清理未知（E06a），已证实 not_sent 的操作也照常闭合、不升级成未知。
 	let unresolved: boolean;
-	if (closedWithoutSend || !mayHaveSent) unresolved = false;
-	else if (anchored != null) unresolved = false;
-	else if (completion === "unknown") unresolved = true;
-	else unresolved = !cleanupSettled || !barrierOk;
-	if (anchored != null) reason += `; qualified verification ${anchored.completion} closed the uncertainty`;
-	else if (unresolved) reason += "; unresolved world-write reconciliation";
+	if (closedWithoutSend || !mayHaveSent) {
+		unresolved = false;
+	} else {
+		const businessClosed = anchored != null || completion !== "unknown";
+		unresolved = !businessClosed || !cleanupSettled || !barrierOk;
+	}
+	if (anchored != null) {
+		reason +=
+			unresolved && !closedWithoutSend && mayHaveSent
+				? "; verification closed the business question but write reconciliation is still pending"
+				: `; qualified verification ${anchored.completion} considered`;
+	} else if (unresolved) reason += "; unresolved world-write reconciliation";
 	return { dispatch, completion, unresolved, reason };
 }
 
@@ -330,6 +339,8 @@ export class RecordQueue implements DriverExecutionSink, RuntimeRecordBarrier {
 	appendVerification(effect: Ref, verification: EffectVerification): void {
 		const attribution = this.effectOwner.get(effect);
 		if (attribution == null) throw new Error(`cannot verify unknown effect ${effect}`);
+		// anchor 由核验发起方按它实际检查过的快照长度带来（F2）；这里只补缺省值，
+		// 不重写成追加时刻的最新长度——否则会冒认它没看过的后续事实。
 		const anchored: EffectVerification = { factsAnchor: attribution.facts.length, ...verification };
 		attribution.verifications.push(anchored);
 		attribution.record = this.mintRecord();

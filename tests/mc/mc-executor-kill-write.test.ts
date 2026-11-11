@@ -12,8 +12,9 @@
  * 断电后的库取证全部走独立 Node 子进程（中性第三方，带 busy_timeout 与超时）：
  * 测试进程内打开崩溃恢复期的库会同步阻塞（批22 实测），取证进程隔离这一怪癖。
  */
-import { randomUUID } from "node:crypto";
+
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,23 +32,6 @@ const config = () => ({
 	},
 	binding: null,
 });
-
-/** 伴生执行进程是测试进程的子进程（命令行含 companion/bootstrap），按父 PID 枚举定位。 */
-function companionPid(): number {
-	const out = spawnSync(
-		"powershell",
-		[
-			"-NoProfile",
-			"-Command",
-			`Get-CimInstance Win32_Process -Filter "ParentProcessId=${process.pid}" | ` +
-				`Where-Object { $_.CommandLine -like '*companion*' -and $_.ProcessId -ne $PID } | Select-Object -ExpandProperty ProcessId`,
-		],
-		{ encoding: "utf8", windowsHide: true },
-	);
-	const pid = Number(out.stdout.trim().split(/\s+/)[0]);
-	if (!Number.isInteger(pid) || pid <= 0) throw new Error(`companion process not found: ${out.stdout || out.stderr}`);
-	return pid;
-}
 
 /** 断电取证：独立 Node 子进程只读检查库，stdout 取最后一个 JSON 行。 */
 function forensic(script: string, dbPath: string, timeoutMs = 30000): Record<string, unknown> {
@@ -162,7 +146,10 @@ test("SIGKILL mid-write keeps runtime.db consistent and the executor recoverable
 				() => null,
 			);
 		await killSubmit;
-		const killedPid = companionPid();
+		// 用 Executor 自己持有的精确进程身份击杀：不做命令行模式匹配，也没有
+		// 无界的同步 WMI 查询（G39 的真实悬挂点：满载下 spawnSync PowerShell 可无限阻塞）。
+		const killedPid = executor.companionPid();
+		if (killedPid == null) throw new Error("companion process is not attached before the kill");
 		process.kill(killedPid, "SIGKILL");
 
 		// 伴生死后对端关闭应让后续提交被诚实拒绝（不受理、不悬挂）。

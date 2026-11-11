@@ -5,6 +5,8 @@ import { existsSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { emptyAssemblyPlan } from "../addons/plan.js";
+import type { AssemblyPlan, DirectorySnapshot } from "../contracts/addons.js";
 import {
 	type BootstrapHello,
 	type CompanionInit,
@@ -12,8 +14,6 @@ import {
 	type ExecutionSideStatus,
 	type ExecutorCloseResult,
 } from "../contracts/executor.js";
-import type { AssemblyPlan, DirectorySnapshot } from "../contracts/addons.js";
-import { emptyAssemblyPlan } from "../addons/plan.js";
 import type {
 	Acceptance,
 	ContinueRequest,
@@ -746,6 +746,14 @@ export class MinecraftExecutor {
 	 * process=unknown/ownership=held，由调用方拒绝启动新执行域。绝不从异常文字猜判定。
 	 * 已证实的结论幂等复用；未证实的结论允许重试——再次 close 就是人工恢复渠道。
 	 */
+	/**
+	 * 当前伴生进程的精确 pid（无连接时 null）。故障注入/运维用确切身份定位执行域，
+	 * 不做命令行模式匹配——并行环境里"找名字像的进程"既慢（WMI）又会认错目标。
+	 */
+	companionPid(): number | null {
+		return this.connection?.process.identity.pid ?? null;
+	}
+
 	close(): Promise<ExecutorCloseResult> {
 		if (this.closeResult && this.closeResult.process === "retired" && this.closeResult.ownership === "released")
 			return Promise.resolve(this.closeResult);

@@ -80,7 +80,15 @@ export function createProgramHost(
 		try {
 			if (h.kind === "body") {
 				h.release();
-				await h.closed;
+				try {
+					await h.closed;
+				} catch (error) {
+					// 收尾/屏障路径下，body scope 的结束结果就是控制退役自身的后果
+					//（安全撤销/取消把 scope 打断）——事实已在调用树与安全记录里，
+					// 释放已完成，不重复计为清理失败；Guest 自己的正常关闭（normal）
+					// 仍按原合同把错误如实上抛。
+					if (mode === "normal") throw error;
+				}
 				retired = true;
 			} else if (h.kind === "stream") {
 				await h.stream.close();
@@ -113,7 +121,21 @@ export function createProgramHost(
 	const close = async (teardown?: { reason: string }): Promise<void> => {
 		lifetime.abort();
 		const mode: RetireMode = teardown?.reason === "cancelled" ? "force" : teardown != null ? "teardown" : "normal";
-		await Promise.allSettled([...handles.keys()].map((handle) => retireHandle(handle, mode)));
+		// 每个句柄都尝试关闭（不让一个失败截断其余），但拒绝结果必须上抛：
+		// 吞掉会让外层 Runtime 的 CLEANUP_FAILED 结算永远看不到这一路失败（§5.3.5）。
+		const settled = await Promise.allSettled([...handles.keys()].map((handle) => retireHandle(handle, mode)));
+		const failures = settled
+			.filter((item): item is PromiseRejectedResult => item.status === "rejected")
+			.map((item) => item.reason);
+		if (failures.length > 0) {
+			const detail = failures
+				.slice(0, 2)
+				.map((error) => (error instanceof Error ? error.message : String(error)))
+				.join("; ");
+			throw failures[0] instanceof Error
+				? Object.assign(failures[0], { message: `handle close failed (${failures.length}): ${detail}` })
+				: new Error(`handle close failed (${failures.length}): ${detail}`);
+		}
 	};
 	resources.add(close);
 	const api: ProgramHostApi = {

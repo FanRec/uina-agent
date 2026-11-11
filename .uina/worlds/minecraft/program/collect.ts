@@ -117,9 +117,16 @@ export const collectProgram = `async function main(mc, input) {
         "widen radius, move to where the block occurs, or check the item's known sources");
     }
     frontier.sort((a, b) => distance(a, here) - distance(b, here));
-    const [first] = frontier;
-    const underfoot = first.x === Math.floor(here.x) && first.z === Math.floor(here.z) && first.y === Math.floor(here.y) - 1;
-    const [at] = frontier.splice(frontier.length > 1 && underfoot ? 1 : 0, 1);
+    // 站立支撑块默认不可直接采挖（§B1）：挖掉脚下唯一支撑会破坏上坡、矿井或回程道路。
+    // 有意向下开凿的任务应使用 mine@1 / tunnel@1 等明确的空间作业能力，不靠 collect 顺手挖。
+    const underfoot = (p) => p.x === Math.floor(here.x) && p.z === Math.floor(here.z) && p.y === Math.floor(here.y) - 1;
+    const pick = frontier.findIndex(p => !underfoot(p));
+    if (pick === -1) {
+      const support = frontier[0];
+      fail("NOT_FOUND", "the only remaining candidate is the block the bot is standing on at " +
+        support.x + "," + support.y + "," + support.z, "move to a safe stance first, or use mine@1/tunnel@1 for deliberate downward digging");
+    }
+    const [at] = frontier.splice(pick, 1);
     if (attempted >= Math.max(8, count * 4)) fail("UNREACHABLE", "too many source blocks could not be reached or broken");
     attempted++;
     if (distance({ x: at.x + 0.5, y: at.y + 0.5, z: at.z + 0.5 }, { ...here, y: here.y + 1.62 }) > 3) {

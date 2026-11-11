@@ -15,7 +15,11 @@ import { describe, expect, test } from "vitest";
 import { DIG_VERIFIER_REF, digVerifier } from "../../.uina/worlds/minecraft/capabilities/shared/verify.js";
 import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
-import type { DriverExecutionFact, EffectVerification } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import type {
+	DriverExecutionFact,
+	EffectVerification,
+	EffectVerifier,
+} from "../../.uina/worlds/minecraft/contracts/runtime.js";
 import type { ExactRef, JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
 import { RuntimeEngine } from "../../.uina/worlds/minecraft/runtime/engine.js";
@@ -71,6 +75,13 @@ function worldWith(block: { name: string } | null, dimension = "overworld"): Wor
 						cursor: null,
 					} as never),
 	} as unknown as WorldPort;
+}
+
+/** 恒定 met 的核验器：F3 矩阵用（只代表业务判定，不关心合同身份）。 */
+function staticMetVerifier(): EffectVerifier {
+	return {
+		check: async () => ({ completion: "met", evidence: [], reason: "static business confirmation" }),
+	};
 }
 
 interface HarnessOptions {
@@ -162,6 +173,99 @@ describe("ctx.verify registry (G4)", () => {
 		});
 		// 追加写成了新的 effect_verification 截面（含 facts + verifications）。
 		expect(h.rows.verification).toHaveLength(1);
+	});
+
+	test("F2: a fact arriving during the check invalidates the anchor and the stale met is not returned as current truth", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const racing: EffectVerifier = {
+			check: async () => {
+				await gate;
+				return { completion: "met", evidence: [], reason: "raced verifier read only its snapshot" };
+			},
+		};
+		const h = harness(
+			{
+				world: worldWith({ name: "air" }),
+				verifiers: new Map([["verify/racing@1" as `${string}@${string}`, racing]]),
+			},
+			(queue) => [
+				callable("racer@1", async (ctx) =>
+					ctx.withBody(async () => {
+						queue.record(digReceipt("eff:verify-race", "unknown"));
+						const verifyPromise = ctx.verify("eff:verify-race", "verify/racing@1", {}) as Promise<never>;
+						await Promise.resolve();
+						// 核验已启动、尚未完成：此刻到达的新事实不在核验器的快照里。
+						queue.record(digReceipt("eff:verify-race", "unknown"));
+						release();
+						return await verifyPromise;
+					}),
+				),
+			],
+		);
+		const summary = await h.finish(await h.submit("racer@1"));
+		// 竞态后当前判定仍按事实投影：两个 unknown receipt → 未决，核验不结清。
+		expect(summary.outcome).toBe("unknown");
+		expect(summary.unknownEffects).toEqual(["eff:verify-race"]);
+		const attribution = h.queue.effectRecord("eff:verify-race")!;
+		expect(attribution.facts).toHaveLength(2);
+		expect(attribution.verifications).toHaveLength(1);
+		expect(attribution.verifications[0]!.factsAnchor).toBe(1);
+		expect(attribution.verifications[0]!.completion).toBe("met");
+	});
+
+	test("F3: a met verification does not bypass an unsettled cleanup barrier (goto)", async () => {
+		const h = harness(
+			{
+				world: worldWith({ name: "air" }),
+				verifiers: new Map([["verify/met@1" as `${string}@${string}`, staticMetVerifier()]]),
+			},
+			(queue) => [
+				callable("gotoverify@1", async (ctx) =>
+					ctx.withBody(async () => {
+						queue.record({ ...digReceipt("eff:verify-barrier", "met"), contract: "body.goto@1" });
+						queue.record({
+							...digReceipt("eff:verify-barrier", "unknown"),
+							contract: "body.goto@1",
+							kind: "cleanup",
+						});
+						return (await ctx.verify("eff:verify-barrier", "verify/met@1", {})) as never;
+					}),
+				),
+			],
+		);
+		const summary = await h.finish(await h.submit("gotoverify@1"));
+		// 业务问题已被核验关闭（返回 met），但导航写源静止证明缺失：仍按未决结算。
+		expect(summary.outcome).toBe("unknown");
+		expect(summary.unknownEffects).toEqual(["eff:verify-barrier"]);
+	});
+
+	test("F3: receipt unknown + cleanup met + qualified verification settles per the contract (goto)", async () => {
+		const h = harness(
+			{
+				world: worldWith({ name: "air" }),
+				verifiers: new Map([["verify/met@1" as `${string}@${string}`, staticMetVerifier()]]),
+			},
+			(queue) => [
+				callable("gotosettle@1", async (ctx) =>
+					ctx.withBody(async () => {
+						queue.record({ ...digReceipt("eff:verify-settle", "unknown"), contract: "body.goto@1" });
+						queue.record({
+							...digReceipt("eff:verify-settle", "met"),
+							contract: "body.goto@1",
+							kind: "cleanup",
+						});
+						return (await ctx.verify("eff:verify-settle", "verify/met@1", {})) as never;
+					}),
+				),
+			],
+		);
+		const summary = await h.finish(await h.submit("gotosettle@1"));
+		// 业务核验关闭不确定性 + 清理已静止：按已有合同结清。
+		expect(summary.outcome).toBe("succeeded");
+		expect(summary.unknownEffects).toEqual([]);
 	});
 
 	test("a verification appended after a run closed never rewrites that run's recorded outcome", async () => {

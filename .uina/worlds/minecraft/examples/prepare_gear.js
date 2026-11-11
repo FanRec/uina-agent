@@ -24,14 +24,17 @@ async function main(mc, input) {
     return fact.value.counts;
   }
 
-  // 多目标共享一份余额：后面的目标看到前面真实扣掉后的库存。
-  const balance = await counts();
+  // 多目标共享一份余额：每次动作后用权威 inventory@1 的**完整计数整体替换**
+  // 本地余额——物品被消耗到 0 后键会从服务端计数里消失，局部覆盖会把旧余额
+  // 留给后续目标（§B2）。
+  let balance = await counts();
   const refresh = async () => {
-    const fresh = await counts();
-    for (const key of Object.keys(fresh)) balance[key] = fresh[key];
+    balance = await counts();
   };
 
-  const produce = async (item, count, via) => {
+  // targetTotal 是**绝对目标库存**；缺口 = 目标 - 当前，动作后重读定去留。
+  const produce = async (item, targetTotal, via) => {
+    const count = targetTotal;
     const short = Math.max(0, count - (balance[item] || 0));
     if (short <= 0) return;
     try {
@@ -80,10 +83,16 @@ async function main(mc, input) {
     const plan = value.plan;
     if (!plan || !Array.isArray(plan.steps))
       mc.decide('配方知识没有给出差额计划：' + goal.item, { phase: 'plan_missing', goal });
-    // plan 只此一层：它的 steps 就是这条直接配方的材料单；再深的前置物按同样
-    // 的"读配方→备材料"显式出现，不在这里写递归规划。
-    for (const step of plan.steps) await produce(step.item, step.count, step.action);
-    await produce(goal.item, need, 'craft');
+    // plan 只此一层：它的 steps 就是这条直接配方的材料单；steps[].count 是**缺口**
+    // 数量，绝对目标取 plan.need[item]（§B2）。plan 缺少换算所需的字段就交还主脑，
+    // 不把缺口误当总目标少制作，也不猜数量。
+    for (const step of plan.steps) {
+      const absolute = plan.need == null ? undefined : plan.need[step.item];
+      if (typeof absolute !== "number")
+        mc.decide("配方计划缺少 " + step.item + " 的绝对需求数量，不猜", { phase: "plan_incomplete", step });
+      await produce(step.item, absolute, step.action);
+    }
+    await produce(goal.item, need, "craft");
   }
 
   // 终验：只认 inventory@1 的实得数量。
