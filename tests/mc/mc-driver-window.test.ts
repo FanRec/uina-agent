@@ -25,7 +25,21 @@ const target = { place: placeT(), block: { x: 0, y: 64, z: 0 } };
 const empty = { item: null, count: 0 };
 const stone = (count: number) => new Item(1, count);
 
-function harness(autoTick = true, options: { type?: string; slots?: number; fullBeforeLayout?: boolean } = {}) {
+function harness(
+	autoTick = true,
+	options: {
+		type?: string;
+		slots?: number;
+		fullBeforeLayout?: boolean;
+		pacing?: {
+			clickGapMs?: number;
+			openDwellMs?: number;
+			resultDwellMs?: number;
+			closeDwellMs?: number;
+			budgetMs?: number;
+		};
+	} = {},
+) {
 	const windowType = options.type ?? "minecraft:generic_9x3";
 	const bot = new EventEmitter() as EventEmitter & Record<string, any>;
 	const client = new EventEmitter() as EventEmitter & Record<string, any>;
@@ -38,14 +52,23 @@ function harness(autoTick = true, options: { type?: string; slots?: number; full
 	bot.registry = mfRequire("prismarine-registry")("1.21.11");
 	bot.version = "1.21.11";
 	bot.supportFeature = (name: string) => bot.registry.supportFeature(name);
-	bot.entity = { position: { x: 0, y: 64, z: 1 }, eyeHeight: 1.62 };
+	bot.entity = { position: { x: 0, y: 64, z: 1 }, eyeHeight: 1.62, yaw: 0, pitch: 0 };
 	bot.game = { dimension: "overworld" };
 	bot.clearControlStates = () => {};
-	bot.blockAt = () => ({ name: "chest", position: target.block });
+	bot.blockAt = () => ({ name: "chest", position: target.block, shapes: [[0, 0, 0, 1, 1, 1]] });
 	bot.lookAt = async () => {
 		if (autoTick) queueMicrotask(() => queueMicrotask(() => bot.emit("physicsTick")));
 	};
+	// 闸门转头的 look 在夹具里即时生效（窗口测试不测转向节奏，只测派发顺序）。
+	bot.look = async (yaw: number, pitch: number) => {
+		bot.entity.yaw = yaw;
+		bot.entity.pitch = pitch;
+	};
 	bot.swingArm = () => {};
+	// 闸门世界：只有容器一个方块，采样射线首命中即容器本身（§4.1 夹具口径）。
+	bot.world = {
+		raycast: async () => ({ x: target.block.x, y: target.block.y, z: target.block.z }),
+	};
 	bot.closeWindow = (window: any) => {
 		client.write("close_window", { windowId: window.id });
 		bot.currentWindow = null;
@@ -113,6 +136,7 @@ function harness(autoTick = true, options: { type?: string; slots?: number; full
 		deadEntities: () => new Set<number>(),
 		publishWindow: (observation) => observations.push(observation),
 	};
+	if (options.pacing != null) (deps as { windowPacing?: unknown }).windowPacing = options.pacing;
 	const session = new BodySessionImpl("body:window-test", ownerT(1), deps);
 	return {
 		deps,
@@ -226,21 +250,28 @@ describe("Driver window lifetime and server confirmation", () => {
 		await host.releaseBody({ handle: body.handle });
 		await h.session.close();
 	});
-	test("block activation waits for the actual physics step after look", async () => {
+	test("block activation follows the aim gate: blocked sight sends nothing, clear sight activates (§4.1)", async () => {
 		const h = harness(false);
-		const opening = h.session.openContainer(target);
+		// 隔墙：容器方块不可命中 → 派发前失败，没有任何写包。
+		h.bot.world.raycast = async () => ({ x: 0, y: 65, z: 0 });
+		const blocked = captureFailure(h.session.openContainer(target));
 		await Promise.resolve();
-		expect(h.writes).toHaveLength(0);
-		expect(h.bot.listenerCount("physicsTick")).toBe(1);
-		h.bot.emit("physicsTick");
-		const window = await opening;
-		expect(h.writes.filter((write) => write.name === "block_place")).toHaveLength(1);
-		expect(h.bot.listenerCount("physicsTick")).toBe(0);
-		await window.close();
+		expect((await blocked).dispatch).toBe("not_sent");
+		expect(h.writes.filter((write) => write.name === "block_place")).toHaveLength(0);
 		await h.session.close();
+
+		// 视线恢复：闸门通过 → 受控转头 → activate 携带真实命中面与 cursor。
+		const h2 = harness(false);
+		const window = await h2.session.openContainer(target);
+		const place = h2.writes.find((write) => write.name === "block_place");
+		expect(place?.data.location).toEqual(target.block);
+		// 激活包携带真实命中点 cursor，不再默认顶面中心。
+		expect(place?.data.cursorX).toBeTypeOf("number");
+		await window.close();
+		await h2.session.close();
 	});
 
-	test("aborting before the activation boundary removes the exact listeners and sends no packet", async () => {
+	test("aborting mid-aim leaves no packet and no lingering aim listeners", async () => {
 		const h = harness(false);
 		const opening = captureFailure(h.session.openContainer(target));
 		await Promise.resolve();
@@ -255,15 +286,19 @@ describe("Driver window lifetime and server confirmation", () => {
 		expect(h.bot.listenerCount("end")).toBe(0);
 	});
 
-	test("a stalled pre-activation physics boundary times out without sending an interaction", async () => {
+	test("a stalled look send fails the open bounded without sending an interaction (§4.2)", async () => {
 		vi.useFakeTimers();
-		const h = harness(false);
-		const opening = captureFailure(h.session.openContainer(target));
-		await vi.advanceTimersByTimeAsync(2100);
-		expect(await opening).toMatchObject({ code: "TIMEOUT", dispatch: "not_sent" });
-		expect(h.writes).toHaveLength(0);
-		expect(h.bot.listenerCount("physicsTick")).toBe(0);
-		await h.session.close();
+		try {
+			const h = harness(false);
+			h.bot.look = () => new Promise<void>(() => {}); // 转头发送停滞（骑乘后停模拟形态）
+			const opening = captureFailure(h.session.openContainer(target));
+			await vi.advanceTimersByTimeAsync(1600);
+			expect(await opening).toMatchObject({ code: "AIM_STALLED", dispatch: "not_sent" });
+			expect(h.writes).toHaveLength(0);
+			await h.session.close();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("authoritative full content has stable regions and a click synchronizes without local prediction", async () => {
@@ -637,6 +672,8 @@ describe("Driver window lifetime and server confirmation", () => {
 		const pending = window.click(await input(window));
 		// 立刻挂上拒绝处理器，避免屏障解除瞬间的 unhandled rejection。
 		const rejected = expect(pending).rejects.toMatchObject({ name: "CallFailure", dispatch: "not_sent" });
+		// 节奏点（缺省 0ms）与屏障各隔微任务：自旋等 intent 落盘后再挂撤销。
+		for (let i = 0; i < 50 && !h.facts.some((fact) => fact.kind === "intent"); i++) await Promise.resolve();
 		expect(h.facts.some((fact) => fact.kind === "intent")).toBe(true);
 		const closing = h.session.close();
 		release();
@@ -857,4 +894,39 @@ describe("G36 click pre-state is content, not sync count", () => {
 		});
 		await h.session.close();
 	});
+});
+
+test("§4.5 可见 GUI 节奏：点击间隔生效、可取消、预算封顶；缺省保持快速", async () => {
+	vi.useFakeTimers();
+	try {
+		// 启用节奏：两次点击之间至少 clickGapMs，且受 budget 封顶。
+		const paced = harness(true, { pacing: { clickGapMs: 180, budgetMs: 200 } });
+		const window = await paced.session.openContainer(target);
+		const first = window.click(await input(window));
+		await vi.advanceTimersByTimeAsync(500);
+		await first;
+		// 第二次点击把光标上的石头放回 0 号格：期望与点击 1 确认后的实际内容一致。
+		const second = window.click({
+			slot: 0,
+			button: 0,
+			mode: 0,
+			expectedRevision: (await window.snapshot()).value.revision,
+			expectedSlots: [{ slot: 0, stack: { item: null, count: 0 } }],
+			expectedCursor: { item: { name: "stone" }, count: 8 },
+		});
+		// 预算只剩 20ms（200-180）：第二次点击最多再等 20ms 就放行，不烧满间隔。
+		await vi.advanceTimersByTimeAsync(30);
+		const receipt2 = await second;
+		expect(receipt2.dispatch).toBe("sent");
+
+		// 缺省（无 pacing）：快速路径，无额外等待。
+		const fast = harness(true);
+		const fastWindow = await fast.session.openContainer(target);
+		const fastClick = fastWindow.click(await input(fastWindow));
+		// 无 pacing：零额外等待，一个假时钟步内完成。
+		await vi.advanceTimersByTimeAsync(0);
+		await fastClick;
+	} finally {
+		vi.useRealTimers();
+	}
 });

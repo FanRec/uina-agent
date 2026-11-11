@@ -23,12 +23,23 @@ function harness() {
 	bot._client = new EventEmitter();
 	bot.version = "1.21.11";
 	bot.registry = mf("prismarine-registry")("1.21.11");
-	bot.entity = { position: { x: 0, y: 64, z: 1 }, eyeHeight: 1.62 };
+	bot.entity = { position: { x: 0, y: 64, z: 1 }, eyeHeight: 1.62, yaw: 0, pitch: 0 };
 	bot.heldItem = null;
-	bot.blockAt = () => ({ name: "stone", type: bot.registry.blocksByName.stone.id, getProperties: () => ({}) });
+	bot.blockAt = () => bot.registry.blocksByName.stone;
 	bot.digTime = () => 100;
 	bot.lookAt = vi.fn(async () => {});
+	bot.look = vi.fn(async (yaw: number, pitch: number) => {
+		bot.entity.yaw = yaw;
+		bot.entity.pitch = pitch;
+	});
 	bot.swingArm = vi.fn();
+	// 闸门世界：夹具里只有目标一个方块，任何采样射线的首命中都是目标本身。
+	bot.world = {
+		raycast: async () => ({ x: target.block.x, y: target.block.y, z: target.block.z }),
+	};
+	// 连续物理 Tick 泵（与真服同构）；受控转头按 tick 步进。
+	const tickPump = setInterval(() => bot.emit("physicsTick"), 1);
+	tickPump.unref?.();
 	const packets: { name: string; input: Record<string, any> }[] = [];
 	bot._client.write = (name: string, input: Record<string, any>) => packets.push({ name, input });
 	const abort = new AbortController();
@@ -83,6 +94,37 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("controlled mining server confirmation", () => {
+	test("a walled-off target fails UNREACHABLE before any intent or packet (§4.1)", async () => {
+		const h = harness();
+		h.bot.world.raycast = async () => ({ x: 0, y: 65, z: 0 }); // 首命中是眼与目标之间的墙
+		const error = await runMining(h.deps, target, { aim: "preserve" }).catch((error) => error);
+		expect(error).toMatchObject({ code: "UNREACHABLE", dispatch: "not_sent" });
+		// 没有写前意图、没有挖掘包：隔墙目标在派发前就被拦下。
+		expect(h.facts).toHaveLength(0);
+		expect(h.packets.filter((p: { name: string }) => p.name === "block_dig")).toHaveLength(0);
+	});
+
+	test("mining swings continuously during the dig and stops when it settles (§4.3)", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = harness();
+			const pending = runMining(h.deps, target, { aim: "preserve" });
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(400);
+			const swingsDuringDig = h.bot.swingArm.mock.calls.length;
+			expect(swingsDuringDig).toBeGreaterThanOrEqual(2); // 起挖一挥 + 350ms 节拍
+			// 服务端 air 更新结算挖掘：挥手立即停止，不留孤立周期。
+			h.serverBlock(true);
+			await pending;
+			const swingsAfter = h.bot.swingArm.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(h.bot.swingArm.mock.calls.length).toBe(swingsAfter);
+			expect(swingsAfter).toBeGreaterThanOrEqual(swingsDuringDig);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("local air prediction and protocol ACK cannot confirm a break", async () => {
 		const h = harness();
 		const pending = runMining(h.deps, target, { aim: "preserve" });
@@ -234,7 +276,8 @@ describe("controlled sign editor and submission", () => {
 		h.editor();
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(await pending).toMatchObject({ completion: "unknown", dispatch: "sent" });
-		expect(vi.getTimerCount()).toBe(0);
+		// runSign 自己的定时器全部清理；剩下的 1 个是夹具的物理 Tick 泵（unref'd）。
+		expect(vi.getTimerCount()).toBe(1);
 	});
 
 	test("editor timeout and disconnect never submit text later", async () => {

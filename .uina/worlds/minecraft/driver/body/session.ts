@@ -48,12 +48,13 @@ import type { WorldQuery } from "../../contracts/world.js";
 import type { ClientHostListener } from "../client-host.js";
 import { EffectRecorder, fail } from "../execution.js";
 import { driveVehicle, neutralizeVehicle } from "../input/vehicle.js";
-import { applyWalkingKeys, consumeWalkingTicks, DRIVE_KEYS, DRIVE_STALL_MS, revokeKeys } from "../input/walking.js";
+import { applyWalkingKeys, consumeWalkingTicks, DRIVE_KEYS, revokeKeys } from "../input/walking.js";
 import { type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 import { protocolFor } from "../mineflayer/protocol.js";
 import { opensWindow } from "../window/layout.js";
 import { WindowSessionImpl } from "../window/session.js";
 import { windowStateFor } from "../window/state.js";
+import { aimAtControlled, BLOCK_REACH, checkBlockHit, checkEntityHit, eyeOf, worldViewOf } from "./aim.js";
 import { FeedbackController } from "./feedback.js";
 import { runEquip, runToss } from "./inventory.js";
 import { runMining } from "./mining.js";
@@ -90,6 +91,18 @@ export interface BodySessionDeps {
 	/** Authoritative window observations; current value is cleared on retirement. */
 	publishWindow?: (observation: ClientWindowObservation | null) => void;
 	bot: () => MineflayerBot | null;
+	/**
+	 * 可见 GUI 操作节奏（§4.5）：组合根在确认直播/观察端能实际看到窗口同步时
+	 * 注入；缺省不注入 = 后台/无画面快速执行。单一配置，不对每个 Capability
+	 * 暴露重复参数；等待可取消、受总预算约束。
+	 */
+	windowPacing?: {
+		clickGapMs?: number;
+		openDwellMs?: number;
+		resultDwellMs?: number;
+		closeDwellMs?: number;
+		budgetMs?: number;
+	};
 	/** Driver 级唯一发号：op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */
 	mintOp: () => Ref;
 	mintEff: () => Ref;
@@ -1005,7 +1018,23 @@ export class BodySessionImpl implements BodySession {
 		try {
 			const bot = this.botForWrite();
 			if ("networkId" in input.target) {
+				// §4.1 实体交互：射程按命中箱计，遮挡由射线判定；通过后才派发。
 				const entity = this.resolveEntity(bot, input.target);
+				const entityGate = await checkEntityHit(worldViewOf(bot), eyeOf(bot.entity), {
+					position: entity.position ?? { x: 0, y: 0, z: 0 },
+					height: entity.height,
+					width: entity.width,
+				});
+				if (!entityGate.ok) {
+					throw fail({
+						code: entityGate.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+						source: "world",
+						message: entityGate.message,
+						dispatch: "not_sent",
+						effects: [eff],
+						recoverable: true,
+					});
+				}
 				protocolFor(bot).activateEntity(entity.id, input.hand === "off" ? 1 : 0);
 				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "met", {
 					completionContract: "entity interaction dispatched",
@@ -1084,17 +1113,58 @@ export class BodySessionImpl implements BodySession {
 					recoverable: true,
 				});
 			}
-			await bot.lookAt(
-				toMineflayerVec3({ x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 }),
-				true,
-			);
+			// §4.1 派发闸门：真实眼位/碰撞形状/射线/射程判可达性；隔墙、超程在写前
+			// 意图之前失败。调用方声明了面就按该面检查，未声明则从可命中面中选。
+			const gate = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
+				reach: BLOCK_REACH,
+				requestedFace: direction,
+			});
+			if (!gate.ok) {
+				throw fail({
+					code: gate.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+					source: "world",
+					message: gate.message,
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			// §4.2 受控转头到位后再复核：瞄准期间目标/眼位可能已变。
+			await aimAtControlled(bot, gate.hit.point, { signal: this.signal });
 			this.recheck();
-			const f = direction ?? { x: 0, y: 1, z: 0 };
-			const face = f.y > 0 ? 1 : f.y < 0 ? 0 : f.z > 0 ? 3 : f.z < 0 ? 2 : f.x > 0 ? 5 : 4;
+			const recheck = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
+				reach: BLOCK_REACH,
+				requestedFace: direction,
+			});
+			if (!recheck.ok) {
+				throw fail({
+					code: recheck.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+					source: "world",
+					message: `target changed while aiming: ${recheck.message}`,
+					dispatch: "not_sent",
+					effects: [eff],
+					recoverable: true,
+				});
+			}
+			const face =
+				direction != null
+					? direction.y > 0
+						? 1
+						: direction.y < 0
+							? 0
+							: direction.z > 0
+								? 3
+								: direction.z < 0
+									? 2
+									: direction.x > 0
+										? 5
+										: 4
+					: recheck.hit.faceNumber;
+			const dispatchedCursor = cursorPos ?? recheck.hit.cursor;
 			// 写前意图（§5.12）：方块交互是放置/使用/开门这类真实世界写，不可安全重放。
 			await this.recorder.beforeWrite(eff, op, "body.interact@1", plain({ block: target.block, hand: input.hand }));
 			this.recheck();
-			protocolFor(bot).activateBlock(target.block, face, input.hand === "off" ? 1 : 0, cursorPos);
+			protocolFor(bot).activateBlock(target.block, face, input.hand === "off" ? 1 : 0, dispatchedCursor);
 			this.recorder.record(
 				eff,
 				op,
@@ -1152,6 +1222,7 @@ export class BodySessionImpl implements BodySession {
 			// 不再另发一个只出现在事件里的引用。
 			const operation = this.deps.mintOp();
 			const window = new WindowSessionImpl({
+				...(this.deps.windowPacing != null ? { pacing: this.deps.windowPacing } : {}),
 				...deps,
 				player: true,
 				operation,
@@ -1270,65 +1341,6 @@ export class BodySessionImpl implements BodySession {
 		}
 	}
 
-	/** physicsTick precedes updatePosition in the installed plugin; awaiting resumes after that stack. */
-	private awaitContainerPhysicsBoundary(bot: MineflayerBot): Promise<void> {
-		const signal = this.signal;
-		return new Promise((resolve, reject) => {
-			let settled = false;
-			const cleanup = () => {
-				clearTimeout(timer);
-				bot.removeListener("physicsTick", onTick);
-				bot.removeListener("end", onEnd);
-				signal.removeEventListener("abort", onAbort);
-			};
-			const finish = (error?: CallFailure) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				if (error === undefined) resolve();
-				else reject(error);
-			};
-			const onTick = () => finish();
-			const onAbort = () =>
-				finish(
-					fail({
-						code: "INTERRUPTED",
-						source: "environment",
-						message: "container opening cancelled before the physics boundary",
-						dispatch: "not_sent",
-						recoverable: false,
-					}),
-				);
-			const onEnd = () =>
-				finish(
-					fail({
-						code: "DISCONNECTED",
-						source: "environment",
-						message: "client disconnected before container activation",
-						dispatch: "not_sent",
-						recoverable: false,
-					}),
-				);
-			const timer = setTimeout(
-				() =>
-					finish(
-						fail({
-							code: "TIMEOUT",
-							source: "environment",
-							message: "client physics loop stalled before container activation",
-							dispatch: "not_sent",
-							recoverable: true,
-						}),
-					),
-				DRIVE_STALL_MS,
-			);
-			bot.on("physicsTick", onTick);
-			bot.on("end", onEnd);
-			signal.addEventListener("abort", onAbort, { once: true });
-			if (signal.aborted) onAbort();
-		});
-	}
-
 	async openContainer(_target: BlockTarget | EntityRef): Promise<WindowSession> {
 		const releaseView = this.beginView();
 		this.enterOp();
@@ -1346,6 +1358,8 @@ export class BodySessionImpl implements BodySession {
 			this.openingWindow = true;
 			const target = structuredClone(_target);
 			let point: Vec3;
+			// 方块目标的命中面/命中点由 §4.1 闸门给出；实体目标无方块闸门。
+			let containerActivate: { face: number; cursor: Vec3 } | undefined;
 			if ("networkId" in target) {
 				const entity = this.resolveEntity(bot, target);
 				if (target.appearance !== `ap:${entity.id}`) {
@@ -1401,14 +1415,41 @@ export class BodySessionImpl implements BodySession {
 					});
 				}
 				point = { x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 };
-			}
-			// force=true performs only a synchronous native look update; no pending look task can activate later.
-			await bot.lookAt(toMineflayerVec3(point), true);
-			this.recheck();
-			if (!("networkId" in target)) {
-				await this.awaitContainerPhysicsBoundary(bot);
+				// §4.1 派发闸门：容器方块必须真实可命中——隔墙/超程在开窗意图之前失败。
+				const gate = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
+					reach: BLOCK_REACH,
+				});
+				if (!gate.ok) {
+					throw fail({
+						code: gate.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+						source: "world",
+						message: gate.message,
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
+				// §4.2 受控转头到位后复核，命中点交给 activateBlock（不再默认顶面中心）。
+				await aimAtControlled(bot, gate.hit.point, { signal: this.signal });
 				this.recheck();
+				const recheck = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
+					reach: BLOCK_REACH,
+				});
+				if (!recheck.ok) {
+					throw fail({
+						code: recheck.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+						source: "world",
+						message: `container changed while aiming: ${recheck.message}`,
+						dispatch: "not_sent",
+						recoverable: true,
+					});
+				}
+				point = recheck.hit.point;
+				containerActivate = { face: recheck.hit.faceNumber, cursor: recheck.hit.cursor };
 			}
+			await aimAtControlled(bot, point, { signal: this.signal });
+			this.recheck();
+			// 受控转头的最终 look 已随物理 Tick 完成发送确认（§4.2）；原来的
+			// awaitContainerPhysicsBoundary 是同一目的的第二套等待，按减法删除。
 			if (bot !== this.deps.bot() || bot.currentWindow !== null) {
 				throw fail({
 					code: "CONTROL_CONFLICT",
@@ -1420,6 +1461,7 @@ export class BodySessionImpl implements BodySession {
 			}
 			const check = this.boundCheck();
 			const window = new WindowSessionImpl({
+				...(this.deps.windowPacing != null ? { pacing: this.deps.windowPacing } : {}),
 				bot,
 				signal: this.signal,
 				operation: this.deps.mintOp(),
@@ -1463,7 +1505,7 @@ export class BodySessionImpl implements BodySession {
 				if ("networkId" in target) {
 					this.resolveEntity(bot, target);
 					protocolFor(bot).activateEntity(target.networkId);
-				} else protocolFor(bot).activateBlock(target.block);
+				} else protocolFor(bot).activateBlock(target.block, containerActivate?.face, 0, containerActivate?.cursor);
 			});
 			return window;
 		} finally {

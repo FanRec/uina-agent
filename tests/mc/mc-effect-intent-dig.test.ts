@@ -6,12 +6,14 @@
  * 1. startDig 发包那一刻，意图已经是这条 effect 的第一条事实；
  * 2. 意图落不了盘就一次包都不发，失败按 not_sent 收口（不是"挖了但不知道结果"）。
  */
+
+import { EventEmitter } from "node:events";
 import { expect, test } from "vitest";
 import type { DriverExecutionFact } from "../../.uina/worlds/minecraft/contracts/runtime.js";
+import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
+import { runMining } from "../../.uina/worlds/minecraft/driver/body/mining.js";
 import type { BodyOperationDeps } from "../../.uina/worlds/minecraft/driver/body/operation.js";
 import { EffectRecorder } from "../../.uina/worlds/minecraft/driver/execution.js";
-import { runMining } from "../../.uina/worlds/minecraft/driver/body/mining.js";
-import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { ProtocolNotice } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
 
 const target = {
@@ -29,6 +31,7 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 	// 会被 runMining 的 async 流程吞掉再包成 CallFailure，一旦所属测试已结束就成了
 	// file-level unhandled rejection（全套并行时偶发）。
 	let intentOrderViolation: string | null = null;
+	const botEvents = new EventEmitter();
 	const deps = {
 		guard: () => {},
 		mintOp: () => "op:1",
@@ -36,8 +39,19 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 		signal: new AbortController().signal,
 		canCleanup: () => false,
 		bot: {
+			entity: { position: { x: 0.5, y: 65.62, z: 0.5 }, eyeHeight: 1.62, yaw: 0, pitch: 0 },
 			lookAt: async () => {},
-			blockAt: () => (options.blockGone?.() ? null : { name: "stone" }),
+			look: async (yaw: number, pitch: number) => {
+				deps.bot.entity.yaw = yaw;
+				deps.bot.entity.pitch = pitch;
+			},
+			on: (name: string, listener: () => void) => botEvents.on(name, listener),
+			off: (name: string, listener: () => void) => botEvents.off(name, listener),
+			world: {
+				// 闸门世界：只有目标一个方块，采样射线首命中即目标（§4.1 夹具口径）。
+				raycast: async () => ({ x: 0, y: 64, z: 0 }),
+			},
+			blockAt: () => (options.blockGone?.() ? null : { name: "stone", shapes: [[0, 0, 0, 1, 1, 1]] }),
 			digTime: () => 20,
 			swingArm: () => {},
 		},
@@ -55,6 +69,9 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 			},
 		},
 	} as unknown as BodyOperationDeps;
+	// 连续物理 Tick 泵：受控转头按 tick 步进（unref 不拖住进程）。
+	const tickPump = setInterval(() => botEvents.emit("physicsTick"), 1);
+	tickPump.unref?.();
 	const recorder = new EffectRecorder({
 		record: (fact) => {
 			facts.push(fact);
@@ -82,8 +99,9 @@ function rig(intent: () => Promise<void>, options: { blockGone?: () => boolean }
 test("the write intent is durable before startDig and the packet confirms it", async () => {
 	const h = rig(async () => {});
 	const digging = runMining(h.deps, target as never, { aim: "preserve" });
-	// 真的 EffectRecorder 里 beforeWrite 还要等一次屏障：排几个 microtask 再断言。
-	for (let i = 0; i < 10 && h.kinds().length < 2; i++) await Promise.resolve();
+	// 真的 EffectRecorder 里 beforeWrite 还要等一次屏障；闸门+受控转头多了若干
+	// await 层——自旋到出现两步事实（上限放宽，找不到仍由断言失败）。
+	for (let i = 0; i < 300 && h.kinds().length < 2; i++) await Promise.resolve();
 	expect(h.kinds().slice(0, 2)).toEqual(["intent", "dispatch"]);
 	expect(h.packets).toContain("startDig");
 	// 只有服务端方块更新能确认：客户端计时到了也只算 unknown。

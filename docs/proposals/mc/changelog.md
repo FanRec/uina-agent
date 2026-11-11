@@ -1,5 +1,17 @@
 # 设计变更记录
 
+## 2026-11-12 · 身体交互派发闸门、受控转头与 GUI 节奏（S1/S2/S4 落地）
+
+按《身体交互、自然表现与局部自治升级决策》完成 S1（硬正确性）、S2（动作连贯）、S4（可见 GUI 节奏）的离线可测切片；S0 真服探针与 S3 按证据如实记录（见文末）。
+
+- **S1 派发闸门**：新增 `driver/body/aim.ts`（Body 私有几何，不构成公共层）——`checkBlockHit` 以操作当刻真实眼位（姿态化眼高，不猜 1.62）、prismarine 碰撞形状、`world.raycast` 首命中与游戏模式射程（生存 4.5）判方块可交互性；命中点/进入面由射线-AABB 精确解给出，cursor ∈ [0,1] 随包下发，不再默认顶面 (0.5,0.5,0.5)。玻璃等实心遮挡不透明通道；`checkEntityHit` 给实体交互补命中箱射程与遮挡判定。`body.dig`/`body.interact`/`openContainer` 三条路径全部接入：隔墙/超程在写前意图之前 `UNREACHABLE`/`OUT_OF_REACH` 失败，零效果记录。Capability 的距离读数降为初筛，Driver 是唯一权威（减法 #1）。
+- **S2 动作连贯**：`nextAimStep` 纯步进（最短 yaw 角差、pitch 夹取、12°/10° 每 Tick 观感初值、收敛容差）；`aimAtControlled` 受控转头逐 look 限速推进、abort 任意等待点立即打断（INTERRUPTED）、look 停滞 1500ms / 全程 4s 有界失败（AIM_STALLED/AIM_TIMEOUT），绝不满负荷挂等。`runMining` 从 startDig 到结算按 ~350ms 节拍连续挥手，服务端终态/取消/断线/退役立即清理周期任务。删除强制 `lookAt(true)` 分支与 `awaitContainerPhysicsBoundary`（受控转头的最终 look 已随物理 Tick 完成发送确认，同功能第二套等待按减法 #2 删除，`DRIVE_STALL_MS` 死常量随之清理）。
+- **S4 可见 GUI 节奏**：`WindowSession` 单一 `pacing` 配置（clickGap/openDwell/resultDwell/closeDwell + 总预算封顶），由 Body 会话从组合根透传；确认画面可见才注入，缺省不注入 = 后台/无画面快速执行。等待可取消（取消立即放行不为表演拖慢清理）、预算耗尽跳过后续停顿；点击的 check→intent 同步窗口不被切开（§7.7 前态冻结不夹异步缝——dwell 在 check 之后、busy 判定之前，不在 intent 前的同步段内）。
+- **路径裁决遵循源码事实**：Pathfinder 的 `bot.dig()` 补丁路径与本直接路径不合并（各自 Effect/意图/代次契约不同，200 行合并收益不抵可观测性损失，按 §4.3 保留）；击退 lpVec3 修正与 GUI 可见通道门控**未实施**——两者都被设计包明确门控在真实 1.21.11 服务器探针证据之后（S0），本环境无真服，不虚构受击位移、不猜呈现通道。
+- **测试**：`mc-aim` 15 项（slab 真实命中面/遮挡不穿透/指定面进入面校验/超距/转头限速与中断/有界停滞）；mining 闸门与挥手两条新用例；driver-window 两个边界时代测试按新合同迁移（闸门阻断+激活包携带真实命中点、AIM_STALLED 有界），GUI 节奏专项（间隔生效/预算封顶/缺省快速）。全量 140 文件 1223 测试通过；typecheck:ci 全绿。
+- **未验证**：S0 真服探针（速度包解码值域、交互发包前眼位射线、GUI 实际直播画面）、S3 局部换位（approach/workstation 改造留待下一片，闸门失败的 UNREACHABLE+blocked 信息已具备）、击退修正、S5 真服验收——全部需要真实 Minecraft 服务器；夹具/单元通过不冒充真服通过。
+
+
 ## 2026-11-12 · 跨 Capability 组合契约修正（复查轮）
 
 复查发现"单个 Capability 测试通过 ≠ 跨 Capability 的 Program 组合正确"，本轮修三处组合/一致性问题：
