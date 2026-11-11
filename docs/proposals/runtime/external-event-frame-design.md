@@ -144,8 +144,8 @@ origin 缺省规则是旧输入的兼容解释，不代表所有历史 runtime �
 - 相同输入重复请求、恢复与回溯重新投影时生成相同帧 ID；第一版以 Subject 单历史为 ID 作用域。
 - 相同正文但不同 eventId 是不同事件，不得按文本合并。
 - 历史旧 user message 使用 SessionEntry.id 作为 eventId。纯内存手工 seed 必须提供 id；存在 external 输入却没有稳定 ID 时明确报投影错误。
-- **帧落在对话首位时降级为一条 user 消息**（正文相同，带同一 context.input，无 kind）：Anthropic 拒绝以 assistant 开场的 messages，而"先补一条通知把 assistant 推到第二位"正是本轮删掉的模板。代价是这一条没有工具回合；换来的是三条 Provider 都不必见一个非法开场。`assertEventFrameContext` 对首位帧直接报错，防止后续 hook 把帧搬到首位。
-- 请求前瞬态观察（世界状态、声音状态）用同一构造函数，但带 `observationSource`，只进请求检视、不进模型正文；它不落 Session 历史。
+- **帧落在对话首位时降级为一条 user 消息**（正文相同，带同一 context.input，无 kind）：Anthropic 拒绝以 assistant 开场的 messages，而"先补一条通知把 assistant 推到第二位"正是本轮删掉的模板。代价是这一条没有工具回合；换来的是三条 Provider 都不必见一个非法开场。`assertEventFrameContext` 对"帧之前没有对话消息"报错（只有 system 也算没有：Provider 会剥掉 system），防止后续 hook 把帧搬到首位。
+- 请求前瞬态观察（世界状态、声音状态）用同一构造函数，但带 `observationSource`，只进请求检视、不进模型正文；它不落 Session 历史。降级成 user 消息时这份检视记录仍然保留（否则首轮观察在 `/prompt` 里看不见）。
 
 ### 4.2 内部消息
 
@@ -196,7 +196,7 @@ ProjectionPolicy 增加 `validateContext?: (messages, request?) => void`，缺�
 
 增加后置校验的理由：当前后续 hook 可修改投影后的消息，没有这个检查就无法对配对与分组作请求级保证。第五关派生证据就是本能力在保持内核不认识具体帧名称的前提下正确运行。
 
-校验要求：帧两成员相邻、编号完整、call ID 对应、参数为空对象、合成调用不带正文、eventId 与 call ID 一致、首位不得是帧、无重复/冲突 ID、帧在场时请求必须声明该工具；真实调用/回执也必须成对，禁止后继 hook 留孤儿消息。完整删除历史帧组是允许的上下文策略；删除其中一部分必须显式失败。不能靠再次清洗静默丢掉坏帧。
+校验要求：帧两成员相邻、编号完整、call ID 对应、参数为空对象、合成调用不带正文、eventId 与 call ID 一致、帧之前必须有对话消息、无重复/冲突 ID、帧在场时请求必须声明该工具；真实调用/回执也必须成对，禁止后继 hook 留孤儿消息。完整删除历史帧组是允许的上下文策略；删除其中一部分必须显式失败。不能靠再次清洗静默丢掉坏帧。
 
 contextTools 的 schema 成本必须加入请求 token 估算、压缩预算与 Host 用量视图，不能仍只计算 broker.defs。context metadata 不上 wire，不单独作为文本 token 计入。
 
