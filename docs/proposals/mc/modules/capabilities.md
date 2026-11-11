@@ -561,12 +561,23 @@ type ExploreTarget =
 #### collect · `collect@1` · act · P0
 - 输入 `{ item: Name, count?: 1..1024 = 1, radius?: 32, digThrough?: false, tool?: Name|ItemSelector }`
 - 做：寻找掉落匹配 item 的方块，走近、挖掘并拾取；只负责已经可执行的采集，不为 charcoal 等自动展开科技树。
+- 采掘要求未知不等于缺工具：已知要求（tools）而库存不满足才报 `MISSING_TOOL`；只剩 `harvest.kind:"unknown"` 源时不假报缺工具，保留候选交给 `mine@1`，由它对采掘要求未知的方块如实抛 `WRONG_STATE`（"harvest requirements unknown"），collect 原样上抛。
+- `NOT_FOUND` 的提示要分开三种原因：物品名解析不到、静态知识没有对应方块来源、当前已观察半径内没有候选。错误码可以保持，事实范围必须说清，否则模型会去改物品名而不是扩大范围。
+- 固定来源范围（`sourceBounds`）是独立的通用采集需求，本轮不随备料 Program 扩张 Collect 接口。若实施，候选发现本身必须以固定中心搜索并说明覆盖；只按当前站位搜索再过滤 xz 距离不算固定范围。
 - 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
 - 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name], goal }`；mined 只累计 Driver 已用服务端事实确认的破坏格数。
-- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{goal, mined, acquired, collected, toolsUsed, candidates:{attempted,skipped,blocked,uncertain}}`（§2.15）；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。`goal` 按**最终取得物品**记账（`total = count`、`completed = acquired`），候选格的成败单独放 `candidates`，两种单位不混在一个计数里。
+- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/TARGET_NOT_MET/INTERRUPTED，progress 为 `{goal, mined, acquired, collected, toolsUsed, candidates:{attempted,skipped,blocked,uncertain}}`（§2.15）；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。`goal` 按**最终取得物品**记账（`total = count`、`completed = acquired`），候选格的成败单独放 `candidates`，两种单位不混在一个计数里。
 - 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
 - 候选纪律（批42）：`tried` 记录 `permanent`（源方块已不在）/`transient`（路线暂不可达）/`unknown`（已派发但结果未知）。**mine 的 TIMEOUT 若 `dispatch:"sent"` 或已有 effect，不得换候选**——那会把"可能已挖掉"当成没发生，必须带 progress 上抛；goto 的 TIMEOUT 只是移动预算，可换候选。真正拿到资源后释放 transient，让环境变化后的候选重新评估。候选耗尽但 `mined > acquired` 时先做一次有界 `pickup@1` 清扫地面掉落，再判定 NOT_FOUND。
 - 实现：物品名先用静态知识反查方块来源（`item@1` 的 block sources），再用 `blocks@1` 取前沿；走的是一遍遍 `goto@1` + `mine@1(collect:false)` + 掉落观察，入不了包再 `pickup@1` 兜底。**不持身体**（Body 槽与 goto 槽互斥），每一步独立取放；子调用的 `CONTROL_CONFLICT` 原样上抛，不做跨 run 隔离。可预判的失败（无来源/没工具/背包满）全在移动之前判定。
+
+#### survey · `survey@1` · act · P1
+- 输入 `{direction?:"n"|"e"|"s"|"w"|"any"="any",maxTimeMs?:90000,上限300000}`。
+- 做：无目标的自由侦察。会话机制与 explore@1 同源（`shared/explore.ts` 的 ObservationMap / rankFrontiers / pickFrontier / route.plan 估价 / gotoDirector），不复制 Pathfinder、不建第二世界数据库。每站读 region 观察盒更新临时覆盖图，走向信息增益最大的非破坏性前沿（不挖、不垫）。
+- 见闻各自来源真实：方块发现取 region palette 的真实名字与格位（air/water/lava 不是发现，solid 不推矿物）；群系来自 `world@1`；实体来自 `entities@1`。发现列表去重（kind+name）、上限 10 项。
+- 返回 `{at:{position,dimension},traveled,scanned,endReason:"time_budget"|"no_frontier",discoveries:[{kind,name,at}]}`。
+- `time_budget`/`no_frontier` 都是正常结束，但诚实区分：一步没走成且没有任何有效新观察时按 `UNREACHABLE` 失败，不假装完成侦察。中断/断线/Safety 照常失败结算。长期地点由 Uina 显式 `remember@1`，本能力只留活动内临时覆盖图。
+- 发布注记（2026-11-12 落地）：已装配进目录；真服场景验收（真实移动/发现来源/不可达诊断）仍未执行。
 
 #### tunnel · `tunnel@1` · act · P1
 - 输入 `{ to: Pos, size?: "1x2"|"1x3"|"2x2"|"3x3" = "1x2", stairs?: "auto"|"never" = "auto", support?: true, maxTimeMs?: 180000 }`
@@ -575,7 +586,9 @@ type ExploreTarget =
 - 走拍前重新观察脚位（G31）：`opened` 记的是"这一格我开过"，不是"这一格现在是空气"。沙/砾石会跟着走廊往下掉，而且掉落滞后于挖拍——挖檐块把上方整摞重力方块带下来，落点正是下一列的脚位。所以每一段腿走之前都重读脚位与其头位：非空气就重挖（这两格都在本次走廊计划里，动的都是这次授权过的范围），清过东西就等落定再看一轮，直到某轮什么都不用清（`STATION_CLEAR_LIMIT = 支撑探测上限 + 1`）。清不掉时如实报出是哪一格、为什么（未加载 / 流体 / 够不着 / 挖不动），不再统一记成"走位卡住"。末列的到位判据比中间列严：中间列允许差一格（下一拍继续往前挖），末列必须真的站进去——完成描述是"走到尽头"。
 - 挖除序列整列自上而下（G40）：支撑探测段也在内——先挖下层重力块会让上层立刻失去支撑、坠进正在挖的走廊，落点正是走位目标脚位；落定时刻与"走位前的最后一读"赛跑，输了就是"机器人站在回填块头顶、GoalNear tolerance=1 谎报到位、烧满预算报卡住"。同一口径的收尾：腿走完仍未站进目标层时，重跑一轮站位清理再步进一次，仍不到位才报卡住。
 - 完成：通道连通且可从起点走到终点。
-- 返回 `{ dug, path:[{ at, name }], goal, stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
+- 返回 `{ dug, path:[{ at, name }], goal }`，只在通道连通且实际走到终点时正常返回；受阻时不再正常返回 `stopped`。
+- 遇到当前库存采不动的格：以真正障碍为准抛 `MISSING_TOOL` 或 `UNREACHABLE`，带 `progress.goal`、`dug`、阻塞位置和 Effect。已挖前缀不回滚，也不能被描述成整条通道已完成。`tunnel@1` 只有这一套结算，不发布 `@2`；输出 Schema 里的 `stopped` 字段随之删除。
+- 失败 `UNREACHABLE`、`MISSING_TOOL`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`
 - 目标对账（§2.15）：`total = 计划格数 + 1`（最后那个 1 是"真的走通"），`completed` 只算服务端确认空气的格与走通本身；流体/挖不动记 `blocked`，未加载/未确认记 `uncertain`，没轮到的格记 `remaining`。执行中发现的头顶支撑格注册时一并计入总量。progress 带 `phase`（digging/walking/done）与 `columns:{walked,total}`
 
 #### excavate · `excavate@1` · act · P1
@@ -1135,7 +1148,7 @@ describe 使用文本与标签匹配。三条固定查询分别检查候选召�
 | 能力 | 可能失败码 |
 |---|---|
 | `goto` | UNREACHABLE TIMEOUT INTERRUPTED |
-| `collect` | NOT_FOUND MISSING_TOOL INVENTORY_FULL UNREACHABLE TIMEOUT INTERRUPTED |
+| `collect` | NOT_FOUND MISSING_TOOL INVENTORY_FULL UNREACHABLE TIMEOUT TARGET_NOT_MET INTERRUPTED |
 | `mine` | NOT_FOUND UNREACHABLE MISSING_TOOL TARGET_NOT_MET INTERRUPTED |
 | `place` | MISSING_MATERIAL CONFLICT UNREACHABLE TARGET_NOT_MET WRONG_STATE |
 | `craft` | NOT_FOUND MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL WRONG_STATE TARGET_NOT_MET CONFLICT INTERRUPTED |

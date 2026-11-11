@@ -327,6 +327,8 @@ P0/P1/P2 和 K1–K8 是能力范围与优先级标签；实际施工顺序见 �
 
 **重构轮 R1（2026-11-09，设计包 `Uina-Minecraft-World-Refactor-Plan.md`）目标对账统一 + 机械恢复 + 交付有界 + 落水策略**——先按源码核实设计稿每条判断，四处登记归因不成立（爬岸不是驱动缺陷、窗口未知点击已合规、工作站副作用已披露、进度明细没丢只是摘要丢了），范围据此收敛。落地：① `GoalState`/`GoalSummary` 进 `contracts/values.ts` + 新增 `capabilities/shared/goal.ts`，`build` `tunnel` `excavate` `collect` 共用四态（和恒等于 total；tunnel 从只报 dug 改按格对账；build 的 preserve 计入完成、unknown 计入 uncertain；collect 按最终取得物品记账、候选格另计），capabilities §2.15 新增；② `boundedSummary` 超 2048 字节不再整块清空 progress，改 `projectProgress` 截断明细保计数；③ 执行域 attach 成功即证明旧域退役 → `disabled`+`owner_lost` 自动解除（`status().recovery`），`emergency` 永不自动解除且压住 `owner_lost`，省掉模型两轮 `runs recover`；④ `pendingDeliveries` 游标改 rowid 键集 + 每轮 ≤96 检查 / ≤8 交付（偏移分页在 ACK 移走行时会跳过未处理项）；⑤ `MOVEMENTS_POLICY.infiniteLiquidDropdownDistance=false`——上游默认让"从平台边缘落进海里"成为 cost 1 的合法一步，目标不可达时 A* 搜 70,916 节点烧满 5s，关掉后同题 1,922 节点 / 1352ms 诚实 noPath，**G28 关闭**（爬岸本身 4 节点 / 3–7ms、端到端 2008/2015/2009/2008/2019ms 五轮零方差）。验收：真服 upstream-nav 7/7 连续五轮、climb 6/6、terrain-nav 6/6；T0 新增 mc-goal-progress 9 项、mc-pathfinder-water-drop 2 项；tests/mc 119 文件 994 项（除既有基线红 mc-pending-client 外全绿）。
 
+**能力完成语义与子调用结算（2026-11-11 裁决；2026-11-12 落地，真服验收未执行）**——审查“可组合游玩能力体系”提案后删去三项（`tunnel@2`、本轮正式发布 `prepare@1`、双版本检索与迁移机制），强化三项（Effect/Call/Goal 三层语义、子调用 unknown 传播、清理异常优先级）。阶段：S1 子调用传播与 `not_met` 厘清（含 `mc-runtime-settlement.test.ts` 两条子调用用例改写与清理故障注入）；S2 `tunnel@1` 受阻结算与 `collect@1` 采掘要求未知归因；S3 describe 简化与检索词表；S4 `survey@1` 与 `arrive@1` 精确脚位研究验证；S5 Library 备料 Program（复用 `recipe@1.plan`，不新增正式 Capability）；S6 真实场景与 LLM 选择对照。`sourceBounds` 作独立需求评估，不随 S5 强制扩张 Collect。合同修订与未验证项见 [changelog 2026-11-11](changelog.md)。
+
 ### 10.4 本次顺序裁决与取舍
 
 | 裁决 | 依据与影响 |
@@ -365,7 +367,8 @@ MC 专项回归继续使用 PowerShell 显式文件列表：`$mcTests = @(rg --f
 | World 事件等待、历史保留、Runtime 引用保护 | 可等待查询已在 9A 接齐；持续运行所需清理/精确引用保护由 9B 在 I2 收口，不能永久只增不清 |
 | ~~ctx.verify 与后续效果核验~~ | 批13 已关闭（`verify/dig@1` + 注册表 + 程序桥 `mc.verify`）；批14 的施工用"收尾逐格复读"复核，未新增 verifier——build 的完成判据本来就是世界读数，不需要第二套核验器 |
 | feedback、过期输入、默认自保与 safety 记录 | 批10已接通；完整 fight 随后实现。当前含真实 guest 控制桥、控制撤销与 safety 持久记录，见 archive/feedback-implementation.md |
-| goto 站姿/空间完成判据 | 路径/脱困工作包落实实际可站立判据，保留现有 GoalNear 的真实节点语义，不用欧氏距离误拒 |
+| goto 站姿/空间完成判据 | 路径/脱困工作包落实实际可站立判据，保留现有 GoalNear 的真实节点语义，不用欧氏距离误拒；精确脚位由独立 `arrive@1` 承接（2026-11-11 裁决），GoalNear 成功不冒充精确抵达 |
+| 通道受阻结算与备料复用 | `tunnel@1` 受阻按领域失败结算并保留已挖前缀，不发布 `@2`；备料先用 Library Program 复用 `recipe@1.plan` 验证，不发布正式 `prepare@1`（2026-11-11 裁决） |
 | Microsoft 认证与账号身份核验 | 正式原生入口后可独立开工；有授权账号时验收客户端认证、profile/账号独占，未验收前仅声明 offline 范围。最终完整交付仍须支持两条认证路径 |
 | 其他协议版本、窗口与物品组件差异 | 真实接入该版本/工作站时在同一 DriverProtocol 窄口处理；当前只确认 1.21.11，不提前声明兼容 |
 | Library 蓝图解释/工程材料、经验条件与证据 | 文件生命周期在批 8；蓝图语义在施工包，经验不认证成事实；完整 Library 验收涵盖三类材料 |

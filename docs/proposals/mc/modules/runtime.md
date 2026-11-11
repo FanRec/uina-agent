@@ -237,7 +237,7 @@ record 同步复制/校验最小事实并进入 Runtime 有序内存队列，返
 1. 同步关闭范围新准入；保存 return/throw/取消/decide 原因，禁止新业务子操作。
 2. 取消并等待已登记子 Call/宿主操作；撤销范围所属资源。Driver 完成该范围控制屏障，相关清理派发/回执先进入 sink。借用祖先 Body 的子 Call 不释放祖先。根 Segment 同时请求 ProgramScope.close，取得旧 guest/桥接退役事实；先封闭准入和撤销控制再等退出，不能互等于仍在等待本次 decide 的 invoke Promise。根未处理 NEEDS_DECISION 才开始该控制转移，不等待仍在等待结算的根 invoke Promise。普通子 Call 只退役自己的 guest；逻辑段关闭也不终止共享 worker。
 3. 执行固定合同需要的宿主只读核验并登记其结果；这是受限结算路径，不重开业务准入，不偷偷开窗/移动/发动作。无法核验则 unknown。
-4. 普通子 Call：固定自己的已收到材料，保存 execution、领域结果、effects 与 control，将不可变完成截面加入同一 writer 序列后返回领域值/抛错。入队不等于持久；无逐 Call flush。无法接收入队则锁存 recorder fault，停止新副作用并将故障上抛，不伪装已记账。其父段最终封口覆盖这些材料与完成截面。
+4. 普通子 Call：固定自己的已收到材料，保存 execution、领域结果、effects 与 control，将不可变完成截面加入同一 writer 序列后返回领域值/抛错。`unknown` 的记录照常入队，向父调用则在交付边界（`invokeChild` 的 `deliverChild`）抛 `EFFECT_UNCONFIRMED`，不返回业务值；清理失败与主目标失败的优先级同 §5.6。入队不等于持久；无逐 Call flush。无法接收入队则锁存 recorder fault，停止新副作用并将故障上抛，不伪装已记账。其父段最终封口覆盖这些材料与完成截面。
 5. 根 Segment：待后代局部关闭和核验材料均已入队，固定此刻 Runtime 已收到的所属事实集合及队列上界 H（含子 Call 完成截面）。调用 writer.flushThrough(H)，等待所有 ticket≤H 的已收材料持久提交或明确失败。全局 FIFO 前缀可包含其他 Call 的早到材料，但不等待 H 之后流量；不建每 Effect 一个 writer。
 6. 屏障成功后按固定材料结算根 execution、领域结果、effects 与 control，再在短事务写阶段/最终结论、record、completionRef 和待交付项。H 以后到达的核验不混入本结论；尚待服务端结果留 unknown，不无限等未来证据。终结事务不得越过 H；commit 确认后才允许完成通知递送。
 7. guest 退役无法证明时，Program 保留未释放容量并请求 Executor 完成隔离；Run 不能报 succeeded，若控制也未隔离则 control=unknown 且禁止接管。flush/commit 失败：实际控制继续撤销，禁止新动作；记录存储 unavailable，不能输出一个假称持久 finished 的 completion。可独立给 StopReceipt.control；恢复按未闭合段处理。
@@ -252,7 +252,15 @@ Effect 原派发/原回执不可改；后续可信核验追加新记录，含 ob
 
 五态：整个 Run 从未执行为 not_started；明确取消且控制停止为 cancelled；未处理错误/当前入口声明要求确定不足为 failed；正常返回但必需效果或控制清理未知为 unknown；当前入口返回且必要效果和清理有据才 succeeded。能力目标是否满足由能力负责，Runtime 不重新求值。failed/cancelled 也可带 unknownEffects；捕获子失败可以换路，原记录和未解决效果仍保留。terminal 的完成范围取最后一段入口，不据此认证历史目标。
 
-原生调用结算先取得实际效果引用，再检查本调用及调用子树的最新效果事实；不能先用空的 Call.effects 判成功，也不能因父调用捕获子失败而丢掉未确认副作用。效果的唯一归属保持不变，父结果不复制一套效果权威。正常返回而效果未确认时保留领域返回值、outcome=unknown 与 unknownEffects；持久记录和恢复读取保留相同结果，不自动重放。
+原生调用结算先取得实际效果引用，再检查本调用及调用子树的最新效果事实；不能先用空的 Call.effects 判成功，也不能因父调用捕获子失败而丢掉未确认副作用。效果的唯一归属保持不变，父结果不复制一套效果权威。
+
+结算要分开**记录**与**传播**。记录对根和子调用一致：正常返回但效果未确认时，Call 保留领域返回值、`outcome=unknown` 与 `unknownEffects`；持久记录和恢复读取保留相同结果，不自动重放。传播只在子调用上收紧：当前判定仍未决（unresolved）时不向父调用正常返回业务值，Runtime 在交付边界抛 `EFFECT_UNCONFIRMED`（带 dispatch/effects/progress），父程序 catch 后必须先读事实或核验原 Effect；`not_met` 且终态闭合是已确认未达，不阻断传播，但同一 Effect 的清理后果仍未静止时仍按未决传播；是否替代、恢复或失败由能力自己的目标核验决定，Runtime 不把 Effect 状态当成 Call 完成判据；`failed` 保留原领域 code 与原因。根调用没有父调用，仍按 Run 结果交付 `unknown + value`。
+
+Effect 的当前判定是**唯一投影** `assessEffectFacts`（records.ts），把 facts + verifications 归约成 `completion`（业务结论）与 `unresolved`（世界写入是否仍待对账）两个字段；`RecordQueue.unknownEffectsFor`、`effectsForSafety`（含恢复路径）、`engine.callHasUnknownEffects` 与子调用交付边界全部消费它，不得各写一份。业务结论取 receipt；独立关闭操作（`body.window.close@1`）以自己的 cleanup 结论为准；只有持久意图而未派发的按确定未达成记 `not_met`；操作已收尾（cleanup met）却无 met 回执的也是 `not_met`——清理成功不冒充业务成功。
+
+`unresolved` 与业务结论分开：`not_met` 且终态闭合不是未知（挖了没掉是确认失败）；但 `receipt met` 之后同一 Effect 的 cleanup 仍未静止时**仍然未决**（导航清理、关窗是真实世界写入，业务成功不遮蔽它）；`body.goto@1` 这类带清理屏障的合同还要求派发后的写源静止证明。合格核验（`EffectVerification` 带 `factsAnchor`，等于追加时的 fact 前缀长度）可以关闭当前未决并参与进行中调用的结算；之后又到达的新 Driver fact 使锚点失效，核验退回历史诊断；无锚点的旧核验只做诊断，跨维度/无身份事实不凭同坐标读数结清。历史 Call/Run 截面从不倒写。
+
+清理与主目标的异常优先级固定：原始失败原因不被清理失败覆盖；清理失败也不静默吞掉，作为独立事实保留。只释放内部 Handle/锁/Worker 的清理按生命周期关闭结果处理，不虚构世界 Effect；真正发送游戏操作（关窗、释放容器）的清理照常记 Effect，未知保留 unknown。两者并存时 Call 记录主目标的 outcome 与 error，清理的 unknown 进入 effects/unknownEffects，不为此新建独立的清理管理器。
 
 ## 6. 执行报告与交付处置
 

@@ -256,6 +256,27 @@ continue 核验 decision 未消费，创建新段和新活引用，保留 Run �
 
 成功 await 返回领域值。CallError 携带 code/source/message/hint/dispatch/effects/progress/recoverable；dispatch 与 effects 由 Runtime 填。source 是报错来源，不是责任裁定；hint 仅是建议，不靠错误文本分支，也不凭模板假装分析了任意源码。
 
+子调用的正常返回只代表**已确认的成功**。结算为 `unknown`（当前判定仍未决）时不返回业务值，抛 `EFFECT_UNCONFIRMED`：`error.effects` 是原 Effect 引用，`error.dispatch` 是派发事实，`error.progress` 是真实进度。catch 后先读世界事实或核验原 Effect，再决定换路、交还或继续；不能默认重放原操作。`not_met` 是确定失败或未达，保留原领域 code，不升级成 unknown。`mc.verify` 只追加效果判断，不会把历史 Call/Run 的 unknown 倒写成 succeeded；父调用要消费新证据，就在 catch 之后自己读 receipt 或世界事实，再按自己的目标结算。
+
+```js
+async function main(mc, input) {
+  const at = input.block; // 提交时已知的目标格
+  try {
+    await mc.call("mine@1", { at });
+  } catch (error) {
+    if (error.code !== "EFFECT_UNCONFIRMED") throw error;
+    const seen = await mc.read("block@1", { at });
+    if (seen.unknown?.length || seen.value?.block == null)
+      mc.decide("方块尚未可靠观测", { at, effects: error.effects ?? [] });
+    if (seen.value.block.name !== "air")
+      mc.decide("方块仍在，需决定新方案", { at, effects: error.effects ?? [] });
+    // 只确认“当前方块为空气”，不倒写旧 mine 的 Effect/Outcome。
+  }
+}
+```
+
+`finally` 里的清理调用与主目标分开结算：主目标的失败原因优先，清理抛错不覆盖它；清理的 unknown 仍进入本次调用 effects。只释放句柄的清理不产生世界 Effect。
+
 查询失败与 unknown 分开。目标型能力未满足合同抛领域错误并保留真实进度；会话型能力声明允许的 ended 原因。程序默认 completion.scope=execution，输入输出校验和 return 都不成为游戏目标证明。取消停止已确认可以 cancelled，同时仍有 unknownEffects；正常返回也不能清空未解决的效果。
 
 错误文本包含执行快照路径与行号、来源、已完成工作、未知效果和简短建议。原生能力与 guest 错误在对方域还原为 Error；返回值不是错误载体。已结算错误仍留在调用树中，父程序 catch 后可成功走替代路径。未处理的原始宿主 CallFailureData 保留领域 code/source/dispatch/effects/progress 进入 InvokeResult.failed，不能一概改成 PROGRAM_ERROR；只有普通 JS 异常才按程序错误分类。

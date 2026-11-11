@@ -129,6 +129,8 @@ interface EffectReceipt {
 
 参数/schema 不合法在该调用派发前报 `INVALID_INPUT`；能力或程序解析不到分别报 `NOT_FOUND` / `PROGRAM_NOT_FOUND`，环境不支持报 `WRONG_STATE`（能力码见 [capabilities.md §2.6](modules/capabilities.md)，程序码见 [program.md §7](modules/program.md)）。领域不足用该能力声明的稳定 code（13 码之一）+ `hint` + 真实 `progress`；未决效果走 `dispatch: "sent"|"unknown"` 与 `unknownEffects`，不另立不确定效果的第二种终态。取消/资格失效使宿主动作失效，catch 不恢复资格。桥接把 Error 转成上述纯数据，再在脚本域还原 Error 属性；未处理普通 JS 异常记 PROGRAM_ERROR。
 
+三层结果各答一个问题，不能互相推导：`EffectReceipt.completion` 答“这次写入有没有达成”，`Outcome` 答“这次调用怎么终止”，`GoalState` 答“这个游戏目标当前是否成立”。Effect 的 `not_met` 是已确认的历史事实，不自动把 Call 判成 failed——能力可以换格、换料、换路线，最终由能力自己的目标核验决定成败。Effect 的 `unknown` 才是执行不确定性：依赖它的结果不能当成确定成功，但 Call 记录仍保留原业务值与 effects。反过来，库存或终点达标也不清除同一调用里未确认的 Effect；两种事实并存，不互相洗白。
+
 Observation.cursor 的完整序号作用域及 read→watch 规则只在 §5 定义；FeedbackFrame.sequence 是单条反馈流内的帧序号，RunSnapshot.revision 是单个运行记录版本，三者不能互相比较。evidence 是事实引用，不是自述；空值不能被接口形状升级成服务端确认。
 
 Fact 不含 World 查询游标，供 Driver 的当前事实采样使用；Observation 是 World 的查询结果。mixed 必须提供 basis，覆盖所有已知的来源/观察时间不同的字段组；分组以实际判定需要为准，不给每个数字建立独立对象。混合结果的 observedAt 是本地采样时刻，各组保留实际观察时刻，不能统一刷新旧事实。unknown 表达未覆盖路径及原因，不是新的事实来源；未知数值不得填 0 或默认健康值。非 mixed 的 observedAt 为所声明来源的实际观察时刻。纯值派生仍须保留其输入依据，derived 不升级为 server。
@@ -197,6 +199,9 @@ interface ReadCallScope {
   progress(value: Progress): Promise<void>;
 }
 interface CallScope extends ReadCallScope {
+  // 只有子调用结算为 succeeded 才正常返回业务值。结算仍未决（unresolved）时抛
+  // EFFECT_UNCONFIRMED（带 dispatch/effects/progress）；failed 保留原领域错误。
+  // 记录合同不变：子 Call 自己仍记 outcome=unknown + value + effects。
   call<I, O>(ref: Selector, input: I): Promise<O>;
   withBody<T>(work: (scope: BodyCallScope) => Promise<T>): Promise<T>;
 }
@@ -215,6 +220,10 @@ interface BodyCallScope extends CallContext { readonly player: BodyOps }
 目录统一发现能力、程序、蓝图与经验。search 只给候选摘要；describe 给合同与路径，示例只有 descriptor 里的输入/输出对（不另生成调用串，也不默认搬运源码）；无参数调用一次给出 `reads`/`acts` 两组能力 ref。匹配和排序见 [Library §8](modules/library.md#8-发现)。查询 callable=false 使用 read；动作/程序 callable=true 使用 call。
 
 Runtime 的 [调用与身体合同](modules/runtime.md#body) 唯一规定子 Call、权限交集、可信来源、身体委托和退出清理。参数由调用者显式传递，内部 call 不 submit 子 Run；read 上下文不装配写代理，捕获旧 act 代理也不能升级权限。受信任原生实现绕过公开端口的 OS 行为不在隔离承诺内。
+
+子调用要分开**记录**与**传播**：记录保留原业务值、Outcome、effects 与进度；传播只在子调用上收紧，`unknown` 不向父调用正常返回业务值。抛错形状、`EFFECT_UNCONFIRMED` 的消费方式与清理异常优先级由 [Runtime §5.6](modules/runtime.md) 规定；`not_met` 且终态闭合是确定事实，不阻断传播；未决的清理后果（如 receipt met 但清理 unknown）仍按未决传播。是否替代、恢复或失败由能力的目标核验决定。根调用没有父调用，仍按 Run 结果交付 `unknown + value`。`EFFECT_UNCONFIRMED` 是 Runtime 调用边界码，不是能力领域码，不进 13 码表。
+
+`ctx.verify` 与后续核验只追加 `EffectVerification`，不改写原 Call/Run 的 Outcome 与历史 facts。核验记录锚定它依据的 fact 前缀（`factsAnchor`）：进行中调用的当前判定可由锚定且终态的核验关闭未决（§Runtime §5.6）；核验之后又到达的新 Driver fact 使锚点失效，退回历史诊断；无锚点旧核验只做诊断。要么有更晚的可信 receipt，要么有合格锚定核验，未决才会关闭；父调用也可以自己读世界事实再按自己的目标返回。
 
 原生能力等待使用 ctx.world.watch；不新增 Program 的 decide/checkpoint/waitUntil 方法。调用程序时可捕获或继续传播专用决策请求；根未处理才交还，见 [Runtime §4](modules/runtime.md#waiting)。
 

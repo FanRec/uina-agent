@@ -1,5 +1,38 @@
 # 设计变更记录
 
+## 2026-11-12 · 完成语义重构落地（对照设计包评审文档）
+
+按《Uina Minecraft World — 可组合行动能力体系》施工版完成 S0–S6 全部源码改造；本条记录落地事实与对 11-11 裁决的三处修正。
+
+- **唯一 Effect 当前判定**：`records.ts` 新增纯函数投影 `assessEffectFacts`（`completion` 业务结论 / `unresolved` 写入对账 / `reason` 诊断）。四处消费者统一：`unknownEffectsFor`、`effectsForSafety`（含 Safety 恢复路径，替换原 `facts.at(-1)` 误读）、`engine.callHasUnknownEffects`（含子谱系）与子调用交付边界。`body.goto@1` 要求清理静止证明；`body.window.close@1` 按独立关闭操作结算；`closeIntent` 的 not_sent cleanup 是可信未派发闭包。
+- **verifier 资格收紧**：`EffectVerification` 新增 `factsAnchor`（追加时 fact 前缀长度）；晚到冲突事实使锚点失效；无锚点旧核验只做诊断。`verify/dig@1` 新增世界身份资格——dig 事实带 `dimension`（新事实起），跨维度/无身份不凭同坐标空气结清。
+- **子调用交付边界**：`invokeChild` 经 `deliverChild` 交付；未决谱系抛 `EFFECT_UNCONFIRMED`（code/source/dispatch/effects/progress/hint/recoverable 完整过 QuickJS 往返）；业务失败、Stop/Safety、decide、suspend 原样透传；根调用仍交付 `unknown + value`。三条调用入口（无 Body / 委托 Body / Program Guest）同语义。
+- **收尾原因贯通**：`CallState.resources` 关闭器收到真实 `ResourceTeardown.reason`（returned/threw/cancelled/parked）；`program-host` 的 Handle 退役按模式执行（normal=Guest 原合同、teardown=先普通后强制、force=屏障），不再用 `ctx.signal.aborted` 反推强制关窗；Guest 正常关闭失败保留 handle 可重试，收尾路径保证不泄漏。`allSettled` 拒绝结果消费：无主错误时按 `CLEANUP_FAILED` 失败，有主错误时附在诊断，parked 时如实上报不破坏决策流。
+- **领域合同**：`tunnel@1` 严格完成（`stopped` 字段删除，受阻报 MISSING_TOOL/UNREACHABLE，按 changelog 11-11 的消费者调查走 @1 原位迁移）；`collect@1` 未知采掘要求不再误报缺工具（留给 `mine@1` 的 WRONG_STATE），`NOT_FOUND` 分开三种原因，`radius` 语义写明随当前站位；`surface@1` 对 nether 在派发前 WRONG_STATE 拒绝（combat 撤退复用不受影响）；explore/tunnel/excavate 三个 examples 的 `{value:...}` 错误包装修正。
+- **目录与信息环境**：候选投影通用化（schema 同源 defaults + descriptor 自带 inputExample，全能力生效），`quickInputRefs` 与 collect 特例删除；已给出调用形状的候选不再强制二次 describe；页大小 10→5；新增真实中文别名（含 `回家→places@1`、`从洞里出来→surface@1`、`随便逛逛→survey@1`）。ENV_PROMPT 增一行行动原则与 EFFECT_UNCONFIRMED 处理原则；`program_api.md` 增补 catch-后-查证模式。
+- **survey@1 落地**：复用 `shared/explore.ts` 抽出的 `observeAround`/`estimateRoute`（explore 同步改用共享助手，原合同不变）；发现列表来源真实、去重、上限 10；`no_frontier` 且零见闻时如实 `UNREACHABLE`。arrive@1 按 §6.8 发布门裁决：真服七类场景未验证，**不注册**，不进目录；goto 保持其比 GoalNear 更严的终点复核。
+- **备料 Program**：`examples/prepare_gear.js`（共享余额、逐动作重读、EFFECT_UNCONFIRMED 不盲重派、终验只认 inventory@1、缺口交主脑），经真实 Program validator 编译 + QuickJS worker 行为矩阵 4 项（P01）；Library 保存/冻结/复用沿用既有 mc-library 覆盖。不新增正式 `prepare@1` Capability（§8.3）。
+- **测试迁移**：`mc-runtime-settlement` 三层用例按新语义改写（中层不隐式继续、父显式 catch + 查证、SQLite 持久化断言同步），新增 E02/E03/E04/E06a/E06b/E06c 判定矩阵与未处理领域失败透传用例；`mc-verify-runtime` 拆分"进行中核验参与结算/历史不倒写"两用例并补 E07/E08；`mc-spatial-actions` 的 tunnel 断言改严格完成合同；`mc-surface` 下界用例改 WRONG_STATE 前置拒绝；目录/编目计数断言同步。
+- **未验证**：Paper 真服全场景（§12 任务对照、tunnel/surface/collect 真实世界行为、survey 真实覆盖、arrive 发布门、备料 Program 真实游戏执行）与真实 Provider 模型轨迹均未执行；模拟器/夹具通过不冒充真服通过。
+
+
+## 2026-11-11 · 能力完成语义与子调用结算裁决
+
+对“可组合游玩能力体系”提案的审查裁决。三项删减、三项强化；合同落在 public-api §2/§3、runtime §5.5/§5.6、capabilities 的 collect/tunnel 段、program §2.6。
+
+- **三层语义分开**：`EffectReceipt.completion` 答“这次写入有没有达成”，`Outcome` 答“这次调用怎么终止”，`GoalState` 答“游戏目标当前是否成立”。Effect 的 `not_met` 不自动把 Call 判成 failed——一次采集里两格没挖掉、换格后最终入包达标，两个事实并存；是否替代、恢复或失败由能力的目标核验决定。Effect 的 `unknown` 才是执行不确定性。反过来，库存或终点达标也不清除同一调用里未确认的 Effect。
+- **Effect 当前判定拆成 `completion` 与 `unresolved` 两个字段**：确认的业务失败（`not_met` 且终态闭合）不再算未知；但 `receipt met` 之后的清理未静止仍是未决，业务成功不遮蔽清理的不确定性。原实现把两者混在一个 `latest` 判据里，既会把“已确认未达”误报成“无法确认”，也会用“最后一个 met”同时冒充业务成功与写源静止。
+- **子调用传播收紧，持久化不变**：Call 记录仍保留 `outcome=unknown` + 原业务值 + effects；向父调用不再正常返回业务值，改抛调用边界码 `EFFECT_UNCONFIRMED`（带 dispatch/effects/progress）。父程序 catch 后先读事实或核验原 Effect，不能默认重放。`not_met` 不阻断传播；`failed` 保留原领域 code。根调用仍按 Run 结果交付 `unknown + value`。`EFFECT_UNCONFIRMED` 不是能力领域码，不进 13 码表。
+- **后续核验的消费方式写清**：`ctx.verify` 只追加 `EffectVerification`，不改写原 Call/Run 的 Outcome，也不把 unknown 结算变成 succeeded。结算读唯一投影 `assessEffectFacts`：更晚的可信 receipt 或**锚定且终态的合格核验**都能关闭当前未决并参与进行中调用的结算；核验后到达的新事实使锚点失效，历史截面从不倒写。
+- **清理异常优先级**：原始失败原因不被清理失败覆盖，清理失败也不静默吞掉。只释放内部 Handle/锁/Worker 的清理按生命周期关闭结果处理，不虚构世界 Effect；真正发送游戏操作的清理照常记 Effect，未知保留 unknown。不为此新建独立的清理管理器。
+- **取消 `tunnel@2`**：`stopped:"unbreakable"` 时正常返回，违背了 descriptor 自己公布的“通道连通且走到终点”。按“实现违背既有合同 → 原版本修复”处理：`tunnel@1` 是唯一权威，受阻时以真正障碍抛 `MISSING_TOOL` 或 `UNREACHABLE`，带 `dug`、`goal`、阻塞位置与 Effect；已挖前缀不回滚，也不描述成整条通道已完成。输出 Schema 的 `stopped` 字段删除。已搜现有消费者：只有 `tests/mc/mc-spatial-actions.test.ts:234`（空手挖石头断言 stopped 正常返回）依赖该行为，内置 Program 与 Guide 无引用；实施时直接改写这条断言。
+- **取消本轮正式发布 `prepare@1`**：`recipe@1` 已提供 `plan {steps, need, have, missing}`，缺的只是多目标材料分配与递归展开。备料先做成 Library Program 并做真实场景验收，不新增正式 Capability、Schema、错误码与发布门。多目标分配先在 Program 内实现，出现多个消费者后再提炼纯规划能力。
+- **`sourceBounds` 降为独立需求**：不允许用“按当前站位搜索再过滤 xz 距离”冒充固定来源范围；若实施，候选发现本身必须以固定中心搜索并说明覆盖。不为首版备料 Program 强迫 Collect 提前扩张。
+- **检索不加推荐版本字段**：`tunnel@2` 删除后 `@1/@2` 同分问题自然消失；`describe` 的别名表与排序保持现状结构，不新增 prefer 位。
+- **保留 `arrive@1` 与 `survey@1` 的能力缺口**：arrive 的精确脚位是真实缺口，是否独立发布取决于精确导航实现与真服七类场景验证，不按交付清单凑数；survey 复用 `shared/explore.ts` 已有的 `ObservationMap`/`rankFrontiers`，不复制前沿算法。
+- **阶段安排**：S1 子调用传播与 not_met 厘清（含现有测试迁移与清理异常语义）、S2 tunnel@1/collect@1 实际缺陷与领域目标核验、S3 describe 简化与检索词表、S4 survey@1 与 arrive 研究验证、S5 Library 备料 Program、S6 真实场景与 LLM 选择对照。S1 的验收要含“父调用不经 catch 不能继续派发下一次写入”与“catch 后能靠真实证据换路、不默认重试”两组。
+- **未验证**：合同修订尚未落到源码；`mc-runtime-settlement.test.ts` 的两条子调用传播用例（三层全 unknown、父调用先取值后补确认）需要按新语义改写，改写前不得声称 S1 完成。
+
 ## 2026-11-11 · 批46 信息交付收口（每请求快照退役）
 
 - **删除**：`WorldDef.requestContext` 与 `WorldActivation` 的采样/超时/在途去重接缝、`state.snapshot` RPC、`world/state-frame.ts`、`world/run-digest.ts`、`RequestObservation`、TUI「上次世界观察」入口、`dev:mc:state-frame` 与专用测试。生产只剩按需 `observe`、连接回执和静态 `environmentGuide`。
