@@ -1,5 +1,38 @@
 # 设计变更记录
 
+## 2026-11-12 · 程序级交付与施工放置：派发级合同收口、按可见性排序
+
+真服 `dev:mc:task` 第一次跑通整条链路后暴露两类问题，都不是闸门判错，而是"返回值与持久记录讲的话不一致"和"施工顺序把可放的格排到了看不见的时候"。
+
+### 派发级合同必须记 receipt（`EFFECT_UNCONFIRMED` 误报）
+
+`pickup@1`、`place@1` 明明返回成功，父调用交付时却被判 `EFFECT_UNCONFIRMED`。根因在驱动侧：`body.lookAt@1`、`body.interact@1`、`body.useItem@1` 的完成合同是"视角已应用并随位置流发出 / 一次协议激活已派发 / 一次方块交互已派发"，但落库只记 `dispatch` 事实。统一判定（`assessEffectFacts`）只把 `receipt` 当业务结论，于是**每一次转头、每一次右键都留下一个"已派发、无结论"的未决效果**，父调用只要碰过它们就拒绝交付。`pickup@1` 内部是 `lookAt + drive`，`place@1` 内部是 `interact`，所以采木与建屋必挂。
+
+修法：
+
+- `body.lookAt@1` 记 `receipt`：`bot.lookAt(force=false)` 返回时 `lastSentYaw` 已追平，Driver 当场能断言"本地朝向已改、并随位置流发出"。
+- `body.interact@1`、`body.useItem@1` 先记 `dispatch`（G34 的 `intent → dispatch` 顺序不变），再补一条 `receipt`：`receipt` 只声明**派发级合同**达成，世界后果（放置/开门/吃掉）仍由调用方观察（`place@1` 轮询目标格、`use@1` 比对前后方块）。只记 `dispatch` 等于返回值说 met、持久记录说"无结论"，两处必须讲同一件事。
+- 回归用例：`mc-body-confirmation` 断言 useItem/interact 的最后一条事实是 `receipt`；`mc-feedback-effects` 断言 lookAt 记 `receipt`。
+
+真服证据：SHELTER 从 `pickup@1`/`place@1` 的 `EFFECT_UNCONFIRMED` 恢复到能完整建屋；MINE、NIGHT 同轮 PASS。
+
+### 施工放置：逐格换位、中心站位最后
+
+- **逐格接入有界换位**：`placeCellTarget` 走 `withRelocation`，每次重试重新读 self 与支撑面（站位变了，能点到的面也变了）；Driver 判定视线受阻且零派发时换最多两个合法站位，已派发/未知一律不重放。换位候选都看不到时如实 defer，下一轮按当前站位重新分区，不判整条施工失败。施工是批量放置，换位的单次 goto 预算压到 6s（默认 15s 会让每格被挡的格吃掉 30s）。
+- **高过头顶的格不换位**：支撑面在眼位之上时换哪个站位都看不到（G42），换位只烧预算。这类格直接按一次尝试结算，remaining 写明"no jump-place yet"。
+- **中心站位排到最后**：`boxVantages` 原来把盒中心放第一位，1×1 内室 + 一扇门时 bot 会为建远墙主动走进去，之后 `goto` 出不来（真服 `spots tried=2 reached=0`，11 格 remaining）。外壳能从外面建完就绝不进去。
+- **换位候选区域多读一层**：`relocationSpots` 读 `target.y-1 … target.y+1`，而"比目标低一格"的候选脚下格在 `target.y-2`，永远读不到 → 候选恒为空（真服屋顶格 `spots tried=0`）。区域改为 `target.y-2 … target.y+1`。
+- **`walkLeg` 容差 2 → 1**：GoalNear 半径 2 会让"走到房子另一侧"在屋内就判定到达（3×3 内室离前侧站位正好 2 格）。
+
+### 未解决：高过头顶的格需要跳放（G42）
+
+屋顶/墙顶那一排的支撑面在眼位之上（眼位 202.62，墙顶面 203.0），从地面永远看不到，换站位无效；真服尝试过"先瞄面中心 + 起跳 + 等 140ms 再派发"，实测派发时眼位只抬到 202.74，仍然被拒，且拖出 240s 超时，已撤回。现在 `build` 对这类格如实记 `cell is above head height; its support face cannot be seen from the ground (no jump-place yet)`。SHELTER 能否 24/24 取决于 bot 是否在施工途中爬上第一层墙（`stepTo` 的自动跳跃），实测两轮通过、多轮停在 6–11 格 remaining——这是能力缺口，不是闸门判错。
+
+### 验证
+
+- `tests/mc`：见下方"验证与清理"（本轮新增 5 项：lookAt/interact/useItem 的 receipt、同层远到近、低一格站位、区域多读一层）。
+- 真服：`dev:mc:task --task mine|night` PASS；`--task shelter` 24/24 PASS（94.7s，bot 站在墙顶收尾）；另有多轮停在屋顶格，原因如实写进 remaining。
+
 ## 2026-11-12 · 真服取证收口：击退解码、射线适配与有界换位（S0/S1/S2/S3/S4）
 
 按《身体交互、自然表现与局部自治升级决策》§7，用 Paper 1.21.11 真服把上一轮登记为"未验证"的四项全部取证。探针 `.uina/worlds/minecraft/driver/mineflayer/body-probe.ts`（`pnpm dev:mc:body-probe`）一次连服抓完，可复跑；以下数字都来自最近两轮实际输出。
@@ -34,11 +67,22 @@
 - 战斗（三只僵尸围攻）：`ended=targets_cleared kills=3 attacks=11 maxAttackGap=684ms maxMotionGap=125ms`。攻击间隔贴着 650ms 冷却，身体每 Tick 都在发运动包，没有被转头或受击阻塞。
 - 苦力怕：`ended=target_lost attacks=2 maxMotionGap=117ms creepersLeft=0`。上一轮曾把 `maxLookGap=2971ms` 当成停顿，按运动包复核后不成立：直线逃跑时朝向没变，mineflayer 不发 look 包；身体一直在动。探针判据据此改为看 `position`/`position_look`/`look` 的合并间隔。
 
+### 闸门生效后暴露的挖除顺序问题（tunnel / excavate）
+
+闸门过去因为射线适配错误从来没真正生效，spatial 回归第一次跑就暴露三处"计划挖了看不见的格"：
+
+- **tunnel 的支撑探测格**：走廊顶之上的重力方块压在檐格上，常被实心顶盖整个包住，从走廊里任何站位都看不到（真服实测眼位 `9515.50 201.62 9500.50`，目标 `9517 202 9500` 被 `9516 202 9500` 挡住）。它本来就是"能挖就挖"的防御性预挖，改为 Driver 拒绝即跳过，不判走廊失败；少挖的后果是重力方块落进已挖开的檐格，由走位前的重挖处理。走廊自身的格仍被挡即失败。
+- **excavate 的箱底格**：箱子正下方那一格，正上方是保留块，从上面看不到；同层邻格没挖开前侧面也看不到。改为两轮：第一轮挖可见的，被挡的留到第二轮（邻格已空，侧面可见），两轮都被挡才记 `remaining`。
+- **落块的回执**：重力方块在挖掘期间落走，服务端回的是"这一格没有变成空气"（块已经不在了）。`digCell` 改为回执未确认时按世界读数复核，格已空就按挖掉算。
+
+真服 spatial 8/8：`tunnel dug=23（gravel 3）` 走到终点、`excavate` 47 格清空且箱子原位。单测 +1（支撑格被 Driver 拒绝不影响走廊）。
+
 ### 验证与清理
 
 - `tests/mc` 全量 141 文件 1228 项通过（本机 node 24.13.1，`--maxWorkers=4`）；`pnpm typecheck:ci` 全绿（biome format + 边界检查 + 两套 tsc）。
-- 新增 `mc-approach-relocation` 4 项（换位成功/已派发不重放/无候选原样抛/候选全失败有界结束）、`mc-aim` 补 raycast 适配回归。
-- 删除：`WindowSession` 的 pacing 与 `dwell()`、`BodySessionDeps.windowPacing` 及其两处透传。
+- 真服场景回归：`dev:mc:body-probe` 14 步全过、`dev:mc:stations` 15/15、`dev:mc:spatial` 8/8。
+- 新增 `mc-approach-relocation` 4 项（换位成功/已派发不重放/无候选原样抛/候选全失败有界结束）、`mc-aim` 补 raycast 适配回归、`mc-spatial-actions` 补支撑格被拒不致命。
+- 删除：`WindowSession` 的 pacing 与 `dwell()`、`BodySessionDeps.windowPacing` 及其两处透传；`mc-driver-window` 里只断言 `dispatch:"sent"` 的空节奏用例。
 - 合同同步：`modules/capabilities.md` §4 增"视线受阻时的有界换位"（含真服证据），build 段补派发前被挡换面的判据。
 
 ### 未验证
