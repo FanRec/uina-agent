@@ -54,11 +54,7 @@ interface RegionSample {
 }
 
 /** 一次读回目标周围 5×3×5 的体素；未加载格返回 null（未知不当空气）。 */
-async function readVoxels(
-	ctx: CallContext,
-	from: Vec3,
-	to: Vec3,
-): Promise<(position: Vec3) => string | null> {
+async function readVoxels(ctx: CallContext, from: Vec3, to: Vec3): Promise<(position: Vec3) => string | null> {
 	const observation = await readObservation<RegionSample>(ctx.world, "region@1", plain({ from, to }));
 	const sample = observation.value;
 	if (sample == null) return () => null;
@@ -74,8 +70,12 @@ async function readVoxels(
 }
 
 const isAirName = (name: string): boolean =>
-	name === "air" || name === "minecraft:air" || name === "cave_air" || name === "minecraft:cave_air" ||
-	name === "void_air" || name === "minecraft:void_air";
+	name === "air" ||
+	name === "minecraft:air" ||
+	name === "cave_air" ||
+	name === "minecraft:cave_air" ||
+	name === "void_air" ||
+	name === "minecraft:void_air";
 
 /** 目标周围的局部站位环：一圈 8 格 + 距离 2 的四个正面。 */
 const RELOCATION_RINGS: readonly (readonly [number, number])[] = [
@@ -99,12 +99,11 @@ const RELOCATION_RINGS: readonly (readonly [number, number])[] = [
  * 只读世界、不宣称能点：脚位与头位必须是空气、脚下必须是实心方块，
  * 距离只做初筛；真正的可达性由 goto 与派发时的 Driver 射线判定。
  */
-export async function relocationSpots(
-	ctx: CallContext,
-	target: Vec3,
-	self: SelfState,
-): Promise<Vec3[]> {
-	const from = { x: target.x - 2, y: target.y - 1, z: target.z - 2 };
+export async function relocationSpots(ctx: CallContext, target: Vec3, self: SelfState): Promise<Vec3[]> {
+	// 站人候选可以比目标低一格（墙脚、台阶下），它的脚下格就再低一格：区域必须
+	// 多读一层，否则 dy=-1 的候选永远"脚下读不到"被跳过（真服实测：3×3 木屋只剩
+	// 前墙上角时，所有可站位的脚下都在区域外，候选为 0）。
+	const from = { x: target.x - 2, y: target.y - 2, z: target.z - 2 };
 	const to = { x: target.x + 2, y: target.y + 1, z: target.z + 2 };
 	const voxel = await readVoxels(ctx, from, to);
 	const here = {
@@ -136,6 +135,24 @@ export async function relocationSpots(
 }
 
 /**
+ * 换位尝试的诊断：候选走了几个、真正走到了几个。
+ * 调用方用它把 remaining 的原因写准——"没走到"和"走到了仍被挡"是两件事。
+ */
+export interface RelocationTrace {
+	tried: number;
+	reached: number;
+}
+
+export interface RelocationOptions {
+	/** 诊断计数（可选）。 */
+	trace?: RelocationTrace;
+	/** false = 只试当前站位。目标在眼位之上（支撑面看不到）时换站位也不会更好。 */
+	relocate?: boolean;
+	/** 每个候选站位的 goto 预算；施工批量放置要短（默认 15s 会把预算耗光）。 */
+	maxWalkMs?: number;
+}
+
+/**
  * 在 Block 目标上执行一次身体工作；Driver 以"视线受阻/未派发"拒绝时，
  * 释放 Body、走到最多两个候选站位、重新取 Body 再试一次。
  *
@@ -147,22 +164,30 @@ export async function withRelocation<T>(
 	position: Vec3,
 	what: string,
 	work: (scope: BodyCallScope) => Promise<T>,
+	options: RelocationOptions = {},
 ): Promise<T> {
+	const trace = options.trace;
 	try {
 		return await ctx.withBody(work);
 	} catch (error) {
-		if (!blockedInteraction(error) || delegated(ctx)) throw error;
+		if (options.relocate === false || !blockedInteraction(error) || delegated(ctx)) throw error;
 		const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 		const spots = await relocationSpots(ctx, position, self);
 		let last: unknown = error;
 		for (const spot of spots.slice(0, RELOCATION_LIMIT)) {
 			if (ctx.signal.aborted) fail("INTERRUPTED", `${what} action was stopped`, { recoverable: false });
+			if (trace != null) trace.tried += 1;
 			try {
-				await ctx.call("goto@1", { at: plain(spot), tolerance: 1, maxTimeMs: 15000 });
+				await ctx.call("goto@1", {
+					at: plain(spot),
+					tolerance: 1,
+					maxTimeMs: options.maxWalkMs ?? 15000,
+				});
 			} catch {
 				// 走不到这个候选就换下一个；候选本身不宣称可站，只表达尝试。
 				continue;
 			}
+			if (trace != null) trace.reached += 1;
 			try {
 				return await ctx.withBody(work);
 			} catch (next) {

@@ -171,6 +171,16 @@ describe("withRelocation", () => {
 		expect(h.gotos[0]).not.toEqual({ x: 0, y: 64, z: 0 });
 	});
 
+	test("a standing spot one level below the target is found (its ground is read, not out of region)", async () => {
+		// 目标在墙顶 (0,65,0)：可站的位置比目标低一格（y=64），脚下 y=63 才是地面。
+		// 区域少读一层时，这些候选的脚下格永远在区域外，候选为 0（真服 3×3 木屋实测）。
+		const h = harness({ blocks: arena(), failures: [blocked()] });
+		const value = await withRelocation(h.ctx, { x: 0, y: 65, z: 0 }, "wall", async () => "placed");
+		expect(value).toBe("placed");
+		expect(h.gotos).toHaveLength(1);
+		expect(h.gotos[0]).toMatchObject({ y: 64 });
+	});
+
 	test("an already dispatched failure is never retried from another spot", async () => {
 		const dispatched = callFailure({
 			code: "TARGET_NOT_MET",

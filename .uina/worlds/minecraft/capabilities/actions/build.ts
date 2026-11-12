@@ -30,6 +30,7 @@ import type { BuildPlanValue, ConstructionTargetCell } from "../../contracts/wor
 import { buildResumeProgram } from "../../program/build-resume.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { blockedInteraction, type RelocationTrace, withRelocation } from "../shared/approach.js";
 import { goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, EYE_HEIGHT } from "../shared/reach.js";
@@ -225,7 +226,11 @@ export function boxVantages(box: Box, groundY: number): Vec3[] {
 		[0, 1],
 		[0, -1],
 	];
-	const candidates: Vec3[] = [{ x: centerX, y: groundY, z: centerZ }];
+	// 房屋中心排在最后：它是唯一"走进去就可能出不来"的站位（1×1 内室 + 一扇门，
+	// 门一旦关上或 path 不认门，剩下的外墙格全部够不着——真服 3×3 木屋实测：
+	// bot 为建远墙走进中心，之后 spots tried=2 reached=0，11 格留在 remaining）。
+	// 外壳能从外面建完就绝不进去；只有外面所有站位都够不着的格才用中心。
+	const candidates: Vec3[] = [];
 	for (const pad of [1, 2]) {
 		for (const [dx, dz] of sides) {
 			candidates.push({
@@ -235,6 +240,7 @@ export function boxVantages(box: Box, groundY: number): Vec3[] {
 			});
 		}
 	}
+	candidates.push({ x: centerX, y: groundY, z: centerZ });
 	return candidates;
 }
 
@@ -274,6 +280,7 @@ async function placeCellTarget(
 	spec: BlockSpec,
 	replace: boolean,
 ): Promise<CellResult | { kind: "defer"; reason: string }> {
+	// 先做不需要身体的预检：已匹配/冲突/缺料/无支撑面都不该为此拿一次身体。
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 	const pre = await inspectPlacement(ctx.world, self, at, spec, { replace });
 	if (pre.kind === "already") return { kind: "done", counted: "skipped" };
@@ -281,16 +288,58 @@ async function placeCellTarget(
 	if (pre.kind === "missing") return { kind: "failed", reason: `no ${pre.name} left in the inventory` };
 	if (pre.kind === "no-support") return { kind: "defer", reason: "no clickable support face yet" };
 	if (pre.kind === "out-of-reach") return { kind: "defer", reason: pre.detail };
-	const outcome = await ctx.withBody(async (scope: BodyCallScope) =>
-		commitPlacement(ctx, scope, self, spec, pre.aims, pre.heldName),
-	);
-	if (outcome.kind === "placed") return { kind: "done", counted: "placed" };
-	const after = await readBlockAt(ctx.world, at);
-	if (matchesDeclared(spec, after)) return { kind: "done", counted: "placed" };
-	// 所有支撑面都没成：不是终局。可能只是相邻格还没放好（门顶、悬挑），
-	// 交给下一轮再试；轮数上界与"这轮毫无进展就停"共同保证不会无限重试。
-	const detail = outcome.kind === "not_met" ? `got ${outcome.actual ?? "nothing"}` : "outcome unknown";
-	return { kind: "defer", reason: `placement not confirmed (${detail})` };
+	// 换位（§5 局部自治）：Driver 判定视线受阻且零派发时，释放身体、走到目标
+	// 周围最多两个合法站位再试。每次重试都重新读 self 与支撑面——站位变了，
+	// 能点到的面也变了；拿旧 aims 重试等于把"换位"变成"换个地方发同一个包"。
+	// 高过头顶的格不换位：支撑面在眼位之上，换哪个站位都看不到（G42），
+	// 换位只会把每格 30s 的施工预算耗光。
+	const trace: RelocationTrace = { tried: 0, reached: 0 };
+	const aboveHead = at.y > self.place.position.y + 1;
+	try {
+		const attempt = await withRelocation(
+			ctx,
+			at,
+			specBlockName(spec),
+			async (scope: BodyCallScope) => {
+				const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+				const now = await inspectPlacement(ctx.world, selfNow, at, spec, { replace });
+				if (now.kind !== "ready") return { kind: "pre" as const, pre: now };
+				const outcome = await commitPlacement(ctx, scope, selfNow, spec, now.aims, now.heldName);
+				return { kind: "outcome" as const, outcome };
+			},
+			{ trace, relocate: !aboveHead, maxWalkMs: 6000 },
+		);
+		if (attempt.kind === "pre") return { kind: "defer", reason: `placement precheck changed (${attempt.pre.kind})` };
+		const outcome = attempt.outcome;
+		if (outcome.kind === "placed") return { kind: "done", counted: "placed" };
+		const after = await readBlockAt(ctx.world, at);
+		if (matchesDeclared(spec, after)) return { kind: "done", counted: "placed" };
+		// 所有支撑面都没成：不是终局。可能只是相邻格还没放好（门顶、悬挑），
+		// 交给下一轮再试；轮数上界与"这轮毫无进展就停"共同保证不会无限重试。
+		const detail = outcome.kind === "not_met" ? `got ${outcome.actual ?? "nothing"}` : "outcome unknown";
+		return { kind: "defer", reason: `placement not confirmed (${detail})` };
+	} catch (error) {
+		// 换位候选都看不到这一格：如实 defer，让下一轮按当前站位重新分区
+		// （下一轮的站位可能已经在房子另一侧），不把"这一轮站得不对"判成整条施工失败。
+		// 带上 Driver 原话（眼位、首命中）：remaining 里要能分清"没走到"与"走到了仍被挡"。
+		if (blockedInteraction(error)) {
+			const detail = (error as { message?: string }).message ?? "blocked";
+			// 高过头顶的格（屋顶、墙顶那一排）：要点的支撑面在眼位之上，从地面
+			// 永远看不到，换站位也解决不了——这是能力缺口（还没有跳放/攀高），
+			// 不是这一轮站错了。remaining 里说清楚，别让人以为是寻路问题。
+			if (at.y > self.place.position.y + 1) {
+				return {
+					kind: "defer",
+					reason: `cell is above head height; its support face cannot be seen from the ground (no jump-place yet): ${detail}`,
+				};
+			}
+			return {
+				kind: "defer",
+				reason: `line of sight blocked (spots tried=${trace.tried} reached=${trace.reached}; ${detail})`,
+			};
+		}
+		throw error;
+	}
 }
 
 /**
@@ -313,7 +362,10 @@ async function walkToward(
 		return ok ? null : `STEP_FAILED: could not step to ${at.x},${at.y},${at.z}`;
 	}
 	try {
-		await walkLeg(deps, ctx, owner, at, { tolerance: 2, timeoutMs: LEG_TIMEOUT_MS, digThrough: false });
+		// 容差 1：GoalNear 半径 2 会让"走到房子另一侧"在屋内就判定到达（3×3 屋的
+		// 内室离前侧站位正好 2 格），之后所有外墙格都从屋里够不着。真服实测两轮
+		// 都停在内室，剩下的墙/屋顶全部 remaining。
+		await walkLeg(deps, ctx, owner, at, { tolerance: 1, timeoutMs: LEG_TIMEOUT_MS, digThrough: false });
 		return null;
 	} catch (error) {
 		if (ctx.signal.aborted) throw error;
