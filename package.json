@@ -83,6 +83,7 @@
     "bench:ui": "tsx scripts/ui-frame-bench.ts",
     "diagnose:frames": "tsx scripts/diagnose-frame-log.mts",
     "dev:mc:window-probe": "tsx .uina/worlds/minecraft/driver/mineflayer/window-probe.ts",
+    "dev:mc:body-probe": "tsx .uina/worlds/minecraft/driver/mineflayer/body-probe.ts",
     "dev:mc:ui": "tsx .uina/worlds/minecraft/dev/ui-server.ts"
   },
   "devDependencies": {
