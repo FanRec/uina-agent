@@ -314,11 +314,16 @@ async function buildPortal(
 				});
 			}
 			const outcome = await commitPlacement(ctx, scope, now, "obsidian", pre.aims, pre.heldName);
-			if (outcome.kind === "not_met") {
-				fail("TARGET_NOT_MET", `the server did not confirm obsidian at ${cell.x},${cell.y},${cell.z}`, {
-					dispatch: "sent",
-					progress: { stage: "portal", at: cell, actual: outcome.actual },
-				});
+			if (outcome.kind === "unconfirmed") {
+				fail(
+					"TARGET_NOT_MET",
+					`the server did not confirm obsidian at ${cell.x},${cell.y},${cell.z} (last ${outcome.last ?? "nothing"})`,
+					{
+						dispatch: "sent",
+						effects: [outcome.effect],
+						progress: { stage: "portal", at: cell, expected: outcome.expected, last: outcome.last },
+					},
+				);
 			}
 			count += 1;
 		}

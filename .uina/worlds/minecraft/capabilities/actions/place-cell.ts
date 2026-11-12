@@ -21,7 +21,7 @@ import type { WorldReadPort } from "../../contracts/world.js";
 import { blockedInteraction } from "../shared/approach.js";
 import { pollUntil } from "../shared/observe.js";
 import { BLOCK_REACH, EYE_HEIGHT, blockReach } from "../shared/reach.js";
-import { faceVector, NEIGHBORS, stripNamespace } from "../shared/targets.js";
+import { fail, faceVector, NEIGHBORS, stripNamespace } from "../shared/targets.js";
 import { itemCountOf, readBlockAt, readInventory } from "../shared/views.js";
 
 const BLOCK_CHECK_TIMEOUT_MS = 1500;
@@ -49,10 +49,15 @@ export type PlacementPrecheck =
 	| { kind: "out-of-reach"; detail: string; distance: number }
 	| { kind: "ready"; aims: AimHit[]; heldName: string | null };
 
-/** 派发之后的实际结局。 */
+/**
+ * 派发之后的实际结局。三态对应真实区别，不混用：
+ * - placed：目标格已匹配声明；
+ * - unconfirmed：交互已派发，观察窗内没有确认匹配——不得换面或下一轮重发；
+ * - （未派发失败不是返回值，而是抛出：Driver 零派发拒绝 → 调用方可换面/换位）。
+ */
 export type PlacementOutcome =
 	| { kind: "placed"; block: BlockStateValue }
-	| { kind: "not_met"; actual: string | null; target: Vec3; expected: string };
+	| { kind: "unconfirmed"; target: Vec3; expected: string; last: string | null; effect: string };
 
 /** 视角短射线：返回"眼前要放的那一格"与可点击的支撑面。 */
 export async function aimedCell(world: WorldReadPort, self: SelfState): Promise<AimHit | null> {
@@ -204,17 +209,18 @@ export async function commitPlacement(
 	// 跳放时先试"上"面：其它候选面在眼位抬高后未必更差，但第一个派发必须是这次
 	// 起跳换来的那个面，否则时间窗会被注定被拒的面耗掉。
 	const ordered = liftAim == null ? aims : [liftAim, ...aims.filter((aim) => aim !== liftAim)];
-	let last: BlockStateValue | null = null;
 	let lastBlocked: unknown = null;
 	for (const aim of ordered) {
+		let effect: string;
 		try {
-			await scope.player.interact({
+			const receipt = await scope.player.interact({
 				target: { place: placeOf(self, aim.support), block: aim.support },
 				hand: "main",
 				face: faceVector(options.face != null && options.face !== "auto" ? options.face : aim.face),
 			});
+			effect = receipt.effect;
 		} catch (error) {
-			// Driver 判定这一面不可命中且零派发：允许试下一个候选面；
+			// Driver 判定这一面不可命中且零派发：允许试下一个候选面。
 			// 已派发或结果未知的交互绝不换面重放。
 			if (blockedInteraction(error)) {
 				lastBlocked = error;
@@ -222,19 +228,28 @@ export async function commitPlacement(
 			}
 			throw error;
 		}
+		// 交互已派发：只等这一面的结果。观察窗结束仍未匹配就是 unconfirmed，
+		// 不能拿"没看到"当"重发安全"的证据（门/告示牌从某些面交互本就不落地）。
 		const settled = await pollUntil(
 			async () => await readBlockAt(scope.world, aim.target),
 			(block) => matchesDeclared(spec, block as BlockStateValue | null),
 			{ timeoutMs: BLOCK_CHECK_TIMEOUT_MS, intervalMs: BLOCK_CHECK_INTERVAL_MS, signal: ctx.signal },
 		);
-		last = settled.last as BlockStateValue | null;
 		if (settled.ok) {
 			const placed = settled.last as BlockStateValue;
 			return { kind: "placed", block: { name: stripNamespace(placed.name), properties: placed.properties ?? {} } };
 		}
+		return {
+			kind: "unconfirmed",
+			target: aim.target,
+			expected: name,
+			last: (settled.last as BlockStateValue | null)?.name ?? null,
+			effect,
+		};
 	}
-	if (lastBlocked != null && last == null) throw lastBlocked;
-	return { kind: "not_met", actual: last?.name ?? null, target: aims[0]!.target, expected: name };
+	if (lastBlocked != null) throw lastBlocked;
+	// 只有 aims 为空才会走到这里；ready 预检保证至少一个候选。
+	throw fail("UNREACHABLE", `no clickable support face for ${name}`);
 }
 
 export function placeOf(self: SelfState, position: Vec3) {

@@ -125,14 +125,16 @@ export const buildingModule: MinecraftCapabilityModule = {
 						const outcome = await commitPlacement(ctx, scope, self, raw.block, pre.aims, pre.heldName, {
 							...(raw.face != null ? { face: raw.face } : {}),
 						});
-						if (outcome.kind === "not_met") {
+						if (outcome.kind === "unconfirmed") {
+							// 已派发但观察窗内没有确认：不再换面/重发，把最新观察与派发事实交给上层。
 							fail(
 								"TARGET_NOT_MET",
-								`cell ${outcome.target.x},${outcome.target.y},${outcome.target.z} is ${outcome.actual ?? "empty"}`,
+								`cell ${outcome.target.x},${outcome.target.y},${outcome.target.z} was dispatched but not confirmed (last ${outcome.last ?? "nothing"})`,
 								{
-									hint: "the server may have rejected the placement or the state does not match the declaration",
+									hint: "the server may have rejected the placement, or the state does not match the declaration; it will not be re-sent automatically",
 									dispatch: "sent",
-									progress: { at: outcome.target, expected: outcome.expected },
+									effects: [outcome.effect],
+									progress: { at: outcome.target, expected: outcome.expected, last: outcome.last },
 								},
 							);
 						}

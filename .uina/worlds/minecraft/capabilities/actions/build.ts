@@ -270,8 +270,9 @@ export function assignVantageZones<T extends { at: Vec3 }>(
 
 /**
  * 放一格（批30：不再逐格走位——站位由分区批量安排）。
- * - `no-support` / 放置未落：defer 给下一轮（相邻格可能本轮稍后建成）；
- * - `out-of-reach`：defer 带因（下一轮按当前站位重新分区，可能就够着了）；
+ * - `no-support` / `out-of-reach` / Driver 零派发拒绝：defer 给下一轮（相邻格可能本轮
+ *   稍后建成，或换个站位就够得着）；
+ * - 已派发但观察窗内未确认：`uncertain`，交给最终只读复核，绝不进下一轮写队列；
  * - 其余结局按事实结算。
  */
 async function placeCellTarget(
@@ -279,7 +280,7 @@ async function placeCellTarget(
 	at: Vec3,
 	spec: BlockSpec,
 	replace: boolean,
-): Promise<CellResult | { kind: "defer"; reason: string }> {
+): Promise<CellResult | { kind: "defer"; reason: string; uncertain?: boolean }> {
 	// 先做不需要身体的预检：已匹配/冲突/缺料/无支撑面都不该为此拿一次身体。
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 	const pre = await inspectPlacement(ctx.world, self, at, spec, { replace });
@@ -292,6 +293,17 @@ async function placeCellTarget(
 	// 周围最多两个合法站位再试。每次重试都重新读 self 与支撑面——站位变了，
 	// 能点到的面也变了；拿旧 aims 重试等于把"换位"变成"换个地方发同一个包"。
 	// 施工是批量放置，换位单次 goto 预算压到 6s（默认 15s 会让每个被挡的格吃掉 30s）。
+	return await commitCell(ctx, at, spec, self, replace);
+}
+
+/** 预检 ready 之后的换位与派发（build 的逐格路径与占位退步共用）。 */
+async function commitCell(
+	ctx: CallContext,
+	at: Vec3,
+	spec: BlockSpec,
+	self: SelfState,
+	replace: boolean,
+): Promise<CellResult | { kind: "defer"; reason: string; uncertain?: boolean }> {
 	const trace: RelocationTrace = { tried: 0, reached: 0 };
 	try {
 		const attempt = await withRelocation(
@@ -310,12 +322,13 @@ async function placeCellTarget(
 		if (attempt.kind === "pre") return { kind: "defer", reason: `placement precheck changed (${attempt.pre.kind})` };
 		const outcome = attempt.outcome;
 		if (outcome.kind === "placed") return { kind: "done", counted: "placed" };
-		const after = await readBlockAt(ctx.world, at);
-		if (matchesDeclared(spec, after)) return { kind: "done", counted: "placed" };
-		// 所有支撑面都没成：不是终局。可能只是相邻格还没放好（门顶、悬挑），
-		// 交给下一轮再试；轮数上界与"这轮毫无进展就停"共同保证不会无限重试。
-		const detail = outcome.kind === "not_met" ? `got ${outcome.actual ?? "nothing"}` : "outcome unknown";
-		return { kind: "defer", reason: `placement not confirmed (${detail})` };
+		// 已派发但没等到匹配：这是"未证实"，不是"可以再试"。本轮不再换面/重发，
+		// 也不进下一轮写队列；最终只读复核若发现迟到落地，再改判完成。
+		return {
+			kind: "defer",
+			reason: `placement dispatched but not confirmed (last ${outcome.last ?? "nothing"})`,
+			uncertain: true,
+		};
 	} catch (error) {
 		// 换位候选都看不到这一格：如实 defer，让下一轮按当前站位重新分区
 		// （下一轮的站位可能已经在房子另一侧），不把"这一轮站得不对"判成整条施工失败。
@@ -561,6 +574,8 @@ export const buildModule: MinecraftCapabilityModule = {
 					const box = boxOf(plan.targets);
 					/** defer 原因跟格走（最后一轮的分区/执行结论）。 */
 					const deferredBy = new Map<string, { reason: string; kind: "blocked" | "uncertain" }>();
+					// 已派发未确认的格：不进下一轮写队列，只在收尾做只读复核。
+					const uncertainCells = new Map<string, ConstructionTargetCell>();
 					let queue = sets;
 					for (let pass = 0; pass < MAX_PASSES && queue.length > 0; pass++) {
 						const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
@@ -637,11 +652,14 @@ export const buildModule: MinecraftCapabilityModule = {
 								stopIfDone("building");
 								const result = await placeCellTarget(ctx, cell.at, cell.block as BlockSpec, raw.replace === true);
 								if (result.kind === "defer") {
-									deferred.push(cell);
-									deferredBy.set(cellKey(cell.at), {
-										reason: result.reason,
-										kind: result.reason.startsWith("placement not confirmed") ? "uncertain" : "blocked",
-									});
+									if (result.uncertain === true) {
+										// 已派发未确认：这一格本次不再写，也不进下一轮队列。
+										uncertainCells.set(cellKey(cell.at), cell);
+										deferredBy.set(cellKey(cell.at), { reason: result.reason, kind: "uncertain" });
+									} else {
+										deferred.push(cell);
+										deferredBy.set(cellKey(cell.at), { reason: result.reason, kind: "blocked" });
+									}
 								} else {
 									account(cell, result);
 									if (result.kind === "done") builtThisPass += 1;
@@ -651,6 +669,15 @@ export const buildModule: MinecraftCapabilityModule = {
 						}
 						queue = deferred;
 						if (builtThisPass === 0) break;
+					}
+					for (const cell of uncertainCells.values()) {
+						const entry = deferredBy.get(cellKey(cell.at));
+						unfinished.set(cellKey(cell.at), {
+							at: cell.at,
+							target: targetLabel(cell),
+							reason: entry?.reason ?? "dispatched but not confirmed",
+							kind: "uncertain",
+						});
 					}
 					for (const cell of queue) {
 						const deferredEntry = deferredBy.get(cellKey(cell.at));

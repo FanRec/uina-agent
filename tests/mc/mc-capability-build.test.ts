@@ -10,6 +10,7 @@
 import { describe, expect, test } from "vitest";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 import type { BuildPlanValue, ConstructionTargetCell } from "../../.uina/worlds/minecraft/contracts/world.js";
+import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { failureOf, type HarnessState, makeHarness } from "./mc-capability-harness.js";
 
 /** self 在 10,64,10：把目标放在相邻列，射程与支撑都好安排。 */
@@ -180,6 +181,60 @@ describe("build@1 施工执行", () => {
 		expect(result.placed).toBe(1);
 		expect(harness.calls.indexOf("drive")).toBeGreaterThanOrEqual(0);
 		expect(harness.calls.indexOf("drive")).toBeLessThan(harness.calls.indexOf("interact"));
+	});
+
+	test("首面被 Driver 零派发拒绝时换下一面（not_sent 才允许换）", async () => {
+		const state: HarnessState = {
+			blocks: new Map([
+				["11,63,10", { name: "stone", properties: {} }],
+				["10,64,10", { name: "stone", properties: {} }],
+			]),
+			inventory: inventoryOf("oak_planks", 4),
+		};
+		let first = true;
+		const harness = makeHarness(state, {
+			buildPlan: () => planOf([setAt(11, 64, 10)]),
+			onInteract: (target, face) => {
+				if (first) {
+					first = false;
+					throw callFailure({
+						code: "UNREACHABLE",
+						source: "world",
+						message: "line of sight is blocked",
+						dispatch: "not_sent",
+						effects: [],
+						recoverable: true,
+					});
+				}
+				state.blocks.set(placedAt(target.block, face), { name: "oak_planks", properties: {} });
+			},
+		});
+		const result = (await harness.callable("build@1").invoke(harness.ctx, {
+			cells: [{ at: { x: 11, y: 64, z: 10 }, block: "oak_planks" }],
+		} as JsonValue)) as { placed: number };
+		expect(result.placed).toBe(1);
+		expect(harness.calls.filter((call) => call === "interact")).toHaveLength(2);
+	});
+
+	test("首面已派发但观察窗内未落地：只发一次，记 uncertain，不再重发", async () => {
+		const state: HarnessState = {
+			blocks: new Map([["11,63,10", { name: "stone", properties: {} }]]),
+			inventory: inventoryOf("oak_planks", 4),
+		};
+		const harness = makeHarness(state, {
+			buildPlan: () => planOf([setAt(11, 64, 10)]),
+			// 交互成功派发，但世界不变（服务端没落地）：观察窗结束后只能是 unconfirmed。
+			onInteract: () => {},
+		});
+		const error = await failureOf(
+			harness.callable("build@1").invoke(harness.ctx, {
+				cells: [{ at: { x: 11, y: 64, z: 10 }, block: "oak_planks" }],
+			} as JsonValue),
+		);
+		expect(error.code).toBe("TARGET_NOT_MET");
+		// 一次已派发操作只有一次待验证结果：不换面、下一轮也不重发。
+		expect(harness.calls.filter((call) => call === "interact")).toHaveLength(1);
+		expect(error.progress?.outstanding).toMatchObject([{ kind: "uncertain" }]);
 	});
 
 	test("先清后放：dig 在 interact 之前", async () => {
