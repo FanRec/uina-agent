@@ -487,6 +487,64 @@ async function main(): Promise<void> {
 				motionGap == null ? "none" : `${motionGap}ms`
 			} maxLookGap=${lookGap == null ? "none" : `${lookGap}ms`} creepersLeft=${alive}`;
 		});
+		await s.step("dig from facing away turns per tick before the first dig packet", async () => {
+			await s.command(`/setblock ${BASE.x + 2} ${BASE.y} ${BASE.z} minecraft:oak_log`);
+			await s.command(`/tp ${USER} ${BASE.x + 0.5} ${BASE.y} ${BASE.z + 0.5}`);
+			await sleep(300);
+			// 目标在 +x，把朝向摆到 -x（yaw=+90°）：挖之前必须逐 Tick 转回来。
+			await bot.look(Math.PI / 2, 0, true);
+			await sleep(200);
+			outbound.length = 0;
+			const result = await s.call("mine@1", { at: { x: BASE.x + 2, y: BASE.y, z: BASE.z } }, 20000);
+			const looks = outbound.filter((row) => row.name === "look" || row.name === "position_look");
+			const firstDig = outbound.find((row) => row.name === "block_dig");
+			const looksBeforeDig = firstDig == null ? 0 : looks.filter((row) => row.t < firstDig.t).length;
+			const swings = outbound.filter((row) => row.name === "arm_animation").length;
+			if (!result.ok || looksBeforeDig < 2)
+				throw new Error(`dig must turn before dispatching: ok=${result.ok} looksBeforeDig=${looksBeforeDig}`);
+			return `ok=${result.ok} code=${result.code ?? "none"} looks=${looks.length} looksBeforeDig=${looksBeforeDig} swings=${swings}`;
+		});
+
+		await s.step("entity interaction behind a wall dispatches nothing", async () => {
+			// 前面的封死工作台步骤会留下 5×3×5 石头；这里先清出测试空地，再摆墙。
+			await s.command(`/kill @e[type=minecraft:zombie]`);
+			await s.command(`/fill ${BASE.x} ${BASE.y} ${BASE.z} ${BASE.x + 3} ${BASE.y + 2} ${BASE.z + 2} minecraft:air`);
+			await sleep(200);
+			await s.command(`/setblock ${BASE.x + 1} ${BASE.y} ${BASE.z + 1} minecraft:stone`);
+			await s.command(`/setblock ${BASE.x + 1} ${BASE.y + 1} ${BASE.z + 1} minecraft:stone`);
+			await s.command(`/tp ${USER} ${BASE.x + 0.5} ${BASE.y} ${BASE.z + 1.5}`);
+			await s.command(
+				`/summon minecraft:zombie ${BASE.x + 2.7} ${BASE.y} ${BASE.z + 1.5} {NoAI:1b,PersistenceRequired:1b}`,
+			);
+			await sleep(500);
+			const zombie = (await s.readEntities(8)).find((entity) => entity.name === "zombie");
+			if (zombie == null) throw new Error("zombie did not spawn");
+			outbound.length = 0;
+			const result = await s.call("use@1", { entity: { networkId: zombie.ref.networkId } }, 15000);
+			const uses = outbound.filter((row) => row.name === "use_entity").length;
+			if (result.ok || result.code !== "UNREACHABLE" || uses !== 0)
+				throw new Error(`blocked entity must not activate: ok=${result.ok} code=${result.code} use=${uses}`);
+			return `ok=${result.ok} code=${result.code ?? "none"} use_entity=${uses} msg=${result.message ?? ""}`;
+		});
+
+		await s.step("entity interaction in the open dispatches exactly one activation", async () => {
+			await s.command(`/setblock ${BASE.x + 1} ${BASE.y} ${BASE.z + 1} minecraft:air`);
+			await s.command(`/setblock ${BASE.x + 1} ${BASE.y + 1} ${BASE.z + 1} minecraft:air`);
+			await sleep(300);
+			const zombie = (await s.readEntities(8)).find((entity) => entity.name === "zombie");
+			if (zombie == null) throw new Error("zombie disappeared");
+			outbound.length = 0;
+			const selfNow = await s.readSelf();
+			const head = await s.readBlock({ x: BASE.x, y: BASE.y + 1, z: BASE.z + 1 });
+			const ahead = await s.readBlock({ x: BASE.x + 1, y: BASE.y + 1, z: BASE.z + 1 });
+			const result = await s.call("use@1", { entity: { networkId: zombie.ref.networkId } }, 15000);
+			const uses = outbound.filter((row) => row.name === "use_entity").length;
+			if (!result.ok || uses !== 1)
+				throw new Error(`open entity must activate exactly once: ok=${result.ok} code=${result.code} use=${uses}`);
+			return `ok=${result.ok} code=${result.code ?? "none"} use_entity=${uses} self=${JSON.stringify(
+				selfNow.place.position,
+			)} head=${head?.name} ahead=${ahead?.name} zombie=${JSON.stringify(zombie.position)} msg=${result.message ?? ""}`;
+		});
 	} finally {
 		clearInterval(sampler);
 		(attacker as { quit?: () => void } | null)?.quit?.();
