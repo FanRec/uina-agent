@@ -1,5 +1,15 @@
 # 设计变更记录
 
+## 2026-11-12 · 身体交互收口：挖掘视角、实体交互、放置单次派发
+
+- **挖掘**：删掉抢先的 `lookAt(..., true)`——它先改了朝向，后面的受控转头就失去意义。默认 `aim:"target"` 由 `aimAtControlled` 逐 Tick 转到位、复核射线后才发 `startDig`；`aim:"preserve"` 不调用任何改变视角的函数（此前虽不占视角资格，底层仍强制转头）。闸门射程统一用 `blockReachFor(bot)`（生存 4.5／创造 5）。
+- **实体交互与实体开窗**：共用 `prepareEntityHit`——身份核验（连接/代次/外观）→ 命中箱 3 格与遮挡 → 受控转头 → 复核。`interact(EntityRef)` 补写前意图（intent → dispatch → receipt 与方块一致）并申请视角资格，反馈流持有时按 `CONTROL_CONFLICT` 拒绝；开窗沿用 `WindowSession` 的窗口回执与关闭责任，外层不重复登记。`checkEntityHit` 改为命中箱与方块真实形状的 AABB 入射距离比较，贴墙实体不再被"首命中中心 ±0.5"误判。
+- **放置的三态**：`commitPlacement` 只表达 未派发失败（抛出）/ 已确认（placed）/ 已派发未确认（unconfirmed）。已派发后观察窗结束仍未匹配就是 unconfirmed：不换面、不重发；`place@1` 以 `TARGET_NOT_MET` 报告并保留 `dispatch:"sent"` 与效果引用；`build@1` 记 `remaining.kind="uncertain"` 并移出后续 Pass 的写队列，收尾只读复核（迟到落地可改判完成）。只有 Driver 零派发拒绝才允许换面或换位。
+- **闸门对空形状的收口**：`checkBlockHit` 现在在采样前拒绝 `shapes` 为空的格（空气）。此前空形状会让面平面坐标算成 ±Infinity、射线方向变 NaN，prismarine 的 `raycast` 死在步进循环里——真服实证：瞄准期间目标被挖成空气，复核直接挂死（`spatial` 的 tunnel 卡在 `clearStation`）。
+- **零派发拒绝按世界读数收口**：`digCell` 捕获 `not_sent` 的 Driver 拒绝后重读目标格，已经空了就按 `open` 返回，不把一次没发出的写当成施工失败（隧道站位格被自己挖空的常见形态）。
+- **真服回归**：`dev:mc:body-probe` 17 步全过（背向挖掘 `looksBeforeDig=30`、隔墙实体 0 包、开阔实体 1 包）；`dev:mc:stations` 15/15；`dev:mc:spatial` 8/8（tunnel `dug=22`）；`dev:mc:task` 的 mine/night 两轮全过，shelter 22–23/24——剩下的都是屋顶格（G42 的几何极限），门/墙格不再出现"派发后盲重发"。
+- **测试**：默认挖掘逐 Tick 转头且无 `lookAt`、`preserve` 零视角写入、反馈持有时默认挖掘拒绝而 `preserve` 不抢视角；实体命中箱的无遮挡/隔墙/半砖/贴墙/超程；实体开窗的正常、隔墙、超程、瞄准期间移动；放置的首面 `not_sent` 换面、首面已派发但未落地只发一次并记 uncertain。
+
 ## 2026-11-12 · 程序级交付与施工放置：派发级合同收口、按可见性排序
 
 真服 `dev:mc:task` 第一次跑通整条链路后暴露两类问题，都不是闸门判错，而是"返回值与持久记录讲的话不一致"和"施工顺序把可放的格排到了看不见的时候"。
