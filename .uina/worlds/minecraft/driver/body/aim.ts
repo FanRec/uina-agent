@@ -199,17 +199,16 @@ function faceSamples(block: { shapes?: number[][] }, faceNumber: number): Vec3[]
 	const tangents = [0, 1, 2].filter((candidate) => candidate !== axis);
 	const axisKey = axis === 0 ? "x" : axis === 1 ? "y" : "z";
 	const tangentKeys: ("x" | "y" | "z")[] = tangents.map((a) => (a === 0 ? "x" : a === 1 ? "y" : "z"));
-	const fixed = normal[axisKey] > 0 ? 1 : 0;
-	const shapeRange = (key: "x" | "y" | "z", index: 0 | 3): number =>
-		Math.max(
-			0,
-			Math.min(
-				1,
-				...shapes.map(
-					(shape) => shape[key === "x" ? index : key === "y" ? (index === 0 ? 1 : 4) : index === 0 ? 2 : 5],
-				),
-			),
-		);
+	const shapeIndex = (key: "x" | "y" | "z", end: boolean): number =>
+		key === "x" ? (end ? 3 : 0) : key === "y" ? (end ? 4 : 1) : end ? 5 : 2;
+	const range = (key: "x" | "y" | "z", end: boolean): { min: number; max: number } => {
+		const values = shapes.map((shape) => shape[shapeIndex(key, end)]!);
+		return { min: Math.max(0, Math.min(...values)), max: Math.min(1, Math.max(...values)) };
+	};
+	// 面平面坐标取真实形状在该轴上的极值面：半砖顶面是 0.5，不是 1；
+	// 门/楼梯/火把这类部分形状必须按自己的实际几何取采样面。
+	const fixedRange = range(axisKey, normal[axisKey] > 0);
+	const fixed = normal[axisKey] > 0 ? fixedRange.max : fixedRange.min;
 	const points: Vec3[] = [];
 	const make = (a: number, b: number): Vec3 => {
 		const point: Vec3 = { x: 0.5, y: 0.5, z: 0.5 };
@@ -220,10 +219,10 @@ function faceSamples(block: { shapes?: number[][] }, faceNumber: number): Vec3[]
 		return point;
 	};
 	const [first, second] = tangentKeys;
-	const minA = shapeRange(first!, 0);
-	const maxA = shapeRange(first!, 3);
-	const minB = shapeRange(second!, 0);
-	const maxB = shapeRange(second!, 3);
+	const minA = range(first!, false).min;
+	const maxA = range(first!, true).max;
+	const minB = range(second!, false).min;
+	const maxB = range(second!, true).max;
 	points.push(make((minA + maxA) / 2, (minB + maxB) / 2));
 	for (const [a, b] of [
 		[minA, minB],
@@ -435,7 +434,16 @@ export function worldViewOf(bot: MineflayerBot): HitGateWorld {
 		},
 		raycast: async (eye, direction, range) => {
 			const hit = await bot.world.raycast(toMineflayerVec3(eye), toMineflayerVec3(direction), range);
-			return hit == null ? null : { position: { x: hit.x, y: hit.y, z: hit.z } };
+			if (hit == null) return null;
+			// prismarine-world 运行时返回方块对象（位置在 hit.position），而它自己的
+			// 类型声明只写了 x/y/z。两处都取：读顶层坐标会得到 undefined，使
+			// "首命中是不是目标"永远为假——夹具里的普通对象掩盖过这个适配错误。
+			const position = (hit as { position?: { x: number; y: number; z: number } }).position ?? {
+				x: hit.x,
+				y: hit.y,
+				z: hit.z,
+			};
+			return { position };
 		},
 	};
 }

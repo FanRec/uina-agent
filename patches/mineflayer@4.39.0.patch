@@ -103,6 +103,45 @@ index 5ae55521d713f14c4d2311133531a14ebc99b77d..5ec57d098e210991e80f02cc42c4d8b5
        bot.targetDigBlock = null
        bot.targetDigFace = null
        bot.lastDigTime = performance.now()
+diff --git a/lib/plugins/entities.js b/lib/plugins/entities.js
+index 9fcb6f9ce28fdc2387d023bbff1cf5a19bbd6748..cef0486346c721986854a7e7f653328ee50ffc70 100644
+--- a/lib/plugins/entities.js
++++ b/lib/plugins/entities.js
+@@ -11,6 +11,15 @@ const CROUCH_EYEHEIGHT = 1.27
+ 
+ module.exports = inject
+ 
++// 1.21.9+ sends entity velocity as lpVec3, which already decodes to blocks per
++// tick; the old short encoding was 1/8000 of a block per tick. Applying
++// fromNotchVelocity to the new format shrinks every knockback by 8000x
++// (upstream issue #4167). Keep the old branch for older protocol versions.
++function velocityFromPacket (bot, velocity) {
++  const raw = new Vec3(velocity.x, velocity.y, velocity.z)
++  return bot.registry.version['>=']('1.21.9') ? raw : conv.fromNotchVelocity(raw)
++}
++
+ const animationEvents = {
+   0: 'entitySwingArm',
+   1: 'entityHurt',
+@@ -232,7 +241,7 @@ function inject (bot) {
+       : addNewNonPlayer(packet.entityId, packet.objectUUID, packet.type, packet)
+     // 1.8 omits velocity when objectData is 0
+     if (packet.velocity) {
+-      entity.velocity.update(conv.fromNotchVelocity(new Vec3(packet.velocity.x, packet.velocity.y, packet.velocity.z)))
++      entity.velocity.update(velocityFromPacket(bot, packet.velocity))
+     }
+     bot.emit('entitySpawn', entity)
+   })
+@@ -285,8 +294,7 @@ function inject (bot) {
+   bot._client.on('entity_velocity', (packet) => {
+     // entity velocity
+     const entity = fetchEntity(packet.entityId)
+-    const notchVel = new Vec3(packet.velocity.x, packet.velocity.y, packet.velocity.z)
+-    entity.velocity.update(conv.fromNotchVelocity(notchVel))
++    entity.velocity.update(velocityFromPacket(bot, packet.velocity))
+   })
+ 
+   bot._client.on('entity_destroy', (packet) => {
 diff --git a/lib/plugins/place_block.js b/lib/plugins/place_block.js
 index dc86e1e84fcfa0d48d3c1147e184737f9de723da..8fcbe49ce13f1ae65b9034457dade70f7e532673 100644
 --- a/lib/plugins/place_block.js

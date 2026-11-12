@@ -15,6 +15,7 @@ import {
 	checkBlockHit,
 	type HitGateWorld,
 	nextAimStep,
+	worldViewOf,
 } from "../../.uina/worlds/minecraft/driver/body/aim.js";
 
 const key = (at: Vec3): string => `${at.x},${at.y},${at.z}`;
@@ -167,6 +168,20 @@ describe("checkBlockHit", () => {
 			requestedFace: { x: 0.3, y: 1, z: 0 },
 		});
 		expect(result.ok).toBe(false);
+	});
+});
+
+describe("worldViewOf", () => {
+	test("prismarine raycast returns the hit block, so its position must be read from .position", async () => {
+		// 真服形态：bot.world.raycast 返回 prismarine Block（坐标在 block.position）。
+		// 读 hit.x 会得到 undefined，闸门把所有合法交互误判成 UNREACHABLE。
+		const bot = {
+			blockAt: () => ({ shapes: unitCube }),
+			world: { raycast: async () => ({ position: { x: 3, y: 65, z: -2 } }) },
+		};
+		const view = worldViewOf(bot as never);
+		const hit = await view.raycast({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, 5);
+		expect(hit).toEqual({ position: { x: 3, y: 65, z: -2 } });
 	});
 });
 
