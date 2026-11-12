@@ -42,7 +42,7 @@ Windows 附带 x64 / arm64 预编译原生附件，仅用于识别物理 Shift /
 
 ```bash
 git clone https://github.com/FanRec/uina-agent.git
-cd uina
+cd uina-agent
 pnpm install
 ```
 
@@ -113,11 +113,11 @@ git diff | uina "总结这次改动"   # 管道也一样可用
 
 几点说明：
 
-- `npm link` 的工作方式：在系统的全局 `node_modules` 里创建一个指向**本仓库目录**的软链接（不是复制）。因此在仓库里 `git pull` 或改完代码后，只需重新 `pnpm build`，全局 `uina` 立即用上新版——不用重新 link。
+- `npm link` 在系统的全局 `node_modules` 里创建一个指向**本仓库目录**的软链接（不是复制）。因此在仓库里 `git pull` 或改完代码后，只需重新 `pnpm build`，全局 `uina` 立即用上新版——不用重新 link。
 - 仓库移动、重命名或删除后，软链接会失效，重新执行 `npm link` 即可。
 - 卸载：回到本仓库目录执行 `npm unlink -g uina`（或任何目录 `npm rm -g uina`）。
 - Windows 首次 `npm link` 后如果提示 `uina` 不是命令，新开一个终端让 PATH 生效即可。
-- 如果你不想动全局环境，替代方案是在 shell 配置里加一个 alias：`alias uina="node <仓库路径>/dist/src/main.js"`（同样需要先 `pnpm build`）。
+- 不想动全局环境，可以在 shell 配置里加 alias：`alias uina="node <仓库路径>/dist/src/main.js"`（同样需要先 `pnpm build`）。
 
 ## 配置：`~/.uina/auth.json`
 
@@ -142,7 +142,8 @@ git diff | uina "总结这次改动"   # 管道也一样可用
 | `apiKey` | string | **是** | 可用环境变量 `UINA_API_KEY_<名字大写>` 覆盖 |
 | `modelContextWindow` | number | **是** | 模型真实上下文上限。Uina 不猜，缺失即报错 |
 | `type` | string | 否 | `openai-compatible`（默认）/ `anthropic` / `gemini` |
-| `maxContextWindow` | number | 否 | 你的自设上限；生效值取它与 `modelContextWindow` 较小者 |
+| `maxContextWindow` | number | 否 | 自设上限；生效值取它与 `modelContextWindow` 较小者 |
+| `inputBudgetTokens` | number | 否 | 每请求输入预算；缺省 60000，`0` 表示只受窗口约束 |
 | `maxOutputTokens` | number | 见说明 | 输出上限；**Anthropic 协议必填**（`/messages` 要求 `max_tokens`） |
 | `maxRetries` | number | 否 | 请求重试次数，非负整数 |
 | `thinkingLevels` | string[] | 否 | 该模型支持的思考档位。省略即「未知」，界面显示未知而不是猜一个 |
@@ -224,7 +225,7 @@ git diff | uina "总结这次改动"   # 管道也一样可用
 
 | 路径 | 内容 | 谁来写 |
 | --- | --- | --- |
-| `~/.uina/auth.json` | 凭据与 provider 配置 | 你（手工维护） |
+| `~/.uina/auth.json` | 凭据与 provider 配置 | 手工维护 |
 | `~/.uina/settings.json` | 会话偏好：模型、思考档位 | 界面自动写，重启自动恢复 |
 | `~/.uina/session.jsonl` | 会话主线记忆 | Uina 逐条追加 |
 
@@ -254,6 +255,8 @@ uina [选项] [prompt...]
 | `-m`, `--model <名字>` | 临时覆盖本次会话的模型 |
 | `-e`, `--extension <路径>` | 加载扩展文件或目录，可重复 |
 | `--no-session` | 纯内存模式：不读历史、不写盘 |
+| `--profile <id>` | 启用具名主体配置，隔离 session/settings 与资源根 |
+| `--gateway`, `--gateway-port`, `--gateway-host` | 启用多前端网关及其监听地址、端口 |
 | `-v`, `--version` | 打印版本 |
 | `-h`, `--help` | 打印帮助 |
 
@@ -309,6 +312,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | `/effort [档位]` | 无参打开强度滑块；有参直接设定 |
 | `/compact [要求]` | 压缩会话历史，释放上下文空间 |
 | `/session` | 查看用量与上下文构成 |
+| `/prompt` | 查看最近一次请求的系统提示词快照与外部来源 |
 | `/history`、`/branches` | 会话历史与分支 |
 | `/trajectory` | 审计轨迹时序 |
 | `/rewind <节点 id> <原因>` | 回溯主线（不撤销文件修改与已发出的外部调用） |
@@ -316,7 +320,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | `/clear` | 清空屏幕转录 |
 | `/gutter` | 切换右侧导航轨样式 |
 | `/reload` | 重载项目与本地扩展 |
-| `/quit` | 等待当前轮次与写入完成后退出 |
+| `/quit`、`/exit` | 等待当前轮次与写入完成后退出 |
 
 ## 内置工具
 
@@ -325,22 +329,22 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | 工具 | 说明 |
 | --- | --- |
 | `read_file` | 读 UTF-8 文本，可按 `offset` / `limit` 读片段；输出上限 2000 行 / 50KB（先命中者生效），截断时附续读 offset；二进制文件拒读 |
-| `write_file` | 覆盖写入文件 |
+| `write_file` | 覆盖写入文件；目标已存在且本进程未读过（或读后已变）时拒绝整体覆盖，要求先 `read_file` |
 | `edit_file` | 精确文本替换：`edits[]` 中每个 `oldText` 必须在文件中唯一，一次调用可携带多个不相交编辑；自动适配 LF/CRLF 行尾并保留 BOM |
 | `grep_file` | 按正则或字面量搜索文件内容，尊重 .gitignore；上限 100 条匹配 / 50KB 输出，超出给出收窄提示 |
-| `find_file` | 按文件名 glob（`*` 段内、`**` 跨段）查找路径；ripgrep 可用时 `grep_file` 走 rg 引擎，否则自动下载到 `~/.uina/bin`，再不行降级内置 node 引擎 |
+| `find_file` | 按文件名 glob（`*` 段内、`**` 跨段）查找路径；上限 100 条 / 50KB。ripgrep 可用时 `grep_file` 走 rg 引擎，否则自动下载到 `~/.uina/bin`，再不行降级内置 node 引擎 |
 | `read_image` | 按文件签名读取 PNG / JPEG / GIF / WebP |
-| `exec_command` | 执行系统命令（Windows 走 PowerShell / `cmd`，Unix 走 `/bin/sh`） |
+| `exec_command` | 执行系统命令（Windows 走 PowerShell / `cmd`，Unix 走 `/bin/sh`）；默认 120 秒超时，`timeout`（秒）可覆盖，输出上限 50KB / 2000 行 |
 | `get_time` | 当前日期时间 |
-| `session_list` / `session_read` / `session_rewind` | 读取历史节点并回溯 |
+| `session_list` / `session_read` / `session_rewind` | 读取历史节点并回溯；`session_read` 默认正文上限 50000 字符 |
 
-`exec_command` **没有**审批、沙箱、超时或白名单，权限等同于当前进程账户；请自行判断在什么目录下运行。工具结果必须显式给出 `succeeded` / `failed` / `cancelled` / `unknown` / `not_started`，Uina 不解析正文猜测成败。
+`exec_command` 没有审批、沙箱或白名单，权限等同于当前进程账户；请自行判断在什么目录下运行。工具结果必须显式给出 `succeeded` / `failed` / `cancelled` / `unknown` / `not_started`，Uina 不解析正文猜测成败；启动后被取消或超时且效果不可确认时报 `unknown`。
 
 ## 会话与回溯
 
-会话逐条追加写入 `session.jsonl`：首行是 header，之后每行是消息、回溯或生命周期事件，写入即 flush。
+会话逐条追加写入 `session.jsonl`：首行是 header（v4），之后每行是消息、回溯或生命周期事件，写入即 flush。
 
-启动时重放日志。末行若是未完成的写入会被原子修复；中间记录损坏则拒绝启动。工具已启动但没有完成记录时，恢复为 `unknown`，不推断为成功。
+启动时重放日志。末行若是未完成的写入会被原子修复；中间记录损坏则拒绝启动；journal 版本不是 v4 时明确拒绝，不自动迁移。工具已启动但没有完成记录时，恢复为 `unknown`，不推断为成功。
 
 回溯（`/rewind` 或模型的 `session_rewind`）只改会话主线，**不会**撤销文件修改或已发出的外部调用。详见 [docs/session-rewind.md](docs/session-rewind.md)。
 
@@ -367,16 +371,21 @@ export default function activate(api) {
 ```text
 src/
   main.ts        进程入口
-  cli/           组合根：建宿主、接一个消费者、处理信号与退出
+  cli/           组合根：建宿主、接消费者、处理信号与退出；frontend-gateway 多前端网关
   host/          主体生命周期所有者，对外只有输入入口与事件流
   agent/         前台循环、上下文投影、steer / followUp 队列
   ai/            配置、provider 适配、wire 转换、SSE 解析
   session/       JSONL 追加日志、恢复、损坏尾行修复
+  core/          跨层领域类型与工具结果合同
   tools/         工具注册、schema 校验与执行
-  extensions/    扩展契约、加载、内置能力（运行时工具 / 任务 / 子智能体 / 压缩）
-  ui/            终端消费者：渲染、输入、焦点、组件组合
-  core/          跨层类型
-docs/            运行时事实、提案与历史审查
+  runtime/       RuntimeHooks 合同、guard、事件与进程追踪
+  extensions/    扩展契约、加载、内置能力（运行时工具 / 压缩 / 会话工具）
+  presentation/  平台中立展示核心与多前端同步协议
+  ui/            终端 Surface Adapter：渲染、输入、焦点、组件组合
+  web-client/    浏览器薄面（原生 ESM）
+.uina/worlds/    QQ、Live2D、Minecraft、Rhythm 等 World 实现
+.uina/extensions/ 项目扩展（voice、tts、embodiment、mcp）
+docs/            运行时事实、专题合同、提案与历史审查
 examples/        可加载的示例扩展
 ```
 
@@ -385,20 +394,23 @@ examples/        可加载的示例扩展
 ```bash
 pnpm start          # 源码直接运行（tsx）
 pnpm dev            # watch 模式
-pnpm test           # 全量测试（vitest）
-pnpm typecheck      # 类型检查 + 分层边界检查
-pnpm build          # 构建到 dist/
+pnpm typecheck:fast # 增量类型检查（日常）
+pnpm typecheck:ci   # 格式 + 边界 + 完整类型检查（提交前）
+pnpm test:dev       # 快速测试，不收集覆盖率
+pnpm test:full      # 全量测试（提交前）
+pnpm build          # 构建 dist、native asset 与 web 产物
+pnpm dev:hot        # 重建 dist 与 native asset，不含 watch
 ```
 
-其他验证脚本：`pnpm verify:cli`（编译产物冒烟）、`pnpm verify:file-events`（文件事件扩展，需要真实运行环境）。
+其他验证脚本：`pnpm verify:cli`（编译产物冒烟）、`pnpm verify:gateway`（真实 WebSocket 网关）、`pnpm verify:file-events`（文件事件扩展，需要真实运行环境）、`pnpm dev:baseline`（开发基线）。
 
 ## 当前边界
 
-诚实起见，把「已验证」与「未验证」分开：
+把「已验证」与「未验证」分开：
 
-- **已验证**：类型检查、全量测试、构建；协议层在 localhost 上覆盖 OpenAI 兼容 / Anthropic / Gemini；真实 DeepSeek 验证过思考控制、usage、取消，以及文件事件驱动回合的完整往返。
-- **未验证**：其他真实服务；真实终端下的 IME 与键位；macOS / Linux 实机。
-- **不在当前范围**：长期记忆、语音、视觉、动态能力筛选、权限审批、RPC。
+- **已验证**：类型检查、分层边界、全量测试、构建；协议层在 localhost 上覆盖 OpenAI 兼容 / Anthropic / Gemini；真实 DeepSeek 验证过思考控制、usage、取消，以及文件事件驱动回合的完整往返。
+- **未验证**：其他真实 Provider 服务端、真实终端下的 IME 与键位、macOS / Linux 实机、ARM native 加载、长期负载与生产部署；各 World 的真实平台、真机设备与连续画面验收。
+- **不在当前范围**：任意分支续写与合并、文件回滚、多会话选择器、图形树编辑器、分布式运行时。
 
 ## 排错
 
@@ -419,9 +431,12 @@ pnpm build          # 构建到 dist/
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/current-runtime.md](docs/current-runtime.md) | 当前运行事实与边界 |
+| [docs/current-runtime.md](docs/current-runtime.md) | 当前运行事实、分层边界与验证范围 |
 | [docs/extensions.md](docs/extensions.md) | 扩展设计与权衡 |
+| [docs/extensions-development.md](docs/extensions-development.md) | 扩展开发指南 |
+| [docs/app-development.md](docs/app-development.md) | World 开发指南 |
 | [docs/session-rewind.md](docs/session-rewind.md) | 会话与回溯设计 |
+| [docs/README.md](docs/README.md) | 文档总索引 |
 
 ## 许可证
 
