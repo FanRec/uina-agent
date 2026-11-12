@@ -133,6 +133,24 @@ test("pending and installed feedback view reject discrete view writers until a k
 	}
 });
 
+test("feedback-held view rejects a target-aimed dig but preserve proceeds without taking the view", async () => {
+	const f = fixture();
+	const body = await f.h.port.acquire(ownerT(1), openSignal());
+	const stream = await body.feedback({});
+	f.step();
+	const frame = await stream.next(null, openSignal());
+	const applied = stream.apply(frame, { keys: {}, look: { yaw: 1, pitch: 0 } });
+	f.step();
+	await applied;
+	const block = { place: placeT(), block: { x: 1, y: 64, z: 0 } };
+	// 反馈流持有视角：默认挖掘按 CONTROL_CONFLICT 拒绝，不暗中覆盖战斗视角。
+	await expect(body.dig(block)).rejects.toMatchObject({ code: "CONTROL_CONFLICT", dispatch: "not_sent" });
+	// preserve 不申请视角：走到世界检查（夹具里该格未加载 → NOT_FOUND），不是 CONTROL_CONFLICT。
+	await expect(body.dig(block, { aim: "preserve" })).rejects.toMatchObject({ code: "NOT_FOUND", dispatch: "not_sent" });
+	expect(f.looks()).toBe(0);
+	await body.close();
+});
+
 test("a discrete look in flight rejects feedback view while keys-only feedback remains usable", async () => {
 	const f = fixture(false, true);
 	const body = await f.h.port.acquire(ownerT(1), openSignal());

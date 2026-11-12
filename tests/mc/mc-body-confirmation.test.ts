@@ -105,6 +105,34 @@ describe("controlled mining server confirmation", () => {
 		expect(h.packets.filter((p: { name: string }) => p.name === "block_dig")).toHaveLength(0);
 	});
 
+	test("default dig turns per tick with controlled look and never calls a forced lookAt", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = harness();
+			// 背对目标：受控转头必须逐 Tick 转回来，而不是一次 lookAt(..., true) 瞬转。
+			h.bot.entity.yaw = Math.PI;
+			const pending = runMining(h.deps, target, { aim: "target" });
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(600);
+			expect(h.bot.lookAt).not.toHaveBeenCalled();
+			expect(h.bot.look.mock.calls.length).toBeGreaterThanOrEqual(2);
+			h.serverBlock(true);
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("aim:preserve never writes the view (no look, no lookAt)", async () => {
+		const h = harness();
+		const pending = runMining(h.deps, target, { aim: "preserve" });
+		await vi.advanceTimersByTimeAsync(0);
+		h.serverBlock(true);
+		await pending;
+		expect(h.bot.lookAt).not.toHaveBeenCalled();
+		expect(h.bot.look).not.toHaveBeenCalled();
+	});
+
 	test("mining swings continuously during the dig and stops when it settles (§4.3)", async () => {
 		vi.useFakeTimers();
 		try {
@@ -340,9 +368,20 @@ describe("dispatch 级合同的持久结论", () => {
 			world: { raycast: async () => null },
 		});
 		h.acknowledgeDurability();
+		// 受控转头靠 look 每步推进：假 bot 的 look 要把角度写回去，否则转不到位。
+		h.bot.look = (async (yaw: number, pitch: number) => {
+			h.bot.entity.yaw = yaw;
+			h.bot.entity.pitch = pitch;
+		}) as typeof h.bot.look;
 		const session = await h.port.acquire(ownerT(1), openSignal());
 		const receipt = await session.interact({ target: entityT(), hand: "main" });
 		expect(receipt).toMatchObject({ dispatch: "sent", completion: "met" });
+		// intent → dispatch → receipt：实体交互与方块交互同一顺序，写前意图先于激活包。
+		expect(h.facts.filter((fact) => fact.contract === "body.interact@1").map((fact) => fact.kind)).toEqual([
+			"intent",
+			"dispatch",
+			"receipt",
+		]);
 		expect(h.facts.at(-1)).toMatchObject({
 			contract: "body.interact@1",
 			kind: "receipt",

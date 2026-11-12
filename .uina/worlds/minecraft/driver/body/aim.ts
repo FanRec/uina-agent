@@ -120,6 +120,30 @@ const normalize = (a: Vec3): Vec3 => {
 	return length === 0 ? { x: 0, y: 0, z: 0 } : scale(a, 1 / length);
 };
 
+/**
+ * 射线与轴对齐盒的入射距离（slab 法）；不相交返回 null，起点在盒内返回 0。
+ * 实体命中箱与遮挡方块共用它，"首命中是否早于命中箱"才有可比的同一口径。
+ */
+const rayBoxEntry = (eye: Vec3, direction: Vec3, min: Vec3, max: Vec3): number | null => {
+	let enter = -Infinity;
+	let exit = Infinity;
+	for (const axis of ["x", "y", "z"] as const) {
+		const d = direction[axis];
+		const o = eye[axis];
+		if (Math.abs(d) < 1e-9) {
+			if (o < min[axis] || o > max[axis]) return null;
+			continue;
+		}
+		const t1 = (min[axis] - o) / d;
+		const t2 = (max[axis] - o) / d;
+		enter = Math.max(enter, Math.min(t1, t2));
+		exit = Math.min(exit, Math.max(t1, t2));
+		if (enter > exit) return null;
+	}
+	if (exit < 0) return null;
+	return Math.max(0, enter);
+};
+
 const normalOfFace = (faceNumber: number): Vec3 => FACE_NORMALS[faceNumber] ?? { x: 0, y: 1, z: 0 };
 
 /**
@@ -202,6 +226,7 @@ async function rayHitsFace(
  */
 function faceSamples(block: { shapes?: number[][] }, faceNumber: number): Vec3[] {
 	const shapes = block.shapes ?? [[0, 0, 0, 1, 1, 1]];
+	if (shapes.length === 0) return [];
 	const normal = normalOfFace(faceNumber);
 	const axis = normal.x !== 0 ? 0 : normal.y !== 0 ? 1 : 2;
 	const tangents = [0, 1, 2].filter((candidate) => candidate !== axis);
@@ -262,6 +287,16 @@ export async function checkBlockHit(
 			ok: false,
 			code: "NOT_FOUND",
 			message: `block ${target.x} ${target.y} ${target.z} is not loaded on the client`,
+		};
+	}
+	// 空气/无碰撞形状的格没有可点击面：必须在采样前拒绝。空 shapes 会让面平面
+	// 坐标算成 ±Infinity，射线方向变 NaN，prismarine 的 raycast 会死在步进循环里
+	// （真服实证：瞄准期间目标被挖成空气，复核直接挂死）。
+	if (block.shapes != null && block.shapes.length === 0) {
+		return {
+			ok: false,
+			code: "NOT_FOUND",
+			message: `block ${target.x} ${target.y} ${target.z} is air (no clickable shape)`,
 		};
 	}
 	const requestedFaceNumber =
@@ -459,8 +494,9 @@ export function worldViewOf(bot: MineflayerBot): HitGateWorld {
 }
 
 /**
- * 实体交互的射程与遮挡判定（§4.1 实体）：眼位到实体命中箱的最近距离 ≤ 3，
- * 且朝实体中心的射线没有被方块先挡住。命中箱用 width/height 近似（中心半高）。
+ * 实体交互的射程与遮挡判定（§4.1 实体）：眼位到命中箱的最近距离 ≤ 3，且朝命中箱的
+ * 射线没有被方块先挡住。命中箱按 width/height 的真实 AABB 算，遮挡用同一射线的
+ * AABB 入射距离比较——"首命中方块中心 ±0.5"的近似会把贴墙实体误判成被挡。
  */
 export async function checkEntityHit(
 	world: HitGateWorld,
@@ -468,12 +504,16 @@ export async function checkEntityHit(
 	entity: { position: Vec3; height?: number; width?: number },
 	reach = ENTITY_REACH,
 ): Promise<HitGateResult> {
-	const halfHeight = (entity.height ?? 1.8) / 2;
-	const center = { x: entity.position.x, y: entity.position.y + halfHeight, z: entity.position.z };
-	const horizontal = Math.hypot(center.x - eye.x, center.z - eye.z);
-	const closest = Math.max(0, horizontal - (entity.width ?? 0.6) / 2);
-	const vertical = Math.max(0, Math.abs(center.y - eye.y) - halfHeight / 2);
-	const nearest = Math.hypot(closest, vertical);
+	const half = (entity.width ?? 0.6) / 2;
+	const height = entity.height ?? 1.8;
+	const min = { x: entity.position.x - half, y: entity.position.y, z: entity.position.z - half };
+	const max = { x: entity.position.x + half, y: entity.position.y + height, z: entity.position.z + half };
+	const gap = {
+		x: Math.max(min.x - eye.x, 0, eye.x - max.x),
+		y: Math.max(min.y - eye.y, 0, eye.y - max.y),
+		z: Math.max(min.z - eye.z, 0, eye.z - max.z),
+	};
+	const nearest = Math.hypot(gap.x, gap.y, gap.z);
 	if (nearest > reach) {
 		return {
 			ok: false,
@@ -481,25 +521,41 @@ export async function checkEntityHit(
 			message: `entity hitbox is ${nearest.toFixed(2)} blocks from the eye (reach ${reach})`,
 		};
 	}
+	const center = { x: entity.position.x, y: entity.position.y + height / 2, z: entity.position.z };
 	const direction = normalize({ x: center.x - eye.x, y: center.y - eye.y, z: center.z - eye.z });
+	const entry = rayBoxEntry(eye, direction, min, max);
+	// 眼睛已经在命中箱里时入射距离是 0：瞄向箱心，别把"瞄自己"交给转头步进。
+	const hitDistance = entry != null && entry > 0.05 ? entry : distance(eye, center);
+	const point =
+		entry != null && entry > 0.05
+			? { x: eye.x + direction.x * entry, y: eye.y + direction.y * entry, z: eye.z + direction.z * entry }
+			: center;
 	const clearHit: HitGateResult = {
 		ok: true,
 		hit: {
 			faceNumber: 1,
 			face: normalOfFace(1),
 			cursor: { x: 0.5, y: 0.5, z: 0.5 },
-			point: center,
-			distance: distance(eye, center),
+			point,
+			distance: hitDistance,
 		},
 	};
-	const first = await world.raycast(eye, direction, distance(eye, center) + 0.5);
+	const first = await world.raycast(eye, direction, hitDistance + 0.5);
 	if (first == null) return clearHit;
-	const blockDistance = distance(eye, {
-		x: first.position.x + 0.5,
-		y: first.position.y + 0.5,
-		z: first.position.z + 0.5,
-	});
-	if (blockDistance < distance(eye, center) - 0.5) {
+	// 遮挡按方块真实碰撞形状算：半砖/门只占一部分体积，按整格 AABB 会把"从上方
+	// 掠过"的视线误判成被挡。
+	const shapes = world.blockAt(first.position)?.shapes ?? [[0, 0, 0, 1, 1, 1]];
+	let blockEntry: number | null = null;
+	for (const shape of shapes) {
+		const entryOfShape = rayBoxEntry(
+			eye,
+			direction,
+			{ x: first.position.x + shape[0]!, y: first.position.y + shape[1]!, z: first.position.z + shape[2]! },
+			{ x: first.position.x + shape[3]!, y: first.position.y + shape[4]!, z: first.position.z + shape[5]! },
+		);
+		if (entryOfShape != null && (blockEntry == null || entryOfShape < blockEntry)) blockEntry = entryOfShape;
+	}
+	if (blockEntry != null && blockEntry < hitDistance - 0.01) {
 		return {
 			ok: false,
 			code: "UNREACHABLE",

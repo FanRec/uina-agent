@@ -9,7 +9,7 @@
 import type { ControlOwner, ItemSelector, SelfState } from "../../contracts/body.js";
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
-import type { EffectReceipt, Ref, Vec3 } from "../../contracts/values.js";
+import type { CallFailure, EffectReceipt, Ref, Vec3 } from "../../contracts/values.js";
 import type { CapabilityDeps } from "../deps.js";
 import { readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach, round2 } from "../shared/reach.js";
@@ -69,7 +69,20 @@ export async function digCell(
 			return { kind: "not_met", dispatch: equipped.dispatch, effect: equipped.effect };
 		}
 	}
-	const receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
+	let receipt: Awaited<ReturnType<typeof scope.player.dig>>;
+	try {
+		receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
+	} catch (error) {
+		// Driver 零派发拒绝（例如瞄准期间这一格已经被挖成空气）：按世界读数复核，
+		// 真的空了就按"无需再挖"收口，不把一次没有发出的写当成施工失败。
+		const failure = error as Partial<CallFailure> | null;
+		if (failure?.name === "CallFailure" && failure.dispatch === "not_sent") {
+			const after = await readBlockAt(scope.world, position);
+			if (after == null) return { kind: "not_loaded" };
+			if (after.name === "air") return { kind: "open" };
+		}
+		throw error;
+	}
 	if (receipt.completion !== "met") {
 		// 重力方块会在挖掘期间落走：回执等的是"这一格变成空气"，落走恰好让它提前空了。
 		// 以世界读数为准——格已空就按挖掉算，否则如实返回未确认。

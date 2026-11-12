@@ -14,6 +14,7 @@ import {
 	BLOCK_REACH,
 	blockReachFor,
 	checkBlockHit,
+	checkEntityHit,
 	type HitGateWorld,
 	nextAimStep,
 	worldViewOf,
@@ -271,5 +272,56 @@ describe("blockReachFor：射程按游戏模式取值", () => {
 		expect(blockReachFor({ game: { gameMode: "survival" } })).toBe(BLOCK_REACH);
 		expect(blockReachFor({ game: { gameMode: null } })).toBe(BLOCK_REACH);
 		expect(blockReachFor({})).toBe(BLOCK_REACH);
+	});
+});
+
+describe("checkEntityHit：命中箱射程与遮挡", () => {
+	const eye = { x: 0.5, y: 65.0, z: 0.5 };
+	const entity = { position: { x: 2.5, y: 64, z: 0.5 }, width: 0.6, height: 1.8 };
+
+	test("no obstruction: aims at the hitbox surface, distance is the box gap", async () => {
+		const gate = await checkEntityHit(samplingWorld(new Map()), eye, entity);
+		expect(gate.ok).toBe(true);
+		if (!gate.ok) return;
+		expect(gate.hit.point.x).toBeCloseTo(2.2, 2);
+		expect(gate.hit.distance).toBeCloseTo(1.7, 2);
+	});
+
+	test("a full block between the eye and the entity blocks the interaction", async () => {
+		const blocks = new Map([[key({ x: 1, y: 64, z: 0 }), unitCube]]);
+		const gate = await checkEntityHit(samplingWorld(blocks), eye, entity);
+		expect(gate).toMatchObject({ ok: false, code: "UNREACHABLE" });
+	});
+
+	test("a bottom slab the ray passes above does not block (real shape, not the whole cell)", async () => {
+		// 同一格换成整格方块就会挡；半砖只占 64..64.5，视线在 64.9 上方掠过。
+		const slab = new Map([[key({ x: 1, y: 64, z: 0 }), bottomSlab]]);
+		expect((await checkEntityHit(samplingWorld(slab), eye, entity)).ok).toBe(true);
+		const full = new Map([[key({ x: 1, y: 64, z: 0 }), unitCube]]);
+		expect((await checkEntityHit(samplingWorld(full), eye, entity)).ok).toBe(false);
+	});
+
+	test("a wall behind the entity (after the hitbox entry) stays clear", async () => {
+		const blocks = new Map([[key({ x: 3, y: 64, z: 0 }), unitCube]]);
+		expect((await checkEntityHit(samplingWorld(blocks), eye, entity)).ok).toBe(true);
+	});
+
+	test("an entity beyond reach is rejected by the hitbox distance", async () => {
+		const far = { position: { x: 6.5, y: 64, z: 0.5 }, width: 0.6, height: 1.8 };
+		const gate = await checkEntityHit(samplingWorld(new Map()), eye, far);
+		expect(gate).toMatchObject({ ok: false, code: "OUT_OF_REACH" });
+	});
+});
+
+describe("checkBlockHit：空气形状", () => {
+	test("an air cell (empty shapes) is rejected before sampling and never raycasts NaN", async () => {
+		const world: HitGateWorld = {
+			blockAt: () => ({ shapes: [] }),
+			raycast: async () => {
+				throw new Error("must not raycast an empty shape");
+			},
+		};
+		const gate = await checkBlockHit(world, { x: 0.5, y: 65, z: 0.5 }, { x: 0, y: 64, z: 0 }, { reach: 4.5 });
+		expect(gate).toMatchObject({ ok: false, code: "NOT_FOUND" });
 	});
 });

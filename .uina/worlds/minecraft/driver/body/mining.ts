@@ -4,7 +4,7 @@ import type { CallFailure, EffectReceipt } from "../../contracts/values.js";
 import { fail } from "../execution.js";
 import { toMineflayerVec3 } from "../mineflayer/adapter.js";
 import type { ProtocolNotice } from "../mineflayer/protocol.js";
-import { aimAtControlled, BLOCK_REACH, checkBlockHit, eyeOf, worldViewOf } from "./aim.js";
+import { aimAtControlled, blockReachFor, checkBlockHit, eyeOf, worldViewOf } from "./aim.js";
 import type { BodyOperationDeps } from "./operation.js";
 
 const CONFIRM_MS = 5000;
@@ -121,13 +121,8 @@ export async function runMining(
 		};
 		void (async () => {
 			try {
-				if ((options?.aim ?? "target") === "target") {
-					await deps.bot.lookAt(
-						toMineflayerVec3({ x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 }),
-						true,
-					);
-				}
-				if (done) return;
+				// 不再抢先 lookAt(..., true)：那一步已经改了朝向，后面的受控转头就失去意义。
+				// 默认模式由下面的 aimAtControlled 逐 Tick 转到位；preserve 全程不碰视角。
 				deps.guard();
 				const block = deps.bot.blockAt(toMineflayerVec3(target.block));
 				if (block == null)
@@ -153,7 +148,7 @@ export async function runMining(
 				// §4.1 派发闸门：以操作当刻真实眼位/方块形状/射线/射程判可达性。
 				// 隔墙、超程、目标未加载在写前意图之前失败，不产生任何效果记录。
 				const gate = await checkBlockHit(worldViewOf(deps.bot), eyeOf(deps.bot.entity), target.block, {
-					reach: BLOCK_REACH,
+					reach: blockReachFor(deps.bot),
 				});
 				if (!gate.ok) {
 					throw fail({
@@ -165,23 +160,27 @@ export async function runMining(
 					});
 				}
 				aimFace = gate.hit.faceNumber;
-				// §4.2 受控转头到位（视角互斥域内、每 Tick 限速），再复核一次射线：
-				// 瞄准期间目标可能被挖掉/回填，眼位也可能随姿态变化。
-				await aimAtControlled(deps.bot, gate.hit.point, { signal: deps.signal });
-				deps.guard();
-				const recheck = await checkBlockHit(worldViewOf(deps.bot), eyeOf(deps.bot.entity), target.block, {
-					reach: BLOCK_REACH,
-				});
-				if (!recheck.ok) {
-					throw fail({
-						code: recheck.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
-						source: "world",
-						message: `target changed while aiming: ${recheck.message}`,
-						dispatch: "not_sent",
-						recoverable: true,
+				// aim:"target"（默认）：受控转头到位（视角互斥域内、每 Tick 限速），再复核
+				// 一次射线——瞄准期间目标可能被挖掉/回填，眼位也可能随姿态变化。
+				// aim:"preserve"：合同写明不自动瞄准，这里不调用任何改变视角的函数；世界
+				// 可达性与写入合法性仍按同一闸门判，发包前另有目标存在性检查。
+				if ((options?.aim ?? "target") === "target") {
+					await aimAtControlled(deps.bot, gate.hit.point, { signal: deps.signal });
+					deps.guard();
+					const recheck = await checkBlockHit(worldViewOf(deps.bot), eyeOf(deps.bot.entity), target.block, {
+						reach: blockReachFor(deps.bot),
 					});
+					if (!recheck.ok) {
+						throw fail({
+							code: recheck.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+							source: "world",
+							message: `target changed while aiming: ${recheck.message}`,
+							dispatch: "not_sent",
+							recoverable: true,
+						});
+					}
+					aimFace = recheck.hit.faceNumber;
 				}
-				aimFace = recheck.hit.faceNumber;
 				await deps.recorder.beforeWrite(effect, operation, "body.dig@1", {
 					target: { x: target.block.x, y: target.block.y, z: target.block.z },
 					predictedMs: waitMs,
