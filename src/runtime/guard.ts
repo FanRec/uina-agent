@@ -1,4 +1,4 @@
-import type { ChatMsg, RequestProjection } from "../core/types.js";
+import type { ChatMsg, ContextRead, RequestProjection } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 import type { RuntimeHooks } from "./hooks.js";
 import { NO_RUNTIME_HOOKS } from "./noop.js";
@@ -106,6 +106,10 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 				clone(await hooks.provider.transformPayload(provider, readonlySnapshot(payload))),
 			observeResponse: async (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) =>
 				hooks.provider.observeResponse(readonlySnapshot(input)),
+		}),
+		context: Object.freeze({
+			// ContextRead 只携带字符串与 signal：signal 是运行时所有物，照 withSignal 纪律穿透。
+			collect: async (input: Readonly<ContextRead>) => readonlySnapshot(await hooks.context.collect(withSignal(input))),
 		}),
 		events: Object.freeze({
 			// DeepReadonly 视图传给 emit：契约形状是 RuntimeEvent，但只读性由 deepFreeze 保证。

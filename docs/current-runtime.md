@@ -65,7 +65,9 @@ TUI 输入框下的 `上次世界观察 N /prompt` 指向最近一次实际模�
 
 `Subject` 对外以 `activeRun` 表示完整运行。`waitForIdle()` 会等待 turn 结束、extension handler、队列续跑和 observed output flush 全部结算。
 
-每次请求先从 canonical history 构造完整 `RequestProjection`，跑完纯 `turn.transformContext` 链后统一测量；`turn.preflight` 只能归并 `fail > rebuild > send`，不能修改投影。compaction capability 只生成持久 checkpoint，Core 收到 rebuild 后从 canonical history 重跑整条投影链；journal 始终保留全量历史。`/compact` 空闲时当场完成，忙时立即显示 queued，并在 awaited `turn.afterEnd` 安全点、下一条队列输入恢复前完成。失败或取消不激活未持久化 checkpoint。AgentHandle 的 busy/status 从实际主体活动派生，dispose 等待活动与存储关闭。
+每次请求先从 canonical history 构造完整 `RequestProjection`，跑完纯 `turn.transformContext` 链，随后读取 Context Source 注册快照并经 Request Composer 装配（guidance 追加到首条 System 专属区域；capability/observation 作为 `context.kind="runtime.perception"` 的运行时参考 user 消息附在历史之后），再对合成后的完整投影统一测量；`turn.preflight` 只能归并 `fail > rebuild > send`，不能修改投影。rebuild 从 canonical history 重跑整条投影链，Source 重新读取、不累积上次临时贡献。compaction capability 只生成持久 checkpoint，只看旧变换链的输出——`runtime.perception` 消息被 `filterCompactionMessages/isRuntimePerception` 排除，不压进历史摘要。journal 始终保留全量历史。`/compact` 空闲时当场完成，忙时立即显示 queued，并在 awaited `turn.afterEnd` 安全点、下一条队列输入恢复前完成。失败或取消不激活未持久化 checkpoint。AgentHandle 的 busy/status 从实际主体活动派生，dispose 等待活动与存储关闭。
+
+**信息注入体系（2026-11-13 重构）**：扩展经 `pi.provideContext(source)` 声明三类信息——`guidance`（稳定可信用法，注册时确定）、`capability`（当前能做什么）、`observation`（此刻事实/证据，须带 `source.type/origin`）。Registry 持有于扩展层，主键为激活作用域+id，collect 在入口固定注册快照（热重载不混代次），单个 Source 失败/为空/注销以 trace 条目如实记录，不伪装"无变化"。装配规则在 `src/agent/composer.ts`（纯函数）：能力在前观察在后、同类按来源身份稳定排序、纯文本合并一条参考消息、外部正文 JSON 字符串编码、含图片贡献单独成消息；无贡献时投影与基线一致。请求观察分三视图：preview（`inspectRequest()`，`basis:"preview"` + 独立 `preview-*` 身份）、active_semantic（`subject.getRequestObservation()`，`requestId=stream-*`）、provider_wire（`sendModelStreamRequest` 在最后一次 `transformPayload` 之后记录载荷摘要/哈希与改写差异，经 `ModelRequest.onWireObservation` 回传 Subject）。`requestId` 是内部诊断字段，不进入 Provider 网络载荷。旧 `turn.prepare`/`turn.transformContext` 的贡献仍经既有 InjectionProvenance 记录（legacy、粒度有限），与逐 Source 的 AssemblyTrace 分属两个粒度。
 
 每个已启动的 `content` 或 `thinking` 输出 channel 恰好以一个 `output_end` 或 `output_interrupted` 终止。网络错误、取消和协议失败不伪造成正常结束。
 
@@ -88,6 +90,8 @@ header 为 v4，且只接受 v4：v3 及更早版本明确拒绝，没有迁移�
 ## 工具结果
 
 `Tool.run` 返回 `{ result: string, status: ToolResultStatus, images?, details? }`。图片以 MIME/base64 附件保留，details 供程序与 UI 使用而不进入模型上下文。内置 shell、时间工具与项目工具共用此合同；旧项目工具需将字符串返回值迁移为该对象。`tool_result` hook 的 `isError` 改为 `status`，正文变换默认保留完整结论。Broker 的 `run()` 仍是仅取正文的便捷方法，执行事实由 `execute()` 返回。
+
+`tools.transformResult` 改写模型可见结果时，canonical journal 仍落原始执行正文；改写正文作为同一条 Tool 消息的可选 `modelView`（`content/images/details`）随消息持久化。历史投影（`convertToLlm` 与事件帧转换）按 `modelView ?? canonical` 字段级回退，`status` 永远来自 canonical；改写未发生时不写冗余 `modelView`。UI 检查执行事实仍读 canonical。
 
 World action 也必须返回该结构化合同；字符串结果不再隐式视为成功。外部效果动作在模型可见正文中保留最小的 `effect=accepted|applied|simulated|unknown` 事实，details 保留完整程序诊断与验证入口。
 

@@ -17,6 +17,8 @@ import type {
 	InputDeliveryOwner,
 	Model,
 	ModelStreamFn,
+	ModelToolView,
+	RequestAssemblyTrace,
 	RequestInspection,
 	RequestProjection,
 	RequestUsage,
@@ -39,6 +41,7 @@ import { projectInputMessage } from "../session/recovery.js";
 import type { RewindRequest, RewindResult, SessionStore } from "../session/types.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
 import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
+import { composeContextSources } from "./composer.js";
 import {
 	type ProjectionPolicy,
 	type ResolvedProjection,
@@ -146,6 +149,22 @@ type ToolBatchResult = import("../tools/broker.js").ToolExecutionResult & {
 	canonical?: import("../tools/broker.js").ToolExecutionResult;
 };
 
+/**
+ * 一次真实模型请求的活动观察（active_semantic + provider_wire，requestId 关联）。
+ *
+ * 与 preview（inspectRequest，按当前状态预测、独立 ID）严格区分：这里记录的是
+ * preflight 完成后真正交付给 Provider Adapter 的语义请求、来源装配追踪，以及
+ * Provider 最终发送前的 Wire 摘要（transformPayload 之后、HTTP 之前，只记录
+ * 哈希与量级，不保存原始正文）。投影正文不入 Journal。
+ */
+export interface ActiveRequestObservation {
+	readonly requestId: string;
+	readonly modelKey: string;
+	readonly projection: RequestProjection;
+	readonly assembly: RequestAssemblyTrace;
+	readonly wire?: import("../core/types.js").ProviderWireObservation;
+}
+
 type ToolBatchOutcome = {
 	results: ToolBatchResult[];
 	error?: AggregateError;
@@ -224,6 +243,8 @@ export class Subject {
 	private currentContextSnapshot?: ContextSnapshot;
 	private contextInspectionSeq = 0;
 	private streamSeq = 0;
+	/** 最近一次真实发送的活动请求观察（active_semantic + wire，requestId 关联）。 */
+	private activeRequest?: ActiveRequestObservation;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 	private lastPromptFingerprint?: string;
 	private readonly inputDeliveries = new Map<string, InputDeliveryAttempt>();
@@ -500,13 +521,27 @@ export class Subject {
 		return this.lastRequestUsage ? structuredClone(this.lastRequestUsage) : undefined;
 	}
 
+	/** 最近一次真实发送的活动请求观察（preview 走 inspectRequest，独立身份）。 */
+	getRequestObservation(): ActiveRequestObservation | undefined {
+		return this.activeRequest ? structuredClone(this.activeRequest) : undefined;
+	}
+
+	/** Wire 观察出口：Provider Adapter 在最后一次 transformPayload 之后回调，只观察。 */
+	private observeWire(observation: import("../core/types.js").ProviderWireObservation): void {
+		if (!this.activeRequest || observation.requestId !== this.activeRequest.requestId) return;
+		this.activeRequest = { ...this.activeRequest, wire: observation };
+	}
+
 	getCurrentContextSnapshot(): ContextSnapshot | undefined {
 		return this.currentContextSnapshot ? structuredClone(this.currentContextSnapshot) : undefined;
 	}
 
 	async inspectRequest(): Promise<RequestInspection> {
 		const model = this.model;
-		const projection = await this.prepareProjection(model, this.systemPrompt, [], true);
+		// preview：与活动请求同一套纯读装配（含 Context Source 快照），但使用独立身份，
+		// 不冒充"刚刚实际发送"。
+		const requestId = `preview-${randomUUID()}`;
+		const { projection, assembly } = await this.prepareProjection(model, this.systemPrompt, []);
 		const measurement = measureRequestContext(
 			projection,
 			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
@@ -517,6 +552,9 @@ export class Subject {
 			measurement,
 			contextWindow: model.contextWindow,
 			inputBudget: inputTokenBudget(model, projection.thinkingLevel),
+			basis: "preview",
+			requestId,
+			assembly,
 		};
 	}
 
@@ -1340,12 +1378,21 @@ export class Subject {
 			await applyRewind();
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
-			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
-			if (!projection) {
+			const prepared = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
+			if (!prepared) {
 				await this.emitInterrupted();
 				return { kind: "aborted" };
 			}
+			const { projection, assembly } = prepared;
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
+			// 活动请求观察：preflight 完成后、调用 Provider 前固定（active_semantic）；
+			// Wire 摘要由 Provider Adapter 在最后一次 transformPayload 之后回填。
+			this.activeRequest = {
+				requestId: callId,
+				modelKey: projection.modelKey,
+				projection,
+				assembly,
+			};
 			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(callId, (event) => this.dispatch(event), {
 				onUsage: (usage, timing) => void this.publishUsage(usage, callId, projection, callSeq, timing),
@@ -1367,6 +1414,10 @@ export class Subject {
 						tools: [...projection.tools],
 						thinkingLevel: projection.thinkingLevel,
 						providerHooks: this.runtimeHooks.provider,
+						// 诊断关联字段：随请求传到内置 Provider Adapter 用于 Wire 观察对账，
+						// 不进入任何 Provider 网络载荷。
+						requestId: callId,
+						onWireObservation: (observation) => this.observeWire(observation),
 					},
 					(delta) => {
 						if (!streamSignal.aborted) collector.handleDelta(delta);
@@ -1439,9 +1490,9 @@ export class Subject {
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
 		turnSignal: AbortSignal,
-	): Promise<RequestProjection | undefined> {
+	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace } | undefined> {
 		for (let pass = 0; pass <= 1; pass++) {
-			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true, turnSignal);
+			const { projection, assembly } = await this.prepareProjection(model, systemPrompt, beforeMessages, turnSignal);
 			// 投影与测量是同步 CPU（全量历史构建 + JSON 序列化）。不在这里割断，
 			// 事件循环会连同 TUI 心跳、输出流一起被冻住（实测单次 1.4s）。
 			await yieldToLoop();
@@ -1475,18 +1526,27 @@ export class Subject {
 					"active_request",
 				),
 			);
-			return projection;
+			return { projection, assembly };
 		}
 		throw new Error("请求准备失败");
 	}
 
+	/**
+	 * 单次模型语义请求的装配（信息注入重构后的收敛点）：
+	 * 1. 基础投影：System/Persona + canonical history 投影 + 临时 beforeMessages；
+	 * 2. 旧 turn.transformContext（含 Compaction）——遗留高级接缝，语义保持不变；
+	 * 3. 读取 Context Source 注册快照并经 RequestComposer 装配（guidance 进首条
+	 *    System 专属区域，capability/observation 作为运行时参考消息附在历史之后），
+	 *    附带 AssemblyTrace；此后测量、预检、预算门与协议校验都看合成后的完整投影。
+	 *
+	 * rebuild（预检 pass>0）从第 1 步重跑整条链：Source 重新读取，不累积上一次临时贡献。
+	 */
 	private async prepareProjection(
 		model: Model,
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
-		runTransforms: boolean,
 		signal?: AbortSignal,
-	): Promise<RequestProjection> {
+	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace }> {
 		const built = [
 			...buildContext({
 				history: this.history,
@@ -1504,10 +1564,9 @@ export class Subject {
 			tools: this.declaredTools(messages),
 			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 		});
-		if (!runTransforms) return base;
 		await yieldToLoop();
 		// 中断发生在让出点之后时，不再执行投影变换；调用方会在下一个检查点收尾。
-		if (signal?.aborted) return base;
+		if (signal?.aborted) return { projection: base, assembly: { sources: [] } };
 		const transformed = await this.runtimeHooks.turn.transformContext(base);
 		if (transformed.projectionId !== base.projectionId || transformed.modelKey !== base.modelKey) {
 			throw new Error("turn.transformContext 不得修改 projectionId 或 modelKey");
@@ -1521,10 +1580,19 @@ export class Subject {
 		}
 		// 声明跟随最终投影：帧可能由尾部注入在这一步之后才出现。只补缺的上下文工具，
 		// 不把 hook 对工具集的选择覆盖掉（限制工具面是合法用法）。
-		return immutableProjection({
+		const merged = immutableProjection({
 			...transformed,
 			tools: this.mergeContextTools(transformed.tools, transformed.messages),
 		});
+		// 新 Source 装配在旧变换之后、测量/预检之前（兼容 Compaction 的必要边界）：
+		// preview 也走同一套纯读装配；inspectRequest 无活动信号，用永不触发的空信号。
+		// 请求已取消时停止继续装配（read 是纯读，但没必要为将丢弃的请求再读一轮）。
+		if (signal?.aborted) return { projection: merged, assembly: { sources: [] } };
+		const collection = await this.runtimeHooks.context.collect({
+			modelKey: modelKey(model),
+			signal: signal ?? new AbortController().signal,
+		});
+		return composeContextSources({ projection: merged, collection });
 	}
 
 	/** 下一次模型请求会声明的工具：可执行工具 + 这份投影需要的上下文工具。
@@ -1632,8 +1700,11 @@ export class Subject {
 		try {
 			for (const res of batch.results) {
 				// 阶段 D/M7：canonical journal 落原始执行正文（未经 transformResult 改写）；
-				// 模型可见改写投影经后续请求的投影链生效，不进 canonical 历史。
+				// 模型可见改写作为同一条 Tool 消息的可选 modelView 随消息持久化（信息注入
+				// 重构 §7）：历史转换按 modelView ?? canonical 字段级回退，模型请求实际收到
+				// 改写正文；执行事实仍只有 canonical 一份。
 				const evidence = res.canonical ?? res;
+				const modelView = toolModelView(evidence, res);
 				await this.appendMessage({
 					role: "tool",
 					tool_call_id: res.callId,
@@ -1643,6 +1714,7 @@ export class Subject {
 					receipt: evidence.receipt,
 					receiptNamespace: evidence.receiptNamespace,
 					status: evidence.status,
+					...(modelView ? { modelView } : {}),
 					timestamp: new Date().toISOString(),
 				});
 			}
@@ -2050,6 +2122,27 @@ export class Subject {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * 改写真实发生时才产出模型视图（§7 规则 6）：原始结果未被改写不写冗余 modelView。
+ * 比较覆盖正文、图片与内部投影信息三个可改写字段；status 永远来自 canonical，
+ * 不参与比较。
+ */
+function toolModelView(
+	canonical: import("../tools/broker.js").ToolExecutionResult,
+	projected: ToolBatchResult,
+): ModelToolView | undefined {
+	const changed =
+		projected.result !== canonical.result ||
+		JSON.stringify(projected.images ?? null) !== JSON.stringify(canonical.images ?? null) ||
+		JSON.stringify(projected.details ?? null) !== JSON.stringify(canonical.details ?? null);
+	if (!changed) return undefined;
+	return {
+		content: projected.result,
+		...(projected.images !== undefined ? { images: projected.images } : {}),
+		...(projected.details !== undefined ? { details: projected.details } : {}),
+	};
 }
 
 function eventData(value: object): Record<string, unknown> {

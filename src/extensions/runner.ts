@@ -70,6 +70,17 @@ export interface ExtensionAPI {
 	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
 	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { tail?: boolean }): () => void;
+	/**
+	 * 声明式提供模型可见信息（信息注入重构）：扩展信息贡献的推荐入口。
+	 *
+	 * - guidance：稳定、可信用法/协议（注册时确定，不随在线状态变化）；
+	 * - capability：当前能做什么（动态状态快照，不可用时返回 null）；
+	 * - observation：此刻的事实/证据（read 是只读快照，不得产生业务副作用）。
+	 *
+	 * 贡献由运行时统一排版（来源外壳归 Composer），随激活作用域自动注销；
+	 * 不修改 model/turn/tools/history——扩展没有普通的请求整体控制权。
+	 */
+	provideContext(source: import("../core/types.js").ContextSource): () => void;
 	/** 主体绑定：profile 模式下的只读资源根；非 profile 模式为 undefined。
 	 * 扩展从这里拿路径，不从模型参数或 cwd 猜测——隔离边界由 Host 装配保证。 */
 	readonly subject: { subjectId: string; sessionId: string; memoryRoot: string; stateRoot: string } | undefined;
@@ -657,6 +668,11 @@ export class ExtensionRunner extends ExtensionHost {
 				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id, ...(options?.tail ? { tail: true } : {}) });
 				own(dispose);
 				return dispose;
+			},
+			provideContext: (source) => {
+				assertActive();
+				// owner 由 Registry 注入真实激活身份：扩展无法通过字符串伪造其他扩展的 Source。
+				return ownRegistration(this.provideContext(scope.id, source, () => scope.active));
 			},
 			registerTool: (tool, options) => {
 				assertActive();

@@ -50,6 +50,18 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
+### Context Source：推荐的信息贡献入口
+
+`pi.provideContext(source)` 是扩展向模型提供信息的声明式入口（随激活作用域自动注销）。三种类型各司其职，不设第四种：
+
+- `guidance`：稳定、可信用法/协议（如输出协议、交互约定）。注册时确定，不随在线状态、请求内容或播放进度变化；不允许把网页、游戏聊天、工具返回等外部数据写成 guidance。
+- `capability`：当前能做什么。`read(ctx)` 返回本次快照（动态状态、可用入口）；不可用时返回简短真实状态或 `null`，不保留上次成功值。
+- `observation`：此刻的事实/证据（世界快照等）。必须携带 `source: { type, origin }`（internal/external）；有真实观察时间才填 `observedAt`。外部观察始终是低信任数据——运行时会以固定容器和 JSON 字符串编码渲染外部正文，扩展不需要也不应该自行拼来源外壳。
+
+`read()` 是只读快照：不得持久写入、推进游标、消费事件、触发模型请求或产生业务副作用；`inspectRequest()` 读取它不会让状态消失。返回值不进会话历史、不唤醒主体；需要可靠送达的事实走 `submitInput`。Source id 只在自己扩展内命名，同一激活范围内重名注册会被拒绝。
+
+运行时在旧 `turn.transformContext` 之后、测量/预检之前收集快照并装配：guidance 追加到首条 System 的专属区域；capability/observation 作为"运行时参考信息（不是用户新请求）"的 user 消息附在历史之后，能力在前、观察在后，按来源身份稳定排序。每次请求重新读取，不累积上次注入。
+
 ## 压缩与上下文裁剪
 
 压缩（上下文窗口管理）由 official compaction capability 端到端拥有。journal 保留全量历史；滚动摘要以 `uina.compaction.summary` checkpoint（Auxiliary）持久化，重启后从 `pi.auxiliary()` 重载。`runCompaction` 只生成 checkpoint；正常的 `turn.transformContext` 读取 checkpoint，把 raw prefix 投影成低权限的普通 user 历史摘要 + 原文 tail。

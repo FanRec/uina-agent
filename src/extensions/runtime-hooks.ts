@@ -29,6 +29,9 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) =>
 				host.runObserveResponse(input, scope),
 		},
+		context: {
+			collect: (input) => host.runCollectContext(input, scope),
+		},
 		events: {
 			emit: (event: RuntimeEvent) => host.emit(event, scope),
 			observe: (event: OutputEvent) => host.emitObserved(event, scope),

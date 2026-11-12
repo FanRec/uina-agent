@@ -210,6 +210,19 @@ export interface AssistantAgentMessage {
 	timestamp?: string;
 }
 
+/**
+ * 工具消息的可选模型视图（信息注入重构）：tools.transformResult 的改写正文随同一条
+ * Tool 消息持久化。canonical 字段仍是执行事实的唯一权威；模型可见投影在历史转换时
+ * 采用 modelView ?? canonical 的字段级回退，status 永远来自 canonical。
+ * 原始结果未被改写时不写冗余 modelView。
+ */
+export interface ModelToolView {
+	readonly content: string;
+	readonly images?: ImageContent[];
+	/** 内部投影信息；不保证 Provider 会序列化，不能冒充模型已读到的正文。 */
+	readonly details?: unknown;
+}
+
 export interface ToolAgentMessage {
 	receipt?: HostDeliveryTag;
 	receiptNamespace?: string;
@@ -222,6 +235,7 @@ export interface ToolAgentMessage {
 	content: string;
 	images?: ImageContent[];
 	status?: ToolResultStatus;
+	modelView?: ModelToolView;
 	timestamp?: string;
 }
 
@@ -264,6 +278,8 @@ export type ChatMsg = { context?: ModelContextMeta } & (
 			content: string;
 			images?: ImageContent[];
 			status?: ToolResultStatus;
+			/** 已解析的模型视图（历史转换的输入直接携带时）；转换层按同一规则回退。 */
+			modelView?: ModelToolView;
 	  }
 );
 
@@ -273,6 +289,38 @@ export interface ModelRequest {
 	thinkingLevel?: ThinkingLevel;
 	/** Request-scoped transport middleware. It is always present, including when no extensions are active. */
 	providerHooks: import("../runtime/hooks.js").ProviderHooks;
+	/**
+	 * 请求关联诊断 id（Subject 每次真实发送时建立）。只用于内部对账（usage/装配追踪/
+	 * Wire 观察），绝不进入 Provider 网络载荷；缺省（如扩展直连 stream）表示无关联。
+	 */
+	requestId?: string;
+	/**
+	 * Wire 观察出口（只观察，无返回协议）：在最后一次 transformPayload 之后、HTTP
+	 * 序列化发送之前回调。观察方不得借它修改请求。
+	 */
+	onWireObservation?: (observation: ProviderWireObservation) => void;
+}
+
+/** Provider 载荷的摘要事实：默认只记录哈希与量级，不保存原始正文。 */
+export interface WirePayloadSummary {
+	/** 序列化载荷的 SHA-256（诊断对账用；不含任何凭据——载荷本身不携带鉴权）。 */
+	readonly hash: string;
+	/** 序列化后的 UTF-8 字节数。 */
+	readonly bytes: number;
+	/** 已知形状下的消息区条数（messages / contents）；未知形状缺省。 */
+	readonly messageCount?: number;
+	/** 已知形状下的工具声明条数（tools 数组长度）；未知形状缺省。 */
+	readonly toolCount?: number;
+}
+
+/** 一次真实发送的 Provider Wire 观察（transformPayload 之后、HTTP 之前）。 */
+export interface ProviderWireObservation {
+	readonly requestId?: string;
+	readonly provider: string;
+	readonly before: WirePayloadSummary;
+	readonly after: WirePayloadSummary;
+	/** before 与 after 摘要不同即 true：说明 transformPayload 改变了载荷。 */
+	readonly transformed: boolean;
 }
 
 /**
@@ -314,6 +362,99 @@ export interface RequestInspection {
 	readonly measurement: TokenMeasurement;
 	readonly contextWindow?: number;
 	readonly inputBudget?: number;
+	/** 预览标记：本检视按当前状态预测请求，不承诺曾发送（活动请求观察另经 Subject 查询）。 */
+	readonly basis?: "preview";
+	/** 预览的独立身份；不冒充活动请求的 requestId。 */
+	readonly requestId?: string;
+	/** 本次预览装配的来源追踪（与活动请求的 RequestAssemblyTrace 同一形状）。 */
+	readonly assembly?: RequestAssemblyTrace;
+}
+
+/**
+ * Context Source 合同（信息注入重构）：扩展以声明方式提供三类模型可见信息。
+ *
+ * - guidance：扩展作者写下的稳定、可信用法/协议；注册时确定，不随在线状态或请求内容变化。
+ *   不允许把网页、游戏聊天、工具返回等外部数据转换成此类型。
+ * - capability：当前能做什么（动态状态、可用入口、少量 Affordance）；不可用时返回简短
+ *   真实状态或 null，不保留上次成功值。
+ * - observation：此刻提供给模型的事实或证据（当前世界快照；未来也可承载已检索的记忆片段，
+ *   用 source.type="memory.recall" 标出）。检索证据不等于当前发生的事件。
+ *
+ * read() 是只读快照：不得持久写入、推进游标、消费事件、触发模型请求或产生业务副作用。
+ * 新输入走 Input，历史走 Session，工具结果走 Tool Result——三者不是第四种上下文源。
+ */
+export type ContextSourceKind = "guidance" | "capability" | "observation";
+
+export interface ContextRead {
+	readonly modelKey: string;
+	readonly signal: AbortSignal;
+}
+
+/** 动态 Source 的单次只读快照值。 */
+export interface ContextValue {
+	readonly text: string;
+	readonly images?: readonly ImageContent[];
+	/** 来源事实由 Source 自报：类型、内外部与可选引用；展示外壳由 Composer 统一渲染。 */
+	readonly source: {
+		readonly type: string;
+		readonly origin: "internal" | "external";
+		readonly ref?: string;
+	};
+	/** 有真实观察时间才填写；没有就保持未知。 */
+	readonly observedAt?: string;
+	/** 仅用于显示与对照（诊断/变化追踪）；不参与事实真实性判定，不实现按它缓存。 */
+	readonly revision?: string;
+}
+
+export type ContextSource =
+	| { readonly id: string; readonly kind: "guidance"; readonly text: string }
+	| {
+			readonly id: string;
+			readonly kind: "capability" | "observation";
+			read(ctx: Readonly<ContextRead>): Promise<ContextValue | null> | ContextValue | null;
+	  };
+
+/**
+ * Registry 补齐 owner/id 后的不可变贡献（不是 ChatMsg；排版归 Request Composer）。
+ * owner 由 Registry 注入真实激活身份，不由 Source 自报；guidance 的值只有 text。
+ */
+export type ContextContribution = Readonly<{
+	key: string;
+	owner: string;
+	kind: ContextSourceKind;
+	value: Readonly<{ text: string }> | ContextValue;
+}>;
+
+/**
+ * 单个 Source 本次未贡献的事实（Trace 条目）。失败与注销必须可见，不得伪装成
+ * "环境无变化"，也不得用旧数据顶替。
+ */
+export interface ContextSourceTraceEntry {
+	readonly key: string;
+	readonly owner: string;
+	readonly id: string;
+	readonly kind: ContextSourceKind;
+	readonly status: "included" | "empty" | "error" | "unregistered";
+	/** 注入到本次投影的第几条消息（included 时填写）。 */
+	readonly messageIndex?: number;
+	/** 贡献正文在该消息中的片段偏移（UTF-16 code unit；included 时填写）。 */
+	readonly charOffset?: number;
+	readonly chars?: number;
+	readonly revision?: string;
+	readonly observedAt?: string;
+	/** empty/error/unregistered 时的原因说明。 */
+	readonly reason?: string;
+}
+
+/** 一次装配的来源追踪（附随诊断；不进 messages、不进 Journal）。 */
+export interface RequestAssemblyTrace {
+	readonly sources: readonly ContextSourceTraceEntry[];
+}
+
+/** context.collect 端口的返回：贡献 + 未贡献事实（各自按 key 稳定排序由 Composer 负责）。 */
+export interface ContextCollection {
+	readonly contributions: readonly ContextContribution[];
+	readonly omitted: readonly ContextSourceTraceEntry[];
 }
 
 /** 一次模型调用的真实时序，单位毫秒，相对请求发出时刻。 */

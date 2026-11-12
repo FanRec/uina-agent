@@ -1,6 +1,8 @@
 import type { ImageContent } from "../core/content.js";
 import type {
 	ChatMsg,
+	ContextCollection,
+	ContextRead,
 	FinishReason,
 	Model,
 	RequestProjection,
@@ -207,6 +209,15 @@ export interface RuntimeHooks {
 		>;
 	};
 	readonly provider: ProviderHooks;
+	/**
+	 * Context Source 只读端口（信息注入重构）：收集当前激活扩展注册的 Source 快照。
+	 * 不是 Hook 链——没有 onHook 注册入口，扩展经 provideContext 注册、Registry 持有；
+	 * collect 每次调用固定注册快照、按 Source 身份稳定返回，单 Source 失败不阻断其余。
+	 * 调用方（Request Composer）在旧 transformContext 之后、测量/预检之前调用一次。
+	 */
+	readonly context: {
+		collect(input: Readonly<ContextRead>): Promise<ContextCollection>;
+	};
 	readonly events: {
 		emit(event: RuntimeEvent): Promise<void>;
 		observe(event: OutputEvent): void;

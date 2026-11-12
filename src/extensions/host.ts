@@ -10,7 +10,7 @@
  */
 
 import { errorMessage } from "../core/errors.js";
-import type { ChatMsg, RequestProjection } from "../core/types.js";
+import type { ChatMsg, ContextCollection, ContextRead, ContextSource, RequestProjection } from "../core/types.js";
 import type { DeepReadonly, InjectionProvenance, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import { immutableProjection } from "../runtime/guard.js";
 import {
@@ -20,6 +20,7 @@ import {
 	type HookName,
 	warnIgnoredToolStatus,
 } from "../runtime/hooks.js";
+import { ContextSourceRegistry } from "./context-registry.js";
 
 export type {
 	AgentEndEvent,
@@ -152,6 +153,8 @@ export class ExtensionHost {
 	private handlers = new Map<string, Set<RegisteredHandler>>();
 	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
 	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
+	/** Context Source 注册表（信息注入重构）：provideContext 的持有方，随激活作用域注销。 */
+	protected readonly contextSources = new ContextSourceRegistry();
 	/** 同进程共享值表（M1）：零语义，不做序列化，与 services 的纯数据通道互补。 */
 	private readonly sharedValues = new Map<string, unknown>();
 	private errorListeners = new Set<ExtensionErrorListener>();
@@ -216,6 +219,20 @@ export class ExtensionHost {
 		return () => {
 			set?.delete(entry);
 		};
+	}
+
+	/**
+	 * 注册 Context Source（信息注入重构）：owner 强制使用激活作用域身份，不由 Source
+	 * 自报；返回注销句柄。这是 Source 的唯一注册入口——没有第二条 onHook("context...")
+	 * 链，避免"注册 Source"与"Context Hook"两种重复写法。
+	 */
+	provideContext(owner: string, source: ContextSource, isActive: () => boolean): () => void {
+		return this.contextSources.register(owner, source, isActive);
+	}
+
+	/** context.collect 端口（RuntimeHooks.context）：只读收集当前注册快照，无干预返回协议。 */
+	runCollectContext(input: Readonly<ContextRead>, scope?: RuntimeScopeFilter): Promise<ContextCollection> {
+		return this.contextSources.collect(input, scope);
 	}
 
 	/**

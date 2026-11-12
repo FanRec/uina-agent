@@ -1,5 +1,14 @@
+import { createHash } from "node:crypto";
 import { assertImageInput } from "../core/content.js";
-import type { Model, ModelRequest, Provider, ThinkingLevel, ThinkingWireFormat, Usage } from "../core/types.js";
+import type {
+	Model,
+	ModelRequest,
+	Provider,
+	ThinkingLevel,
+	ThinkingWireFormat,
+	Usage,
+	WirePayloadSummary,
+} from "../core/types.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
 import { ProviderProtocolError, parseSSE } from "./sse.js";
@@ -75,6 +84,8 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 				// retry 可观察性与其他 provider 对齐（providers.ts 同款协议），不在这里降级。
 				onRetry: (event) => onDelta({ kind: "provider_retry", ...event }),
 				onRecovered: (attempt) => onDelta({ kind: "provider_recovered", attempt }),
+				requestId: req.requestId,
+				...(req.onWireObservation ? { onWire: req.onWireObservation } : {}),
 			});
 
 			let finished = false;
@@ -186,15 +197,49 @@ export interface ModelStreamRequestOptions {
 	maxRetries?: number;
 	onRetry?: (event: { attempt: number; delayMs: number; status?: number; reason: string }) => void;
 	onRecovered?: (attempt: number) => void;
+	/** 请求关联诊断 id（不进入 Provider 网络载荷）；来自 ModelRequest.requestId。 */
+	requestId?: string;
+	/** Wire 观察出口：最后一次 transformPayload 之后、HTTP 序列化发送之前回调。 */
+	onWire?: (observation: import("../core/types.js").ProviderWireObservation) => void;
+}
+
+/** 载荷摘要：哈希 + 量级；已知形状补消息/工具条数。不保存原始正文。 */
+function wirePayloadSummary(payload: unknown, serialized?: string): WirePayloadSummary {
+	const json = serialized ?? JSON.stringify(payload) ?? "";
+	const hash = createHash("sha256").update(json).digest("hex");
+	const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : undefined;
+	const messages = obj ? (obj.messages ?? obj.contents) : undefined;
+	const tools = obj ? obj.tools : undefined;
+	return {
+		hash,
+		bytes: Buffer.byteLength(json, "utf8"),
+		...(Array.isArray(messages) ? { messageCount: messages.length } : {}),
+		...(Array.isArray(tools) ? { toolCount: tools.length } : {}),
+	};
 }
 
 export async function sendModelStreamRequest(options: ModelStreamRequestOptions): Promise<ReadableStream<Uint8Array>> {
 	const headers = copyValue(
 		await options.hooks.transformHeaders(options.providerId, readonlySnapshot(options.headers)),
 	);
+	// Wire 观察发生在最后一次 transformPayload 之后、HTTP 序列化发送之前：transformPayload
+	// 改写文本或工具时，before/after 摘要差异必须可观察。序列化只为 fetch 做一次，
+	// before 摘要仅在存在观察出口时额外计算。
 	const bodyPayload = copyValue(
 		await options.hooks.transformPayload(options.providerId, readonlySnapshot(options.body)),
 	);
+	const serializedBody = JSON.stringify(bodyPayload);
+	if (options.onWire) {
+		const before = wirePayloadSummary(options.body);
+		const after = wirePayloadSummary(bodyPayload, serializedBody);
+		options.onWire({
+			requestId: options.requestId,
+			provider: options.providerId,
+			before,
+			after,
+			transformed: before.hash !== after.hash,
+		});
+	}
 
 	const response = await fetchWithRetry(options.url, {
 		// 未显式限制时默认重试上界 8 次（退避累计约 48 秒，足以穿过普通抖动）；
@@ -206,7 +251,7 @@ export async function sendModelStreamRequest(options: ModelStreamRequestOptions)
 		request: {
 			method: "POST",
 			headers,
-			body: JSON.stringify(bodyPayload),
+			body: serializedBody,
 		},
 	});
 

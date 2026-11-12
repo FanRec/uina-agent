@@ -120,6 +120,8 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 				maxRetries: conf.maxRetries,
 				onRetry: (event) => emit({ kind: "provider_retry", ...event }),
 				onRecovered: (attempt) => emit({ kind: "provider_recovered", attempt }),
+				requestId: req.requestId,
+				...(req.onWireObservation ? { onWire: req.onWireObservation } : {}),
 			});
 
 			let sawMessageStart = false;
@@ -334,6 +336,8 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 				maxRetries: conf.maxRetries,
 				onRetry: (event) => emit({ kind: "provider_retry", ...event }),
 				onRecovered: (attempt) => emit({ kind: "provider_recovered", attempt }),
+				requestId: req.requestId,
+				...(req.onWireObservation ? { onWire: req.onWireObservation } : {}),
 			});
 
 			let finished = false;

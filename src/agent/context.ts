@@ -167,13 +167,17 @@ export function convertToLlm(
 			}
 			case "tool":
 				if (msg.tool_call_id && pairedIds.has(msg.tool_call_id)) {
+					// 单一规则（信息注入重构 §7）：模型可见结果用 modelView ?? canonical 的
+					// 字段级回退；status 永远来自 canonical（执行事实由流水线独占）。
+					// modelView.details 只是内部投影信息，与 canonical details 一样不上 Wire。
+					const view = msg.modelView;
 					result.push({
 						...meta,
 						role: "tool",
 						tool_call_id: msg.tool_call_id,
-						content: msg.content,
-						images: msg.images,
-						details: msg.details,
+						content: view?.content ?? msg.content,
+						images: view?.images ?? msg.images,
+						details: view?.details ?? msg.details,
 						status: msg.status,
 					});
 				}
