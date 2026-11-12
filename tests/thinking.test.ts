@@ -183,11 +183,11 @@ describe("deepseek reasoning_content 出站回传", () => {
 		expect("reasoning_content" in wire[0]!).toBe(false);
 	});
 
-	it("非工具且无 thinking 的 assistant 帧不写 reasoning_content", () => {
+	it("非工具且无 thinking 的 assistant 帧也补空串 reasoning_content", () => {
 		const wire = toWireMessages([{ role: "assistant", content: "好" }] as ChatMsg[], "deepseek") as Array<
 			Record<string, unknown>
 		>;
-		expect("reasoning_content" in wire[0]!).toBe(false);
+		expect(wire[0]).toMatchObject({ reasoning_content: "" });
 	});
 });
 
@@ -206,14 +206,8 @@ describe("thinking 回放范围", () => {
 		{ role: "tool", tool_call_id: "c1", content: "ok" },
 	];
 
-	const assistants = (thinkingReplay: "none" | "tool-calls" | "all") =>
+	const assistants = (thinkingReplay: "none" | "all") =>
 		convertToLlm(history, { thinkingReplay }).filter((message) => message.role === "assistant");
-
-	it("tool-calls 只保留发生过工具调用的轮次", () => {
-		const [plain, withTool] = assistants("tool-calls");
-		expect(plain).toMatchObject({ role: "assistant", thinking: undefined, providerReplay: undefined });
-		expect(withTool).toMatchObject({ role: "assistant", thinking: "t2" });
-	});
 
 	it("none 丢弃 thinking、signature 与 providerReplay", () => {
 		const [plain, withTool] = assistants("none");

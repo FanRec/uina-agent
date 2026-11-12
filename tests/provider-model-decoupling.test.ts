@@ -197,7 +197,7 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		// 3. protocolThinkingReplay 精准协议推导
 		expect(protocolThinkingReplay("anthropic", undefined, ["off", "high"])).toBe("all");
 		expect(protocolThinkingReplay("gemini", undefined, undefined)).toBe("none");
-		expect(protocolThinkingReplay("openai-compatible", "deepseek", ["off", "high"])).toBe("tool-calls");
+		expect(protocolThinkingReplay("openai-compatible", "deepseek", ["off", "high"])).toBe("all");
 		expect(protocolThinkingReplay("openai-compatible", "openai", ["off", "high"])).toBe("none");
 
 		// 4. Model 创建包含完整纯数据事实

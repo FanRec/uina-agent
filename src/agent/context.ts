@@ -140,9 +140,9 @@ export function convertToLlm(
 				const hasContent = content.trim().length > 0;
 				const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
 				const replay = options.thinkingReplay ?? "none";
-				// DeepSeek 只在发生过工具调用的轮次校验 reasoning_content；
-				// 其余协议由档位决定是否整轮回放。
-				const carriesThinking = replay === "all" || (replay === "tool-calls" && hasToolCalls);
+				// DeepSeek thinking 模式逐帧校验 reasoning_content，回放范围由协议决定，
+				// 与这一轮有没有工具调用无关。
+				const carriesThinking = replay === "all";
 				const thinking = carriesThinking ? msg.thinking : undefined;
 				const thinkingSignature = carriesThinking ? msg.thinkingSignature : undefined;
 				const hasThinking = Boolean(thinking && thinking.trim().length > 0);

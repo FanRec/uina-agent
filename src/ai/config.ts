@@ -38,7 +38,8 @@ export interface ProviderConfig {
 
 /**
  * 依据协议与配置推导历史 thinking 的回放范围。
- * openai-compatible 只有 deepseek 会在回传时校验 reasoning_content，因此只回放工具轮；
+ * deepseek 在 thinking 模式下要求历史里每个 assistant 帧原样回传 reasoning_content，
+ * 因此整轮回放；其余 openai-compatible 不回放。
  * anthropic 与 gemini 声明了非 off 档位时整轮回放。
  */
 export function protocolThinkingReplay(
@@ -47,7 +48,7 @@ export function protocolThinkingReplay(
 	levels?: readonly ThinkingLevel[],
 ): ThinkingReplay {
 	if (kind === "openai-compatible") {
-		return thinkingFormat === "deepseek" ? "tool-calls" : "none";
+		return thinkingFormat === "deepseek" ? "all" : "none";
 	}
 	return levels?.some((level) => level !== "off") ? "all" : "none";
 }

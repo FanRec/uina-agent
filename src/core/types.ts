@@ -4,10 +4,10 @@ import type { ImageContent } from "./content.js";
 export type DeliveryMode = "direct" | "steer" | "followUp";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 /** 协议决定的历史 thinking 回放范围。缺省语义为 none。
- * - none：从不回放；
- * - tool-calls：只回放发生过工具调用的 assistant 轮（DeepSeek 协议要求）；
- * - all：每轮 assistant 都回放。 */
-export type ThinkingReplay = "none" | "tool-calls" | "all";
+ * - none：不回放；
+ * - all：每轮 assistant 都回放（thinking 模式下须原样回传推理原文）。
+ * 回放范围由协议决定，与这一轮有没有工具调用无关。 */
+export type ThinkingReplay = "none" | "all";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type FinishReason = "stop" | "tool_calls" | "length";

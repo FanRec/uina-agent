@@ -427,14 +427,10 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 				continue;
 			}
 
-			// DeepSeek thinking 模式要求携带工具调用的 assistant 帧回传 reasoning_content：
-			// 无推理时发空串（="无推理"，实测放行），缺字段则 400
-			//（`reasoning_content` in the thinking mode must be passed back）。
-			// 非工具帧只在确实有 reasoning 时写，避免把空字段塞给普通对话轮。
-			const reasoningField =
-				thinkingFormat === "deepseek" && (hasToolCalls || hasThinking)
-					? { reasoning_content: message.thinking ?? "" }
-					: {};
+			// DeepSeek thinking 模式要求历史里每个 assistant 帧都回传 reasoning_content，
+			// 缺字段直接 400（The reasoning_content ... must be passed back）。
+			// 原文由上游 convertToLlm 按 thinkingReplay 回放；历史帧没有原文时发空串兜底。
+			const reasoningField = thinkingFormat === "deepseek" ? { reasoning_content: message.thinking ?? "" } : {};
 
 			wire.push({
 				role: "assistant",

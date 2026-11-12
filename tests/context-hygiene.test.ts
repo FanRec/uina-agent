@@ -48,7 +48,7 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		expect(context.map((m) => m.content)).toEqual([expect.any(String), "question 1", "question 2"]);
 	});
 
-	it("retains thinking only on tool-call frames under tool-calls replay", () => {
+	it("retains thinking on every assistant frame under all replay", () => {
 		const history: ChatMsg[] = [
 			{ role: "user", content: "q1" },
 			{ role: "assistant", content: "plain", thinking: "t1" },
@@ -57,9 +57,9 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "tool", tool_call_id: "c1", content: "ok" },
 		];
 
-		const context = buildContext({ history, thinkingReplay: "tool-calls" });
+		const context = buildContext({ history, thinkingReplay: "all" });
 		const assistants = context.filter((m) => m.role === "assistant");
-		expect(assistants[0]?.thinking).toBeUndefined();
+		expect(assistants[0]?.thinking).toBe("t1");
 		expect(assistants[1]?.thinking).toBe("t2");
 	});
 
