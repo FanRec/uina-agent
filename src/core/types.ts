@@ -406,13 +406,43 @@ export interface ContextValue {
 	readonly revision?: string;
 }
 
+/**
+ * 文件式 guidance 的编译元数据（扩展 Prompt 文件机制）：文件在注册时一次性编译为
+ * 静态文本，这里只携带诊断对账信息，不参与装配语义；不写入模型正文或 Journal。
+ */
+export interface PromptCompileMeta {
+	/** 相对扩展资源根的入口路径。 */
+	readonly entry: string;
+	/** 实际读取的文件（相对资源根，按首次访问顺序去重）。 */
+	readonly sources: readonly string[];
+	/** 编译后正文的 SHA-256。 */
+	readonly hash: string;
+}
+
 export type ContextSource =
-	| { readonly id: string; readonly kind: "guidance"; readonly text: string }
+	| {
+			readonly id: string;
+			readonly kind: "guidance";
+			readonly text: string;
+			/** 文件式注册时由 Runner 附加的编译元数据；内联注册没有。 */
+			readonly prompt?: PromptCompileMeta;
+	  }
 	| {
 			readonly id: string;
 			readonly kind: "capability" | "observation";
 			read(ctx: Readonly<ContextRead>): Promise<ContextValue | null> | ContextValue | null;
 	  };
+
+/**
+ * 文件式 guidance 的注册声明（ExtensionAPI.provideContext 的重载入参）：注册时由
+ * Runner 在扩展资源根内编译为普通静态 guidance；不允许与 text 同时指定。
+ */
+export interface FileGuidanceSource {
+	readonly id: string;
+	readonly kind: "guidance";
+	/** 相对扩展资源根的 Markdown 入口（可经 {{include:...}} 组合根内其他 .md）。 */
+	readonly file: string;
+}
 
 /**
  * Registry 补齐 owner/id 后的不可变贡献（不是 ChatMsg；排版归 Request Composer）。
@@ -423,6 +453,8 @@ export type ContextContribution = Readonly<{
 	owner: string;
 	kind: ContextSourceKind;
 	value: Readonly<{ text: string }> | ContextValue;
+	/** 文件式 guidance 的编译元数据（诊断对账用）。 */
+	prompt?: PromptCompileMeta;
 }>;
 
 /**
@@ -442,6 +474,8 @@ export interface ContextSourceTraceEntry {
 	readonly chars?: number;
 	readonly revision?: string;
 	readonly observedAt?: string;
+	/** 文件式 guidance 的编译元数据（入口、依赖文件与内容指纹；诊断对账用）。 */
+	readonly prompt?: PromptCompileMeta;
 	/** empty/error/unregistered 时的原因说明。 */
 	readonly reason?: string;
 }

@@ -99,6 +99,31 @@ export function semanticUnits(
  * @param countThinking 是否包含 thinking token
  * @param maxTailBudget 尾部单步/结果允许占用的最大上下文上限（防止最新单步超窗口，缺省为 targetKeepTokens）
  */
+/**
+ * 固定扩展前缀（runtime.guidance）不是历史：它在每次请求装配时重新出现在 System
+ * 之后，Compaction 不能把它当可裁剪历史，也不能把它的成本当作可释放预算。
+ * 返回剔除前缀后的裁剪视图与前缀成本（token 估算，与 perceptionCost 同口径）。
+ */
+export function splitGuidancePrefix<T extends StreamMessageView>(
+	messages: readonly T[],
+): { history: T[]; guidanceCostTokens: number } {
+	let hasPrefix = false;
+	const prefix: T[] = [];
+	const history: T[] = [];
+	for (const message of messages) {
+		if (message.context?.kind === "runtime.guidance") {
+			hasPrefix = true;
+			prefix.push(message);
+		} else {
+			history.push(message);
+		}
+	}
+	return {
+		history,
+		guidanceCostTokens: hasPrefix ? estimateRequestTokens(prefix as readonly ChatMsg[], []) : 0,
+	};
+}
+
 export function findTrimBoundary(
 	messages: readonly StreamMessageView[],
 	targetKeepTokens: number,
@@ -656,18 +681,20 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			inspection.projection.messages.filter((m) => isRuntimePerception(m as StreamMessageView)) as readonly ChatMsg[],
 			[],
 		);
-		// perception 消息不参与裁剪但会重新追加，必须先从消息预算里扣掉。
-		const messageBudget = Math.max(0, inspection.inputBudget - toolCost - perceptionCost);
+		// 固定扩展前缀不参与裁剪映射，但成本必须从消息预算里预留（每次请求都会重新出现）。
+		const { history: trimmable, guidanceCostTokens } = splitGuidancePrefix(messages);
+		// perception 与固定前缀不参与裁剪但会重新出现，必须先从消息预算里扣掉。
+		const messageBudget = Math.max(0, inspection.inputBudget - toolCost - perceptionCost - guidanceCostTokens);
 		const countThinking = (pi.models.current().thinkingReplay ?? "none") !== "none";
 		// system prompt 每次请求都在，必须先从保留尾预算里扣掉，否则大 prompt 会让
 		// system + 摘要 + 尾部在重建时超出输入预算。摘要至少保留截断标记的固定开销，
 		// 摘要正文不足时按 summaryBudget 截断，不再为它预留整块预算挤掉尾部。
 		let systemEnd = 0;
-		while (messages[systemEnd]?.role === "system") systemEnd++;
-		const systemCost = estimateStreamTokens(messages.slice(0, systemEnd), countThinking);
+		while (trimmable[systemEnd]?.role === "system") systemEnd++;
+		const systemCost = estimateStreamTokens(trimmable.slice(0, systemEnd), countThinking);
 		const trimBudget = Math.max(0, messageBudget - TRUNCATION_OVERHEAD);
 		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, Math.max(0, trimBudget - systemCost));
-		const boundary = findTrimBoundary(messages, targetKeepTokens, countThinking, trimBudget);
+		const boundary = findTrimBoundary(trimmable, targetKeepTokens, countThinking, trimBudget);
 		if (boundary === null) {
 			await pi.emitEvent({
 				type: "session_compact",
@@ -678,8 +705,8 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			return "noop";
 		}
 		const coverTarget = boundary;
-		const coveredIds = entryIds(messages, 0, coverTarget);
-		const tailIds = entryIds(messages, coverTarget, messages.length);
+		const coveredIds = entryIds(trimmable, 0, coverTarget);
+		const tailIds = entryIds(trimmable, coverTarget, trimmable.length);
 		const previous = activeCheckpoint();
 		const coveredThroughEntryId = coveredIds.at(-1) ?? previous?.coveredThroughEntryId;
 		const tailStartsAtEntryId = tailIds[0];
@@ -706,7 +733,8 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const lastActivityChars = { thinking: 0, text: 0 };
 		let summary = await requestSummary(
 			pi,
-			messages.slice(0, coverTarget),
+			// coverTarget 是裁剪视图（trimmable）的索引：固定前缀不是历史，不进摘要输入。
+			trimmable.slice(0, coverTarget),
 			instruction,
 			signal ?? pi.signal,
 			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
@@ -722,7 +750,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		);
 
 		// 计算摘要可用的精确上限，保证重建请求 100% 落入可用预算
-		const tailCost = estimateStreamTokens(messages.slice(coverTarget), countThinking);
+		const tailCost = estimateStreamTokens(trimmable.slice(coverTarget), countThinking);
 		const summaryBudget = messageBudget - systemCost - tailCost - REBUILD_HEADROOM_TOKENS;
 		const maxSummaryMessageTokens = Math.max(TRUNCATION_OVERHEAD, Math.min(MAX_SUMMARY_MESSAGE_TOKENS, summaryBudget));
 		if (summaryMessageTokens(summary) > maxSummaryMessageTokens) {

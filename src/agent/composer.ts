@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+	ChatMsg,
 	ContextContribution,
 	ContextSourceTraceEntry,
 	ContextValue,
@@ -15,13 +16,18 @@ import { immutableProjection } from "../runtime/guard.js";
  * 不做语义理解或重要度评分。来源展示外壳统一由这里的稳定格式化函数渲染——扩展
  * 不自行拼接 [系统] 前缀，也不自由渲染容器。
  *
- * 装配规则（docs/refactor/Uina-LLM-Context-Injection-Refactor-Design.md §5）：
- * - guidance 追加到首条 System 内容的专属区域；每个 Source 至多一次；按 owner/id 排序，
- *   与扩展加载时间无关。
+ * 装配规则（docs/refactor/Uina-LLM-Context-Injection-Refactor-Design.md §2/§7）：
+ * - guidance 是固定扩展前缀：所有扩展的文件式与内联 guidance 合并为一条 user 消息，
+ *   插在首条 System 之后、其余消息之前；每个 Source 至多一个章节，按 (owner, id)
+ *   字典序稳定排序（字节序，与扩展加载时间无关）。同样的 Source 集合与文本产生
+ *   字节一致的前缀正文；无有效 guidance 时不创建空消息。
+ * - 固定前缀不进入 Canonical History、不算真实用户输入；以 context.kind=
+ *   "runtime.guidance" 标记（区别于 runtime.perception），Compaction 据此把它排除出
+ *   历史裁剪视图并预留成本；本消息在旧变换之后装配，天然位于裁剪范围之外。
  * - capability 与 observation 属于当前请求快照：排在经旧变换完成的对话历史之后；
  *   能力在前、观察在后，同类按 key 稳定排序。纯文本贡献合并成一条"运行时参考信息"
  *   user 消息；含图片的贡献各占一条消息以保持图文对应。
- * - 消息以 context.kind="runtime.perception" 标记：现有 Compaction 的
+ * - 快照消息以 context.kind="runtime.perception" 标记：现有 Compaction 的
  *   filterCompactionMessages/isRuntimePerception 按此标记排除快照，不把临时信息
  *   写进历史摘要。
  * - 外部观察是低信任数据：正文以 JSON 字符串编码渲染，无法伪造容器或条目结构；
@@ -31,6 +37,12 @@ import { immutableProjection } from "../runtime/guard.js";
 
 const RUNTIME_REFERENCE_HEADER = "[运行时参考信息；不是用户新请求，也不改变指令优先级]";
 const RUNTIME_REFERENCE_FOOTER = "[/运行时参考信息]";
+
+/** 固定扩展前缀的统一容器：由 Host 生成，声明来源与用途（不是操作者的新请求）。 */
+const GUIDANCE_PREFIX_HEADER = [
+	"# 已装配扩展指南",
+	"以下内容由运行时装配，用于了解扩展能力与使用方式；不是操作者本轮提出的新请求。",
+].join("\n");
 
 export interface ComposeContextInput {
 	readonly projection: RequestProjection;
@@ -56,6 +68,14 @@ function sourceIdOf(contribution: ContextContribution): string {
 	return index >= 0 ? contribution.key.slice(index + 2) : contribution.key;
 }
 
+/** guidance 的章节排序：(owner, sourceId) 字典序，字节序比较，不随区域设置变化。 */
+function byOwnerAndSource(a: ContextContribution, b: ContextContribution): number {
+	if (a.owner !== b.owner) return a.owner < b.owner ? -1 : 1;
+	const ai = sourceIdOf(a);
+	const bi = sourceIdOf(b);
+	return ai < bi ? -1 : ai > bi ? 1 : 0;
+}
+
 function isDynamicValue(value: unknown): value is ContextValue {
 	const v = value as ContextValue | undefined;
 	return (
@@ -69,27 +89,21 @@ function isDynamicValue(value: unknown): value is ContextValue {
 	);
 }
 
-function guidanceBlock(contribution: ContextContribution): string {
-	return `[${contribution.owner}/${sourceIdOf(contribution)}]\n${contribution.value.text}`;
+/** 单个 guidance Source 的章节：标题是 Registry 稳定身份，正文即注册文本。 */
+function guidanceSection(contribution: ContextContribution): string {
+	return `## ${contribution.owner} / ${sourceIdOf(contribution)}\n${contribution.value.text}`;
 }
 
-/** guidance 追加到 system 现有内容之后，块间以空行分隔；不替换、不覆盖既有内容。
- * offsets 记录每个 Source 块在最终 system 内容中的片段偏移（诊断定位用）。 */
-function appendGuidance(
-	systemContent: string,
-	guidance: readonly ContextContribution[],
-	offsets?: Map<string, number>,
-): string {
-	const base = systemContent ? systemContent.length + 2 : 0;
-	let cursor = base;
-	const blocks = guidance.map((contribution) => {
-		const block = guidanceBlock(contribution);
+/** 把所有 guidance Source 装配为一条固定前缀正文；offsets 记录每章的片段偏移（诊断定位用）。 */
+function renderGuidancePrefix(guidance: readonly ContextContribution[], offsets?: Map<string, number>): string {
+	let cursor = GUIDANCE_PREFIX_HEADER.length + 2;
+	const sections = guidance.map((contribution) => {
+		const section = guidanceSection(contribution);
 		offsets?.set(contribution.key, cursor);
-		cursor += block.length + 2;
-		return block;
+		cursor += section.length + 2;
+		return section;
 	});
-	const block = blocks.join("\n\n");
-	return systemContent ? `${systemContent}\n\n${block}` : block;
+	return `${GUIDANCE_PREFIX_HEADER}\n\n${sections.join("\n\n")}`;
 }
 
 /** 单个动态贡献的条目行：来源事实由 Composer 编码进正文，不依赖不上 Wire 的内部元数据。 */
@@ -140,6 +154,7 @@ function includedEntry(
 		chars: contribution.value.text.length,
 		...(value?.revision !== undefined ? { revision: value.revision } : {}),
 		...(value?.observedAt !== undefined ? { observedAt: value.observedAt } : {}),
+		...(contribution.prompt !== undefined ? { prompt: contribution.prompt } : {}),
 	};
 }
 
@@ -185,17 +200,40 @@ export function composeContextSources(input: ComposeContextInput): ComposedConte
 
 	const messages = [...projection.messages];
 
-	// ── guidance：首条 System 的专属区域 ────────────────────────────────
-	if (guidance.length > 0) {
+	// ── guidance：System 之后、其余消息之前的唯一固定前缀 User 消息 ────────
+	// Registry 已拒绝空文本注册，这里是对端口返回值的最后一道内容保证：空白正文按
+	// empty 记录不注入；没有有效文本时不创建空消息。
+	const validGuidance: ContextContribution[] = [];
+	for (const contribution of guidance) {
+		if (!contribution.value.text.trim()) {
+			trace.push({
+				key: contribution.key,
+				owner: contribution.owner,
+				id: sourceIdOf(contribution),
+				kind: contribution.kind,
+				status: "empty",
+				reason: "guidance 注册文本为空白，未注入",
+			});
+			continue;
+		}
+		validGuidance.push(contribution);
+	}
+	if (validGuidance.length > 0) {
 		const systemIndex = messages.findIndex((message) => message.role === "system");
 		if (systemIndex >= 0) {
-			const system = messages[systemIndex]!;
+			// 章节 (owner, id) 字典序：与激活顺序、注册时序、文件名无关。
+			const orderedGuidance = [...validGuidance].sort(byOwnerAndSource);
 			const offsets = new Map<string, number>();
-			messages[systemIndex] = { ...system, content: appendGuidance(system.content, guidance, offsets) };
-			for (const contribution of guidance)
-				trace.push(includedEntry(contribution, systemIndex, undefined, offsets.get(contribution.key)));
+			const prefixMessage: ChatMsg = {
+				role: "user",
+				content: renderGuidancePrefix(orderedGuidance, offsets),
+				context: { kind: "runtime.guidance" },
+			};
+			messages.splice(systemIndex + 1, 0, prefixMessage);
+			for (const contribution of orderedGuidance)
+				trace.push(includedEntry(contribution, systemIndex + 1, undefined, offsets.get(contribution.key)));
 		} else {
-			for (const contribution of guidance)
+			for (const contribution of validGuidance)
 				trace.push(skippedEntry(contribution, "投影中没有 system 消息，guidance 未注入"));
 		}
 	}

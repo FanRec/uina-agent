@@ -85,11 +85,13 @@ export class ContextSourceRegistry {
 					}
 					if (entry.source.kind === "guidance") {
 						// guidance 是注册时确定的同步文本：活性已在入口核过，直接给出。
+						// 文件式注册的编译元数据随贡献透传（诊断对账用，不参与装配语义）。
 						contributions.push({
 							key: entry.key,
 							owner: entry.owner,
 							kind: "guidance",
 							value: { text: entry.source.text },
+							...(entry.source.prompt ? { prompt: entry.source.prompt } : {}),
 						});
 						return;
 					}

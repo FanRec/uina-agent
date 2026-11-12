@@ -9,6 +9,8 @@ import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
 import type {
 	ContextSnapshot,
+	ContextSource,
+	FileGuidanceSource,
 	HostDeliveryPort,
 	InputDeliveryOwner,
 	Provider,
@@ -21,7 +23,8 @@ import type { HookName, RuntimeHooks } from "../runtime/hooks.js";
 import type { Tool, ToolBroker, ToolExecutionResult } from "../tools/broker.js";
 import { type ExtensionEvent, type ExtensionEventHandler, ExtensionHost, type HookHandler } from "./host.js";
 import { ResourceScope } from "./lifecycle-scope.js";
-import { discoverExtensions, importExtension } from "./loader.js";
+import { type DiscoveredExtensionEntry, discoverExtensionEntries, importExtension } from "./loader.js";
+import { compilePromptFile } from "./prompt-compiler.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
 import type { CallOptions, ExtensionModelAccess, ExtensionModelRequest, ServiceHandler } from "./services.js";
@@ -77,10 +80,20 @@ export interface ExtensionAPI {
 	 * - capability：当前能做什么（动态状态快照，不可用时返回 null）；
 	 * - observation：此刻的事实/证据（read 是只读快照，不得产生业务副作用）。
 	 *
+	 * guidance 有两种等价形态：
+	 * - 内联 `text`：同步注册，立即生效；
+	 * - 文件式 `file`（扩展 Prompt 文件机制）：相对本扩展资源根的 Markdown 入口，
+	 *   注册时一次性编译为普通静态 guidance，Promise 完成后生效；编译失败 Promise
+	 *   拒绝并给出定位，不留下半个 Source。两种形态统一装配为 System 后的固定 User
+	 *   前缀，语义一致。
+	 *
 	 * 贡献由运行时统一排版（来源外壳归 Composer），随激活作用域自动注销；
 	 * 不修改 model/turn/tools/history——扩展没有普通的请求整体控制权。
 	 */
-	provideContext(source: import("../core/types.js").ContextSource): () => void;
+	provideContext: {
+		(source: import("../core/types.js").ContextSource): () => void;
+		(source: import("../core/types.js").FileGuidanceSource): Promise<() => void>;
+	};
 	/** 主体绑定：profile 模式下的只读资源根；非 profile 模式为 undefined。
 	 * 扩展从这里拿路径，不从模型参数或 cwd 猜测——隔离边界由 Host 装配保证。 */
 	readonly subject: { subjectId: string; sessionId: string; memoryRoot: string; stateRoot: string } | undefined;
@@ -225,6 +238,8 @@ export class ExtensionRunner extends ExtensionHost {
 	private readonly sharedUI = new Map<string, Map<string, Component | undefined>>();
 	private readonly extensions = new Map<string, ResourceScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
+	/** 扩展资源根（Prompt 文件机制）：激活时由 Loader 发现结果注入，卸载时释放。 */
+	private readonly resourceRoots = new Map<string, string>();
 	private ui: ExtensionUIContext;
 	readonly registry = new ExtensionRegistry();
 
@@ -253,8 +268,8 @@ export class ExtensionRunner extends ExtensionHost {
 		return `project:${relative(this.options.cwd, file).replace(/\\/g, "/")}`;
 	}
 
-	private listProjectFiles(): Promise<string[]> {
-		return discoverExtensions(this.options.cwd, this.options.extensionPaths);
+	private listProjectFiles(): Promise<readonly DiscoveredExtensionEntry[]> {
+		return discoverExtensionEntries(this.options.cwd, this.options.extensionPaths);
 	}
 
 	private setSharedUI(slot: "header" | "footer", owner: string, component: Component | undefined): void {
@@ -274,19 +289,20 @@ export class ExtensionRunner extends ExtensionHost {
 
 	private async loadProjects(): Promise<void> {
 		const files = await this.listProjectFiles();
-		for (const file of files) {
-			await this.activate(file);
+		for (const found of files) {
+			await this.activate(found.file, found.root);
 		}
 	}
 
-	/** Core-owned capabilities use the same scope and teardown path as project extensions. */
-	activateBuiltin(id: string, activate: ExtensionActivation): Promise<void> {
-		return this.enqueueLifecycle(() => this.activateBuiltinScope(id, activate));
+	/** Core-owned capabilities use the same scope and teardown path as project extensions.
+	 * options.resourceRoot：装配点明确提供的独占资源根（启用文件式 guidance），缺省只能用内联。 */
+	activateBuiltin(id: string, activate: ExtensionActivation, options?: { resourceRoot?: string }): Promise<void> {
+		return this.enqueueLifecycle(() => this.activateBuiltinScope(id, activate, options?.resourceRoot));
 	}
 
-	private async activateBuiltinScope(id: string, activate: ExtensionActivation): Promise<void> {
+	private async activateBuiltinScope(id: string, activate: ExtensionActivation, root?: string): Promise<void> {
 		try {
-			await this.activateScope(`builtin:${id}`, `builtin:${id}`, activate);
+			await this.activateScope(`builtin:${id}`, `builtin:${id}`, activate, root);
 		} catch (error) {
 			this.failures.set(`builtin:${id}`, { id: `builtin:${id}`, path: `builtin:${id}`, error: errorMessage(error) });
 			this.emitOwnedError(`builtin:${id}`, "activate", error);
@@ -299,17 +315,17 @@ export class ExtensionRunner extends ExtensionHost {
 
 			// 阶段一：模块导入预检（执行模块顶层代码，不调用 activate）。
 			// 若有文件语法错误或加载失败，保护现有旧扩展不被卸载并抛错。
-			const modules: Array<{ id: string; file: string; activate: ExtensionActivation }> = [];
+			const modules: Array<{ id: string; file: string; root?: string; activate: ExtensionActivation }> = [];
 			const importFailures: Array<{ id: string; file: string; error: string }> = [];
 
-			for (const file of files) {
-				const id = this.idForFile(file);
+			for (const found of files) {
+				const id = this.idForFile(found.file);
 				try {
-					const module = await importExtension(file);
+					const module = await importExtension(found.file);
 					if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
-					modules.push({ id, file, activate: module.default });
+					modules.push({ id, file: found.file, ...(found.root ? { root: found.root } : {}), activate: module.default });
 				} catch (error) {
-					importFailures.push({ id, file, error: errorMessage(error) });
+					importFailures.push({ id, file: found.file, error: errorMessage(error) });
 				}
 			}
 
@@ -330,9 +346,9 @@ export class ExtensionRunner extends ExtensionHost {
 			}
 
 			// 阶段三：逐个激活新扩展。单扩展激活异常自动触发其局部 deactivate 精准回收，不影响其他扩展。
-			for (const { id, file, activate } of modules) {
+			for (const { id, file, root, activate } of modules) {
 				try {
-					await this.activateScope(id, file, activate);
+					await this.activateScope(id, file, activate, root);
 				} catch (error) {
 					this.failures.set(id, { id, path: file, error: errorMessage(error) });
 					this.emitOwnedError(id, "activate", error);
@@ -398,12 +414,12 @@ export class ExtensionRunner extends ExtensionHost {
 		return guardRuntimeHooks(createRuntimeHooks(this, scope));
 	}
 
-	private async activate(file: string): Promise<void> {
+	private async activate(file: string, root?: string): Promise<void> {
 		const id = this.idForFile(file);
 		try {
 			const module = await importExtension(file);
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
-			await this.activateScope(id, file, module.default);
+			await this.activateScope(id, file, module.default, root);
 			this.failures.delete(id);
 		} catch (error) {
 			this.failures.set(id, { id, path: file, error: errorMessage(error) });
@@ -411,11 +427,12 @@ export class ExtensionRunner extends ExtensionHost {
 		}
 	}
 
-	private async activateScope(id: string, path: string, activate: ExtensionActivation): Promise<void> {
+	private async activateScope(id: string, path: string, activate: ExtensionActivation, root?: string): Promise<void> {
 		if (this.extensions.has(id)) throw new Error(`扩展重复加载: ${id}`);
 		this.failures.delete(id);
 		const scope = new ResourceScope(id, path);
 		this.extensions.set(id, scope);
+		if (root !== undefined) this.resourceRoots.set(id, root);
 		try {
 			const dispose = await activate(this.apiFor(scope));
 			if (typeof dispose === "function") scope.onDispose(dispose);
@@ -434,6 +451,7 @@ export class ExtensionRunner extends ExtensionHost {
 			throw error;
 		} finally {
 			this.extensions.delete(scope.id);
+			this.resourceRoots.delete(scope.id);
 		}
 	}
 
@@ -669,11 +687,15 @@ export class ExtensionRunner extends ExtensionHost {
 				own(dispose);
 				return dispose;
 			},
-			provideContext: (source) => {
+			provideContext: ((raw: ContextSource | FileGuidanceSource) => {
 				assertActive();
+				if ("file" in raw) {
+					// 文件式：Runner 先在扩展资源根内编译，再注册为普通静态 guidance。
+					return this.registerFileGuidance(scope, raw as FileGuidanceSource, ownRegistration);
+				}
 				// owner 由 Registry 注入真实激活身份：扩展无法通过字符串伪造其他扩展的 Source。
-				return ownRegistration(this.provideContext(scope.id, source, () => scope.active));
-			},
+				return ownRegistration(this.provideContext(scope.id, raw as ContextSource, () => scope.active));
+			}) as ExtensionAPI["provideContext"],
 			registerTool: (tool, options) => {
 				assertActive();
 				return ownRegistration(
@@ -778,6 +800,44 @@ export class ExtensionRunner extends ExtensionHost {
 
 	private emitOwnedError(extensionName: string, event: string, error: unknown): void {
 		this.emitError(event, error, extensionName);
+	}
+
+	/**
+	 * 文件式 guidance 注册：先完成全部校验与编译，再原子注册；失败不留半个 Source。
+	 * 异步编译期间作用域若已停用，不补注册过期 Source。
+	 */
+	private registerFileGuidance(
+		scope: ResourceScope,
+		source: FileGuidanceSource,
+		ownRegistration: (dispose: () => void) => () => void,
+	): Promise<() => void> {
+		const reject = (message: string): Promise<never> => Promise.reject(new Error(message));
+		if ("text" in source && typeof (source as { text?: unknown }).text === "string")
+			return reject("guidance 不允许同时指定 text 和 file");
+		if (typeof source.file !== "string" || !source.file.trim()) return reject("guidance 的 file 必须是非空字符串");
+		if (typeof source.id !== "string" || !source.id.trim() || source.id.includes("::"))
+			return reject('guidance 的 id 必须是非空且不含 "::" 的字符串');
+		const root = this.resourceRoots.get(scope.id);
+		if (!root)
+			return reject(
+				`扩展 ${scope.id} 没有独占资源根（单文件扩展无根；内置扩展需在装配点提供 resourceRoot），不能注册文件式 guidance；请改用内联 text`,
+			);
+		return compilePromptFile(source.file, root).then((compiled) => {
+			if (!compiled.text.trim()) throw new Error(`Prompt 入口编译结果为空文本: ${compiled.entry}`);
+			if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}（编译期间扩展已卸载，未注册）`);
+			return ownRegistration(
+				this.provideContext(
+					scope.id,
+					{
+						id: source.id,
+						kind: "guidance",
+						text: compiled.text,
+						prompt: { entry: compiled.entry, sources: compiled.sources, hash: compiled.hash },
+					},
+					() => scope.active,
+				),
+			);
+		});
 	}
 }
 

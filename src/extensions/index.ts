@@ -7,6 +7,7 @@ export type {
 	ContextSource,
 	ContextSourceKind,
 	ContextValue,
+	FileGuidanceSource,
 	Model,
 	ModelRequest,
 	ModelToolView,

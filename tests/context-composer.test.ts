@@ -80,21 +80,78 @@ describe("Request Composer（Context Source 装配）", () => {
 		expect(result.assembly.sources).toEqual([omitted("ext::state", "empty", "read() 返回 null")]);
 	});
 
-	it("guidance 追加到首条 system 的专属区域，按 owner/id 排序，与输入顺序无关", () => {
+	it("guidance 装配为 System 后唯一的固定前缀 User 消息，按 (owner,id) 排序，与输入顺序无关", () => {
 		const result = compose(base(), {
 			contributions: [guidance("zebra-ext", "protocol", "Z 协议说明"), guidance("alpha-ext", "usage", "A 用法说明")],
 		});
-		const system = result.projection.messages[0]!;
-		expect(system.role).toBe("system");
-		expect(system.content).toContain("[alpha-ext/usage]\nA 用法说明");
-		expect(system.content).toContain("[zebra-ext/protocol]\nZ 协议说明");
-		expect(system.content.indexOf("A 用法说明")).toBeLessThan(system.content.indexOf("Z 协议说明"));
-		expect(system.content.startsWith("系统提示")).toBe(true);
+		const messages = result.projection.messages;
+		expect(messages).toHaveLength(3);
+		expect(messages[0]).toEqual({ role: "system", content: "系统提示" });
+		const prefix = messages[1]!;
+		expect(prefix.role).toBe("user");
+		expect(prefix.context?.kind).toBe("runtime.guidance");
+		expect(prefix.content).toContain("# 已装配扩展指南");
+		expect(prefix.content).toContain("不是操作者本轮提出的新请求");
+		expect(prefix.content).toContain("## alpha-ext / usage\nA 用法说明");
+		expect(prefix.content).toContain("## zebra-ext / protocol\nZ 协议说明");
+		expect(prefix.content.indexOf("A 用法说明")).toBeLessThan(prefix.content.indexOf("Z 协议说明"));
+		// 真实输入原样保留在前缀之后；system 内容未被追加
+		expect(messages[2]).toEqual({ role: "user", content: "你好" });
 		const trace = result.assembly.sources.filter((s) => s.status === "included");
-		expect(trace.map((s) => s.id)).toEqual(["usage", "protocol"]);
-		expect(trace.every((s) => s.messageIndex === 0 && s.kind === "guidance")).toBe(true);
-		// 非系统消息不动
-		expect(result.projection.messages[1]).toEqual({ role: "user", content: "你好" });
+		expect(trace.map((s) => [s.id, s.messageIndex])).toEqual([
+			["usage", 1],
+			["protocol", 1],
+		]);
+	});
+
+	it("相同 Source 集合与文本产生字节一致的固定前缀，不随历史变化", () => {
+		const contributions = [guidance("b", "x", "B 文本"), guidance("a", "y", "A 文本")];
+		const first = compose(base(), { contributions }).projection.messages[1]!.content;
+		const second = compose(
+			projection([
+				{ role: "system", content: "系统提示" },
+				{ role: "user", content: "完全不同的历史" },
+			]),
+			{ contributions },
+		).projection.messages[1]!.content;
+		expect(second).toBe(first);
+	});
+
+	it("固定前缀章节按 (owner, id) 字典序：owner 优先于 id", () => {
+		const result = compose(base(), {
+			contributions: [guidance("b", "a", "B/a 正文"), guidance("a", "z", "A/z 正文"), guidance("a", "a", "A/a 正文")],
+		});
+		const content = result.projection.messages[1]!.content;
+		expect(content.indexOf("A/a 正文")).toBeLessThan(content.indexOf("A/z 正文"));
+		expect(content.indexOf("A/z 正文")).toBeLessThan(content.indexOf("B/a 正文"));
+	});
+
+	it("固定前缀标记 runtime.guidance：不是 runtime.perception，动态快照标记不受影响", () => {
+		const result = compose(base(), {
+			contributions: [guidance("ext", "a", "说明"), dynamic("d", "cap", "capability", "能力正文")],
+		});
+		const messages = result.projection.messages;
+		const prefix = messages[1]!;
+		const perception = messages[3]!;
+		expect(prefix.context?.kind).toBe("runtime.guidance");
+		expect(isRuntimePerception(prefix)).toBe(false);
+		expect(perception.context?.kind).toBe("runtime.perception");
+		expect(isRuntimePerception(perception)).toBe(true);
+	});
+
+	it("文件式 guidance 的编译元数据随 trace 透传（对账用）", () => {
+		const contribution: ContextContribution = {
+			...guidance("ext", "instructions", "编译后的正文"),
+			prompt: { entry: "PROMPT.md", sources: ["PROMPT.md", "prompts/expression.md"], hash: "abc123" },
+		};
+		const result = compose(base(), { contributions: [contribution] });
+		const entry = result.assembly.sources.find((s) => s.status === "included")!;
+		expect(entry.messageIndex).toBe(1);
+		expect(entry.prompt).toEqual({
+			entry: "PROMPT.md",
+			sources: ["PROMPT.md", "prompts/expression.md"],
+			hash: "abc123",
+		});
 	});
 
 	it("capability 在前、observation 在后，合并为一条 runtime.perception user 消息；origin 在正文中可读", () => {
@@ -176,9 +233,9 @@ describe("Request Composer（Context Source 装配）", () => {
 		const result = compose(base(), {
 			contributions: [guidance("ext", "a", "第一份"), guidance("ext", "a", "第二份")],
 		});
-		const system = result.projection.messages[0]!;
-		expect(system.content.match(/第一份/g)).toHaveLength(1);
-		expect(system.content).not.toContain("第二份");
+		const prefix = result.projection.messages[1]!.content;
+		expect(prefix.match(/第一份/g)).toHaveLength(1);
+		expect(prefix).not.toContain("第二份");
 		const deduped = result.assembly.sources.find((s) => s.status === "error");
 		expect(deduped?.reason).toContain("重复贡献");
 	});
@@ -214,17 +271,17 @@ describe("Request Composer（Context Source 装配）", () => {
 				dynamic("d2", "obs", "observation", "外部事实", { origin: "external" }),
 			],
 		});
-		const system = result.projection.messages[0]!.content;
-		const reference = result.projection.messages[2]!.content;
+		const prefix = result.projection.messages[1]!.content;
+		const reference = result.projection.messages[3]!.content;
 		for (const entry of result.assembly.sources.filter((s) => s.status === "included")) {
-			const content = entry.messageIndex === 0 ? system : reference;
+			const content = entry.kind === "guidance" ? prefix : reference;
 			const fragment = content.slice(entry.charOffset!);
-			// guidance 块以 [owner/id] 标题开场；动态条目以来源行开场
-			const expected = entry.kind === "guidance" ? `[${entry.owner}/${entry.id}]` : "- source:";
+			// guidance 章节以稳定身份标题开场；动态条目以来源行开场
+			const expected = entry.kind === "guidance" ? `## ${entry.owner} / ${entry.id}` : "- source:";
 			expect(fragment.startsWith(expected)).toBe(true);
 			expect(fragment.length).toBeGreaterThanOrEqual(entry.chars!);
 		}
-		// 两个 guidance 块偏移互不相同且有序
+		// 两个 guidance 章节偏移互不相同且有序
 		const guidanceOffsets = result.assembly.sources.filter((s) => s.kind === "guidance").map((s) => s.charOffset!);
 		expect(guidanceOffsets[0]!).toBeLessThan(guidanceOffsets[1]!);
 	});

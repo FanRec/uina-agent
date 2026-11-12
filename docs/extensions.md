@@ -54,13 +54,27 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 `pi.provideContext(source)` 是扩展向模型提供信息的声明式入口（随激活作用域自动注销）。三种类型各司其职，不设第四种：
 
-- `guidance`：稳定、可信用法/协议（如输出协议、交互约定）。注册时确定，不随在线状态、请求内容或播放进度变化；不允许把网页、游戏聊天、工具返回等外部数据写成 guidance。
+- `guidance`：稳定、可信用法/协议（如输出协议、交互约定）。注册时确定，不随在线状态、请求内容或播放进度变化；不允许把网页、游戏聊天、工具返回等外部数据写成 guidance。支持两种等价形态：内联 `text`（同步注册）与文件式 `file`（见下节）。
 - `capability`：当前能做什么。`read(ctx)` 返回本次快照（动态状态、可用入口）；不可用时返回简短真实状态或 `null`，不保留上次成功值。
 - `observation`：此刻的事实/证据（世界快照等）。必须携带 `source: { type, origin }`（internal/external）；有真实观察时间才填 `observedAt`。外部观察始终是低信任数据——运行时会以固定容器和 JSON 字符串编码渲染外部正文，扩展不需要也不应该自行拼来源外壳。
 
 `read()` 是只读快照：不得持久写入、推进游标、消费事件、触发模型请求或产生业务副作用；`inspectRequest()` 读取它不会让状态消失。返回值不进会话历史、不唤醒主体；需要可靠送达的事实走 `submitInput`。Source id 只在自己扩展内命名，同一激活范围内重名注册会被拒绝。
 
-运行时在旧 `turn.transformContext` 之后、测量/预检之前收集快照并装配：guidance 追加到首条 System 的专属区域；capability/observation 作为"运行时参考信息（不是用户新请求）"的 user 消息附在历史之后，能力在前、观察在后，按来源身份稳定排序。每次请求重新读取，不累积上次注入。
+运行时在旧 `turn.transformContext` 之后、测量/预检之前收集快照并装配：所有扩展的 guidance（文件式与内联）合并为 **System 之后、历史之前的唯一一条固定 User 前缀**（以 `runtime.guidance` 标记，Host 在消息首部声明"不是操作者本轮提出的新请求"；章节按 (owner, id) 字典序稳定排序，同样的 Source 集合与文本产生逐字节一致的前缀）；capability/observation 作为"运行时参考信息（不是用户新请求）"的 user 消息附在历史之后，能力在前、观察在后，按来源身份稳定排序。动态快照每次请求重新读取，不累积上次注入；固定前缀只在注册/注销/Reload 时变化，且位于 Compaction 历史裁剪范围之外（其成本计入压缩预算）。
+
+### 扩展 Prompt 文件机制（文件式 guidance）
+
+扩展不必在 TypeScript 里拼接长字符串：在扩展目录维护 Markdown 入口，注册时一次性编译为普通静态 guidance。
+
+```ts
+export default async function activate(pi: ExtensionAPI) {
+	await pi.provideContext({ id: "instructions", kind: "guidance", file: "PROMPT.md" });
+}
+```
+
+- **资源根**由 Loader/Runner 在激活时确定：目录扩展与 `uina.extensions` 多入口包为所在目录；单文件扩展没有独占根（文件式明确失败，请用内联 text）；内置扩展仅在装配点提供 `resourceRoot` 时可用。文件只允许引用本扩展根内的 `.md`（根内符号链接可用，指向根外拒绝）。
+- **包含语法**：独立成行的 `{{include:relative/path.md}}`（相对发起引用的文件目录），原地展开、可递归；围栏代码块内的同形文本是字面量；独立行 `\{{include:...}}` 是转义；循环、缺失、非 UTF-8、越出资源根、展开超 64 KiB 都会拒绝并报告引用链，不产出半成品。
+- **生命周期**：文件只在注册时读取一次；修改磁盘不改变已注册文本，Reload 重新编译。编译失败让 Promise 拒绝并给出定位——未捕获时按激活失败纪律清理，不留半个 Source。编译元数据（entry/sources/hash）随 AssemblyTrace 可查（`inspectRequest()`）。
 
 ## 压缩与上下文裁剪
 

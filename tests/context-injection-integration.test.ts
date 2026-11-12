@@ -28,17 +28,15 @@ function capturingStream(): { stream: ModelStreamFn; requests: CapturedRequest[]
 	return { stream, requests };
 }
 
-/** 从真实 ModelRequest 中提取装配事实（guidance 落 system 段；动态来源落运行时参考消息）。 */
+/** 从真实 ModelRequest 中提取装配事实（guidance 落 System 后的固定前缀 User；动态来源落运行时参考消息）。 */
 function assemblyOf(req: CapturedRequest) {
-	const system = req.messages
-		.filter((m) => m.role === "system")
-		.map((m) => m.content)
-		.join("\n");
+	const guidanceMessage = req.messages.find((m) => m.context?.kind === "runtime.guidance");
 	const reference = req.messages.filter((m) => m.context?.kind === "runtime.perception");
 	const text = reference.map((m) => m.content).join("\n");
 	return {
-		system,
-		guidance: [...system.matchAll(/\[([^\]/]+)\/([^\]]+)\]\n([^\n]+)/g)].map((m) => `${m[1]}::${m[2]}=${m[3]}`),
+		guidanceMessage,
+		guidanceText: guidanceMessage?.content ?? "",
+		guidance: [...(guidanceMessage?.content ?? "").matchAll(/^## (.+) \/ (.+)$/gm)].map((m) => `${m[1]}::${m[2]}`),
 		referenceMessages: reference.length,
 		referenceText: text,
 		internalSources: [...text.matchAll(/- source: ([^;]+); origin: internal/g)].map((m) => m[1]!),
@@ -78,7 +76,15 @@ describe("Context Source 注入（真实 decide() 请求链）", () => {
 
 			expect(requests).toHaveLength(1);
 			const assembly = assemblyOf(requests[0]!);
-			expect(assembly.guidance).toEqual(["builtin:zeta::note-protocol=Zeta 的记录协议。"]);
+			expect(assembly.guidance).toEqual(["builtin:zeta::note-protocol"]);
+			expect(assembly.guidanceText).toContain("Zeta 的记录协议。");
+			// 固定前缀位置：messages[0] 是 system，messages[1] 是唯一的扩展指南 User，且全请求仅此一条
+			const messages = requests[0]!.messages;
+			expect(messages[0]!.role).toBe("system");
+			expect(messages[1]!.context?.kind).toBe("runtime.guidance");
+			expect(
+				messages.map((m, index) => (m.context?.kind === "runtime.guidance" ? index : -1)).filter((i) => i >= 0),
+			).toEqual([1]);
 			expect(assembly.referenceMessages).toBe(1);
 			expect(assembly.internalSources).toEqual(["alpha.battery"]);
 			expect(assembly.externalSources).toEqual(["alpha.weather"]);
@@ -183,13 +189,18 @@ describe("Context Source 注入（真实 decide() 请求链）", () => {
 			const harness = SubjectHarness.create({ runtimeHooks: runner.runtimeHooks(), stream });
 			await harness.subject.pushInput("第一问");
 			await harness.subject.waitForIdle();
-			expect(assemblyOf(requests[0]!).guidance).toEqual(["builtin:ghost::hint=过期的指引。"]);
+			const first = assemblyOf(requests[0]!);
+			expect(first.guidance).toEqual(["builtin:ghost::hint"]);
+			expect(first.guidanceText).toContain("过期的指引。");
 
 			disposeSource?.();
 			await harness.subject.pushInput("第二问");
 			await harness.subject.waitForIdle();
 			const second = assemblyOf(requests[1]!);
+			// 无有效 guidance 时不创建空消息：下一次请求不再含其章节，也没有前缀容器
 			expect(second.guidance).toEqual([]);
+			expect(second.guidanceMessage).toBeUndefined();
+			expect(requests[1]!.messages.some((m) => m.context?.kind === "runtime.guidance")).toBe(false);
 			expect(second.referenceMessages).toBe(0);
 		} finally {
 			await runner.dispose();
