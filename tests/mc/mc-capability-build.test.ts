@@ -132,6 +132,56 @@ describe("build@1 施工执行", () => {
 		expect(state.blocks.get("11,65,10")?.name).toBe("oak_planks");
 	});
 
+	test("同层外圈先、中心后：3×3 平层的中心格最后放", async () => {
+		const blocks = new Map<string, { name: string; properties: Record<string, string> }>();
+		for (let x = 11; x <= 13; x++) {
+			for (let z = 10; z <= 12; z++) blocks.set(`${x},63,${z}`, { name: "stone", properties: {} });
+		}
+		const state: HarnessState = { blocks, inventory: inventoryOf("oak_planks", 16) };
+		const order: string[] = [];
+		const cells: { at: { x: number; y: number; z: number }; block: string }[] = [];
+		for (let x = 11; x <= 13; x++) {
+			for (let z = 10; z <= 12; z++) cells.push({ at: { x, y: 64, z }, block: "oak_planks" });
+		}
+		const harness = makeHarness(state, {
+			buildPlan: () => planOf(cells.map((cell) => ({ at: cell.at, kind: "set" as const, block: "oak_planks" }))),
+			onInteract: (target, face) => {
+				const at = placedAt(target.block, face);
+				order.push(at);
+				state.blocks.set(at, { name: "oak_planks", properties: {} });
+			},
+		});
+		const result = (await harness.callable("build@1").invoke(harness.ctx, {
+			cells,
+		} as JsonValue)) as { placed: number; remaining: unknown[] };
+		expect(result.placed).toBe(9);
+		expect(result.remaining).toEqual([]);
+		// 中心格 (12,64,11) 的支撑面是四邻的内侧面，必须留到最后。
+		// 重试会让个别外圈格排到中心之后，但中心必须排在外圈之后（旧排序里它第 5 个）。
+		expect(order.indexOf("12,64,11")).toBeGreaterThanOrEqual(6);
+	});
+
+	test("高于眼位的格先起跳再交互（上表面在眼位之上）", async () => {
+		// self 在 10,64,10（眼位 65.62），目标格 11,66,10 的支撑面顶面在 66.0：
+		// 从地面看不到，必须先起跳（drive jump）再派发。
+		const state: HarnessState = {
+			blocks: new Map([["11,65,10", { name: "stone", properties: {} }]]),
+			inventory: inventoryOf("oak_planks", 4),
+		};
+		const harness = makeHarness(state, {
+			buildPlan: () => planOf([setAt(11, 66, 10)]),
+			onInteract: (target, face) => {
+				state.blocks.set(placedAt(target.block, face), { name: "oak_planks", properties: {} });
+			},
+		});
+		const result = (await harness.callable("build@1").invoke(harness.ctx, {
+			cells: [{ at: { x: 11, y: 66, z: 10 }, block: "oak_planks" }],
+		} as JsonValue)) as { placed: number };
+		expect(result.placed).toBe(1);
+		expect(harness.calls.indexOf("drive")).toBeGreaterThanOrEqual(0);
+		expect(harness.calls.indexOf("drive")).toBeLessThan(harness.calls.indexOf("interact"));
+	});
+
 	test("先清后放：dig 在 interact 之前", async () => {
 		const state: HarnessState = {
 			blocks: new Map([

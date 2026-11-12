@@ -20,7 +20,7 @@ import type { Vec3 } from "../../contracts/values.js";
 import type { WorldReadPort } from "../../contracts/world.js";
 import { blockedInteraction } from "../shared/approach.js";
 import { pollUntil } from "../shared/observe.js";
-import { BLOCK_REACH, blockReach } from "../shared/reach.js";
+import { BLOCK_REACH, EYE_HEIGHT, blockReach } from "../shared/reach.js";
 import { faceVector, NEIGHBORS, stripNamespace } from "../shared/targets.js";
 import { itemCountOf, readBlockAt, readInventory } from "../shared/views.js";
 
@@ -183,9 +183,30 @@ export async function commitPlacement(
 	if (heldName !== name) {
 		await scope.player.equip({ name }, "hand");
 	}
+	// 目标格高过头顶时，要点的"上"面在眼位之上，从地面永远看不到（§4.1 闸门会如实
+	// 拒绝），换站位也一样。玩家会跳起来放：先瞄到面中心，起跳，趁眼位高于顶面时派发
+	// ——闸门按派发当刻的真实眼位判断。只有"上"面需要跳；站到比目标高或同高的位置时
+	// lift 为假，普通放置完全不跳。
+	const eyeY = self.place.position.y + EYE_HEIGHT;
+	const liftAim = aims.find((aim) => aim.face === "up" && aim.support.y + 1 > eyeY + 0.02) ?? null;
+	if (liftAim != null) {
+		const normal = faceVector(liftAim.face);
+		await scope.player.lookAt({
+			x: liftAim.support.x + 0.5 + normal.x * 0.5,
+			y: liftAim.support.y + 0.5 + normal.y * 0.5,
+			z: liftAim.support.z + 0.5 + normal.z * 0.5,
+		});
+		await scope.player.drive({ keys: { jump: true } }, 2);
+		// 不再额外等待：drive 的两拍结束时身体已离地约 0.7 格，眼位已高于顶面，
+		// 闸门能通过；再等只会让瞄准/复核撞上落地（真服实测：等 170ms 后复核时
+		// 眼位已回到 202.62，判定"目标在瞄准期间变了"）。
+	}
+	// 跳放时先试"上"面：其它候选面在眼位抬高后未必更差，但第一个派发必须是这次
+	// 起跳换来的那个面，否则时间窗会被注定被拒的面耗掉。
+	const ordered = liftAim == null ? aims : [liftAim, ...aims.filter((aim) => aim !== liftAim)];
 	let last: BlockStateValue | null = null;
 	let lastBlocked: unknown = null;
-	for (const aim of aims) {
+	for (const aim of ordered) {
 		try {
 			await scope.player.interact({
 				target: { place: placeOf(self, aim.support), block: aim.support },

@@ -100,10 +100,10 @@ const RELOCATION_RINGS: readonly (readonly [number, number])[] = [
  * 距离只做初筛；真正的可达性由 goto 与派发时的 Driver 射线判定。
  */
 export async function relocationSpots(ctx: CallContext, target: Vec3, self: SelfState): Promise<Vec3[]> {
-	// 站人候选可以比目标低一格（墙脚、台阶下），它的脚下格就再低一格：区域必须
-	// 多读一层，否则 dy=-1 的候选永远"脚下读不到"被跳过（真服实测：3×3 木屋只剩
-	// 前墙上角时，所有可站位的脚下都在区域外，候选为 0）。
-	const from = { x: target.x - 2, y: target.y - 2, z: target.z - 2 };
+	// 站人候选可以比目标低两格（墙顶的屋顶格要从地面跳放），它的脚下格就再低一格：
+	// 区域必须多读两层，否则低两格的候选"脚下读不到"被跳过（真服实测：3×3 木屋
+	// 只剩前墙上角时，屋外地面站位全在区域外，候选为 0）。
+	const from = { x: target.x - 2, y: target.y - 3, z: target.z - 2 };
 	const to = { x: target.x + 2, y: target.y + 1, z: target.z + 2 };
 	const voxel = await readVoxels(ctx, from, to);
 	const here = {
@@ -114,7 +114,7 @@ export async function relocationSpots(ctx: CallContext, target: Vec3, self: Self
 	const spots: { at: Vec3; score: number }[] = [];
 	const seen = new Set<string>();
 	for (const [dx, dz] of RELOCATION_RINGS) {
-		for (const dy of [0, -1]) {
+		for (const dy of [0, -1, -2]) {
 			const at = { x: target.x + dx, y: target.y + dy, z: target.z + dz };
 			const key = `${at.x},${at.y},${at.z}`;
 			if (seen.has(key)) continue;
@@ -146,8 +146,6 @@ export interface RelocationTrace {
 export interface RelocationOptions {
 	/** 诊断计数（可选）。 */
 	trace?: RelocationTrace;
-	/** false = 只试当前站位。目标在眼位之上（支撑面看不到）时换站位也不会更好。 */
-	relocate?: boolean;
 	/** 每个候选站位的 goto 预算；施工批量放置要短（默认 15s 会把预算耗光）。 */
 	maxWalkMs?: number;
 }
@@ -170,7 +168,7 @@ export async function withRelocation<T>(
 	try {
 		return await ctx.withBody(work);
 	} catch (error) {
-		if (options.relocate === false || !blockedInteraction(error) || delegated(ctx)) throw error;
+		if (!blockedInteraction(error) || delegated(ctx)) throw error;
 		const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 		const spots = await relocationSpots(ctx, position, self);
 		let last: unknown = error;

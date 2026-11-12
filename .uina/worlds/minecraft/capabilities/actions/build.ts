@@ -291,10 +291,8 @@ async function placeCellTarget(
 	// 换位（§5 局部自治）：Driver 判定视线受阻且零派发时，释放身体、走到目标
 	// 周围最多两个合法站位再试。每次重试都重新读 self 与支撑面——站位变了，
 	// 能点到的面也变了；拿旧 aims 重试等于把"换位"变成"换个地方发同一个包"。
-	// 高过头顶的格不换位：支撑面在眼位之上，换哪个站位都看不到（G42），
-	// 换位只会把每格 30s 的施工预算耗光。
+	// 施工是批量放置，换位单次 goto 预算压到 6s（默认 15s 会让每个被挡的格吃掉 30s）。
 	const trace: RelocationTrace = { tried: 0, reached: 0 };
-	const aboveHead = at.y > self.place.position.y + 1;
 	try {
 		const attempt = await withRelocation(
 			ctx,
@@ -307,7 +305,7 @@ async function placeCellTarget(
 				const outcome = await commitPlacement(ctx, scope, selfNow, spec, now.aims, now.heldName);
 				return { kind: "outcome" as const, outcome };
 			},
-			{ trace, relocate: !aboveHead, maxWalkMs: 6000 },
+			{ trace, maxWalkMs: 6000 },
 		);
 		if (attempt.kind === "pre") return { kind: "defer", reason: `placement precheck changed (${attempt.pre.kind})` };
 		const outcome = attempt.outcome;
@@ -324,13 +322,12 @@ async function placeCellTarget(
 		// 带上 Driver 原话（眼位、首命中）：remaining 里要能分清"没走到"与"走到了仍被挡"。
 		if (blockedInteraction(error)) {
 			const detail = (error as { message?: string }).message ?? "blocked";
-			// 高过头顶的格（屋顶、墙顶那一排）：要点的支撑面在眼位之上，从地面
-			// 永远看不到，换站位也解决不了——这是能力缺口（还没有跳放/攀高），
-			// 不是这一轮站错了。remaining 里说清楚，别让人以为是寻路问题。
+			// 高过头顶的格：跳放也没落地（通常是被天花板压住起跳高度，或屋外没有
+			// 合法站位）。remaining 里说清楚是"高度"问题，别让人以为是寻路问题。
 			if (at.y > self.place.position.y + 1) {
 				return {
 					kind: "defer",
-					reason: `cell is above head height; its support face cannot be seen from the ground (no jump-place yet): ${detail}`,
+					reason: `cell is above head height; jump-place did not land it (spots tried=${trace.tried} reached=${trace.reached}): ${detail}`,
 				};
 			}
 			return {
@@ -616,8 +613,26 @@ export const buildModule: MinecraftCapabilityModule = {
 									continue;
 								}
 							}
-							// 组内按列自下而上（y 升序，同列从地面往屋顶）。
-							group.cells.sort((a, b) => a.at.y - b.at.y || a.at.x - b.at.x || a.at.z - b.at.z);
+							// 组内按列自下而上（y 升序），同层"外圈先、中心后"：中心格的支撑面
+							// 是四邻的内侧面，从外面被整圈挡住；先放外圈、中心留到最后一格，
+							// 从屋内或圈内才点得到（真服 3×3 屋顶正中实测：先放中心时四邻还没放，
+							// 唯一支撑在圈外，怎么换位都看不到）。
+							const layerCenters = new Map<number, { x: number; z: number; n: number }>();
+							for (const cell of group.cells) {
+								const entry = layerCenters.get(cell.at.y) ?? { x: 0, z: 0, n: 0 };
+								entry.x += cell.at.x;
+								entry.z += cell.at.z;
+								entry.n += 1;
+								layerCenters.set(cell.at.y, entry);
+							}
+							const ringDistance = (at: Vec3): number => {
+								const center = layerCenters.get(at.y)!;
+								return Math.hypot(at.x - center.x / center.n, at.z - center.z / center.n);
+							};
+							group.cells.sort(
+								(a, b) =>
+									a.at.y - b.at.y || ringDistance(b.at) - ringDistance(a.at) || a.at.x - b.at.x || a.at.z - b.at.z,
+							);
 							for (const cell of group.cells) {
 								stopIfDone("building");
 								const result = await placeCellTarget(ctx, cell.at, cell.block as BlockSpec, raw.replace === true);
