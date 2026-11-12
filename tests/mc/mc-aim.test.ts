@@ -12,6 +12,7 @@ import {
 	aimAtControlled,
 	anglesTo,
 	BLOCK_REACH,
+	blockReachFor,
 	checkBlockHit,
 	type HitGateWorld,
 	nextAimStep,
@@ -261,5 +262,14 @@ describe("aimAtControlled", () => {
 		);
 		await expect(attempt).rejects.toMatchObject({ code: "AIM_STALLED", dispatch: "not_sent" });
 		expect(looks.length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("blockReachFor：射程按游戏模式取值", () => {
+	test("survival keeps 4.5, creative gets 5, unknown mode stays conservative", () => {
+		expect(blockReachFor({ game: { gameMode: "creative" } })).toBe(5);
+		expect(blockReachFor({ game: { gameMode: "survival" } })).toBe(BLOCK_REACH);
+		expect(blockReachFor({ game: { gameMode: null } })).toBe(BLOCK_REACH);
+		expect(blockReachFor({})).toBe(BLOCK_REACH);
 	});
 });

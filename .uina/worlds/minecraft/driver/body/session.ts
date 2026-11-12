@@ -54,7 +54,7 @@ import { protocolFor } from "../mineflayer/protocol.js";
 import { opensWindow } from "../window/layout.js";
 import { WindowSessionImpl } from "../window/session.js";
 import { windowStateFor } from "../window/state.js";
-import { aimAtControlled, BLOCK_REACH, checkBlockHit, checkEntityHit, eyeOf, worldViewOf } from "./aim.js";
+import { aimAtControlled, blockReachFor, checkBlockHit, checkEntityHit, eyeOf, worldViewOf } from "./aim.js";
 import { FeedbackController } from "./feedback.js";
 import { runEquip, runToss } from "./inventory.js";
 import { runMining } from "./mining.js";
@@ -1116,7 +1116,7 @@ export class BodySessionImpl implements BodySession {
 			// §4.1 派发闸门：真实眼位/碰撞形状/射线/射程判可达性；隔墙、超程在写前
 			// 意图之前失败。调用方声明了面就按该面检查，未声明则从可命中面中选。
 			const gate = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
-				reach: BLOCK_REACH,
+				reach: blockReachFor(bot),
 				requestedFace: direction,
 			});
 			if (!gate.ok) {
@@ -1133,7 +1133,7 @@ export class BodySessionImpl implements BodySession {
 			await aimAtControlled(bot, gate.hit.point, { signal: this.signal });
 			this.recheck();
 			const recheck = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
-				reach: BLOCK_REACH,
+				reach: blockReachFor(bot),
 				requestedFace: direction,
 			});
 			if (!recheck.ok) {
@@ -1438,7 +1438,7 @@ export class BodySessionImpl implements BodySession {
 				point = { x: target.block.x + 0.5, y: target.block.y + 0.5, z: target.block.z + 0.5 };
 				// §4.1 派发闸门：容器方块必须真实可命中——隔墙/超程在开窗意图之前失败。
 				const gate = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
-					reach: BLOCK_REACH,
+					reach: blockReachFor(bot),
 				});
 				if (!gate.ok) {
 					throw fail({
@@ -1453,7 +1453,7 @@ export class BodySessionImpl implements BodySession {
 				await aimAtControlled(bot, gate.hit.point, { signal: this.signal });
 				this.recheck();
 				const recheck = await checkBlockHit(worldViewOf(bot), eyeOf(bot.entity), target.block, {
-					reach: BLOCK_REACH,
+					reach: blockReachFor(bot),
 				});
 				if (!recheck.ok) {
 					throw fail({

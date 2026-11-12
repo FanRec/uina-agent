@@ -13,6 +13,14 @@ import { type MineflayerBot, toMineflayerVec3 } from "../mineflayer/adapter.js";
 export const BLOCK_REACH = 4.5;
 export const ENTITY_REACH = 3;
 
+/**
+ * 方块交互射程按游戏模式取值（§4.1「版本或模式特殊规则在 Driver 适配处处理」）。
+ * 创造模式是 5 格；模式未知时按生存的保守值，宁可早拒也不越权派发。
+ */
+export function blockReachFor(bot: { game?: { gameMode?: string | null } | null }): number {
+	return bot.game?.gameMode === "creative" ? 5 : BLOCK_REACH;
+}
+
 export interface AimAngles {
 	yaw: number;
 	pitch: number;
