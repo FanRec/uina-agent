@@ -7,7 +7,7 @@ import type { JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
-import { approachBlock } from "../shared/approach.js";
+import { approachBlock, withRelocation } from "../shared/approach.js";
 import { settleFailure } from "../shared/failure.js";
 import { requireKnowledge } from "../shared/knowledge.js";
 import { readValue } from "../shared/observe.js";
@@ -231,7 +231,8 @@ async function withCraftWindow(
 	const table = await resolveTable(ctx);
 	const self = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
 	const target: BlockTarget = { block: table.at, place: { ...self.place, position: table.at } };
-	await ctx.withBody(async (scope: BodyCallScope) => {
+	// §5 局部自治：工作台够近但视线受阻时换少量安全站位；窗口写操作不重放。
+	await withRelocation(ctx, table.at, "craft", async (scope: BodyCallScope) => {
 		interrupted(ctx, "craft");
 		const window = await scope.player.openContainer(target);
 		try {

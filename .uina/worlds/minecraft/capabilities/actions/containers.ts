@@ -5,7 +5,7 @@ import type { BodyCallScope, CallableDescriptor, CallContext } from "../../contr
 import type { CallFailure, JsonSchema, JsonValue, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
-import { approachBlock, delegated } from "../shared/approach.js";
+import { approachBlock, delegated, withRelocation } from "../shared/approach.js";
 import { readValue } from "../shared/observe.js";
 import { ENTITY_REACH } from "../shared/reach.js";
 import { GRID_POS_SCHEMA, ITEM_SELECTOR_SCHEMA } from "../shared/schema.js";
@@ -188,7 +188,8 @@ async function withWindow<T>(
 	work: (window: WindowSession, scope: BodyCallScope) => Promise<T>,
 ): Promise<T> {
 	await approach(ctx, candidate);
-	return ctx.withBody(async (scope) => {
+	// §5 局部自治：够近但视线受阻时换少量安全站位；窗口写操作不重放。
+	return withRelocation(ctx, candidate.position, candidate.block ?? "container", async (scope) => {
 		interrupted(ctx);
 		const window = await scope.player.openContainer(candidate.target);
 		try {

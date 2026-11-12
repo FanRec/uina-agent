@@ -18,6 +18,7 @@ import type { BlockSpec, BlockStateValue, SelfState } from "../../contracts/body
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
 import type { Vec3 } from "../../contracts/values.js";
 import type { WorldReadPort } from "../../contracts/world.js";
+import { blockedInteraction } from "../shared/approach.js";
 import { pollUntil } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
 import { faceVector, NEIGHBORS, stripNamespace } from "../shared/targets.js";
@@ -183,12 +184,23 @@ export async function commitPlacement(
 		await scope.player.equip({ name }, "hand");
 	}
 	let last: BlockStateValue | null = null;
+	let lastBlocked: unknown = null;
 	for (const aim of aims) {
-		await scope.player.interact({
-			target: { place: placeOf(self, aim.support), block: aim.support },
-			hand: "main",
-			face: faceVector(options.face != null && options.face !== "auto" ? options.face : aim.face),
-		});
+		try {
+			await scope.player.interact({
+				target: { place: placeOf(self, aim.support), block: aim.support },
+				hand: "main",
+				face: faceVector(options.face != null && options.face !== "auto" ? options.face : aim.face),
+			});
+		} catch (error) {
+			// Driver 判定这一面不可命中且零派发：允许试下一个候选面；
+			// 已派发或结果未知的交互绝不换面重放。
+			if (blockedInteraction(error)) {
+				lastBlocked = error;
+				continue;
+			}
+			throw error;
+		}
 		const settled = await pollUntil(
 			async () => await readBlockAt(scope.world, aim.target),
 			(block) => matchesDeclared(spec, block as BlockStateValue | null),
@@ -200,6 +212,7 @@ export async function commitPlacement(
 			return { kind: "placed", block: { name: stripNamespace(placed.name), properties: placed.properties ?? {} } };
 		}
 	}
+	if (lastBlocked != null && last == null) throw lastBlocked;
 	return { kind: "not_met", actual: last?.name ?? null, target: aims[0]!.target, expected: name };
 }
 

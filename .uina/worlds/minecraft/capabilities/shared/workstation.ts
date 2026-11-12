@@ -20,7 +20,7 @@ import type {
 import type { BodyCallScope, CallContext } from "../../contracts/capabilities.js";
 import type { RegistryKnowledge } from "../../contracts/knowledge.js";
 import type { Ref, Vec3 } from "../../contracts/values.js";
-import { approachBlock } from "./approach.js";
+import { approachBlock, withRelocation } from "./approach.js";
 import { checkBudget } from "./observe.js";
 import { findStation, placeStation } from "./stations.js";
 import { assertSameDimension, fail, resolveGrid, resolvePoint, stripNamespace } from "./targets.js";
@@ -132,7 +132,9 @@ export async function withStation<T>(
 	await approachBlock(ctx, station.position, station.block);
 	await validateStation(ctx, station);
 	checkBudget(ctx, deadline, station.block);
-	return await ctx.withBody(async (scope: BodyCallScope) => {
+	// §5 局部自治：够近但 Driver 判定视线受阻时，释放 Body 后换少量安全站位再试；
+	// 窗口写操作一旦开始，失败按原语义冒泡，不换位重放。
+	return await withRelocation(ctx, station.position, station.block, async (scope: BodyCallScope) => {
 		checkBudget(ctx, deadline, station.block);
 		await validateStation(ctx, station);
 		const window = await scope.player.openContainer(station.target);
@@ -166,22 +168,27 @@ export async function withEntity<T>(
 	checkBudget(ctx, deadline, "merchant");
 	await approachBlock(ctx, position, "merchant");
 	checkBudget(ctx, deadline, "merchant");
-	return await ctx.withBody(async (scope: BodyCallScope) => {
-		checkBudget(ctx, deadline, "merchant");
-		const window = await scope.player.openContainer(ref);
-		try {
+	return await withRelocation(
+		ctx,
+		{ x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) },
+		"merchant",
+		async (scope: BodyCallScope) => {
 			checkBudget(ctx, deadline, "merchant");
-			const snapshot = (await window.snapshot()).value;
-			if (snapshot.type !== windowType)
-				fail("UNSUPPORTED_WINDOW", `this entity opened ${snapshot.type}, expected ${windowType}`, {
-					hint: "only merchant menus are supported here",
-					recoverable: false,
-				});
-			return await work(window, snapshot);
-		} finally {
-			await window.close({ force: true });
-		}
-	});
+			const window = await scope.player.openContainer(ref);
+			try {
+				checkBudget(ctx, deadline, "merchant");
+				const snapshot = (await window.snapshot()).value;
+				if (snapshot.type !== windowType)
+					fail("UNSUPPORTED_WINDOW", `this entity opened ${snapshot.type}, expected ${windowType}`, {
+						hint: "only merchant menus are supported here",
+						recoverable: false,
+					});
+				return await work(window, snapshot);
+			} finally {
+				await window.close({ force: true });
+			}
+		},
+	);
 }
 
 /** 区域里的指定物品总数（材料预算与结算共用）。 */ export function countInRegion(
