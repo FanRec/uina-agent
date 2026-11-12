@@ -663,6 +663,64 @@ export class BodySessionImpl implements BodySession {
 		return entity;
 	}
 
+	/**
+	 * 离散实体交互的物理准备（§4.1 实体）：身份核验 → 命中/遮挡/射程 → 受控转头 → 复核。
+	 * 只做检查与转向，不派发；方块与实体的协议、业务语义仍各自保留。
+	 * 调用方必须已持有视角资格（beginView）。
+	 */
+	private async prepareEntityHit(
+		bot: MineflayerBot,
+		target: EntityRef,
+		effect?: Ref,
+	): Promise<{ entity: MFEntity; point: Vec3 }> {
+		const effects = effect != null ? [effect] : [];
+		const first = this.resolveEntity(bot, target);
+		if (target.appearance !== `ap:${first.id}`) {
+			throw fail({
+				code: "REFERENCE_STALE",
+				source: "input",
+				message: "entity appearance does not match the tracked entity",
+				dispatch: "not_sent",
+				effects,
+				recoverable: false,
+			});
+		}
+		const gate = await checkEntityHit(worldViewOf(bot), eyeOf(bot.entity), {
+			position: first.position ?? { x: 0, y: 0, z: 0 },
+			height: first.height,
+			width: first.width,
+		});
+		if (!gate.ok) {
+			throw fail({
+				code: gate.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+				source: "world",
+				message: gate.message,
+				dispatch: "not_sent",
+				effects,
+				recoverable: true,
+			});
+		}
+		await aimAtControlled(bot, gate.hit.point, { signal: this.signal });
+		this.recheck();
+		const live = this.resolveEntity(bot, target);
+		const recheck = await checkEntityHit(worldViewOf(bot), eyeOf(bot.entity), {
+			position: live.position ?? { x: 0, y: 0, z: 0 },
+			height: live.height,
+			width: live.width,
+		});
+		if (!recheck.ok) {
+			throw fail({
+				code: recheck.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
+				source: "world",
+				message: `target changed while aiming: ${recheck.message}`,
+				dispatch: "not_sent",
+				effects,
+				recoverable: true,
+			});
+		}
+		return { entity: live, point: recheck.hit.point };
+	}
+
 	private checkBlockTarget(target: BlockTarget, bot: MineflayerBot): void {
 		this.recheck();
 		const self = this.deps.sampleSelf()?.value;
@@ -1005,31 +1063,28 @@ export class BodySessionImpl implements BodySession {
 		face?: Vec3;
 		cursor?: Vec3;
 	}): Promise<EffectReceipt> {
-		const releaseView = "networkId" in input.target ? () => {} : this.beginView();
+		// 实体交互与方块交互一样占用视角资格：反馈流正在控制视角时按 CONTROL_CONFLICT
+		// 返回，不暗中覆盖战斗视角（§4.2）。
+		const releaseView = this.beginView();
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
 		this.enterOp();
 		try {
 			const bot = this.botForWrite();
 			if ("networkId" in input.target) {
-				// §4.1 实体交互：射程按命中箱计，遮挡由射线判定；通过后才派发。
-				const entity = this.resolveEntity(bot, input.target);
-				const entityGate = await checkEntityHit(worldViewOf(bot), eyeOf(bot.entity), {
-					position: entity.position ?? { x: 0, y: 0, z: 0 },
-					height: entity.height,
-					width: entity.width,
-				});
-				if (!entityGate.ok) {
-					throw fail({
-						code: entityGate.code === "NOT_FOUND" ? "NOT_FOUND" : "UNREACHABLE",
-						source: "world",
-						message: entityGate.message,
-						dispatch: "not_sent",
-						effects: [eff],
-						recoverable: true,
-					});
-				}
-				protocolFor(bot).activateEntity(entity.id, input.hand === "off" ? 1 : 0);
+				// §4.1 实体交互：身份 → 命中箱射程与遮挡 → 受控转头 → 复核；通过后才派发。
+				await this.prepareEntityHit(bot, input.target, eff);
+				// 写前意图（§5.12）：实体交互不可撤销，intent → dispatch → receipt 与方块一致。
+				await this.recorder.beforeWrite(
+					eff,
+					op,
+					"body.interact@1",
+					plain({ entity: input.target.networkId, hand: input.hand }),
+				);
+				this.recheck();
+				// 意图落盘期间身份可能换代/消失：不往旧实体发包。
+				const live = this.resolveEntity(bot, input.target);
+				protocolFor(bot).activateEntity(live.id, input.hand === "off" ? 1 : 0);
 				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "unknown", {
 					entity: input.target.networkId,
 				});
@@ -1382,17 +1437,9 @@ export class BodySessionImpl implements BodySession {
 			// 方块目标的命中面/命中点由 §4.1 闸门给出；实体目标无方块闸门。
 			let containerActivate: { face: number; cursor: Vec3 } | undefined;
 			if ("networkId" in target) {
-				const entity = this.resolveEntity(bot, target);
-				if (target.appearance !== `ap:${entity.id}`) {
-					throw fail({
-						code: "REFERENCE_STALE",
-						source: "input",
-						message: "entity appearance does not match the tracked entity",
-						dispatch: "not_sent",
-						recoverable: false,
-					});
-				}
-				point = { x: entity.position.x, y: entity.position.y + 1, z: entity.position.z };
+				// 实体开窗同样走命中箱射程/遮挡 → 转头 → 复核；窗口意图与生命周期仍归 WindowSession。
+				const prepared = await this.prepareEntityHit(bot, target);
+				point = prepared.point;
 			} else {
 				if (!isIntVec(target.block) || target.place.dimension !== bot.game.dimension) {
 					throw fail({

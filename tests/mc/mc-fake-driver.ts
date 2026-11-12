@@ -33,7 +33,7 @@ export const placeT = (): Place => ({
 export const entityT = (): EntityRef => ({
 	connection: "conn:t1",
 	incarnation: "inc:t1",
-	appearance: "app:t1",
+	appearance: "ap:42",
 	networkId: 42,
 });
 

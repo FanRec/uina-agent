@@ -31,6 +31,7 @@ function harness(
 		type?: string;
 		slots?: number;
 		fullBeforeLayout?: boolean;
+		entities?: Record<number, unknown>;
 	} = {},
 ) {
 	const windowType = options.type ?? "minecraft:generic_9x3";
@@ -46,6 +47,7 @@ function harness(
 	bot.version = "1.21.11";
 	bot.supportFeature = (name: string) => bot.registry.supportFeature(name);
 	bot.entity = { position: { x: 0, y: 64, z: 1 }, eyeHeight: 1.62, yaw: 0, pitch: 0 };
+	bot.entities = options.entities ?? {};
 	bot.game = { dimension: "overworld" };
 	bot.clearControlStates = () => {};
 	bot.blockAt = () => ({ name: "chest", position: target.block, shapes: [[0, 0, 0, 1, 1, 1]] });
@@ -885,5 +887,62 @@ describe("G36 click pre-state is content, not sync count", () => {
 			expect(receipt).toMatchObject({ dispatch: "sent" });
 		});
 		await h.session.close();
+	});
+});
+
+describe("实体交互与实体开窗（§4.1 实体）", () => {
+	const ref = { connection: "conn:t1", incarnation: "inc:t1", appearance: "ap:7", networkId: 7 };
+	// 工厂：换位用例会改实体位置，共享对象会让后续用例拿到被改过的坐标。
+	const zombie = () => ({ id: 7, position: { x: 0, y: 64, z: 0.5 }, height: 1.8, width: 0.6 });
+	const uses = (h: ReturnType<typeof harness>) => h.writes.filter((write) => write.name === "use_entity");
+
+	test("a reachable merchant opens exactly one use_entity", async () => {
+		const h = harness(true, { entities: { 7: zombie() } });
+		h.bot.world.raycast = async () => null;
+		const window = await h.session.openContainer(ref as never);
+		expect(uses(h)).toHaveLength(1);
+		await window.close();
+	});
+
+	test("an entity behind a wall is never activated", async () => {
+		const h = harness(true, { entities: { 7: zombie() } });
+		h.bot.world.raycast = async () => ({ x: 0, y: 65, z: 0 });
+		const error = await captureFailure(h.session.openContainer(ref as never));
+		expect(error).toMatchObject({ code: "UNREACHABLE", dispatch: "not_sent" });
+		expect(uses(h)).toHaveLength(0);
+	});
+
+	test("an entity out of reach is never activated", async () => {
+		const h = harness(true, { entities: { 7: { ...zombie(), position: { x: 0, y: 64, z: 5 } } } });
+		h.bot.world.raycast = async () => null;
+		const error = await captureFailure(h.session.openContainer(ref as never));
+		expect(error).toMatchObject({ code: "UNREACHABLE", dispatch: "not_sent" });
+		expect(uses(h)).toHaveLength(0);
+	});
+
+	test("an entity that moves out of reach while aiming is re-checked before activation", async () => {
+		const h = harness(true, { entities: { 7: zombie() } });
+		h.bot.world.raycast = async () => null;
+		const original = h.bot.look;
+		h.bot.look = async (yaw: number, pitch: number) => {
+			await original(yaw, pitch);
+			h.bot.entities[7].position = { x: 0, y: 64, z: 5 };
+		};
+		const error = await captureFailure(h.session.openContainer(ref as never));
+		expect(error).toMatchObject({ code: "UNREACHABLE", dispatch: "not_sent" });
+		expect(String(error.message)).toContain("target changed while aiming");
+		expect(uses(h)).toHaveLength(0);
+	});
+
+	test("direct entity interact records intent before the activation packet", async () => {
+		const h = harness(true, { entities: { 7: zombie() } });
+		h.bot.world.raycast = async () => null;
+		await h.session.interact({ target: ref as never, hand: "main" });
+		expect(h.facts.filter((fact) => fact.contract === "body.interact@1").map((fact) => fact.kind)).toEqual([
+			"intent",
+			"dispatch",
+			"receipt",
+		]);
+		expect(uses(h)).toHaveLength(1);
 	});
 });
