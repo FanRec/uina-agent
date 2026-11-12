@@ -1,13 +1,27 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TtsBridgeClient, TtsSpeakError } from "../.uina/extensions/tts/client.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
+
+/**
+ * Python 解释器发现顺序：UINA_TEST_PYTHON（显式覆盖，CI/异机用）→ 仓库约定 venv
+ * `.venv-tts`（存在才用，本机零配置）→ PATH 上的 python。
+ * 依赖清单与引导命令见 tests/fixtures/tts-contract-bridge.requirements.txt。
+ */
+function bridgePython(): string {
+	if (process.env.UINA_TEST_PYTHON) return process.env.UINA_TEST_PYTHON;
+	const venvPython = resolve(process.platform === "win32" ? ".venv-tts/Scripts/python.exe" : ".venv-tts/bin/python");
+	if (existsSync(venvPython)) return venvPython;
+	return "python";
+}
 
 let processHandle: ChildProcess;
 let url: string;
 let logs = "";
 beforeAll(async () => {
-	processHandle = spawn(process.env.UINA_TEST_PYTHON ?? "python", ["-B", "tests/fixtures/tts-contract-bridge.py"], {
+	processHandle = spawn(bridgePython(), ["-B", "tests/fixtures/tts-contract-bridge.py"], {
 		windowsHide: true,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -30,7 +44,8 @@ beforeAll(async () => {
 					`Bridge fixture exited ${code}: ${logs}` +
 						(missing == null
 							? ""
-							: `\n\nset UINA_TEST_PYTHON to a Python that has the TTS bridge dependencies (missing: ${missing[1]})`),
+							: `\n\nset UINA_TEST_PYTHON to a Python with the TTS bridge dependencies (missing: ${missing[1]}), ` +
+								`or bootstrap the bundled venv: uv venv .venv-tts && uv pip install -p .venv-tts/Scripts/python.exe -r tests/fixtures/tts-contract-bridge.requirements.txt`),
 				),
 			);
 		});
@@ -47,8 +62,23 @@ beforeAll(async () => {
 }, 10000);
 afterAll(async () => {
 	if (!processHandle || processHandle.exitCode !== null) return;
-	processHandle.kill();
-	await new Promise<void>((resolve) => processHandle.once("exit", () => resolve()));
+	// 先走 fixture 的优雅停机（POST /test-shutdown → uvicorn 正常退出 →
+	// TemporaryDirectory 清理钩子执行）；Windows 上直接 kill 会泄漏
+	// uina-tts-protocol-* 临时目录。超时再硬杀兜底。
+	try {
+		await fetch(url + "/test-shutdown", { method: "POST", signal: AbortSignal.timeout(2000) });
+	} catch {
+		/* 进程已退出或端口不可达 */
+	}
+	await Promise.race([
+		new Promise<void>((resolve) => processHandle.once("exit", () => resolve())),
+		new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+	]);
+	if (processHandle.exitCode === null) processHandle.kill();
+	await new Promise<void>((resolve) => {
+		if (processHandle.exitCode !== null) return resolve();
+		processHandle.once("exit", () => resolve());
+	});
 });
 
 async function completed(ids: string[]) {

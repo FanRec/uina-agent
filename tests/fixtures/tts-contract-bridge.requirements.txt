@@ -1,0 +1,7 @@
+# tests/fixtures/tts-contract-bridge.py 及其加载的 .uina/extensions/tts/bridge 服务层
+# 的第三方依赖（vendor 由 fixture 伪造，不含真实 TTS 引擎依赖）。
+# 引导：uv venv .venv-tts && uv pip install -p .venv-tts/Scripts/python.exe -r tests/fixtures/tts-contract-bridge.requirements.txt
+fastapi
+uvicorn
+httpx
+pydantic
