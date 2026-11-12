@@ -120,6 +120,14 @@ test("pending and installed feedback view reject discrete view writers until a k
 		await released;
 		await expect(body.lookAt({ x: 1, y: 64, z: 0 })).resolves.toMatchObject({ completion: "met" });
 		expect(f.looks()).toBe(1);
+		// 视角操作的完成合同由 Driver 当场断言，必须记 receipt。只记 dispatch 会被统一判定
+		// 读成"已派发、无结论"，父调用交付时把每次转头都判成 EFFECT_UNCONFIRMED。
+		expect(f.h.facts.at(-1)).toMatchObject({
+			contract: "body.lookAt@1",
+			kind: "receipt",
+			dispatch: "sent",
+			completion: "met",
+		});
 	} finally {
 		await body.close();
 	}

@@ -10,6 +10,7 @@ import { runSign } from "../../.uina/worlds/minecraft/driver/body/sign.js";
 import { EffectRecorder } from "../../.uina/worlds/minecraft/driver/execution.js";
 import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
 import { protocolFor } from "../../.uina/worlds/minecraft/driver/mineflayer/protocol.js";
+import { entityT, makeBodyHarness, openSignal, ownerT } from "./mc-fake-driver.js";
 
 const require = createRequire(import.meta.url);
 const mf = createRequire(require.resolve("mineflayer"));
@@ -305,5 +306,48 @@ describe("controlled sign editor and submission", () => {
 		const error = await runSign(h.deps, target, input).catch((failure) => failure);
 		expect(error).toMatchObject({ dispatch: "unknown", effects: [expect.any(String)] });
 		expect(h.facts.at(-1)).toMatchObject({ dispatch: "unknown", completion: "unknown" });
+	});
+});
+
+// ---- 视角/使用/交互的持久结论（返回值与事实必须讲同一件事）----
+
+describe("dispatch 级合同的持久结论", () => {
+	test("a dispatched item use records a receipt so a parent may rely on it", async () => {
+		const h = makeBodyHarness({
+			entity: { position: { x: 0, y: 64, z: 0 }, eyeHeight: 1.62, yaw: 0, pitch: 0 },
+			heldItem: { name: "bread", type: 1, count: 1 },
+			game: { dimension: "overworld" },
+		});
+		h.acknowledgeDurability();
+		const session = await h.port.acquire(ownerT(1), openSignal());
+		const receipt = await session.useItem("main");
+		expect(receipt).toMatchObject({ dispatch: "sent", completion: "met" });
+		// 只记 dispatch 会被统一判定读成"已派发、无结论"，父调用交付时判
+		// EFFECT_UNCONFIRMED；返回值说 met，记录也必须说 met。
+		expect(h.facts.at(-1)).toMatchObject({
+			contract: "body.useItem@1",
+			kind: "receipt",
+			dispatch: "sent",
+			completion: "met",
+		});
+	});
+
+	test("a dispatched entity interaction records a receipt so a parent may rely on it", async () => {
+		const h = makeBodyHarness({
+			entity: { position: { x: 0, y: 64, z: 0 }, eyeHeight: 1.62, yaw: 0, pitch: 0 },
+			entities: { 42: { id: 42, position: { x: 1, y: 64, z: 0 }, height: 1.8, width: 0.6 } },
+			game: { dimension: "overworld" },
+			world: { raycast: async () => null },
+		});
+		h.acknowledgeDurability();
+		const session = await h.port.acquire(ownerT(1), openSignal());
+		const receipt = await session.interact({ target: entityT(), hand: "main" });
+		expect(receipt).toMatchObject({ dispatch: "sent", completion: "met" });
+		expect(h.facts.at(-1)).toMatchObject({
+			contract: "body.interact@1",
+			kind: "receipt",
+			dispatch: "sent",
+			completion: "met",
+		});
 	});
 });

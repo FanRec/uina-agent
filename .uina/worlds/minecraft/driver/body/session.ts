@@ -950,7 +950,13 @@ export class BodySessionImpl implements BodySession {
 				owner: this.scopes.getStore()?.owner ?? this.owner,
 				recorder: this.recorder,
 			});
-			this.recorder.record(eff, op, "body.useItem@1", "dispatch", "sent", "met", {
+			// 先记派发事实（G34：intent → dispatch），再补 receipt 收口：这条操作的
+			// 完成合同是"一次协议激活已派发"，Driver 当场能断言，所以派发本身就是它的
+			// 结论。世界侧后果（吃掉/放置/点燃）由调用方观察确认，合同文本写明范围。
+			// 只有 dispatch 会让返回值说 met、持久记录说"无结论"，父调用交付时把每次
+			// 使用都判成 EFFECT_UNCONFIRMED。
+			this.recorder.record(eff, op, "body.useItem@1", "dispatch", "sent", "unknown", { hand });
+			this.recorder.record(eff, op, "body.useItem@1", "receipt", "sent", "met", {
 				completionContract: "one protocol activation dispatched",
 				hand,
 				nativeUseState: bot.usingHeldItem,
@@ -1024,7 +1030,13 @@ export class BodySessionImpl implements BodySession {
 					});
 				}
 				protocolFor(bot).activateEntity(entity.id, input.hand === "off" ? 1 : 0);
-				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "met", {
+				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "unknown", {
+					entity: input.target.networkId,
+				});
+				// 派发级合同：Driver 能断言"已发出"，世界后果由调用方观察（骑乘按
+				// attach_entity 证据、拴绳按 linkHolders 复核）。补 receipt 收口，
+				// 否则父调用会把它读成"已派发、无结论"。
+				this.recorder.record(eff, op, "body.interact@1", "receipt", "sent", "met", {
 					completionContract: "entity interaction dispatched",
 					entity: input.target.networkId,
 				});
@@ -1153,11 +1165,29 @@ export class BodySessionImpl implements BodySession {
 			await this.recorder.beforeWrite(eff, op, "body.interact@1", plain({ block: target.block, hand: input.hand }));
 			this.recheck();
 			protocolFor(bot).activateBlock(target.block, face, input.hand === "off" ? 1 : 0, dispatchedCursor);
+			// 方块交互的完成合同是"派发"，放置/开门由调用方观察确认（place@1 轮询目标格、
+			// use@1 比对前后方块）。先记派发事实（G34：intent → dispatch），再补 receipt
+			// 收口——派发这一层 Driver 当场能断言，就是它的结论。只记 dispatch 会让返回值
+			// 说 met、持久记录说"无结论"，统一判定把每次右键留成未决效果，父调用交付时
+			// 判 EFFECT_UNCONFIRMED。
 			this.recorder.record(
 				eff,
 				op,
 				"body.interact@1",
 				"dispatch",
+				"sent",
+				"unknown",
+				plain({
+					completionContract: "block interaction dispatched; placement/opening verified by observation",
+					block: target.block,
+					face: input.face ?? null,
+				}),
+			);
+			this.recorder.record(
+				eff,
+				op,
+				"body.interact@1",
+				"receipt",
 				"sent",
 				"met",
 				plain({
@@ -1296,11 +1326,15 @@ export class BodySessionImpl implements BodySession {
 			const point = this.lookPointFor(bot, target);
 			await bot.lookAt(toMineflayerVec3(point), false);
 			this.recheck();
+			// 视角操作的完成合同是"本地朝向已改、并随位置流发出"——bot.lookAt(force=false)
+			// 返回时 lastSentYaw 已追平，Driver 能当场断言，所以这是 receipt 而不是 dispatch。
+			// 只记 dispatch 会让统一判定按"已派发但无结论"收口，父调用交付时把每次转头
+			// 都判成 EFFECT_UNCONFIRMED（pickup@1 内部就是 lookAt + drive）。
 			this.recorder.record(
 				eff,
 				op,
 				"body.lookAt@1",
-				"dispatch",
+				"receipt",
 				"sent",
 				"met",
 				plain({
