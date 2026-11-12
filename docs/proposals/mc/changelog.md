@@ -35,7 +35,7 @@
 | 指标 | 数值 | 来源 |
 |---|---|---|
 | 任务完成率 | shelter 24/24、mine PASS、night PASS | `dev:mc:task`（同批） |
-| 任务耗时 | shelter 94.7s / mine 51.0s / night 60.1s | 同上 |
+| 任务耗时 | shelter 94.7–121.0s（多轮）/ mine 51.0s / night 60.1s | 同上 |
 | 派发 unknown 次数 | 0（三次任务 `unknownEffectCount=0`） | 任务记录 |
 | 视角角速度 | 180° 转头 30 个 look 包，`maxYawStep=8.6°`（限 12°） | `dev:mc:body-probe` |
 | 取消到停止输入 | 1ms（取消包与挥手停止） | 同上 |
