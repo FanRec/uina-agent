@@ -46,18 +46,6 @@ export interface WindowSessionDeps {
 	exitOp(): void;
 	onRetired(unresolvedOpening: boolean): void;
 	publishWindow?(value: ClientWindowObservation | null): void;
-	/**
-	 * 可见 GUI 操作节奏（§4.5）：由 Body 会话从组合根注入（确认画面可见才启用）。
-	 * 缺省不注入 = 后台/无画面快速执行；等待可取消、受总预算约束，点击的权威
-	 * 确认顺序完全不变。
-	 */
-	pacing?: {
-		clickGapMs?: number;
-		openDwellMs?: number;
-		resultDwellMs?: number;
-		closeDwellMs?: number;
-		budgetMs?: number;
-	};
 }
 
 /** 一次操作视角下的窗口内容；由共享连接状态（或玩家库存快照）即时读出，不落第二份缓存。 */
@@ -181,36 +169,6 @@ export class WindowSessionImpl implements WindowSession {
 	private playerFullSequence = 0;
 	private playerStateId: number | null = null;
 	private playerObservedAt = nowIso();
-
-	/** §4.5 节奏预算：本窗口会话已消耗的额外等待。 */
-	private pacingSpentMs = 0;
-
-	/** 可取消停顿：取消/退役立即返回（不为表演拖慢清理），预算耗尽跳过后续停顿。 */
-	private async dwell(ms: number): Promise<void> {
-		const budget = this.deps.pacing?.budgetMs ?? 6000;
-		if (this.pacingSpentMs >= budget) return;
-		const wait = Math.max(0, Math.min(ms, budget - this.pacingSpentMs));
-		if (wait <= 0) return;
-		const started = Date.now();
-		try {
-			await new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, wait);
-				const onAbort = () => {
-					clearTimeout(timer);
-					reject(new Error("dwell cancelled"));
-				};
-				if (this.deps.signal.aborted) {
-					clearTimeout(timer);
-					return resolve();
-				}
-				this.deps.signal.addEventListener("abort", onAbort, { once: true });
-				void this.deps.signal.removeEventListener;
-			});
-		} catch {
-			return; // 取消：直接返回，不拖慢清理
-		}
-		this.pacingSpentMs += Date.now() - started;
-	}
 
 	constructor(private readonly deps: WindowSessionDeps) {
 		this.wire = protocolFor(deps.bot);
@@ -447,8 +405,6 @@ export class WindowSessionImpl implements WindowSession {
 				window: `window:${operation}`,
 				completionContract: "server window and complete slot/cursor contents received",
 			});
-			// §4.5：窗口就绪后短暂停留，观众看见窗口弹出。
-			await this.dwell(this.deps.pacing?.openDwellMs ?? 0);
 		} catch (error) {
 			if (
 				error instanceof Error &&
@@ -505,10 +461,6 @@ export class WindowSessionImpl implements WindowSession {
 	}
 
 	async click(input: ClickInput): Promise<WindowClickReceipt> {
-		this.check();
-		// §4.5 可见 GUI 节奏：节奏点在写前意图之前，但不在 check→intent 的同步窗口
-		// 内切出异步缝（§7.7 前态冻结必须在 intent 之前且不夹缝）。
-		await this.dwell(this.deps.pacing?.clickGapMs ?? 0);
 		this.check();
 		if (this.busy) throw failure("CONTROL_CONFLICT", "another click is pending on this window");
 		if (this.uncertain)
@@ -648,7 +600,6 @@ export class WindowSessionImpl implements WindowSession {
 					completionContract: "forced-stateId business click returned the exact mode-0 clicked slot and cursor result",
 					stateId: settled.serverStateId,
 				});
-				await this.dwell(this.deps.pacing?.resultDwellMs ?? 0);
 				return {
 					effect,
 					dispatch: "sent",
@@ -910,8 +861,6 @@ export class WindowSessionImpl implements WindowSession {
 					"ordinary window close requires a confirmed empty cursor; forced cleanup may have unknown return/drop consequences",
 				);
 			}
-			// §4.5：关窗前短暂停留（校验通过才会停留；强制退役不为表演拖慢清理）。
-			await this.dwell(this.deps.pacing?.closeDwellMs ?? 0);
 		}
 		this.retire(true);
 	}

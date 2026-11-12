@@ -31,13 +31,6 @@ function harness(
 		type?: string;
 		slots?: number;
 		fullBeforeLayout?: boolean;
-		pacing?: {
-			clickGapMs?: number;
-			openDwellMs?: number;
-			resultDwellMs?: number;
-			closeDwellMs?: number;
-			budgetMs?: number;
-		};
 	} = {},
 ) {
 	const windowType = options.type ?? "minecraft:generic_9x3";
@@ -136,7 +129,6 @@ function harness(
 		deadEntities: () => new Set<number>(),
 		publishWindow: (observation) => observations.push(observation),
 	};
-	if (options.pacing != null) (deps as { windowPacing?: unknown }).windowPacing = options.pacing;
 	const session = new BodySessionImpl("body:window-test", ownerT(1), deps);
 	return {
 		deps,
@@ -894,39 +886,4 @@ describe("G36 click pre-state is content, not sync count", () => {
 		});
 		await h.session.close();
 	});
-});
-
-test("§4.5 可见 GUI 节奏：点击间隔生效、可取消、预算封顶；缺省保持快速", async () => {
-	vi.useFakeTimers();
-	try {
-		// 启用节奏：两次点击之间至少 clickGapMs，且受 budget 封顶。
-		const paced = harness(true, { pacing: { clickGapMs: 180, budgetMs: 200 } });
-		const window = await paced.session.openContainer(target);
-		const first = window.click(await input(window));
-		await vi.advanceTimersByTimeAsync(500);
-		await first;
-		// 第二次点击把光标上的石头放回 0 号格：期望与点击 1 确认后的实际内容一致。
-		const second = window.click({
-			slot: 0,
-			button: 0,
-			mode: 0,
-			expectedRevision: (await window.snapshot()).value.revision,
-			expectedSlots: [{ slot: 0, stack: { item: null, count: 0 } }],
-			expectedCursor: { item: { name: "stone" }, count: 8 },
-		});
-		// 预算只剩 20ms（200-180）：第二次点击最多再等 20ms 就放行，不烧满间隔。
-		await vi.advanceTimersByTimeAsync(30);
-		const receipt2 = await second;
-		expect(receipt2.dispatch).toBe("sent");
-
-		// 缺省（无 pacing）：快速路径，无额外等待。
-		const fast = harness(true);
-		const fastWindow = await fast.session.openContainer(target);
-		const fastClick = fastWindow.click(await input(fastWindow));
-		// 无 pacing：零额外等待，一个假时钟步内完成。
-		await vi.advanceTimersByTimeAsync(0);
-		await fastClick;
-	} finally {
-		vi.useRealTimers();
-	}
 });

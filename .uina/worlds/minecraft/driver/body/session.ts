@@ -91,18 +91,6 @@ export interface BodySessionDeps {
 	/** Authoritative window observations; current value is cleared on retirement. */
 	publishWindow?: (observation: ClientWindowObservation | null) => void;
 	bot: () => MineflayerBot | null;
-	/**
-	 * 可见 GUI 操作节奏（§4.5）：组合根在确认直播/观察端能实际看到窗口同步时
-	 * 注入；缺省不注入 = 后台/无画面快速执行。单一配置，不对每个 Capability
-	 * 暴露重复参数；等待可取消、受总预算约束。
-	 */
-	windowPacing?: {
-		clickGapMs?: number;
-		openDwellMs?: number;
-		resultDwellMs?: number;
-		closeDwellMs?: number;
-		budgetMs?: number;
-	};
 	/** Driver 级唯一发号：op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */
 	mintOp: () => Ref;
 	mintEff: () => Ref;
@@ -1222,7 +1210,6 @@ export class BodySessionImpl implements BodySession {
 			// 不再另发一个只出现在事件里的引用。
 			const operation = this.deps.mintOp();
 			const window = new WindowSessionImpl({
-				...(this.deps.windowPacing != null ? { pacing: this.deps.windowPacing } : {}),
 				...deps,
 				player: true,
 				operation,
@@ -1461,7 +1448,6 @@ export class BodySessionImpl implements BodySession {
 			}
 			const check = this.boundCheck();
 			const window = new WindowSessionImpl({
-				...(this.deps.windowPacing != null ? { pacing: this.deps.windowPacing } : {}),
 				bot,
 				signal: this.signal,
 				operation: this.deps.mintOp(),
