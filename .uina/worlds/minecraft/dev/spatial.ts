@@ -244,10 +244,19 @@ async function main(): Promise<void> {
 				throw new Error(`unexpected corridor contents: ${[...new Set(value.path.map((p) => p.name))].join(",")}`);
 			}
 			const gravelCells = value.path.filter((p) => p.name === "gravel");
-			if (gravelCells.length < 2) throw new Error(`support did not dig the gravel cap: ${gravelCells.length}`);
+			// 支撑探测格压在檐格上、却位于走廊顶之上，常被实心顶盖整个包住：Driver
+			// 判定看不到就不挖（玩家也看不到），上面的砾石会落进已挖开的檐格。所以这里
+			// 验结果而不是"预挖了几格"——走位格必须清空，砾石不许留在走廊里。
+			if (gravelCells.length < 1) throw new Error(`support did not dig the gravel cap: ${gravelCells.length}`);
 			const pos = await serverPos(h, s);
 			if (Math.abs(pos.x - (x0 + 8)) > 1.5 || Math.abs(pos.y - 196) > 1.5 || Math.abs(pos.z - z0) > 1.5) {
 				throw new Error(`bot did not walk to the corridor end: ${JSON.stringify(pos)}`);
+			}
+			for (const y of [198, 199]) {
+				const cell = await s.readBlock({ x: x0 + 2, y, z: z0 });
+				if (cell?.name !== "air") {
+					throw new Error(`gravel fell into the walkable corridor at y=${y}: ${cell?.name ?? "null"}`);
+				}
 			}
 			const head = await s.readBlock({ x: x0 + 2, y: 202, z: z0 });
 			if (head?.name !== "air") throw new Error(`gravel cap still blocks the ceiling: ${head?.name ?? "null"}`);

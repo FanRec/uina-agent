@@ -16,6 +16,7 @@ import type { GoalSummary, JsonValue, Progress, Vec3 } from "../../contracts/val
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { blockedInteraction } from "../shared/approach.js";
 import { type GoalOutstanding, goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { readValue } from "../shared/observe.js";
 import { GOAL_SUMMARY_SCHEMA, POS_SCHEMA } from "../shared/schema.js";
@@ -128,22 +129,31 @@ interface TunnelInput {
  * 重力块会立刻让上层失去支撑、坠进正在挖的走廊（真服 G31 回归：砾石帽落进走位
  * 目标脚位，GoalNear tolerance=1 谎报到位，烧满预算后只报一句"卡住"）。
  */
+interface ColumnDigPlan {
+	/** 走廊顶之上的重力方块：能挖就挖，Driver 说看不到就不挖（不挡走廊）。 */
+	support: Vec3[];
+	/** 本列必须打开的格。 */
+	cells: Vec3[];
+}
+
 async function columnDigList(
 	scope: import("../../contracts/capabilities.js").BodyCallScope,
 	column: TunnelColumn,
 	support: boolean,
-): Promise<Vec3[]> {
-	const positions: Vec3[] = [];
+): Promise<ColumnDigPlan> {
+	const supportCells: Vec3[] = [];
 	if (support) {
 		// 下坡列的 ceiling 檐块本身要挖（在 cells 里），探测从再上一格起步。
 		for (let i = 0, y = column.ceiling.y + (column.digCeiling ? 1 : 0); i < SUPPORT_PROBE_LIMIT; i++, y++) {
 			const block = await readBlockAt(scope.world, { x: column.ceiling.x, y, z: column.ceiling.z });
 			if (block == null || !isGravityBlock(stripNamespace(block.name))) break;
-			positions.push({ x: column.ceiling.x, y, z: column.ceiling.z });
+			supportCells.push({ x: column.ceiling.x, y, z: column.ceiling.z });
 		}
 	}
-	positions.push(...column.cells);
-	return positions.sort((a, b) => b.y - a.y);
+	return {
+		support: supportCells.sort((a, b) => b.y - a.y),
+		cells: [...column.cells].sort((a, b) => b.y - a.y),
+	};
 }
 
 /** 等待脚下结算：onGround 且两次采样位置稳定（≤2s）；悬空超时按现状继续。 */
@@ -384,7 +394,48 @@ export const tunnelModule: MinecraftCapabilityModule = {
 									Math.hypot(at.x + 0.5 - eye.x, at.y + 0.5 - eye.y, at.z + 0.5 - eye.z);
 								const span = Math.max(spanOf(column.floor), spanOf(column.ceiling));
 								if (cursor > stoodIndex + 1 && span > DIG_REACH_LIMIT) break;
-								for (const position of await columnDigList(scope, column, support)) {
+								const plan = await columnDigList(scope, column, support);
+								// 支撑格先挖：它压在檐格上，先挖掉上层，檐格的重力方块就不会落进来。
+								// 但它位于走廊顶之上，常常被实心顶盖整个包住——Driver 判定看不到时
+								// 就不挖（玩家也看不到）。少挖一格的后果是重力方块落进已挖开的檐格，
+								// 由走位前的重挖处理；因此它不挡走廊，也不构成走廊失败。
+								for (const position of plan.support) {
+									const key = register(position);
+									if (opened.has(key)) continue;
+									let supported: Awaited<ReturnType<typeof digCell>>;
+									try {
+										supported = await digCell(deps, scope, selfNow, position);
+									} catch (error) {
+										if (blockedInteraction(error)) continue;
+										throw error;
+									}
+									if (supported.kind === "unreachable" || supported.kind === "not_loaded") continue;
+									if (supported.kind === "liquid" || supported.kind === "unbreakable") continue;
+									if (supported.kind === "open") {
+										opened.add(key);
+										held.delete(key);
+										continue;
+									}
+									if (supported.kind === "not_met") {
+										held.set(key, {
+											kind: "uncertain",
+											at: position,
+											target: "air",
+											reason: "server did not confirm the break",
+										});
+										fail("TARGET_NOT_MET", "the server did not confirm a support cell was broken", {
+											dispatch: supported.dispatch,
+											effects: [supported.effect],
+											progress: progressOf("digging"),
+											recoverable: true,
+										});
+									}
+									dug += 1;
+									opened.add(key);
+									held.delete(key);
+									path.push({ at: position, name: supported.name });
+								}
+								for (const position of plan.cells) {
 									const key = register(position);
 									if (opened.has(key)) continue;
 									const result = await digCell(deps, scope, selfNow, position);

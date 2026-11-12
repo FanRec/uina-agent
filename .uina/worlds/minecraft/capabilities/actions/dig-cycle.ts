@@ -71,6 +71,11 @@ export async function digCell(
 	}
 	const receipt = await scope.player.dig({ place: placeOf(self, position), block: position });
 	if (receipt.completion !== "met") {
+		// 重力方块会在挖掘期间落走：回执等的是"这一格变成空气"，落走恰好让它提前空了。
+		// 以世界读数为准——格已空就按挖掉算，否则如实返回未确认。
+		const after = await readBlockAt(scope.world, position);
+		if (after != null && after.name === "air")
+			return { kind: "dug", tool: tool == null ? null : tool, name: block.name };
 		return { kind: "not_met", dispatch: receipt.dispatch, effect: receipt.effect };
 	}
 	return { kind: "dug", tool: tool == null ? null : tool, name: block.name };

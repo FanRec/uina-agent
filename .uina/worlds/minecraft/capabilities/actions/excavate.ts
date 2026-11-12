@@ -16,6 +16,7 @@ import type { JsonValue, Progress, Vec3 } from "../../contracts/values.js";
 import { plain } from "../../contracts/values.js";
 import type { MinecraftCapabilityModule } from "../catalog.js";
 import type { CapabilityDeps } from "../deps.js";
+import { blockedInteraction } from "../shared/approach.js";
 import { GOAL_SAMPLE_LIMIT, goalProgress, goalSummaryOf, sampleOutstanding } from "../shared/goal.js";
 import { pollUntil, readValue } from "../shared/observe.js";
 import { BLOCK_REACH, blockReach } from "../shared/reach.js";
@@ -249,113 +250,135 @@ export const excavateModule: MinecraftCapabilityModule = {
 						}
 					};
 
-					for (const layer of layers) {
-						const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-						for (const cell of orderNear(layer, here.place.position)) {
-							if (ctx.signal.aborted) interrupt();
-							if (Date.now() >= deadline) {
-								const outstandingNow = outstanding();
-								fail("TIMEOUT", `excavate budget exhausted with ${outstandingNow.length} uncleared cell(s)`, {
-									dispatch: "sent",
-									progress: progressSnapshot(progress, outstandingNow, planned.length, kept.length, false),
-									recoverable: true,
-								});
-							}
-							const block = await readBlockAt(ctx.world, cell);
-							if (block == null) {
-								processed.add(atKey(cell));
-								remaining.push({ at: cell, reason: "not_loaded" });
-								continue;
-							}
-							if (keep.has(block.name)) {
-								processed.add(atKey(cell));
-								kept.push({ at: cell, name: block.name });
-								continue;
-							}
-							if (block.name === "air") {
-								processed.add(atKey(cell));
-								progress.opened += 1;
-								continue;
-							}
-							// 读取抛错时这一格仍算"从未访问"，会进 `remaining`（goal 四态里的剩余）；
-							// 确认是可处理方块后，才记为已尝试。
-							processed.add(atKey(cell));
-							// 容器先收内容再挖（不在 keep 时）：transfer@1 自己完成开箱/搬运/关窗。
-							// 不再先 container@1 再 transfer——连续开合同一窗口在真服上会搬不动（批13 实测）。
-							if (isContainerBlock(block.name)) {
-								await ctx.call("transfer@1", { from: { x: cell.x, y: cell.y, z: cell.z }, all: true });
-							}
-							// 站位管理（MC-WORLD.md 经验 22）：近距 drive 步进（持身体）优先，
-							// 失败退回受控寻路（不持身体）；目标脚位 = 目标格上方一格。
-							const vantage = { x: cell.x, y: cell.y + 1, z: cell.z };
-							let inReach = false;
-							await ctx.withBody(async (scope) => {
-								const standing = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-								if (blockReach(standing, cell) <= BLOCK_REACH - 0.25) {
-									inReach = true;
-									return;
-								}
-								inReach = await stepTo(ctx, scope, vantage, { maxMs: 4000 });
-							});
-							if (!inReach) {
+					// 两轮：第一轮按层自上而下挖；被 Driver 判定"看不到"的格（正上方是保留块、
+					// 或同层邻格还没挖开）留到第二轮——那时同层邻格已空，从侧面就能看见。
+					// 两轮都被挡才如实记 remaining，不把"看不到"当成挖不动。
+					const deferred = new Set<string>();
+					for (let round = 0; round < 2; round++) {
+						for (const layer of layers) {
+							const here = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+							for (const cell of orderNear(layer, here.place.position)) {
+								const cellKey = atKey(cell);
+								if (round === 0 ? deferred.has(cellKey) : !deferred.has(cellKey)) continue;
 								if (ctx.signal.aborted) interrupt();
+								if (Date.now() >= deadline) {
+									const outstandingNow = outstanding();
+									fail("TIMEOUT", `excavate budget exhausted with ${outstandingNow.length} uncleared cell(s)`, {
+										dispatch: "sent",
+										progress: progressSnapshot(progress, outstandingNow, planned.length, kept.length, false),
+										recoverable: true,
+									});
+								}
+								const block = await readBlockAt(ctx.world, cell);
+								if (block == null) {
+									processed.add(atKey(cell));
+									remaining.push({ at: cell, reason: "not_loaded" });
+									continue;
+								}
+								if (keep.has(block.name)) {
+									processed.add(atKey(cell));
+									kept.push({ at: cell, name: block.name });
+									continue;
+								}
+								if (block.name === "air") {
+									processed.add(atKey(cell));
+									progress.opened += 1;
+									continue;
+								}
+								// 读取抛错时这一格仍算"从未访问"，会进 `remaining`（goal 四态里的剩余）；
+								// 确认是可处理方块后，才记为已尝试。
+								processed.add(atKey(cell));
+								// 容器先收内容再挖（不在 keep 时）：transfer@1 自己完成开箱/搬运/关窗。
+								// 不再先 container@1 再 transfer——连续开合同一窗口在真服上会搬不动（批13 实测）。
+								if (isContainerBlock(block.name)) {
+									await ctx.call("transfer@1", { from: { x: cell.x, y: cell.y, z: cell.z }, all: true });
+								}
+								// 站位管理（MC-WORLD.md 经验 22）：近距 drive 步进（持身体）优先，
+								// 失败退回受控寻路（不持身体）；目标脚位 = 目标格上方一格。
+								const vantage = { x: cell.x, y: cell.y + 1, z: cell.z };
+								let inReach = false;
+								await ctx.withBody(async (scope) => {
+									const standing = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+									if (blockReach(standing, cell) <= BLOCK_REACH - 0.25) {
+										inReach = true;
+										return;
+									}
+									inReach = await stepTo(ctx, scope, vantage, { maxMs: 4000 });
+								});
+								if (!inReach) {
+									if (ctx.signal.aborted) interrupt();
+									try {
+										await walkLeg(deps, ctx, owner, vantage, {
+											tolerance: 1,
+											timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
+											digThrough: true,
+										});
+									} catch (error) {
+										if (ctx.signal.aborted) interrupt();
+										const code = (error as { code?: string }).code;
+										if (code === "UNREACHABLE" || code === "TIMEOUT") {
+											// 走不到位不等于挖不到（如箱子正下方的格子：vantage 是箱子本身）。
+											// 失败后的实际站位可能已进入射程，复核后再定。
+											const landed = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+											if (blockReach(landed, cell) > BLOCK_REACH - 0.25) {
+												remaining.push({ at: cell, reason: "unreachable" });
+												continue;
+											}
+										} else {
+											throw error;
+										}
+									}
+								}
+								const before = await readInventory(ctx.world);
 								try {
-									await walkLeg(deps, ctx, owner, vantage, {
-										tolerance: 1,
-										timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
-										digThrough: true,
+									await ctx.withBody(async (scope) => {
+										const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
+										const result = await digCell(deps, scope, selfNow, cell);
+										switch (result.kind) {
+											case "dug":
+												progress.dug += 1;
+												await observeDrop(before);
+												break;
+											case "open":
+												break;
+											case "not_loaded":
+												remaining.push({ at: cell, reason: "not_loaded" });
+												break;
+											case "liquid":
+												remaining.push({ at: cell, reason: "liquid" });
+												break;
+											case "unbreakable":
+												remaining.push({ at: cell, reason: "unbreakable" });
+												break;
+											case "unreachable":
+												remaining.push({ at: cell, reason: "unreachable" });
+												break;
+											case "not_met": {
+												// 回执未确认（确认窗边界竞态）：以世界读数为准再核一次。
+												const after = await readBlockAt(scope.world, cell);
+												if (after != null && after.name === "air") {
+													progress.dug += 1;
+												} else {
+													remaining.push({ at: cell, reason: "unconfirmed" });
+												}
+												break;
+											}
+										}
 									});
 								} catch (error) {
-									if (ctx.signal.aborted) interrupt();
-									const code = (error as { code?: string }).code;
-									if (code === "UNREACHABLE" || code === "TIMEOUT") {
-										// 走不到位不等于挖不到（如箱子正下方的格子：vantage 是箱子本身）。
-										// 失败后的实际站位可能已进入射程，复核后再定。
-										const landed = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-										if (blockReach(landed, cell) > BLOCK_REACH - 0.25) {
-											remaining.push({ at: cell, reason: "unreachable" });
+									// Driver 在派发前拒绝（看不到这个面）：第一轮留到第二轮换侧面再试，
+									// 第二轮仍被挡就如实记进 remaining。已派发的失败照常上抛。
+									if (blockedInteraction(error)) {
+										if (round === 0) {
+											deferred.add(cellKey);
 											continue;
 										}
-									} else {
-										throw error;
+										remaining.push({ at: cell, reason: "unreachable" });
+										continue;
 									}
+									throw error;
 								}
 							}
-							const before = await readInventory(ctx.world);
-							await ctx.withBody(async (scope) => {
-								const selfNow = await readValue<SelfState>(ctx.world, "self@1", {}, ctx.signal, "self state");
-								const result = await digCell(deps, scope, selfNow, cell);
-								switch (result.kind) {
-									case "dug":
-										progress.dug += 1;
-										await observeDrop(before);
-										break;
-									case "open":
-										break;
-									case "not_loaded":
-										remaining.push({ at: cell, reason: "not_loaded" });
-										break;
-									case "liquid":
-										remaining.push({ at: cell, reason: "liquid" });
-										break;
-									case "unbreakable":
-										remaining.push({ at: cell, reason: "unbreakable" });
-										break;
-									case "unreachable":
-										remaining.push({ at: cell, reason: "unreachable" });
-										break;
-									case "not_met": {
-										// 回执未确认（确认窗边界竞态）：以世界读数为准再核一次。
-										const after = await readBlockAt(scope.world, cell);
-										if (after != null && after.name === "air") {
-											progress.dug += 1;
-										} else {
-											remaining.push({ at: cell, reason: "unconfirmed" });
-										}
-										break;
-									}
-								}
-							});
 						}
 					}
 					// 收尾复核：remaining + 从未轮到的格都要按世界读数再核一遍——

@@ -299,10 +299,12 @@ export async function checkBlockHit(
 	return {
 		ok: false,
 		code: "UNREACHABLE",
+		// 眼位写进消息：只报"被谁挡住"时，调用方无法判断是站位不对还是目标本身
+		// 被完全包住，也无法据消息复现。三个坐标是判定的全部输入，一起给出。
 		message:
 			blocked != null
-				? `line of sight to ${target.x} ${target.y} ${target.z} is blocked (first hit at ${blocked.x} ${blocked.y} ${blocked.z})`
-				: `no hittable face of ${target.x} ${target.y} ${target.z} is visible from the current eye`,
+				? `line of sight to ${target.x} ${target.y} ${target.z} is blocked (first hit at ${blocked.x} ${blocked.y} ${blocked.z}, eye ${eye.x.toFixed(2)} ${eye.y.toFixed(2)} ${eye.z.toFixed(2)})`
+				: `no hittable face of ${target.x} ${target.y} ${target.z} is visible from eye ${eye.x.toFixed(2)} ${eye.y.toFixed(2)} ${eye.z.toFixed(2)}`,
 		...(blocked != null ? { occluder: blocked } : {}),
 	};
 }

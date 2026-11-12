@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CallContext } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
+import { callFailure } from "../../.uina/worlds/minecraft/contracts/values.js";
 import { type HarnessHooks, type HarnessState, key, makeHarness } from "./mc-capability-harness.js";
 
 afterEach(() => vi.useRealTimers());
@@ -112,6 +113,39 @@ describe("tunnel@1", () => {
 		]);
 		expect(state.blocks.get(key({ x: 11, y: 66, z: 10 }))?.name).toBe("air");
 		expect(state.blocks.get(key({ x: 11, y: 67, z: 10 }))?.name).toBe("air");
+	});
+
+	test("a support cell the driver refuses is skipped, not fatal to the corridor", async () => {
+		const state: HarnessState = { blocks: new Map(), inventory: structuredClone(PICKAXE) };
+		state.blocks.set(key({ x: 10, y: 64, z: 10 }), { name: "air", properties: {} });
+		state.blocks.set(key({ x: 10, y: 65, z: 10 }), { name: "air", properties: {} });
+		solidBox(state, { x: 11, y: 64, z: 10 }, { x: 14, y: 65, z: 10 });
+		// 走廊顶之上的支撑格被实心顶盖整个包住：Driver 在派发前拒绝（看不到这个面），
+		// 玩家同样挖不到。走廊不能因此判失败——少挖一格的后果是重力方块落进已挖开的
+		// 檐格，由走位前的重挖处理。
+		state.blocks.set(key({ x: 12, y: 66, z: 10 }), { name: "gravel", properties: {} });
+		const h = makeHarness(state, {
+			onDig: (target) => {
+				if (target.block.x === 12 && target.block.y === 66) {
+					throw callFailure({
+						code: "UNREACHABLE",
+						source: "world",
+						message: "line of sight to 12 66 10 is blocked",
+						dispatch: "not_sent",
+						effects: [],
+						recoverable: true,
+					});
+				}
+				state.blocks.set(key(target.block), { name: "air", properties: {} });
+			},
+		});
+		const value = await invoke<{ dug: number; stopped?: string }>(h, "tunnel@1", { to: { x: 14, y: 64, z: 10 } });
+		expect(value.stopped).toBeUndefined();
+		for (let x = 11; x <= 14; x++) {
+			expect(state.blocks.get(key({ x, y: 64, z: 10 }))?.name).toBe("air");
+			expect(state.blocks.get(key({ x, y: 65, z: 10 }))?.name).toBe("air");
+		}
+		expect(state.blocks.get(key({ x: 12, y: 66, z: 10 }))?.name).toBe("gravel");
 	});
 
 	test("a station refilled during the walk is re-cleared, not walked through", async () => {
