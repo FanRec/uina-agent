@@ -1,5 +1,52 @@
 # 设计变更记录
 
+## 2026-11-12 · 真服取证收口：击退解码、射线适配与有界换位（S0/S1/S2/S3/S4）
+
+按《身体交互、自然表现与局部自治升级决策》§7，用 Paper 1.21.11 真服把上一轮登记为"未验证"的四项全部取证。探针 `.uina/worlds/minecraft/driver/mineflayer/body-probe.ts`（`pnpm dev:mc:body-probe`）一次连服抓完，可复跑；以下数字都来自最近两轮实际输出。
+
+### 按证据修的三处
+
+- **击退速度被缩水 8000 倍**（原假设"Pathfinder 覆盖速度"被探针推翻）：1.21.9+ 的入站 `entity_velocity` 用 lpVec3 编码，本身就是 blocks/tick；mineflayer 仍按旧短编码 `fromNotchVelocity`（1/8000）换算，解出的速度小到被物理 Tick 吃掉。证据：原始包 `(0,0.3608,0.4000)`，而 `bot.entity.velocity` 是 `(0,0,0)`，静止位移 0。修法在 `patches/mineflayer@4.39.0.patch` 增加 `velocityFromPacket`：1.21.9+ 直取，旧协议保留原分支（上游 #4167）。修后解码值与原始包一致：静止位移 1.989、行走 4.326、寻路 1.989。
+- **方块交互在真服上全部误判不可达**：`worldViewOf().raycast` 读 `hit.x/y/z`，而 prismarine 运行时返回的是方块对象（坐标在 `hit.position`），首命中坐标恒为 `undefined`，"首命中是不是目标"永远为假。夹具用普通对象，把这个适配错误掩盖了。改为两处都取，并补 `mc-aim` 回归用例（夹具按运行时真实形状返回方块对象）。
+- **半砖、门这类部分形状不可命中**：`faceSamples` 把面平面坐标写死 0/1，半砖顶面采样在 y=1（真实是 0.5）。改为按 `shapes` 在该轴上的极值面取 fixed。真服门：`face=4 cursor=(0,0.5,0.90625) open=true`。
+
+### S3 有界换位接入
+
+`capabilities/shared/approach.ts` 新增三个东西：`blockedInteraction`（只认 `UNREACHABLE` + `dispatch:"not_sent"`）、`relocationSpots`（`region@1` 读目标周围 5×3×5，脚/头为空气、脚下实心、水平 ≤ 3.5，8 环 + 距离 2 四方向）、`withRelocation`（最多两个候选，goto 一律在 `withBody` 之外，重新取身体再试；已派发或未知不重放）。`workstation`、`containers`、`craft`、`place-cell` 四条路径接入；`place-cell` 的候选面在派发前被挡时改试下一面，整轮全被挡且无实际结果才抛 `UNREACHABLE`。
+
+真服证据：
+
+- 工作台在墙另一侧（直线 2.5 格，墙两层高、两端留口）：`dispatch=1 fromStart=0 at=[9505.5,9500.5] pickaxes=1`——出发位置零派发，绕到墙后派发一次，铁镐真的进了背包。
+- 同一张工作台灌满石头封死（±2 环全实心）：`ok=false code=UNREACHABLE dispatch=0`——没有合法站位时如实失败，不假装成功。
+- 隔墙的箱子同样：`dispatch=1 fromStart=0`，派发发生在绕行后的站位。
+
+### S4 结论：没有可见画面，就不做分拍
+
+探针核查 headless 客户端：`visibleRenderChannel=false`，`window_click` 只有协议状态，没有任何观众能看到的画面出口。合同要求"有 GUI 才演出"，因此把上一轮接了一半的 `WindowSession.pacing`（`dwell()`、open/result/close/click 四处停顿、`pacingSpentMs` 预算）与 `BodySessionDeps.windowPacing` 整体删除——没有消费者的表演节奏是死代码，还会让后台批量操作多等。GUI 镜像（让观众真的看到窗口）属独立产品能力，登记为 G41，不在本轮。
+
+### S1/S2 真服验收
+
+- 隔墙/超程：出发位置零交互包，闸门在写前意图之前拒绝（见上）。
+- 部分形状：门按真实 AABB 命中面打开。
+- 180° 转头：`lookCalls=15`、`lookPackets=30`（每物理 Tick 两跳）、`beforeDispatch=30`、`maxYawStep=8.6°`——先转完再发包，没有瞬转。
+- 挖掘：`actions=0@0ms,2@1252ms`、`swings=4`、间隔 354/355/356ms——持续挥手，不是一次动画。
+- 取消：`stopToCancel=1ms`、`afterCancel=0`——停止立即发取消，之后不再挥手。
+- 战斗（三只僵尸围攻）：`ended=targets_cleared kills=3 attacks=11 maxAttackGap=684ms maxMotionGap=125ms`。攻击间隔贴着 650ms 冷却，身体每 Tick 都在发运动包，没有被转头或受击阻塞。
+- 苦力怕：`ended=target_lost attacks=2 maxMotionGap=117ms creepersLeft=0`。上一轮曾把 `maxLookGap=2971ms` 当成停顿，按运动包复核后不成立：直线逃跑时朝向没变，mineflayer 不发 look 包；身体一直在动。探针判据据此改为看 `position`/`position_look`/`look` 的合并间隔。
+
+### 验证与清理
+
+- `tests/mc` 全量 141 文件 1228 项通过（本机 node 24.13.1，`--maxWorkers=4`）；`pnpm typecheck:ci` 全绿（biome format + 边界检查 + 两套 tsc）。
+- 新增 `mc-approach-relocation` 4 项（换位成功/已派发不重放/无候选原样抛/候选全失败有界结束）、`mc-aim` 补 raycast 适配回归。
+- 删除：`WindowSession` 的 pacing 与 `dwell()`、`BodySessionDeps.windowPacing` 及其两处透传。
+- 合同同步：`modules/capabilities.md` §4 增"视线受阻时的有界换位"（含真服证据），build 段补派发前被挡换面的判据。
+
+### 未验证
+
+- `fight@1` 的击杀路径对苦力怕仍不成立（G29 残余）：本轮只测逐帧节奏，没有改善"引燃期净拉开不足"。
+- 载具（船/马）上的动作取消与断线不悬挂，本轮未跑；`G23` 有鞍马不可达仍是服务器侧事实。
+- GUI 镜像、多模态感知、随机闲逛等按 §9 不做。
+
 ## 2026-11-12 · 身体交互派发闸门、受控转头与 GUI 节奏（S1/S2/S4 落地）
 
 按《身体交互、自然表现与局部自治升级决策》完成 S1（硬正确性）、S2（动作连贯）、S4（可见 GUI 节奏）的离线可测切片；S0 真服探针与 S3 按证据如实记录（见文末）。
