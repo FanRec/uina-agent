@@ -2,14 +2,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdmissionResult, SpeechDeliveryPort, StopResult } from "../.uina/extensions/speech/delivery-port.js";
+import type {
+	AdmissionResult,
+	SealResult,
+	SpeechDeliveryPort,
+	StopResult,
+} from "../.uina/extensions/speech/delivery-port.js";
 import type { SpeechRuntimeNotice } from "../.uina/extensions/speech/session.js";
 import { SpeechSession } from "../.uina/extensions/speech/session.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
 
-/** 可编程的假交付端口：受理/停止结果按用例设定，并记录提交序列。 */
+/** 可编程的假交付端口：受理/封口/停止结果按用例设定，并记录提交序列。 */
 function fakeDelivery(options?: {
 	submit?: (utteranceId: string, text: string) => Partial<AdmissionResult>;
+	seal?: (utteranceId: string) => Partial<SealResult>;
 	stop?: (utteranceId?: string) => Partial<StopResult>;
 	/** 挂住第 holdAt（0 起）次提交，直到 releaseHold()。 */
 	holdAt?: number;
@@ -29,7 +35,7 @@ function fakeDelivery(options?: {
 		},
 		async sealSource(utteranceId) {
 			sealed.push(utteranceId);
-			return { status: "sealed" };
+			return { status: "sealed", ...(options?.seal?.(utteranceId) ?? {}) } as SealResult;
 		},
 		async stopSource(utteranceId) {
 			stopped.push(utteranceId);
@@ -266,6 +272,46 @@ describe("SpeechSession（Utterance / 分句 / Cue 对齐 / 代次屏障）", ()
 		expect(session.currentSpeakingLine()).toBeNull();
 	});
 
+	it("第一段播完而 Block 仍在生成时，Utterance 不得提前 settled", async () => {
+		const { session, delivery } = makeSession();
+		session.acceptBlockStart("s1", "b1");
+		session.acceptSpeechText("s1", "b1", "第一句。");
+		await vi.waitFor(() => expect(delivery.submitted.length).toBe(1));
+		const utteranceId = delivery.submitted[0]!.utteranceId;
+		session.acceptPlaybackFact(utteranceId, { traceId: "trace", segmentIndex: 1, kind: "started" });
+		session.acceptPlaybackFact(utteranceId, { traceId: "trace", segmentIndex: 1, kind: "completed" });
+		await flushChains();
+		// 输入未封口：第一段播完也不结算，后续内容还会到来
+		expect(session.currentSpeakingLine()).toBe("第一句。");
+		// 后续句段正常受理
+		session.acceptSpeechText("s1", "b1", "第二句。");
+		await vi.waitFor(() => expect(delivery.submitted.length).toBe(2));
+		// 封口 + 全部片段完成后才结算
+		session.acceptPlaybackFact(utteranceId, { traceId: "trace", segmentIndex: 2, kind: "completed" });
+		await flushChains();
+		session.acceptBlockEnd("s1", "b1");
+		await flushChains();
+		expect(session.currentSpeakingLine()).toBeNull();
+	});
+
+	it("封口未确认（unknown）时按事实落 unknown 终局并只通知一次", async () => {
+		const { session, delivery, notices } = makeSession({
+			seal: () => ({ status: "unknown", reason: "模拟封口丢失" }),
+		});
+		session.acceptBlockStart("s1", "b1");
+		session.acceptSpeechText("s1", "b1", "唯一一句。");
+		await vi.waitFor(() => expect(delivery.submitted.length).toBe(1));
+		session.acceptPlaybackFact(delivery.submitted[0]!.utteranceId, {
+			traceId: "trace",
+			segmentIndex: 1,
+			kind: "completed",
+		});
+		session.acceptBlockEnd("s1", "b1");
+		await flushChains();
+		expect(notices.filter((n) => n.type === "speech.delivery_unknown").length).toBe(1);
+		expect(session.currentSpeakingLine()).toBeNull();
+	});
+
 	it("异步播放失败发一次 delivery_failed；同一 Utterance 不重复", async () => {
 		const { session, delivery, notices } = makeSession();
 		session.acceptBlockStart("s1", "b1");
@@ -301,16 +347,20 @@ describe("SpeechSession（Utterance / 分句 / Cue 对齐 / 代次屏障）", ()
 		expect(notices.filter((n) => n.type === "speech.unavailable").length).toBe(2);
 	});
 
-	it("turn_aborted 只影响仍在接受输入的表达，不误杀独立 speech.say 或已封口音频", async () => {
+	it("turn_aborted 只停止仍在接受输入的表达，不误杀独立 speech.say 或已封口音频", async () => {
 		const { session, delivery } = makeSession();
 		session.acceptBlockStart("s1", "b1");
 		session.acceptSpeechText("s1", "b1", "本轮还在说。");
 		await session.say("独立发言。", false, { callId: "call-1" });
-		session.acceptBlockEnd("s1", "b1");
-		await vi.waitFor(() => expect(delivery.submitted.length).toBe(2));
-		// 已封口的块表达不再被 turn_aborted 停止。
+		session.acceptBlockStart("s2", "b2");
+		session.acceptSpeechText("s2", "b2", "已闭合的块。");
+		session.acceptBlockEnd("s2", "b2");
+		await vi.waitFor(() => expect(delivery.submitted.length).toBe(3));
+		// say 与已闭合块都已封口：turn_aborted 只停止仍开放的 s1（已受理音频）。
 		session.abortOpenUtterances();
 		await vi.waitFor(() => expect(delivery.stopped.length).toBe(1));
+		const openBlockUtteranceId = delivery.submitted[0]!.utteranceId;
+		expect(delivery.stopped).toEqual([openBlockUtteranceId]);
 	});
 
 	it("发音规范化：Markdown 修饰与 Emoji 去除、全角旁白括注不朗读", async () => {

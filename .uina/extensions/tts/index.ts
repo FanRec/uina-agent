@@ -149,11 +149,14 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 				utteranceSources.set(utteranceId, trace);
 			}
 			const result = await driver.submitSegment(text, undefined, undefined, trace);
-			if (result.status === "accepted" || result.status === "unknown") {
+			// 规范结果：Driver 的 uncertain 在适配边界统一映射为 unknown，
+			// Speech 端口对 unknown 保留来源并可目标性停止，不得按拒绝丢弃。
+			const status = result.status === "uncertain" ? "unknown" : result.status;
+			if (status === "accepted" || status === "unknown") {
 				startLevelStream();
 				ensureProgressPolling();
 			}
-			return { ...result, traceId: trace };
+			return { ...result, status, traceId: trace };
 		});
 
 		pi.registerService("tts_delivery:seal", async (input) => {
@@ -161,8 +164,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			const trace = typeof utteranceId === "string" ? sourceOf(utteranceId) : undefined;
 			if (!trace) return { status: "not_started", reason: "该表达没有进行中的声音来源" };
 			try {
-				await driver.endSource(trace);
-				return { status: "sealed" };
+				const sealed = await driver.endSource(trace);
+				// 只有远端确认（turn-end 成功或来源已取消）才是 sealed；否则如实 unknown。
+				return sealed === "sealed" ? { status: "sealed" } : { status: "unknown", reason: "来源结束未确认" };
 			} catch (error) {
 				return { status: "unknown", reason: error instanceof Error ? error.message : String(error) };
 			}
@@ -339,6 +343,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 					// 探测失败即"这一拍没看到新事实"，快照保留上一次观测；不刷屏、不臆造。
 				})
 				.then(() => {
+					// 来源终局且不再用于停止/对账后回收双向关联（不留只增映射）。
+					for (const [utteranceId, trace] of [...utteranceSources]) {
+						if (driver.isSourceRetired(trace)) utteranceSources.delete(utteranceId);
+					}
 					if (!driver.isDelivering) {
 						stopProgressPolling();
 						resetLevelSinks();

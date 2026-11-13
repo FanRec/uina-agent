@@ -50,6 +50,10 @@ interface UtteranceRecord {
 	/** 已受理片段的最大 index（1 起）。 */
 	segmentSeq: number;
 	segmentTexts: Map<number, string>;
+	/** 已收到播放终局 completed 的片段 index。 */
+	completedSegments: Set<number>;
+	/** 远端封口已确认（turn-end 回执或来源已取消/无受理段）。 */
+	sealed: boolean;
 	cueSeq: number;
 	/** 等待下一段起始边界的 Cue（Marker 强制左侧封段后进入这里）。 */
 	pendingCues: SpeechCue[];
@@ -202,10 +206,10 @@ export class SpeechSession {
 					return;
 				}
 				if (fact.kind === "completed") {
-					if (fact.segmentIndex >= record.segmentSeq) {
-						for (const cue of record.trailingCues) this.executeCue(record, cue);
-						this.settle(record, "completed");
-					}
+					// 片段事实先落账；整次表达只有在输入封口且封口确认后才结算，
+					// 模型仍在输出时后续句段还会到来，不得提前 settled。
+					record.completedSegments.add(fact.segmentIndex);
+					this.settleIfDelivered(record);
 					return;
 				}
 				// failed：整段表达未完成；剩余 Cue 不补执行。
@@ -290,6 +294,8 @@ export class SpeechSession {
 			});
 		}
 		record.utterance.text = normalized;
+		// say 是一次性表达：受理即封口输入（提交后链内 seal），可参与完成结算。
+		record.utterance.inputClosed = true;
 		if (identity.invocationId) this.byInvocation.set(identity.invocationId, record);
 		const generation = record.generation;
 		let admission: AdmissionResult | undefined;
@@ -482,6 +488,8 @@ export class SpeechSession {
 			cancelled: false,
 			segmentSeq: 0,
 			segmentTexts: new Map(),
+			completedSegments: new Set(),
+			sealed: false,
 			cueSeq: 0,
 			pendingCues: [],
 			trailingCues: [],
@@ -549,18 +557,41 @@ export class SpeechSession {
 		record.trailingCues.push(...record.pendingCues.splice(0));
 		if (record.traceId !== undefined && record.audioAccepted) {
 			const seal = await this.delivery.sealSource(record.utterance.id);
-			if (seal.status === "unknown") {
+			if (seal.status === "sealed") {
+				record.sealed = true;
+			} else if (seal.status === "unknown") {
 				this.notifyOnce(record, "speech.delivery_unknown", () => ({
 					identity: `speech:${record.utterance.id}:seal_unknown`,
 					text: `一次发言的结束确认未返回：${seal.reason ?? "来源封口结果未知"}；这段音频是否完整播放暂无法确认。`,
 				}));
+				// 封口未确认 = 无法宣称完成；按事实落未知终局。
+				this.settle(record, "unknown");
+				return;
 			}
+			// not_started：远端没有该来源或驱动未挂载，无可封口的远端事实。
+			this.settleIfDelivered(record);
 		}
 		// 文本降级判定：确认整次表达没有音频进入播放路径（静音、离线、全部明确拒绝、纯 Cue），
 		// 且 Block 正常闭合，才按原文顺序执行未触发 Cue。
 		if (!record.audioAccepted && !record.textPathStarted && !record.cancelled) {
 			this.startTextPath(record);
+			// 无音频进入交付路径的表达在 Cue 执行后即为终局（not_played）。
+			this.settle(record, "not_played");
 		}
+	}
+
+	/** 交付完成的结算条件（全部满足才 settle completed）：
+	 * 输入已封口、封口已被远端确认、所有已受理片段都收到播放终局 completed。 */
+	private settleIfDelivered(record: UtteranceRecord): void {
+		if (record.utterance.state === "settled") return;
+		if (!record.utterance.inputClosed || !record.audioAccepted) return;
+		if (!record.sealed) return;
+		if (record.segmentSeq === 0) return;
+		for (let index = 1; index <= record.segmentSeq; index++) {
+			if (!record.completedSegments.has(index)) return;
+		}
+		for (const cue of record.trailingCues) this.executeCue(record, cue);
+		this.settle(record, "completed");
 	}
 
 	/** 同步取消纪律（§5.3 执行纪律 1）：标记、递增代次、清除尚未交给 Driver 的内容；

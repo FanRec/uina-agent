@@ -1,215 +1,125 @@
-from dataclasses import replace
-from pathlib import Path
-import threading
+"""test_runtime_hardening.py — 生命周期与运维边界测试（新架构）。"""
+from __future__ import annotations
+
 import time
-import io
-import wave
-import httpx
-from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
+
+from _testkit import FakeSink, FakeVendor, _wav_bytes
 from lifecycle_handlers import TTSBridgeConfig
-from models import AudioAsset, BridgeTask, GenerationSession, SegmentKey, SegmentRecord
-from playback_projection import PlaybackProjection, PlaybackSnapshotHub
-from runtime_components import PlaybackEventHub
+from models import DefaultPreset, StreamingConfig, VendorConfig
+from playback_feed import PlaybackEventHub
 from service import TTSBridgeService
-from synthesis_handlers import SpeakRequest, TurnEndRequest
+from synthesis_handlers import SpeakRequest
 
 
-class Vendor:
-    process = None
-    def ready(self): return True
-    def ensure_running(self): return False
-    def wait_until_ready(self, timeout): return True
-    def close(self): pass
-    def synthesize_stream(self, payload, **kwargs): yield b"\x01\x00"
+def make_service(*, vendor=None, sink=None, ref_audio_path=None, **streaming_overrides) -> TTSBridgeService:
+    vendor = vendor or FakeVendor()
+    sink = sink or FakeSink()
+    config = TTSBridgeConfig(
+        service_name="test",
+        base_url="http://127.0.0.1:0",
+        host="127.0.0.1",
+        port=0,
+        vendor_port=0,
+        startup_timeout_ms=1000,
+        request_timeout_ms=1000,
+        output_dir=None,  # type: ignore[arg-type]
+        playback_enabled=True,
+        vendor=VendorConfig(api_style="api_v2", python_executable="unused", entry_script=None),  # type: ignore[arg-type]
+        preset=DefaultPreset(
+            ref_audio_path=ref_audio_path,
+            prompt_text="ref",
+            prompt_lang="zh",
+            text_lang="zh",
+            text_split_method="cut5",
+            speed_factor=1.0,
+            media_type="wav",
+        ),
+        streaming=StreamingConfig(**{"enabled": True, "warmup_enabled": False, **streaming_overrides}),
+    )
+    return TTSBridgeService(config, vendor_manager=vendor, sink=sink)  # type: ignore[arg-type]
 
 
-class Player:
-    ready = True
-    is_playing = False
-    is_streaming = False
-    supports_streaming = True
-    def start(self): pass
-    def stop(self): pass
-    def cancel_all(self): pass
-    def start_stream(self, **kwargs): self.is_playing = True
-    resume_or_start_stream = start_stream
-    def feed(self, data): pass
-    def finish_stream(self): self.is_playing = False
-    def wait_until_drained(self, timeout): return True
-    def stream_stats(self): return {"playback_started": True, "playback_completed": True}
-    def play_file_as_pcm_and_wait(self, **kwargs): return True
-
-
-@pytest.fixture
-def service(tmp_path):
-    config = TTSBridgeConfig.load(Path(__file__).parent / "config/service.toml")
-    config = replace(config, output_dir=tmp_path, preset=replace(config.preset, ref_audio_path=tmp_path / "ref.wav"), lipsync_bridge=replace(config.lipsync_bridge, enabled=False))
-    config.preset.ref_audio_path.write_bytes(b"reference")
-    instance = TTSBridgeService(config, vendor_manager=Vendor(), player=Player())
-    yield instance
-    instance.close()
-
-
-def task(id, *, age=0, state="completed"):
-    return BridgeTask(task_id=id, trace_id="trace", state=state, cancel_token="c", completed_at=time.time()-age)
-
-
-def test_retention_keeps_active_tasks_and_bounds_terminal_summaries(service):
-    service._tasks = {str(i): task(str(i)) for i in range(1100)}
-    service._tasks["expired"] = task("expired", age=3601)
-    service._tasks["active"] = task("active", state="in_progress")
-    service._prune_terminal_state()
-    assert len(service._tasks) == 1001
-    assert service.task_status("expired")["status"] == "not_found"
-    assert service.task_status("active")["status"] == "in_progress"
-
-
-def test_retention_deletes_only_owned_artifacts_and_keeps_recent_query(service):
-    old = service.config.output_dir / "old.wav"
-    recent = service.config.output_dir / "recent.wav"
-    unrelated = service.config.output_dir / "unrelated.wav"
-    for file in [old, recent, unrelated]: file.write_bytes(b"audio")
-    expired = task("old", age=3601)
-    expired.artifact_path = str(old)
-    current = task("recent")
-    current.artifact_path = str(recent)
-    service._tasks = {"old": expired, "recent": current}
-    service._prune_terminal_state()
-    assert not old.exists()
-    assert recent.exists() and unrelated.exists()
-    assert service.task_status("recent")["audio_path"] == str(recent)
-
-
-def test_duplicate_admission_does_not_resynthesize_and_conflict_does_not_replace(service):
-    request = SpeakRequest(trace_id="trace", segment_id="id", index=1, text="hello")
-    with patch.object(service, "_ensure_delivery_worker"), patch.object(service, "_should_reject_admission", return_value=False):
-        first = service.admit_speak(request)
-        second = service.admit_speak(request)
-        with pytest.raises(HTTPException) as conflict:
-            service.admit_speak(request.model_copy(update={"text": "different"}))
-    assert first["task_id"] == second["task_id"]
-    assert service._delivery_queue.qsize() == 1
-    assert conflict.value.status_code == 409
-    assert service._tasks["id"].detail["original_text"] == "hello"
-
-
-def test_completion_releases_trace_metadata_after_turn_end(service):
-    service._tasks = {"id": task("id")}
-    record = SegmentRecord(key=SegmentKey("trace",1,1), task_id="id", text="hello", state="completed")
-    service._sessions_by_trace["trace"] = GenerationSession(trace_id="trace",generation_id=1,next_play_index=2,segments={1:record})
-    service._next_generation_id_by_trace["trace"] = 1
-    service._first_chunk_events[("trace",1)] = threading.Event()
-    service.mark_turn_end(TurnEndRequest(trace_id="trace",last_segment_index=1))
-    assert "trace" not in service._sessions_by_trace
-    assert ("trace",1) not in service._first_chunk_events
-    assert "trace" not in service._next_generation_id_by_trace
-    assert service.task_status("id")["status"] == "delivered"
-
-
-def test_snapshot_heartbeat_does_not_repeat_payload():
-    projection = PlaybackProjection()
-    hub = PlaybackSnapshotHub(projection)
-    stream = hub.stream()
-    assert "data:" in next(stream)
-    assert next(stream).startswith(": heartbeat")
-    stream.close()
-    hub.close()
+def speak(trace_id: str, index: int, *, text: str = "句子。") -> SpeakRequest:
+    return SpeakRequest(trace_id=trace_id, segment_id=f"{trace_id}:{index}", index=index, text=text)
 
 
 def test_closed_event_hub_cannot_be_reopened_by_subscribe():
     hub = PlaybackEventHub()
     hub.close()
-    stream = hub.stream()
-    assert next(stream, None) is None
-    assert hub.stop_event.is_set()
+    stream = hub.stream("*")
+    with pytest.raises(StopIteration):
+        next(iter(stream))
 
 
-def test_warmup_empty_stream_is_failure(service):
-    service.vendor_manager.synthesize_stream = lambda *args, **kwargs: iter(())
-    service._warmup_vendor_best_effort()
-    assert service._warmup_status["status"] != "completed"
-
-
-def test_close_marks_pending_delivery_terminal_and_does_not_restart_worker(service):
-    service._tasks = {"waiting": task("waiting", state="pending")}
+def test_close_marks_pending_delivery_terminal_and_stops_threads(tmp_path):
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(_wav_bytes(b"\x00\x00" * 320, 32000))
+    sink = FakeSink(consume_per_tick=3200, consume_interval_s=0.02)
+    vendor = FakeVendor(chunk_delay_s=0.02)
+    service = make_service(vendor=vendor, sink=sink, ref_audio_path=reference)
+    service.start()
+    service.admit_speak(speak("t1", 1, text="慢句。"))
+    time.sleep(0.05)
     service.close()
-    assert service._tasks["waiting"].state in {"cancelled", "unknown"}
-    with pytest.raises(HTTPException):
-        service.admit_speak(SpeakRequest(trace_id="new",segment_id="new",index=1,text="hello"))
+    status = service.lane.task_status("t1:1")["status"]
+    assert status in {"cancelled", "delivered"}
+    assert service.lane.head_source() is None
+    # close 后再次 close 是幂等 no-op
+    service.close()
+    assert service._closing.is_set()
 
 
-def _valid_wav() -> bytes:
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(8000)
-        wav_file.writeframes(b"\x00\x00" * 800)
-    return buffer.getvalue()
-
-
-class SynthVendor(Vendor):
-    ownership = "external"
-
-    def synthesize(self, payload, *, timeout_ms):
-        return httpx.Response(200, content=_valid_wav())
-
-
-def test_synthesis_test_executes_vendor_and_validates_audio(service):
-    service.vendor_manager = SynthVendor()
-    result = service.test("synthesis", "test-session")
-    assert result["status"] == "succeeded"
-    assert result["duration_ms"] > 0
-    assert result["sample_rate"] == service.config.streaming.sample_rate
-    assert result["path"] == "streaming"
-    assert service.health()["last_verification"]["scope"] == "synthesis"
-
-
-def test_playback_test_uses_real_player_path_without_unmuting(service):
-    service.vendor_manager = SynthVendor()
-    result = service.test("playback", "test-session")
-    assert result["status"] == "succeeded"
-    assert result["playback_started"] is True
-    assert result["playback_completed"] is True
-
-
-def test_external_vendor_cannot_be_restarted(service):
-    service.vendor_manager = SynthVendor()
+def test_external_vendor_cannot_be_restarted():
+    vendor = FakeVendor()
+    vendor.ownership = "external"
+    service = make_service(vendor=vendor)
     result = service.restart("vendor")
     assert result["status"] == "not_started"
-    assert result["ownership"] == "external"
+    assert "不是当前 Bridge 明确拥有" in result["reason"]
 
 
-def test_speech_cues_follow_playback_offsets_once_and_ignore_cancelled_task(service):
-    from subtitle_sync import PlaybackProgressSnapshot
-    service._task_cancelled_or_stale = lambda task: task.cancel_requested
-    snapshots = [
-        PlaybackProgressSnapshot(played_samples=0, playback_started=False, played_ms=0, buffered_ms=1000, segment_finished=False, duration_ms=1000),
-        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=100, buffered_ms=900, segment_finished=False, duration_ms=1000),
-        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=600, buffered_ms=400, segment_finished=False, duration_ms=1000),
-        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=1000, buffered_ms=0, segment_finished=True, duration_ms=1000),
-    ]
-    events = []
-    service._publish_playback_event = lambda kind, **kwargs: events.append(kwargs["detail"])
-    current = [snapshots[0]]
-    service.player.progress_snapshot = lambda **kwargs: current[0]
-    def run_loop(**kwargs):
-        for snapshot in snapshots:
-            current[0] = snapshot
-            kwargs["snapshot_getter"]()
-        return snapshots[-1]
-    service.subtitle_sync.run_progress_loop = run_loop
-    task = BridgeTask(task_id="cue-task", trace_id="cue-trace", state="in_progress", cancel_token="cue")
-    task.detail = {"text": "一二三四", "segment_index": 1, "cues": [{"id": "start", "offset": 0}, {"id": "middle", "offset": 2}]}
-    service._run_subtitle_progress_loop(task=task, duration_ms=1000)
-    assert events[0]["cues"] == []
-    assert [cue["id"] for event in events for cue in event["cues"]] == ["start", "middle"]
-    assert events[1]["cues"][0]["id"] == "start"
-    assert events[2]["cues"][0]["id"] == "middle"
-    events.clear()
-    task.cancel_requested = True
-    service._run_subtitle_progress_loop(task=task, duration_ms=1000)
-    assert all(event["cues"] == [] for event in events)
+def test_warmup_skips_when_vendor_busy_and_reports_status(tmp_path):
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(_wav_bytes(b"\x00\x00" * 320, 32000))
+    service = make_service(ref_audio_path=reference, warmup_enabled=True, warmup_text="嗯。")
+    # 预热锁被真实讲话持有：best-effort 跳过，不阻塞
+    service._vendor_lock.acquire()
+    try:
+        service._warmup_vendor_best_effort()
+        assert service._warmup_status["status"] == "skipped"
+        assert service._warmup_status["reason"] == "vendor_busy"
+    finally:
+        service._vendor_lock.release()
+    service.close()
+
+
+def test_admission_after_close_is_refused():
+    vendor = FakeVendor()
+    sink = FakeSink()
+    service = make_service(vendor=vendor, sink=sink)
+    service.start()
+    service.close()
+    with pytest.raises(Exception) as refused:
+        service.admit_speak(speak("t1", 1))
+    assert refused.value.status_code == 503
+
+
+def test_retention_bounds_terminal_tasks():
+    service = make_service()
+    try:
+        for index in range(1, 12):
+            service.admit_speak(speak(f"t{index}", 1))
+        # 模拟全部终结并到期
+        for index in range(1, 12):
+            segment = service.lane.get_segment(f"t{index}:1")
+            segment.playback = "completed"
+            segment.terminal_at = time.time() - 7200
+            service.lane.apply_transition("completed", f"t{index}:1")
+        service.lane.retention(ttl_seconds=3600, max_tasks=5)
+        assert len(service.lane._tasks) <= 5  # noqa: SLF001 - 直接验证有界保留
+        for index in range(1, 12):
+            assert service.lane.task_status(f"t{index}:1")["status"] == "not_found"
+    finally:
+        service.close()

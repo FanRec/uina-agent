@@ -12,7 +12,22 @@
 - **交付端口职责分离（输出表达体系）**：哪些正文应读出、语义分句、Cue 对齐与 Utterance 业务全部归 Speech 扩展（`.uina/extensions/speech`）；本扩展经 `tts_delivery:*` 服务提供交付端口，并把播放事实回推给 Speech 的 `speech_delivery:on_playback`。TTS 不再解析模型原文。
 - **全双工主体自律打断**：用户新输入时不自动截断上一轮声音；停止经 Speech 的 `speech.stop`，结果严格区分已打断、无需操作、失败和未知；
 - **估计式字符断点**：打断时向 `tts_bridge` 提取 `revealed_text` 与播放时钟，向模型报告估计的听觉断点，不宣称逐字声学对齐；
+- **连续交付引擎（`bridge/`）**：`DeliveryLane`（唯一受理表：来源 FIFO、连续 index、幂等 segment_id、Session/Epoch、封口/取消）→ `SynthesisWorker`（唯一 Vendor 推理者，PCM 按产出顺序写入同一条有界时间线，背压等待不是失败）→ `AudioSink`（唯一播放物理权威：跨句段连续输出、按有效帧结算句段、DAC 估计的可听位置与电平、欠载如实计数、best-effort 镜像隔离）→ `PlaybackFeed`（唯一事实发布者：started/completed 一次性转换、字幕估计、设备空闲收尾）。句段是同一条 PCM 时间线上的区间，没有逐句排空、固定等待或重复预缓冲。
 - **Producer-Consumer 绝对解耦**：`tts_bridge` 对外广播按物理播放身份标记的事件流和完整播放快照 SSE；Live2D 与独立 `E:/Uina/ThirdParty/realtime-subtitles` 服务各自订阅，TTS 不向 OBS 发同步 HTTP 请求。
+
+## Bridge 模块图
+
+```text
+bridge/
+  service.py               装配与 HTTP 用例转发（不持有第二本播放账）
+  delivery_lane.py         唯一 Source/Segment 交付事实所有者
+  synthesis_worker.py      唯一合成执行者（Vendor 串行、有界背压、失败回退）
+  audio_playback.py        AudioSink：连续 PCM 时间线 + 实时回调 + 镜像隔离
+  playback_feed.py         事件中心 + 字幕估计 + 设备控制/事实发布线程
+  vendor_runtime.py        Vendor 进程归属与流式读取（到达即交付、跨包对齐）
+  playback_projection.py   当前物理播放投影（OBS 字幕消费）
+  lipsync_bridge_client.py 口型桥 best-effort 副本（默认关闭）
+```
 
 ## 配置项 (`config.json`)
 

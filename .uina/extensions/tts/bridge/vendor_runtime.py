@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import socket
@@ -181,6 +181,12 @@ class VendorRuntime:
         total_timeout_ms: int | None = None,
         cancel_event: threading.Event | None = None,
     ) -> Iterator[bytes]:
+        """流式读取 vendor PCM，到达即交付，不按网络包边界攒块。
+
+        `iter_raw()` 不重新分块：上游发出多少就读多少，首包不被
+        `chunk_size` 聚合推迟。奇数字节跨包暂存至完整 16-bit frame，
+        绝不凭 HTTP chunk 边界裁切音频样本。
+        """
         endpoint = "/" if self.config.vendor.api_style == "legacy" else "/tts"
         read_timeout = max((idle_timeout_ms or timeout_ms) / 1000, 0.1)
         if cancel_event is not None and cancel_event.is_set():
@@ -195,17 +201,30 @@ class VendorRuntime:
         total_deadline = None
         if total_timeout_ms:
             total_deadline = time.perf_counter() + max(total_timeout_ms / 1000, 0.1)
+        remainder = b""
         with self.client.stream("POST", endpoint, json=payload, timeout=timeout) as response:
             response.raise_for_status()
-            for chunk in response.iter_bytes(chunk_size=4096):
+            for chunk in response.iter_raw():
                 if cancel_event is not None and cancel_event.is_set():
                     break
                 if total_deadline is not None and time.perf_counter() > total_deadline:
                     raise httpx.TimeoutException(
                         f"tts vendor stream exceeded total timeout of {total_timeout_ms}ms"
                     )
-                if chunk:
-                    yield chunk
+                if not chunk:
+                    continue
+                data = remainder + chunk if remainder else chunk
+                extra = len(data) % 2
+                if extra:
+                    remainder = data[-1:]
+                    data = data[:-1]
+                else:
+                    remainder = b""
+                if data:
+                    yield data
+            if remainder:
+                # 半帧属于传输截断：补零成完整 frame 交给上层如实播放，不静默丢弃。
+                yield remainder + b"\x00"
 
     def close(self) -> None:
         self.client.close()

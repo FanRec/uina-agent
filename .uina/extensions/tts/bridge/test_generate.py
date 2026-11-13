@@ -49,23 +49,22 @@ def service(tmp_path):
     )
     vendor = Mock()
     vendor.synthesize_file = AsyncMock(return_value=httpx.Response(200, content=wav_bytes()))
-    player = Mock()
-    instance = TTSBridgeService(config, vendor_manager=vendor, player=player)
+    sink = Mock()
+    instance = TTSBridgeService(config, vendor_manager=vendor, sink=sink)
     yield instance
     instance.close()
 
 
 def test_generate_is_pure_synthesis_and_preserves_text(service):
     text = "  你好\n（这些字也要保留）🙂  "
-    before = dict(service._tasks)
+    before = service.lane.active_task_count()
     result = generate(service, text)
     assert result == wav_bytes()
     payload = service.vendor_manager.synthesize_file.call_args.args[0]
     assert payload["text"] == text
     assert payload["media_type"] == "wav" and payload["streaming_mode"] is False
     assert 0 < service.vendor_manager.synthesize_file.call_args.kwargs["timeout_ms"] <= 1000
-    assert service._tasks == before
-    service.player.enqueue_and_wait.assert_not_called()
+    assert service.lane.active_task_count() == before
     assert list(service.config.output_dir.glob("uina-tts-*")) == []
 
 
@@ -95,7 +94,7 @@ def test_generate_rejects_invalid_pcm_metadata_before_http_success(service, defe
 
 def test_cancellation_while_waiting_does_not_dispatch(service):
     async def scenario():
-        service._synthesis_lock.acquire()
+        service._vendor_lock.acquire()
         try:
             request = asyncio.create_task(service.generate("hello", timeout_ms=1000))
             await asyncio.sleep(0)
@@ -103,7 +102,7 @@ def test_cancellation_while_waiting_does_not_dispatch(service):
             with pytest.raises(asyncio.CancelledError):
                 await request
         finally:
-            service._synthesis_lock.release()
+            service._vendor_lock.release()
     asyncio.run(scenario())
     service.vendor_manager.synthesize_file.assert_not_called()
 
@@ -118,8 +117,8 @@ def test_late_audio_is_discarded_and_lock_released(service):
         with pytest.raises(asyncio.CancelledError):
             await request
     asyncio.run(scenario())
-    assert service._synthesis_lock.acquire(blocking=False)
-    service._synthesis_lock.release()
+    assert service._vendor_lock.acquire(blocking=False)
+    service._vendor_lock.release()
 
 
 def test_generate_endpoint_returns_audio_not_admission_or_playback(service):
@@ -141,14 +140,14 @@ def test_generate_rejects_invalid_deadline_at_parameter_boundary(service, timeou
 
 
 def test_lock_waiting_expires_without_dispatch(service):
-    service._synthesis_lock.acquire()
+    service._vendor_lock.acquire()
     try:
         with pytest.raises(HTTPException) as failure:
             generate(service, timeout_ms=30)
         assert failure.value.status_code == 504
         service.vendor_manager.synthesize_file.assert_not_called()
     finally:
-        service._synthesis_lock.release()
+        service._vendor_lock.release()
 
 
 def test_legacy_payload_preserves_configured_language(service):
@@ -176,8 +175,8 @@ def test_endpoint_cancellation_closes_request_and_releases_lock(service):
             with pytest.raises(asyncio.CancelledError):
                 await request
             assert stopped.is_set()
-            assert service._synthesis_lock.acquire(blocking=False)
-            service._synthesis_lock.release()
+            assert service._vendor_lock.acquire(blocking=False)
+            service._vendor_lock.release()
     asyncio.run(scenario())
 
 
@@ -215,8 +214,8 @@ def test_slow_drip_cannot_keep_synthesis_lock_after_deadline_or_cancel(service, 
             if not abort:
                 assert failure.value.status_code == 504
         asyncio.run(scenario())
-        assert service._synthesis_lock.acquire(blocking=False)
-        service._synthesis_lock.release()
+        assert service._vendor_lock.acquire(blocking=False)
+        service._vendor_lock.release()
     finally:
         server.shutdown()
         server.server_close()

@@ -1,14 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 
-TaskState = Literal["pending", "in_progress", "completed", "cancelled", "failed", "obsolete"]
-StreamStrategy = Literal["adaptive", "fixed_streaming", "fixed_batch"]
-SegmentState = Literal["pending", "synthesizing", "ready", "playing", "completed", "cancelled", "obsolete", "failed"]
+# Source 输入侧：open=继续受理；sealed=不再受理；cancelled=已取消。
+SourceInput = Literal["open", "sealed", "cancelled"]
+# 合成维度：queued=待合成；running=Vendor 推理中；终局 finished/failed/cancelled。
+SynthesisState = Literal["queued", "running", "finished", "failed", "cancelled"]
+# 播放维度：pending=尚无音频可播；playing/completed 由 AudioSink 真实推进；
+# cancelled/failed 为终局；unknown 仅表示物理停止无法确认。
+PlaybackState = Literal["pending", "playing", "completed", "cancelled", "failed", "unknown"]
+
+PLAYBACK_TERMINAL: frozenset[str] = frozenset({"completed", "cancelled", "failed", "unknown"})
+SYNTHESIS_TERMINAL: frozenset[str] = frozenset({"finished", "failed", "cancelled"})
 
 
 @dataclass(frozen=True)
@@ -35,36 +41,40 @@ class DefaultPreset:
 
 @dataclass(frozen=True)
 class StreamingConfig:
+    """流式交付参数。所有时长都是可测参数，不是正确性公理。"""
+
     enabled: bool = True
-    stream_strategy: StreamStrategy = "adaptive"
     media_type: str = "raw"
     sample_rate: int = 32000
     vendor_streaming_mode: int = 2
     min_chunk_length: int = 32
     fragment_interval: float = 0.08
+    # 首句快速 profile（首句延迟优先；是否启用由听感实测决定）。
     first_chunk_vendor_streaming_mode: int | None = None
-    first_chunk_min_chunk_length: int = 24
-    first_chunk_fragment_interval: float = 0.05
-    first_chunk_prebuffer_ms: int = 100
-    first_chunk_gate_timeout_ms: int = 1800
+    first_chunk_min_chunk_length: int = 16
+    first_chunk_fragment_interval: float = 0.03
     warmup_enabled: bool = True
     warmup_text: str = "嗯。"
     warmup_timeout_ms: int = 25000
     batch_size: int = 1
-    prebuffer_ms: int = 120
-    rebuffer_ms: int = 420
-    drain_timeout_ms: int = 2000
+    # 设备冷启动（打开声卡）时的预热静音与预缓冲；只在真实打开设备时生效一次。
+    device_priming_ms: int = 120
+    start_prebuffer_ms: int = 300
+    # 有界背压：未播放 PCM 上限（秒）。超过后合成生产者等待消费，不是失败。
+    buffer_seconds: float = 2.0
+    # 播放完全空闲后多久关闭声卡（由普通控制线程执行，非回调）。
+    idle_close_ms: int = 3000
+    # Vendor 流式请求的读空闲与总时限；只约束真正开始的 I/O。
     stream_idle_timeout_ms: int = 60000
     stream_total_timeout_ms: int = 120000
-    synthesis_lock_timeout_ms: int = 60000
-    max_delivery_task_ms: int = 60000
-
+    # Vendor 流无消费进展的停滞上限（设备完全卡死时收束，正常背压不受此约束）。
+    stall_timeout_ms: int = 60000
+    # 合成失败且尚无任何 PCM 进入输出路径时，允许的一次非流式回退。
     fallback_to_batch_on_failure: bool = True
-    adaptive_playback_start_latency_ms: int = 1600
-    adaptive_rebuffer_threshold: int = 2
-    adaptive_max_chunk_gap_ms: float = 400.0
-    adaptive_realtime_factor_threshold: float = 0.85
-    adaptive_batch_recovery_successes: int = 2
+    # 受理边界容量（超限在受理前明确拒绝，不受理后按年龄清除）。
+    max_source_pending_segments: int = 48
+    max_source_pending_chars: int = 4000
+    max_total_pending_segments: int = 64
     device: str | None = None
     mirror_device: str | None = None
 
@@ -75,16 +85,15 @@ class StreamingProfile:
     vendor_streaming_mode: int
     min_chunk_length: int
     fragment_interval: float
-    prebuffer_ms: int
-    rebuffer_ms: int
 
 
 @dataclass(frozen=True)
 class SubtitleSyncConfig:
+    """字幕刷新节拍与演示配置；OBS 消费播放快照 SSE，本配置只控制刷新频率。"""
+
     enabled: bool = False
     obs_base_url: str = "http://127.0.0.1:8104"
-    progress_interval_ms: int = 16
-    fallback_mode: str = "sentence_only"
+    progress_interval_ms: int = 33
 
 
 @dataclass(frozen=True)
@@ -102,41 +111,23 @@ class LipsyncBridgeConfig:
 
 @dataclass(frozen=True)
 class PlaybackProgressSnapshot:
+    """AudioSink 播放位置的只读快照。
+
+    clock_quality: dac=以 PortAudio DAC 估计的可听位置；submitted_samples=已提交
+    帧数估计；unknown=无时钟。位置只统计有效语音样本，补静音不推进。
+    """
+
     playback_started: bool
     played_ms: float
-    played_samples: int
+    played_frames: int
     buffered_ms: float
     segment_finished: bool
     duration_ms: int
-    # 声学电平测量（0.0~1.0）。带默认值以免影响既有构造点。
-    # 只承载"最近一段音频测到多少"，不做包络平滑——平滑是消费者的职责。
     rms: float = 0.0
     peak: float = 0.0
     state: str = "idle"
     clock_quality: str = "unknown"
     playback_id: str | None = None
-
-
-@dataclass(frozen=True)
-class SubtitleProgressEvent:
-    trace_id: str
-    generation_id: int
-    segment_index: int
-    task_id: str
-    action: Literal["segment_start", "segment_progress", "segment_complete", "sentence", "turn_end", "clear"]
-    text: str
-    revealed_text: str = ""
-    revealed_count: int = 0
-    playback_started: bool = False
-    playback_completed: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class AdaptiveTraceState:
-    force_batch: bool = False
-    consecutive_batch_successes: int = 0
-    conservative_stream_successes: int = 0
 
 
 @dataclass(frozen=True)
@@ -153,66 +144,75 @@ class DiagnosticResult:
     metrics: dict[str, Any]
 
 
-@dataclass(frozen=True)
-class SegmentKey:
-    trace_id: str
-    generation_id: int
-    segment_index: int
-
-
-@dataclass(frozen=True)
-class AudioAsset:
-    kind: Literal["file", "pcm"]
-    artifact_path: Path | None
-    sample_rate: int
-    duration_ms: int
-    media_type: str
-    pcm_bytes: bytes | None = None
-    pcm_stream: Any | None = None
-    metrics: dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
-class SegmentRecord:
-    key: SegmentKey
+class Segment:
+    """一个句段的交付事实。合成与播放是两个独立推进的维度。"""
+
+    index: int
     task_id: str
-    text: str
-    state: SegmentState = "pending"
-    asset: AudioAsset | None = None
-    detail: dict[str, Any] = field(default_factory=dict)
-    cancel_requested: bool = False
-
-
-@dataclass
-class GenerationSession:
-    trace_id: str
-    generation_id: int
-    submission_closed: bool = False
-    next_play_index: int = 1
-    next_issue_index: int = 1
-    expected_end_index: int | None = None
-    closed: bool = False
-    segments: dict[int, SegmentRecord] = field(default_factory=dict)
-    condition: threading.Condition | None = field(default=None, repr=False, compare=False)
-
-
-@dataclass
-class BridgeTask:
-    task_id: str
-    trace_id: str
-    state: TaskState
+    text: str  # 发送给 vendor 的规范化文本
+    original_text: str  # 上游原文（字幕/回执对照）
     cancel_token: str
-    cancel_requested: bool = False
-    stream_cancel_event: Any | None = field(default=None, repr=False, compare=False)
-
-    started_at: float | None = None
-    completed_at: float | None = None
-    audio_id: str | None = None
-    artifact_path: str | None = None
+    traceparent: str | None = None
+    synthesis: SynthesisState = "queued"
+    playback: PlaybackState = "pending"
+    # 在 AudioSink 连续时间线上的有效语音帧区间；end_frame 在合成结束时才最终确定。
+    pcm_start_frame: int | None = None
+    pcm_end_frame: int = 0
+    pcm_final: bool = False
     error: str | None = None
-    detail: dict[str, Any] = field(default_factory=dict)
-    subtitle_state: dict[str, Any] = field(default_factory=dict)
-    session_id: str | None = None
-    invocation_id: str | None = None
-    source_id: str | None = None
-    epoch: str | None = None
+    stop_outcome: str | None = None
+    accepted_at: float | None = None
+    synth_started_at: float | None = None
+    first_pcm_at: float | None = None
+    synth_end_at: float | None = None
+    playback_started_at: float | None = None
+    terminal_at: float | None = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.playback in PLAYBACK_TERMINAL
+
+    def timings(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "accepted_at": self.accepted_at,
+            "synth_started_at": self.synth_started_at,
+            "first_pcm_at": self.first_pcm_at,
+            "synth_end_at": self.synth_end_at,
+            "playback_started_at": self.playback_started_at,
+            "terminal_at": self.terminal_at,
+            "pcm_start_frame": self.pcm_start_frame,
+            "pcm_end_frame": self.pcm_end_frame if self.pcm_final else None,
+        }
+        return data
+
+
+@dataclass
+class Source:
+    """一个发声来源（= Driver 的 trace）。按首次受理顺序进入全局 FIFO。"""
+
+    id: str
+    session_id: str
+    epoch: str
+    generation_id: int = 1
+    input: SourceInput = "open"
+    last_accepted_index: int = 0
+    segments: dict[int, Segment] = field(default_factory=dict)
+    accepted_at: float | None = None
+    sealed_at: float | None = None
+    terminal_reason: str | None = None
+
+    def all_terminal(self) -> bool:
+        return all(segment.terminal for segment in self.segments.values())
+
+    def pending_count(self) -> int:
+        return sum(1 for segment in self.segments.values() if not segment.terminal)
+
+
+class BridgeError(Exception):
+    """对外 HTTP 语义的业务错误。"""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail

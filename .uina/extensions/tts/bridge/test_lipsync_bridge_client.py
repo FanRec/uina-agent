@@ -4,7 +4,6 @@ import base64
 import threading
 
 from lipsync_bridge_client import LipsyncBridgeClient, LipsyncBridgeClientConfig
-from models import AudioAsset
 
 
 class FakeHttpClient:
@@ -48,45 +47,6 @@ class BlockingHttpClient:
 
     def close(self) -> None:
         self.release.set()
-
-
-def test_mirrors_streaming_pcm_buffer_when_ready() -> None:
-    http = FakeHttpClient()
-    client = LipsyncBridgeClient(
-        LipsyncBridgeClientConfig(enabled=True, inline_pcm_max_bytes=1024),
-        client=http,  # type: ignore[arg-type]
-    )
-    ready = threading.Event()
-    buffer = bytearray(b"\x01\x02\x03\x04")
-    asset = AudioAsset(
-        kind="pcm",
-        artifact_path=None,
-        sample_rate=32000,
-        duration_ms=10,
-        media_type="raw",
-        pcm_stream=iter(()),
-        metrics={
-            "pcm_buffer": buffer,
-            "pcm_buffer_done": ready,
-        },
-    )
-
-    client.mirror_asset_async(
-        trace_id="trace-1",
-        generation_id=1,
-        segment_index=1,
-        task_id="task-1",
-        text="hello",
-        asset=asset,
-    )
-    ready.set()
-
-    assert wait_for(lambda: len(http.posts) == 1)
-    path, payload, _ = http.posts[0]
-    assert path == "/v1/lipsync/mirror"
-    assert payload["trace_id"] == "trace-1"
-    assert payload["pcm_base64"] == base64.b64encode(bytes(buffer)).decode("ascii")
-    client.close()
 
 
 def test_stream_chunk_posts_low_latency_events() -> None:
@@ -200,37 +160,6 @@ def test_stream_chunks_are_bounded_and_numbered_before_finish() -> None:
     assert http.posts[2][1]["chunk_index"] == 1
     assert len(base64.b64decode(http.posts[2][1]["pcm_base64"])) <= 4
     assert http.posts[3][1]["last_chunk_index"] == 1
-    client.close()
-
-
-def test_streaming_pcm_mirror_respects_pending_backpressure() -> None:
-    http = BlockingHttpClient()
-    client = LipsyncBridgeClient(
-        LipsyncBridgeClientConfig(enabled=True, max_workers=1, max_pending_requests=1),
-        client=http,  # type: ignore[arg-type]
-    )
-    ready = threading.Event()
-    asset = AudioAsset(
-        kind="pcm",
-        artifact_path=None,
-        sample_rate=16_000,
-        duration_ms=10,
-        media_type="raw",
-        pcm_stream=iter(()),
-        metrics={"pcm_buffer": bytearray(b"12"), "pcm_buffer_done": ready},
-    )
-
-    client.mirror_asset_async(
-        trace_id="trace-1", generation_id=1, segment_index=1, task_id="first", text="a", asset=asset
-    )
-    ready.set()
-    assert http.entered.wait(timeout=1.0)
-    client.mirror_asset_async(
-        trace_id="trace-1", generation_id=1, segment_index=2, task_id="second", text="b", asset=asset
-    )
-    http.release.set()
-    assert wait_for(lambda: len(http.posts) == 1)
-    assert http.posts[0][1]["task_id"] == "first"
     client.close()
 
 

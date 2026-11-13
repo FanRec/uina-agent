@@ -3,14 +3,12 @@ from __future__ import annotations
 import base64
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-
-from models import AudioAsset
 
 
 @dataclass(frozen=True)
@@ -66,60 +64,23 @@ class LipsyncBridgeClient:
         self._executor.shutdown(wait=False, cancel_futures=True)
         self.client.close()
 
-    def mirror_asset_async(
-        self, *, trace_id: str, generation_id: int, segment_index: int,
-        task_id: str, text: str, asset: AudioAsset,
-    ) -> None:
+    def _mirror_pcm_bytes_async(self, *, payload: dict[str, Any], pcm: bytes, label: str) -> None:
+        """best-effort 整段镜像（流式端点不可用时的回退路径）。"""
         if not self.config.enabled or self._closed.is_set():
             return
-        payload = {
-            "trace_id": trace_id, "generation_id": generation_id,
-            "segment_index": segment_index, "task_id": task_id, "text": text,
-            "sample_rate": asset.sample_rate, "duration_ms": asset.duration_ms,
-            "media_type": asset.media_type,
-        }
-        if asset.kind == "file" and asset.artifact_path is not None:
-            payload["audio_path"] = str(asset.artifact_path)
-        elif asset.kind == "pcm" and asset.pcm_bytes is not None:
-            if len(asset.pcm_bytes) > self.config.inline_pcm_max_bytes:
-                self._log_drop(f"mirror_size:{task_id}")
-                return
-            payload["pcm_base64"] = base64.b64encode(asset.pcm_bytes).decode("ascii")
-        elif asset.kind == "pcm" and asset.pcm_stream is not None:
-            done = asset.metrics.get("pcm_buffer_done")
-            buffer = asset.metrics.get("pcm_buffer")
-            if isinstance(buffer, bytearray) and callable(getattr(done, "wait", None)):
-                self._mirror_pcm_buffer_when_ready(
-                    payload=payload, buffer=buffer, wait_for_ready=done.wait,
-                    label=f"mirror_stream:{task_id}",
-                )
+        if len(pcm) > self.config.inline_pcm_max_bytes:
+            self._log_drop(label)
             return
-        else:
-            return
-        self._fire_and_forget("/v1/lipsync/mirror", payload, label=f"mirror:{task_id}")
+        data = {**payload, "pcm_base64": base64.b64encode(pcm).decode("ascii")}
 
-    def _mirror_pcm_buffer_when_ready(
-        self, *, payload: dict[str, Any], buffer: bytearray,
-        wait_for_ready: Callable[[float | None], bool], label: str,
-    ) -> None:
         def send() -> None:
-            deadline = time.monotonic() + 10.0
-            while not self._closed.is_set():
-                if wait_for_ready(0.05):
-                    break
-                if time.monotonic() >= deadline:
-                    self._log_drop(label)
-                    return
-            if self._closed.is_set() or not buffer or len(buffer) > self.config.inline_pcm_max_bytes:
-                return
-            current = {**payload, "pcm_base64": base64.b64encode(bytes(buffer)).decode("ascii")}
-            self._post_json("/v1/lipsync/mirror", current, label=label)
+            self._post_json("/v1/lipsync/mirror", data, label=label)
+
         self._submit(send, label=label)
 
     def stream_start_async(
         self, *, trace_id: str, generation_id: int, segment_index: int,
         task_id: str, text: str, sample_rate: int, duration_ms: int,
-        prebuffer_ms: int | None = None, rebuffer_ms: int | None = None,
     ) -> None:
         if not self.config.enabled or self._closed.is_set():
             return
@@ -128,10 +89,6 @@ class LipsyncBridgeClient:
             "segment_index": segment_index, "task_id": task_id, "text": text,
             "sample_rate": sample_rate, "duration_ms": duration_ms,
         }
-        if prebuffer_ms is not None and prebuffer_ms > 0:
-            payload["prebuffer_ms"] = prebuffer_ms
-        if rebuffer_ms is not None and rebuffer_ms > 0:
-            payload["rebuffer_ms"] = rebuffer_ms
         with self._lock:
             if len(self._streams) >= self._capacity and task_id not in self._streams:
                 self._log_drop(f"stream_start:{task_id}")

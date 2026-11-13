@@ -71,6 +71,17 @@ export class TtsVoiceOutputDriver {
 	ownsSource(traceId: string): boolean {
 		return this.sources.has(traceId);
 	}
+	/** 来源是否已终结且不再用于停止/对账（utteranceId↔trace 双向关联可回收）。 */
+	isSourceRetired(traceId: string): boolean {
+		const source = this.sources.get(traceId);
+		if (!source) return true;
+		return (
+			source.closed &&
+			!source.stopUnconfirmed &&
+			!source.sealUnconfirmed &&
+			[...source.segments.values()].every((segment) => TERMINAL.has(segment.state))
+		);
+	}
 	acceptsSource(traceId: string): boolean {
 		return this.sources.get(traceId)?.closed === false;
 	}
@@ -125,25 +136,45 @@ export class TtsVoiceOutputDriver {
 		this.activeTrace = this.newSource().id;
 		return this.activeTrace;
 	}
-	async endSource(traceId = this.activeTrace): Promise<void> {
-		if (!traceId) return;
+	/**
+	 * 封口来源。返回值是动作事实：只有远端 turn-end 得到确认（或来源已被
+	 * 远端取消/从未产生受理段）才是 "sealed"；本地 closed 不是封口证据。
+	 */
+	async endSource(traceId = this.activeTrace): Promise<"sealed" | "unknown"> {
+		if (!traceId) return "unknown";
 		const source = this.sources.get(traceId);
-		if (!source || source.sealed || source.cancelled) return;
-		source.closed = true;
-		try {
-			const submitted = [...source.segments.entries()]
-				.filter(([, segment]) => segment.state !== "rejected")
-				.map(([index]) => index);
-			if (submitted.length)
-				await this.client.turnEnd(source.id, source.generation, Math.max(...submitted), this.sessionId, this.epoch);
+		if (!source || source.sealed) return "sealed";
+		if (source.cancelled) {
+			// 来源已被取消停止：远端不会再接收新句，封口事实由取消收据支撑。
 			source.sealed = true;
 			source.sealUnconfirmed = false;
+			return "sealed";
+		}
+		source.closed = true;
+		const submitted = [...source.segments.entries()]
+			.filter(([, segment]) => segment.state !== "rejected")
+			.map(([index]) => index);
+		if (!submitted.length) {
+			// 没有任何受理段：远端不存在需要封口的来源，本地关闭即可。
+			source.sealed = true;
+			source.sealUnconfirmed = false;
+			return "sealed";
+		}
+		try {
+			await this.client.turnEnd(source.id, source.generation, Math.max(...submitted), this.sessionId, this.epoch);
+			source.sealed = true;
+			source.sealUnconfirmed = false;
+			return "sealed";
 		} catch (error) {
-			if (!source.cancelled) {
-				source.sealUnconfirmed = true;
-				this.barrierKinds.add("seal");
-				throw error;
+			if (source.cancelled) {
+				// 封口途中来源被停止：取消收据是远端封闭证据。
+				source.sealed = true;
+				source.sealUnconfirmed = false;
+				return "sealed";
 			}
+			source.sealUnconfirmed = true;
+			this.barrierKinds.add("seal");
+			throw error;
 		}
 	}
 	async submitSegment(
@@ -229,17 +260,24 @@ export class TtsVoiceOutputDriver {
 				timeout_ms: this.longTimeoutMs,
 			};
 			const result = signal ? await this.client.speak(payload, signal) : await this.client.speak(payload);
-			if (result.status !== "accepted") {
-				segment.state = "rejected";
-				source.closed = true;
-				outcome = { status: "rejected", task_id: taskId, reason: result.reason ?? "Bridge 返回 " + result.status };
-			} else {
+			if (result.status === "accepted" || result.status === "in_progress" || result.status === "delivered") {
+				// 幂等重放可能返回进行中/已完成的真实状态：按事实合并，不算新拒绝。
+				if (result.status === "delivered") segment.state = "completed";
+				else if (!TERMINAL.has(segment.state)) segment.state = "pending";
 				if (result.generation_id && !source.cancelled) source.generation = result.generation_id;
-				if (!TERMINAL.has(segment.state)) segment.state = "pending";
 				outcome = {
 					status: segment.state === "cancelled" || segment.state === "obsolete" ? "cancelled" : "accepted",
 					task_id: taskId,
 				};
+			} else if (result.status === "failed" || result.status === "cancelled" || result.status === "not_found") {
+				// 重放命中已知终局：按事实收束，不重复合成。
+				segment.state = result.status === "cancelled" ? "cancelled" : result.status === "failed" ? "failed" : "rejected";
+				source.closed = true;
+				outcome = { status: "rejected", task_id: taskId, reason: result.reason ?? "Bridge 返回 " + result.status };
+			} else {
+				segment.state = "rejected";
+				source.closed = true;
+				outcome = { status: "rejected", task_id: taskId, reason: result.reason ?? "Bridge 返回 " + result.status };
 			}
 		} catch (error) {
 			if (TERMINAL.has(segment.state)) {
@@ -550,6 +588,22 @@ export class TtsVoiceOutputDriver {
 			this.epoch = connected.epoch;
 			const subscribed = this.reconnectFeed ? await this.reconnectFeed(signal) : undefined;
 			await this.probe(signal);
+			// 封口未确认：turn-end 幂等，先按同身份重发核对（不重发语音），
+			// 而不是直接 reset 杀掉可能完好播放中的声音；核对失败才走既有 reset。
+			if (this.barrierKinds.has("seal")) {
+				for (const source of [...this.sources.values()]) {
+					if (!source.sealUnconfirmed) continue;
+					signal?.throwIfAborted();
+					try {
+						if ((await this.endSource(source.id)) === "sealed") {
+							source.sealUnconfirmed = false;
+							this.barrierKinds.delete("seal");
+						}
+					} catch {
+						/* 重发仍失败：保留屏障，走既有 reset/recover */
+					}
+				}
+			}
 			if (operation === "reset" || this.deliveryBarrier || operation === "restart") {
 				controlAttempted = true;
 				const reset = await this.client.reset(this.sessionId, this.epoch, undefined, invocationId, remaining(), signal);

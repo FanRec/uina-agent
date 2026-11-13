@@ -89,43 +89,39 @@ def _parse_streaming_config(raw: Any) -> StreamingConfig:
     streaming_raw = raw if isinstance(raw, dict) else {}
     streaming_device_raw = str(streaming_raw.get("device", "")).strip()
     streaming_mirror_device_raw = str(streaming_raw.get("mirror_device", "")).strip()
-    stream_strategy_raw = str(streaming_raw.get("stream_strategy", "adaptive")).strip() or "adaptive"
-    if stream_strategy_raw not in {"adaptive", "fixed_streaming", "fixed_batch"}:
-        raise TTSBridgeConfigError(f"invalid streaming.stream_strategy: {stream_strategy_raw}")
+    if "stream_strategy" in streaming_raw:
+        raise TTSBridgeConfigError(
+            "streaming.stream_strategy has been removed: the bridge runs one continuous streaming path"
+        )
     return StreamingConfig(
         enabled=bool(streaming_raw.get("enabled", True)),
-        stream_strategy=stream_strategy_raw,  # type: ignore[arg-type]
         media_type=str(streaming_raw.get("media_type", "raw")).strip() or "raw",
         sample_rate=int(streaming_raw.get("sample_rate", 32000)),
         vendor_streaming_mode=int(streaming_raw.get("vendor_streaming_mode", 2)),
-        min_chunk_length=int(streaming_raw.get("min_chunk_length", 48)),
-        fragment_interval=float(streaming_raw.get("fragment_interval", 0.10)),
+        min_chunk_length=int(streaming_raw.get("min_chunk_length", 32)),
+        fragment_interval=float(streaming_raw.get("fragment_interval", 0.08)),
         first_chunk_vendor_streaming_mode=(
             int(streaming_raw["first_chunk_vendor_streaming_mode"])
             if "first_chunk_vendor_streaming_mode" in streaming_raw
             else None
         ),
-        first_chunk_min_chunk_length=max(1, int(streaming_raw.get("first_chunk_min_chunk_length", 24))),
-        first_chunk_fragment_interval=max(0.01, float(streaming_raw.get("first_chunk_fragment_interval", 0.05))),
-        first_chunk_prebuffer_ms=max(0, int(streaming_raw.get("first_chunk_prebuffer_ms", 100))),
-        first_chunk_gate_timeout_ms=max(0, int(streaming_raw.get("first_chunk_gate_timeout_ms", 1800))),
+        first_chunk_min_chunk_length=max(1, int(streaming_raw.get("first_chunk_min_chunk_length", 16))),
+        first_chunk_fragment_interval=max(0.01, float(streaming_raw.get("first_chunk_fragment_interval", 0.03))),
         warmup_enabled=bool(streaming_raw.get("warmup_enabled", True)),
         warmup_text=str(streaming_raw.get("warmup_text", "嗯。")).strip() or "嗯。",
         warmup_timeout_ms=max(1000, int(streaming_raw.get("warmup_timeout_ms", 25000))),
         batch_size=int(streaming_raw.get("batch_size", 1)),
-        prebuffer_ms=int(streaming_raw.get("prebuffer_ms", 260)),
-        rebuffer_ms=int(streaming_raw.get("rebuffer_ms", 420)),
-        drain_timeout_ms=int(streaming_raw.get("drain_timeout_ms", 2000)),
+        device_priming_ms=max(0, int(streaming_raw.get("device_priming_ms", 120))),
+        start_prebuffer_ms=max(0, int(streaming_raw.get("start_prebuffer_ms", 300))),
+        buffer_seconds=max(0.5, float(streaming_raw.get("buffer_seconds", 2.0))),
+        idle_close_ms=max(200, int(streaming_raw.get("idle_close_ms", 3000))),
         stream_idle_timeout_ms=max(1000, int(streaming_raw.get("stream_idle_timeout_ms", 60000))),
         stream_total_timeout_ms=max(1000, int(streaming_raw.get("stream_total_timeout_ms", 120000))),
-        synthesis_lock_timeout_ms=max(1000, int(streaming_raw.get("synthesis_lock_timeout_ms", 60000))),
-        max_delivery_task_ms=max(5000, int(streaming_raw.get("max_delivery_task_ms", 60000))),
+        stall_timeout_ms=max(5000, int(streaming_raw.get("stall_timeout_ms", 60000))),
         fallback_to_batch_on_failure=bool(streaming_raw.get("fallback_to_batch_on_failure", True)),
-        adaptive_playback_start_latency_ms=int(streaming_raw.get("adaptive_playback_start_latency_ms", 2000)),
-        adaptive_rebuffer_threshold=int(streaming_raw.get("adaptive_rebuffer_threshold", 2)),
-        adaptive_max_chunk_gap_ms=float(streaming_raw.get("adaptive_max_chunk_gap_ms", 400.0)),
-        adaptive_realtime_factor_threshold=float(streaming_raw.get("adaptive_realtime_factor_threshold", 0.85)),
-        adaptive_batch_recovery_successes=int(streaming_raw.get("adaptive_batch_recovery_successes", 2)),
+        max_source_pending_segments=max(1, int(streaming_raw.get("max_source_pending_segments", 48))),
+        max_source_pending_chars=max(64, int(streaming_raw.get("max_source_pending_chars", 4000))),
+        max_total_pending_segments=max(1, int(streaming_raw.get("max_total_pending_segments", 64))),
         device=streaming_device_raw or None,
         mirror_device=streaming_mirror_device_raw or None,
     )
@@ -137,7 +133,6 @@ def _parse_subtitle_sync_config(raw: Any) -> SubtitleSyncConfig:
         enabled=bool(subtitle_sync_raw.get("enabled", False)),
         obs_base_url=str(subtitle_sync_raw.get("obs_base_url", "http://127.0.0.1:8104")).strip().rstrip("/"),
         progress_interval_ms=int(subtitle_sync_raw.get("progress_interval_ms", 33)),
-        fallback_mode=str(subtitle_sync_raw.get("fallback_mode", "sentence_only")).strip() or "sentence_only",
     )
 
 

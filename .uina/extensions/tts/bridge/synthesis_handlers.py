@@ -1,34 +1,16 @@
-﻿"""synthesis_handlers.py — 合成相关的自包含模块级组件。
+"""synthesis_handlers.py — 请求模型与 vendor 文本处理（无服务实例依赖）。
 
-本模块承载 TTS 合成路径中不依赖 TTSBridgeService 实例状态的纯组件：
-vendor 文本清洗、流式 PCM 队列、延迟/时长估算、请求模型，以及合成相关常量。
-``TTSBridgeService`` 类（含全部方法内逻辑）保留在 service.py；
-这里只搬模块级、无 ``self`` 依赖的定义，语义与原文件逐条等价。
+承载 TTS Bridge 的 HTTP 请求模型、vendor 文本清洗与延迟日志。
+调度、队列、播放状态一律不在这里；它们属于 DeliveryLane/AudioSink/PlaybackFeed。
 """
 from __future__ import annotations
 
 import json
-import threading
 import time
 import unicodedata
-from dataclasses import dataclass
-from pathlib import Path
-from queue import Empty, Full, Queue
 from typing import Any, Literal, Optional
-from uuid import uuid4
 
-import httpx
 from pydantic import BaseModel, Field
-
-from models import BridgeTask, StreamingProfile
-
-
-class StreamingSynthesisError(RuntimeError):
-    def __init__(self, detail: str, *, status_code: int, fallback_allowed: bool) -> None:
-        super().__init__(detail)
-        self.detail = detail
-        self.status_code = status_code
-        self.fallback_allowed = fallback_allowed
 
 
 class GenerateRequest(BaseModel):
@@ -37,115 +19,21 @@ class GenerateRequest(BaseModel):
     timeout_ms: int = Field(default=120000, gt=0, le=2147483647, strict=True)
 
 
-# 流式音频队列无消费空间的停滞阈值。正常背压（播放端短暂慢）在几秒内恢复；
-# 超过该阈值说明播放端已停滞（设备故障等），producer 必须显式失败并释放
-# 合成锁，而不是永久自旋冻结 vendor 推理。失败会明确上报，不静默丢句。
-STREAM_PUT_STALL_TIMEOUT_S = 30.0
-SHORT_SEGMENT_FAST_START_CHAR_LIMIT = 10
-
-
-class _PCMChunkStream:
-    def __init__(self, *, max_chunks: int = 64, on_chunk=None) -> None:
-        self._queue: Queue[bytes | object] = Queue(maxsize=max(max_chunks, 1))
-        self._state_lock = threading.Lock()
-        self._finished = False
-        self._cancelled = False
-        self._on_chunk = on_chunk
-
-    def put(self, chunk: bytes, *, timeout: float | None = None) -> bool:
-        """入队一个音频 chunk。
-
-        队列满时阻塞等待消费端腾出空间（背压 = 合法等待，不丢弃）。
-        ``timeout`` 秒后仍无空间则返回 False，由调用方决定失败上报。
-        """
-        deadline = None if timeout is None else time.perf_counter() + timeout
-        while True:
-            with self._state_lock:
-                if self._finished or self._cancelled:
-                    return False
-            try:
-                self._queue.put(chunk, timeout=0.05)
-                if self._on_chunk is not None:
-                    try:
-                        self._on_chunk(chunk)
-                    except Exception:
-                        pass
-                return True
-            except Full:
-                if deadline is not None and time.perf_counter() >= deadline:
-                    return False
-                continue
-        return False
-
-    def finish(self) -> None:
-        """Mark normal producer completion without discarding queued PCM."""
-        with self._state_lock:
-            self._finished = True
-
-    def cancel(self) -> None:
-        """Abort the stream and discard only the not-yet-consumed PCM."""
-        with self._state_lock:
-            self._cancelled = True
-        while True:
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                return
-
-    def __iter__(self):
-        while True:
-            with self._state_lock:
-                if self._cancelled:
-                    return
-                finished = self._finished
-            try:
-                item = self._queue.get(timeout=0.05)
-            except Empty:
-                if finished:
-                    return
-                continue
-            yield item
-
-
-@dataclass(frozen=True)
-class _AdmittedSpeakTask:
-    task_id: str
-    ref_audio_path: Path
-    timeout_ms: int
-    profile: StreamingProfile
-    use_batch_only: bool
-    admitted_at: float
-
-
 def _latency_ms_since(started_at: float | None) -> float | None:
     if started_at is None:
         return None
     return round((time.perf_counter() - started_at) * 1000, 2)
 
 
-def _log_latency(task: BridgeTask, stage: str, **detail: Any) -> None:
-    started_at = task.detail.get("latency_trace_started_at")
-    elapsed_ms = _latency_ms_since(started_at if isinstance(started_at, float) else None)
+def _log_latency(trace_id: str, task_id: str, stage: str, started_at: float | None = None, **detail: Any) -> None:
     payload = {
-        "trace_id": task.trace_id,
-        "task_id": task.task_id,
-        "generation_id": task.detail.get("generation_id"),
-        "segment_index": task.detail.get("segment_index"),
+        "trace_id": trace_id,
+        "task_id": task_id,
         "stage": stage,
-        "elapsed_ms": elapsed_ms,
-        "traceparent": task.detail.get("traceparent"),
+        "elapsed_ms": _latency_ms_since(started_at),
         **detail,
     }
     print(f"[TTS][latency] {json.dumps(payload, ensure_ascii=False)}", flush=True)
-
-
-def _estimate_stream_duration_ms_static(text: str, *, speed_factor: float) -> int:
-    """静态估算回退：仅用于无法访问实例的场景。"""
-    compact = "".join(ch for ch in text if not ch.isspace())
-    if not compact:
-        return 1000
-    adjusted_speed = max(speed_factor, 0.2)
-    return max(int(len(compact) * 300 / adjusted_speed), 400)
 
 
 def _sanitize_vendor_text(text: str) -> str:
@@ -225,6 +113,26 @@ def _vendor_text_lang_for(text: str) -> str:
     return "zh"
 
 
+def align_original_to_vendor(original: str, vendor: str) -> list[int]:
+    """原文 → vendor 文本的字符映射（vendor 文本是原文清洗后的子序列）。
+
+    返回长度为 len(vendor) 的列表：第 i 个 vendor 字符在原文中的索引。
+    清洗只会删除字符、折叠空白，不会重排，因此双指针即可对齐；
+    对不上的尾部字符统一映射到最后一个匹配位置，保证前缀揭示单调。
+    """
+    mapping: list[int] = []
+    j = 0
+    for i, ch in enumerate(vendor):
+        while j < len(original) and original[j] != ch:
+            j += 1
+        if j >= len(original):
+            mapping.append(mapping[-1] if mapping else 0)
+        else:
+            mapping.append(j)
+            j += 1
+    return mapping
+
+
 class SpeakRequest(BaseModel):
     trace_id: str
     segment_id: str
@@ -250,6 +158,7 @@ class CancelTraceRequest(BaseModel):
     trace_id: str
     session_id: Optional[str] = None
     expected_epoch: Optional[str] = None
+    generation_id: Optional[int] = None
     mode: Literal["immediate", "segment_boundary"] = "immediate"
 
 

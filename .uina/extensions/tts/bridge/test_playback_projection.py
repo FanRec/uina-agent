@@ -11,7 +11,7 @@ def progress(*, started: bool = True, finished: bool = False, played_ms: float =
     return PlaybackProgressSnapshot(
         playback_started=started,
         played_ms=played_ms,
-        played_samples=int(played_ms),
+        played_frames=int(played_ms),
         buffered_ms=20.0,
         segment_finished=finished,
         duration_ms=1000,

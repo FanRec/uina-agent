@@ -56,7 +56,7 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.vendor_port, 9880)
         self.assertEqual(cfg.vendor.api_style, "api_v2")
         self.assertEqual(cfg.preset.prompt_lang, "zh")
-        self.assertEqual(cfg.streaming.stream_strategy, "adaptive")
+        self.assertEqual(cfg.streaming.vendor_streaming_mode, 2)
         self.assertFalse(cfg.subtitle_sync.enabled)
         self.assertFalse(cfg.lipsync_bridge.enabled)
 
@@ -92,7 +92,6 @@ class TestConfigLoading(unittest.TestCase):
 
         [streaming]
         enabled = true
-        stream_strategy = "fixed_streaming"
         media_type = "raw"
         sample_rate = 24000
         vendor_streaming_mode = 1
@@ -104,7 +103,6 @@ class TestConfigLoading(unittest.TestCase):
         enabled = true
         obs_base_url = "http://127.0.0.1:8104/"
         progress_interval_ms = 50
-        fallback_mode = "full"
 
         [lipsync_bridge]
         enabled = true
@@ -128,7 +126,6 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(cfg.vendor.api_style, "custom_api")
         self.assertEqual(cfg.preset.speed_factor, 1.2)
         self.assertEqual(cfg.preset.text_split_method, "cut1")
-        self.assertEqual(cfg.streaming.stream_strategy, "fixed_streaming")
         self.assertEqual(cfg.streaming.sample_rate, 24000)
         self.assertEqual(cfg.streaming.first_chunk_vendor_streaming_mode, 2)
         self.assertEqual(cfg.streaming.device, "cuda:0")
@@ -158,15 +155,15 @@ class TestConfigLoading(unittest.TestCase):
             TTSBridgeConfig.load(config_file)
         self.assertIn("invalid [preset] section", str(ctx.exception))
 
-    def test_invalid_streaming_strategy(self) -> None:
+    def test_removed_stream_strategy_is_rejected(self) -> None:
         toml_content = """
         [streaming]
-        stream_strategy = "invalid_strategy"
+        stream_strategy = "fixed_streaming"
         """
         config_file = self._create_config_file(toml_content)
         with self.assertRaises(TTSBridgeConfigError) as ctx:
             TTSBridgeConfig.load(config_file)
-        self.assertIn("invalid streaming.stream_strategy", str(ctx.exception))
+        self.assertIn("stream_strategy has been removed", str(ctx.exception))
 
     def test_path_helpers(self) -> None:
         repo_root = Path("/root/repo")
