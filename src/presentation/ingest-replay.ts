@@ -141,7 +141,8 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 							{
 								kind: "turn.started",
 								turn,
-								userText: sanitizeExternal(message.content),
+								// 展示正文优先（操作者原始命令），与实时 turn_start 同源。
+								userText: sanitizeExternal(message.displayText ?? message.content),
 								images: message.images,
 							},
 							at,

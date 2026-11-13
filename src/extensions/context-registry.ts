@@ -40,6 +40,8 @@ export function validateContextSource(source: ContextSource): void {
 	if (source.kind === "guidance") {
 		if (typeof source.text !== "string" || !source.text.trim())
 			throw new Error("guidance Source 的 text 不能为空（稳定指引在注册时确定）");
+		if (source.requiresTool !== undefined && (typeof source.requiresTool !== "string" || !source.requiresTool.trim()))
+			throw new Error("guidance Source 的 requiresTool 必须是非空工具名");
 		return;
 	}
 	if (source.kind !== "capability" && source.kind !== "observation")
@@ -84,6 +86,20 @@ export class ContextSourceRegistry {
 						return;
 					}
 					if (entry.source.kind === "guidance") {
+						// requiresTool 条件：本次请求声明的工具不含该名称时省略（普通省略
+						// 诊断）。保证 Guidance 与同一次最终请求的工具声明一致。
+						if (
+							entry.source.requiresTool !== undefined &&
+							!(input.availableToolNames ?? []).includes(entry.source.requiresTool)
+						) {
+							omitted.push({
+								...traceBase,
+								kind: "guidance",
+								status: "empty",
+								reason: `requiresTool 未在本次工具声明中: ${entry.source.requiresTool}`,
+							});
+							return;
+						}
 						// guidance 是注册时确定的同步文本：活性已在入口核过，直接给出。
 						// 文件式注册的编译元数据随贡献透传（诊断对账用，不参与装配语义）。
 						contributions.push({

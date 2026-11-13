@@ -105,7 +105,13 @@ export interface QueuedMessage {
 	id: string;
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
+	/** 模型真正接收的正文（Canonical User Message 的 content）。 */
 	text: string;
+	/**
+	 * 操作者原始命令（展示域可选字段）：终端、远端、回放与 turn_start 展示取它
+	 * （缺省回退 text），Provider 投影绝不携带——模型上下文始终只有 text。
+	 */
+	displayText?: string;
 	images?: ImageContent[];
 	source?: InputSource;
 	receivedAt?: string;
@@ -191,6 +197,8 @@ export interface UserAgentMessage {
 	id?: string;
 	role: "user";
 	content: string;
+	/** 展示域可选字段（操作者原始命令等）；convertToLlm 只投影 content，绝不携带。 */
+	displayText?: string;
 	images?: ImageContent[];
 	timestamp?: string;
 }
@@ -395,6 +403,12 @@ export type ContextSourceKind = "guidance" | "capability" | "observation";
 export interface ContextRead {
 	readonly modelKey: string;
 	readonly signal: AbortSignal;
+	/**
+	 * 本次最终请求声明的语义工具名（RequestProjection.tools，Provider Wire 转换前）。
+	 * 固定 Guidance Source 据此声明条件可用性（requiresTool）；调用方传真实最终名单，
+	 * 不引入对任何具体扩展的判断。
+	 */
+	readonly availableToolNames?: readonly string[];
 }
 
 /** 动态 Source 的单次只读快照值。 */
@@ -431,6 +445,12 @@ export type ContextSource =
 			readonly id: string;
 			readonly kind: "guidance";
 			readonly text: string;
+			/**
+			 * 条件可用性：本次请求声明的工具不含该名称时，Registry 省略此 Source
+			 * （普通省略诊断）。用于 Guidance 与同一请求的工具声明保持一致——
+			 * 依赖某工具的指引只在该工具真实可见的请求中出现。
+			 */
+			readonly requiresTool?: string;
 			/** 文件式注册时由 Runner 附加的编译元数据；内联注册没有。 */
 			readonly prompt?: PromptCompileMeta;
 	  }

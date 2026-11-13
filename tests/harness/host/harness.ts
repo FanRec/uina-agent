@@ -1,5 +1,6 @@
 import type { AgentInput } from "../../../src/agent/loop.js";
 import type { AgentMessage, ChatMsg, Model } from "../../../src/core/types.js";
+import { join } from "node:path";
 import { UinaHost } from "../../../src/host/host.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 
@@ -65,6 +66,9 @@ export class UinaTestHarness {
 		const host = await UinaHost.create({
 			cwd: env.cwd,
 			sessionPath: env.sessionPath,
+			// Skill 来源密封：测试只见隔离环境的 workspace 来源，不继承本机全局目录
+			//（宿主测试可用 hostOptions.skillSources 覆写）。
+			skillSources: [{ ownerId: "workspace", directory: join(env.cwd, ".uina", "skills"), priority: 0 }],
 			...(options.useConfig ? {} : { model: scenario.model }),
 			stream: (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal),
 			...options.hostOptions,
@@ -117,6 +121,7 @@ export class UinaTestHarness {
 		const newHost = await UinaHost.create({
 			cwd: this.env.cwd,
 			sessionPath: this.env.sessionPath,
+			skillSources: [{ ownerId: "workspace", directory: join(this.env.cwd, ".uina", "skills"), priority: 0 }],
 			model: this.scenario.model,
 			stream: (m, req, onDelta, signal) => this.scenario.stream(m, req, onDelta, signal),
 			...this.options.hostOptions,

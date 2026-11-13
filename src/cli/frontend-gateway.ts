@@ -211,6 +211,15 @@ export class FrontendGatewayCore {
 					}
 					this.host.cycleThinkingLevel();
 					return;
+				case "skill.invoke":
+					// 唯一开放的远端命令类意图：结构化 Skill 调用，经 Host 与 /skill 命令
+					// 同一展开函数处理；不开放任意斜杠命令。错误回执带 Skill 名称。
+					if (intent.arguments.length > MAX_TEXT_LENGTH) {
+						this.reject(client, `Skill 参数超过 ${MAX_TEXT_LENGTH} 字符上限`);
+						return;
+					}
+					await this.host.submitSkillInvocation(intent.name, intent.arguments, intent.mode, source);
+					return;
 				case "ui.interaction":
 					return;
 			}

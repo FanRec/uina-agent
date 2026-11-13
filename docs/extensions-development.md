@@ -6,7 +6,7 @@
 
 - 自动入口：Host.cwd 下 .uina/extensions/ 的脚本或一级目录入口。
 - 目录使用 index.ts/js/mts/mjs，或 package.json 的 uina.extensions 数组声明脚本入口。
-- 显式入口：pnpm start -e examples/extensions/skills；-e/--extension 可重复。
+- 显式入口：-e/--extension 指定额外文件/目录，可重复。
 - 内置能力：组合层调用 ExtensionRunner.activateBuiltin，与项目扩展共用注册生命周期。
 
 脚本支持 ts/mts/cts/js/mjs/cjs。源码与构建后的 CLI 都通过 jiti 加载扩展；项目扩展无需先纳入 Uina 的构建。相对资源路径应基于 api.cwd 或 api.path，不假设进程工作目录与嵌入 Host 相同。
@@ -112,7 +112,7 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 嵌入 Host 缺少模型、Provider、消息或输入端口时，相应操作明确失败。标准 Host 已接入；不能把一次 API 调用当成未接线能力的成功证据。
 
-[workspace-tools](../src/extensions/workspace-tools/index.ts) 与 [skills](../examples/extensions/skills/index.ts) 展示文件、图片、服务、工具、上下文和 renderer 的组合。检查入口、实际 cwd、default export、重名、失效 API，再检查依赖与外部错误。真实 Provider 验收使用临时数据，不属于普通离线测试。
+[workspace-tools](../src/extensions/workspace-tools/index.ts) 与 [skills](../src/extensions/skills/index.ts)（官方内置 Skill 能力）展示文件、图片、服务、工具、上下文和 renderer 的组合。检查入口、实际 cwd、default export、重名、失效 API，再检查依赖与外部错误。真实 Provider 验收使用临时数据，不属于普通离线测试。
 
 ## 默认文件与图片工具
 

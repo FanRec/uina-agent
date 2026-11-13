@@ -30,6 +30,9 @@ export function routePresentationIntent(intent: PresentationIntent, actions: Pre
 		case "thinking.cycle":
 			actions.cycleThinkingLevel();
 			return;
+		case "skill.invoke":
+			// 本地 surface 直接使用 /skill 命令；该意图只为多前端网关定义。
+			return;
 		default: {
 			const exhaustive: never = intent;
 			return exhaustive;

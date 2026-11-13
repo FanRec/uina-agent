@@ -927,7 +927,8 @@ export class TranscriptContainer implements Component {
 			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
-				current = createTurn(consumeTurnNumber(), msg.content);
+				// 恢复展示取展示正文（操作者原始命令），与实时 turn_start 同源。
+				current = createTurn(consumeTurnNumber(), msg.displayText ?? msg.content);
 				current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
 				current ??= createTurn(lastTurnNumber);

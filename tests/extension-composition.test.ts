@@ -5,8 +5,8 @@ import { estimateRequestTokens } from "../src/agent/context.js";
 import { parseArgs } from "../src/cli/args.js";
 import type { ContextSnapshot, Model, ModelStreamFn } from "../src/core/types.js";
 import activateCompaction from "../src/extensions/compaction/index.js";
+import { createSkillsCapability } from "../src/extensions/skills/index.js";
 import { createPrintUI, type ExtensionAPI, ExtensionRunner } from "../src/extensions/runner.js";
-import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { type Tool, ToolBroker } from "../src/tools/broker.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import {
@@ -589,38 +589,50 @@ describe("compaction capability event contract", () => {
 	});
 });
 
-it("skills and filesystem extensions compose through services and the existing tool execution pipeline", async () => {
+it("builtin skills compose through the existing tool execution pipeline; source loss withdraws tool and catalog", async () => {
 	const cwd = await temp();
-	await mkdir(join(cwd, ".uina/skills"), { recursive: true });
-	await writeFile(join(cwd, ".uina/skills/example.md"), "Example skill instructions");
-	const tools = new ToolBroker({ ownerId: "root" });
-	const host = runner(cwd, {
-		tools,
-		extensionPaths: [join(process.cwd(), "examples/extensions/skills")],
-	});
-	await host.activateBuiltin("workspace-tools", activateWorkspaceTools);
-	const consumer = await activate(host, "consumer");
-	const undoRead = consumer.registerTool(
-		{ ...echo("replacement"), def: { ...echo("").def, function: { ...echo("").def.function, name: "read_file" } } },
-		{ replace: true },
+	// 标准目录式 Skill（旧 *.md 平铺格式已清算）。
+	const skillDir = join(cwd, ".uina/skills/example");
+	await mkdir(skillDir, { recursive: true });
+	await writeFile(
+		join(skillDir, "SKILL.md"),
+		["---", "name: example", "description: 用于验证组合的示例 Skill。", "---", "", "Example skill instructions"].join(
+			"\n",
+		),
+		"utf8",
 	);
-	expect((await consumer.callTool("read_file", { text: "x" })).result).toBe("replacement");
-	undoRead();
-	await host.load();
-	expect(host.diagnostics().filter((e) => e.status === "failed")).toEqual([]);
-	expect(await consumer.callService("skills.discover/v1", null)).toMatchObject([{ name: "example" }]);
-	expect(await consumer.callTool("read_skill", { name: "example" })).toMatchObject({
-		status: "succeeded",
-		result: "Example skill instructions",
+	const tools = new ToolBroker({ ownerId: "root" });
+	const host = runner(cwd, { tools });
+	const skills = createSkillsCapability();
+	await host.activateBuiltin("skills", skills.activate);
+	const consumer = await activate(host, "consumer");
+	await skills.refresh([{ ownerId: "workspace", directory: join(cwd, ".uina/skills"), priority: 0 }]);
+
+	// read_skill 走既有 Broker 流水线：普通工具结果，正文来自发现时缓存。
+	const read = await consumer.callTool("read_skill", { name: "example" });
+	expect(read).toMatchObject({ status: "succeeded" });
+	expect(read.result as string).toContain("Example skill instructions");
+	expect(read.result as string).toContain("revision");
+
+	// Catalog 是 requiresTool 条件 Guidance：工具真实声明时才贡献。
+	const collection = await host.runtimeHooks().context.collect({
+		modelKey: "m",
+		signal: new AbortController().signal,
+		availableToolNames: ["read_skill"],
 	});
-	const collection = await host.runtimeHooks().context.collect({ modelKey: "m", signal: new AbortController().signal });
-	expect(collection.contributions.some((c) => (c.value as { text: string }).text.includes("Available skills"))).toBe(
+	expect(collection.contributions.some((c) => (c.value as { text: string }).text.includes("<available_skills>"))).toBe(
 		true,
 	);
-	await host.reload();
-	expect(await consumer.callTool("read_skill", { name: "example" })).toMatchObject({
-		result: "Example skill instructions",
-	});
+	const withoutTool = await host
+		.runtimeHooks()
+		.context.collect({ modelKey: "m", signal: new AbortController().signal });
+	expect(withoutTool.contributions.some((c) => (c.value as { text: string }).text.includes("<available_skills>"))).toBe(
+		false,
+	);
+
+	// 来源清空后一次性撤下工具与目录：不留幽灵能力（Broker 对已撤工具返回 not_started）。
+	await skills.refresh([]);
+	const gone = await consumer.callTool("read_skill", { name: "example" });
+	expect(gone.status).toBe("not_started");
 	await host.disposeProjects();
-	await expect(consumer.callService("skills.discover/v1", null)).rejects.toThrow("不可用");
 });

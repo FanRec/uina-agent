@@ -365,6 +365,7 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 				order: data.order as number,
 				mode: data.mode as "steer" | "followUp",
 				text: data.text as string,
+				...(typeof data.displayText === "string" ? { displayText: data.displayText } : {}),
 				...(validImages(data.images) && data.images ? { images: data.images } : {}),
 				...(isInputSource(data.source) ? { source: data.source } : {}),
 				...(data.data !== undefined ? { data: data.data } : {}),
@@ -694,6 +695,7 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 		input: provenance,
 		id: input.id,
 		content: input.text,
+		...(typeof input.displayText === "string" && input.displayText ? { displayText: input.displayText } : {}),
 		images: input.images,
 	};
 }
@@ -845,6 +847,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 			(input.order as number) > 0 &&
 			(input.mode === "steer" || input.mode === "followUp") &&
 			typeof input.text === "string" &&
+			(input.displayText === undefined || typeof input.displayText === "string") &&
 			validImages(input.images) &&
 			validDeliveryMetadata(input) &&
 			(input.source === undefined || isInputSource(input.source)) &&

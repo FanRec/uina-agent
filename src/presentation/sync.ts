@@ -132,6 +132,13 @@ export function parseIntent(value: unknown): PresentationIntent | undefined {
 			return { type: "thinking.cycle" };
 		case "ui.interaction":
 			return { type: "ui.interaction" };
+		case "skill.invoke":
+			return typeof value.name === "string" &&
+				value.name.trim().length > 0 &&
+				typeof value.arguments === "string" &&
+				(value.mode === "direct" || value.mode === "steer" || value.mode === "followUp")
+				? { type: "skill.invoke", name: value.name, arguments: value.arguments, mode: value.mode }
+				: undefined;
 		default:
 			return undefined;
 	}

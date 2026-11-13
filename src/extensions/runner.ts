@@ -421,6 +421,21 @@ export class ExtensionRunner extends ExtensionHost {
 		return [...active, ...failed];
 	}
 
+	/**
+	 * 当前有效的扩展资源根（Skill 来源装配等 Host 查询用）：仅返回成功激活、
+	 * 仍有效且拥有资源根的扩展；多入口共享根按真实路径去重（先激活者持有身份）。
+	 * 单文件 Extension 没有资源根，不猜其目录。
+	 */
+	activeResourceRoots(): readonly { ownerId: string; root: string }[] {
+		const byRoot = new Map<string, string>();
+		for (const [id, scope] of this.extensions) {
+			const root = this.resourceRoots.get(id);
+			if (root === undefined || !scope.active || byRoot.has(root)) continue;
+			byRoot.set(root, id);
+		}
+		return [...byRoot].map(([root, ownerId]) => ({ ownerId, root }));
+	}
+
 	/** Produces a dispatch view over this one Host; it never creates another owner.
 	 * 所有出口统一过 guard（clone+freeze 单点）：Subject 与 runToolDirect/callTool
 	 * 旁路同权，host.run* 由此敢假设输入只读；guard 幂等，重复包装零成本。 */

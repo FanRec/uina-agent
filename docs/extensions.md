@@ -113,10 +113,10 @@ Markdown transformer 只处理 user/assistant 显示文本，带角色、流式�
 没有照搬 resources_discover hook。Pi 该事件服务于已有 skill/prompt/theme loader；Uina 先用程序服务证明资源发现与消费，再决定是否需要公共资源层。
 
 - [workspace-tools](../src/extensions/workspace-tools/index.ts)：默认内置文件读写、图片读取、文件 renderer；Host `workspaceTools: false` 可禁用，公开 replace 注册可替换。
-- [skills](../examples/extensions/skills/index.ts)：skills.discover/v1、上下文目录与 read_skill；后者调用 workspace-tools 的 read_file。
+- [skills](../src/extensions/skills/index.ts)：官方内置 Skill 能力（目录式 SKILL.md 发现、read_skill 渐进读取、单一 Catalog Guidance 与 /skill 手动调用）。
 - [custom-compaction](../examples/extensions/custom-compaction/index.ts)：经 registerHistoryView 提供确定性折叠策略（History View 接缝示例）。
 
-技能示例展示组合合同，不声称实现完整 Pi skill 元数据规范。目录来源、技能选择和提示词属于扩展；文件工具没有下沉到 Core。
+Skill 是官方内置扩展：目录来源与优先级由 Host 装配，快照与读取归 `src/extensions/skills/`；不实现 `context: fork` 等执行型 Frontmatter，`allowed-tools` 仅保留诊断、不授予权限。
 
 ## 验证边界
 

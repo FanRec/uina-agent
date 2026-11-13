@@ -74,6 +74,10 @@ export function clampThinkingLevel(requested: ThinkingLevel, available?: readonl
 export interface QueueInputOptions {
 	mode?: DeliveryMode;
 	source?: import("../core/types.js").InputSource;
+	/** 展示域正文（操作者原始命令）；缺省回退 text，不进 Provider 投影。 */
+	displayText?: string;
+	/** 机器可读上下文（沿输入记录持久化）。 */
+	data?: unknown;
 }
 
 /**
@@ -121,10 +125,17 @@ export interface AgentInput {
 	mode: "steer" | "followUp";
 	source: import("../core/types.js").InputSource;
 	receivedAt?: string;
+	/** 模型真正接收的正文（展开后的最终内容）。 */
 	text?: string;
+	/**
+	 * 操作者原始命令（展示域）：终端、远端、回放与 turn_start 展示取它（缺省回退
+	 * text）。沿 AgentInput → QueuedInput → Session Input Record → projectInputMessage
+	 * 传递并持久化；convertToLlm 只投影 text，绝不把 displayText 再插入 Provider 请求。
+	 */
+	displayText?: string;
 	images?: import("../core/content.js").ImageContent[];
 	data?: unknown;
-	/** Runtime-only deferred body. It is evaluated immediately before queue commit and never journaled. */
+	/** Runtime-only deferred body. It is evaluated immediately before queue commit and is never journaled. */
 	render?: () => string | null | Promise<string | null>;
 }
 
@@ -777,7 +788,11 @@ export class Subject {
 		// direct 空闲即开跑；忙时升级为 steer；空闲但已有队列时随队保序。
 		const requestedMode = options.mode ?? (busy ? "steer" : "direct");
 		const mode = requestedMode === "direct" ? (busy ? "steer" : "followUp") : requestedMode;
-		const queued = this.queues.create(normalized, mode, { source: options.source });
+		const queued = this.queues.create(normalized, mode, {
+			source: options.source,
+			...(options.displayText !== undefined ? { displayText: options.displayText } : {}),
+			...(options.data !== undefined ? { data: options.data } : {}),
+		});
 		// 直启必须同步占住 activeRun：调用方是 `void pushInput(); waitForIdle()`，
 		// 中间夹一次 await 会让 waitForIdle 扑空、把这一轮当成已经结束。
 		if (requestedMode === "direct" && !busy && this.queues.size === 0)
@@ -815,6 +830,7 @@ export class Subject {
 			...this.queues.create((input.text ?? "").trim(), input.mode, {
 				source: input.source,
 				...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
+				...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
 				data: input.data,
 				images: input.images,
 			}),
@@ -1198,7 +1214,8 @@ export class Subject {
 			await this.dispatch({
 				type: "turn_start",
 				turnNumber: currentTurn,
-				userText: text ?? "",
+				// 展示正文优先（操作者原始命令）；模型上下文始终是展开后的真实正文。
+				userText: queuedInputs[0]?.displayText ?? text ?? "",
 				inputRefs: queuedInputs.map((item) => item.id),
 				images: queuedInput?.images,
 			});
@@ -1549,6 +1566,9 @@ export class Subject {
 		const collection = await this.runtimeHooks.context.collect({
 			modelKey: modelKey(model),
 			signal: signal ?? new AbortController().signal,
+			// 本次最终请求声明的语义工具名（工具收口在第 3 步已完成）：固定 Guidance
+			// Source 的 requiresTool 条件据此判断；不取静态 Broker 名单。
+			availableToolNames: tools.map((tool) => tool.function.name),
 		});
 		const composed = composeContextSources({ projection: base, collection });
 		return { projection: composed.projection, assembly: composed.assembly, history: visibleHistory };
@@ -1721,7 +1741,7 @@ export class Subject {
 					await this.dispatch({
 						type: "turn_start",
 						turnNumber: nextTurn,
-						userText: item.text,
+						userText: item.displayText ?? item.text,
 						inputRefs: [item.id],
 						images: item.images,
 					});

@@ -571,6 +571,13 @@ export interface PendingQueueOptions {
 export interface PendingQueueItem {
 	readonly mode: "steer" | "followUp";
 	readonly text: string;
+	/** 操作者原始命令（展示正文）；缺省回退 text。 */
+	readonly displayText?: string;
+}
+
+/** 队列卡片展示的正文：操作者看到的原始命令，不是模型展开正文。 */
+function queueDisplayText(item: PendingQueueItem): string {
+	return (item.displayText ?? item.text).replace(/[\r\n]+/g, " ").trim();
 }
 
 export class PendingQueueComponent {
@@ -605,7 +612,7 @@ export class PendingQueueComponent {
 			lines.push(`  ${C.suggestion}◆ (Steer)${C.reset} ${C.inactive}· 下一步送达${steerSuffix}${C.reset}`);
 			for (const item of steerItems) {
 				if (renderedCount >= this.maxVisible) break;
-				const cleanText = item.text.replace(/[\r\n]+/g, " ").trim();
+				const cleanText = queueDisplayText(item);
 				const truncated = fitLine(cleanText, maxContentW);
 				lines.push(`    ${C.subtle}↳${C.reset} ${C.text}${truncated}${C.reset}`);
 				renderedCount++;
@@ -618,7 +625,7 @@ export class PendingQueueComponent {
 			lines.push(`  ${C.inactive}◇ (Follow-up)${C.reset} ${C.inactive}· 本轮结束后送达${countSuffix}${C.reset}`);
 			for (const item of followUpItems) {
 				if (renderedCount >= this.maxVisible) break;
-				const cleanText = item.text.replace(/[\r\n]+/g, " ").trim();
+				const cleanText = queueDisplayText(item);
 				const truncated = fitLine(cleanText, maxContentW);
 				lines.push(`    ${C.subtle}↳${C.reset} ${C.text}${truncated}${C.reset}`);
 				renderedCount++;

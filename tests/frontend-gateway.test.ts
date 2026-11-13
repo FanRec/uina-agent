@@ -15,13 +15,14 @@ import type { SessionEntry } from "../src/session/types.js";
 
 interface FakeHostCalls {
 	submitText: Array<{ text: string; mode: string; source: unknown }>;
+	skillInvocations: Array<{ name: string; args: string; mode: string; source: unknown }>;
 	interrupts: number;
 	cycles: number;
 }
 
 function createFakeHost(entries: readonly SessionEntry[] = []) {
 	const listeners = new Set<(record: HostEventRecord) => void>();
-	const calls: FakeHostCalls = { submitText: [], interrupts: 0, cycles: 0 };
+	const calls: FakeHostCalls = { submitText: [], skillInvocations: [], interrupts: 0, cycles: 0 };
 	const state = { busy: false };
 	const snapshot = { modelName: "test-model", busy: false, queue: [], queueDepth: 0 };
 	const host = {
@@ -35,6 +36,9 @@ function createFakeHost(entries: readonly SessionEntry[] = []) {
 		isBusy: () => state.busy,
 		submitText: async (text: string, mode: string, source: unknown) => {
 			calls.submitText.push({ text, mode, source });
+		},
+		submitSkillInvocation: async (name: string, args: string, mode: string, source: unknown) => {
+			calls.skillInvocations.push({ name, args, mode, source });
 		},
 		pushInput: async () => {},
 		interrupt: () => {
@@ -211,6 +215,48 @@ describe("FrontendGatewayCore：意图路径", () => {
 			kind: "error",
 			message: "远程端暂不支持队列撤回，请在本机终端操作",
 		});
+	});
+
+	it("skill.invoke：唯一开放的远端命令类意图，携带网关归属经同一展开函数", async () => {
+		const { host, calls } = createFakeHost();
+		const core = new FrontendGatewayCore(host, "secret");
+		const client = createClient(core);
+		client.send(hello());
+
+		client.send({
+			v: SYNC_PROTOCOL_VERSION,
+			kind: "intent",
+			intent: { type: "skill.invoke", name: "minecraft-building", arguments: " 建造木屋 ", mode: "steer" },
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(calls.skillInvocations).toHaveLength(1);
+		const forwarded = calls.skillInvocations[0]!;
+		// 参数保真：不 trim、不重排，展开归 Host 的同一函数
+		expect(forwarded.name).toBe("minecraft-building");
+		expect(forwarded.args).toBe(" 建造木屋 ");
+		expect(forwarded.mode).toBe("steer");
+		expect((forwarded.source as { channel: string }).channel).toMatch(/^gateway:[0-9a-f-]+$/);
+
+		// 未知 Skill：错误回执带名称
+		const failing = {
+			...host,
+			submitSkillInvocation: async () => {
+				throw new Error("未知 Skill: ghost");
+			},
+		} as unknown as UinaHost;
+		const failingCore = new FrontendGatewayCore(failing, "secret");
+		const failingClient = createClient(failingCore);
+		failingClient.send(hello());
+		failingClient.send({
+			v: SYNC_PROTOCOL_VERSION,
+			kind: "intent",
+			intent: { type: "skill.invoke", name: "ghost", arguments: "", mode: "direct" },
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(failingClient.received.at(-1)).toMatchObject({ kind: "error" });
+		expect((failingClient.received.at(-1) as { message: string }).message).toContain("ghost");
 	});
 
 	it("回溯整段重建并对已接入客户端就地推新快照（客户端幂等 restore）", () => {

@@ -430,7 +430,11 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			return;
 		}
 		if (text.startsWith("/")) {
-			void host.commands.dispatch(text);
+			// 所有本地入口（TUI/stdin/print）共用同一命令展开：Host 的操作者命令入口
+			// 等装配收口、转成真实输入；未知命令与失败明确显示，不落成普通 Prompt。
+			void host.submitOperatorCommand(text).catch((error: unknown) => {
+				writeCommandOutput(`[命令错误] ${errorMessage(error)}`);
+			});
 			return;
 		}
 		if (text.startsWith("!")) {
@@ -445,9 +449,17 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				});
 			return;
 		}
-		void host.submitText(text, mode).catch((error: unknown) => {
+		void submitOperatorLine(text, mode).catch((error: unknown) => {
 			process.stderr.write(`[输入提交失败] ${String(error)}\n`);
 		});
+	};
+
+	/** 普通文本与命令的统一提交（TUI/stdin/print/初始 Prompt 共用；/stop 与 !exec 是 TUI 行专属）。 */
+	const submitOperatorLine = async (raw: string, mode: "steer" | "followUp" | "direct"): Promise<void> => {
+		const text = raw.trim();
+		if (!text) return;
+		if (text.startsWith("/")) return host.submitOperatorCommand(text, mode);
+		return host.submitText(text, mode);
 	};
 
 	// —— 消费者接入 ——
@@ -522,7 +534,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const runPrintPhase = async (): Promise<void> => {
 		if (initialPrompt !== undefined) {
-			await host.submitText(initialPrompt, "direct").catch((error: unknown) => {
+			await submitOperatorLine(initialPrompt, "direct").catch((error: unknown) => {
 				process.stderr.write(`[执行失败] ${String(error)}\n`);
 				hadError = true;
 			});
@@ -533,7 +545,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 	const submitInitialPromptInteractive = (prompt: string): void => {
 		// 交互模式下带有初始 prompt：自动提交首条任务，执行后停留在 TUI
-		void host.submitText(prompt, "direct").catch((error: unknown) => {
+		void submitOperatorLine(prompt, "direct").catch((error: unknown) => {
 			process.stderr.write(`[初始任务提交失败] ${String(error)}\n`);
 		});
 	};

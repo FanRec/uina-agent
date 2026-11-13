@@ -49,6 +49,23 @@ export type MessageRenderer<T = unknown> = (
 	options: MessageRenderOptions,
 ) => Component | undefined;
 
+/**
+ * 命令处理器可返回的结构化结果：Router 不直接给 Subject 发消息，宿主把
+ * `{ kind: "agent-input", ... }` 转成一条真实操作者输入。
+ *
+ * - `text`：模型真正接收的展开正文（进 Canonical User Message 的 content）；
+ * - `displayText`：操作者原始命令（终端、远端、回放展示；缺省回退 text），
+ *   不进 Provider 请求；
+ * - `data`：机器可读上下文（沿输入记录持久化，不替代展示字段）。
+ */
+export interface CommandAgentInput {
+	text: string;
+	displayText?: string;
+	data?: unknown;
+}
+
+export type CommandResult = { kind: "agent-input" } & CommandAgentInput;
+
 /** 斜杠命令定义 */
 export interface LocalCommand {
 	name: string;
@@ -57,7 +74,7 @@ export interface LocalCommand {
 	argumentHint?: string;
 	tag?: string;
 	hasArgs?: boolean;
-	handler?: (args: string) => void | Promise<void>;
+	handler?: (args: string) => void | Promise<void> | CommandResult | Promise<CommandResult>;
 }
 
 export interface PromptOptions {

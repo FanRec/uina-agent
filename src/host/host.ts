@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { type AgentInput, Subject } from "../agent/loop.js";
 import type { ProjectionPolicy } from "../agent/projection.js";
 import type { QueuedMessage } from "../agent/queue.js";
@@ -6,7 +9,7 @@ import { activeProvider, loadConfig } from "../ai/config.js";
 import { ModelRegistry, modelKey } from "../ai/providers.js";
 import { loadSettings, saveSettings } from "../ai/settings.js";
 import { errorMessage } from "../core/errors.js";
-import type { Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
+import type { InputSource, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import { CommandRouter } from "../extensions/commands.js";
 import activateCompaction from "../extensions/compaction/index.js";
@@ -14,6 +17,9 @@ import { createEventFrameProfile } from "../extensions/event-frames/index.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { activateRuntimeTools } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
+import { agentsSkillAncestors } from "../extensions/skills/loader.js";
+import { createSkillsCapability } from "../extensions/skills/index.js";
+import type { SkillSource } from "../extensions/skills/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { activateWorldFramework } from "../extensions/world-framework/index.js";
@@ -41,6 +47,16 @@ export interface UinaHostOptions {
 	extensionPaths?: readonly string[];
 	/** Disable default filesystem capabilities when the host supplies its own assembly. */
 	workspaceTools?: boolean;
+	/**
+	 * Host 显式指定的 Skill 根（最高优先级来源）：按声明顺序，先声明者优先。
+	 * 缺省走默认来源装配（工作区/近层 .agents/Profile/用户全局/活跃扩展）。
+	 */
+	skillRoots?: readonly string[];
+	/**
+	 * Skill 来源完整覆写：提供时替换默认来源装配（嵌入方/测试完全掌控来源集合，
+	 * 不继承本机全局目录）。priority 语义与默认装配一致：数值越小越优先。
+	 */
+	skillSources?: readonly SkillSource[];
 	/** 会话 journal 路径。省略时使用内存 store（测试与嵌入场景）。 */
 	sessionPath?: string;
 	/** 注入 provider（测试与嵌入）。省略时按 ~/.uina/auth.json 创建。 */
@@ -74,7 +90,8 @@ export class UinaHost {
 	private readonly dispatch: (event: HostEvent) => void;
 	private stopPromise?: Promise<void>;
 	private readonly directRuns = new Map<AbortController, Promise<ToolExecutionResult>>();
-	private reloading = 0;
+	/** Skill 官方内置能力：来源装配、刷新与显式调用展开的唯一所有者。 */
+	private readonly skills = createSkillsCapability();
 	/** 消费者自定义关闭流程（start 时接入；pi.shutdown 与 /quit 经此关闭）。 */
 	private requestShutdown?: () => Promise<void>;
 
@@ -96,8 +113,8 @@ export class UinaHost {
 		listeners: Set<HostEventListener>,
 		recordListeners: Set<HostEventRecordListener>,
 		dispatch: (event: HostEvent) => void,
-		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
-		private readonly state: { stopping: boolean },
+		/** 共享的运行标志：关闭与重载准入门，钩子与扩展输入入口据此拒绝跨界的新工作。 */
+		private readonly state: { stopping: boolean; reloading: number },
 	) {
 		this.listeners = listeners;
 		this.recordListeners = recordListeners;
@@ -182,7 +199,7 @@ export class UinaHost {
 			// 这些对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
 			const listeners = new Set<HostEventListener>();
 			const recordListeners = new Set<HostEventRecordListener>();
-			const state = { stopping: false };
+			const state = { stopping: false, reloading: 0 };
 			const emit = (event: HostEvent): void => {
 				// 记录在派发点生成一次：所有监听者看到同一个 `at`，消费者不得自行再记时刻。
 				const record = { at: Date.now(), event } as const;
@@ -264,10 +281,17 @@ export class UinaHost {
 				shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
 				tools,
 				delivery: (namespace) => subject.delivery(namespace),
-				onInput: (input, owner) =>
-					state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input, owner),
-				onInputs: (inputs, owner) =>
-					state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.acceptBatch(inputs, owner),
+				onInput: (input, owner) => {
+					if (state.stopping) return Promise.reject(new Error("宿主正在关闭"));
+					// 重载准入门覆盖扩展输入入口：资源替换边界期间不放入新的 Agent 回合。
+					if (state.reloading > 0) return Promise.reject(new Error("扩展正在重载，请稍后重试"));
+					return subject.accept(input, owner);
+				},
+				onInputs: (inputs, owner) => {
+					if (state.stopping) return Promise.reject(new Error("宿主正在关闭"));
+					if (state.reloading > 0) return Promise.reject(new Error("扩展正在重载，请稍后重试"));
+					return subject.acceptBatch(inputs, owner);
+				},
 				onError: (text) => emit({ type: "error", text }),
 				onNotice: (text) => emit({ type: "notice", text }),
 				onProvider: (name, registered, options) => models.register(name, registered, options),
@@ -312,7 +336,7 @@ export class UinaHost {
 				// 主体词汇表不收它，只在此处产生。
 				emit(event);
 			});
-			const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
+			const commands = new CommandRouter(extensionHost.registry);
 
 			subject.addHistory(subject.projection.projectHistory(restoredEntries, store.state));
 			if (restoredQueue.length > 0) subject.seedQueue(restoredQueue);
@@ -367,13 +391,15 @@ export class UinaHost {
 	}
 
 	async send(input: AgentInput): Promise<void> {
+		// 装配未收口时排队等待：直接投递的输入也必须等系统提示词完整后再开跑。
+		await this.startCompletion;
 		this.assertAccepting();
 		return this.subject.accept(input);
 	}
 
 	private assertAccepting(): void {
 		if (this.state.stopping) throw new Error("宿主正在关闭");
-		if (this.reloading) throw new Error("扩展正在重载，请稍后重试");
+		if (this.state.reloading > 0) throw new Error("扩展正在重载，请稍后重试");
 	}
 
 	/** 人工恢复入口：只请求当前 session 的 TTS reset，不重播旧台词、不修改偏好。 */
@@ -426,6 +452,58 @@ export class UinaHost {
 		await this.startCompletion;
 		this.assertAccepting();
 		return this.subject.pushInput(text, { mode });
+	}
+
+	/**
+	 * 操作者命令入口（TUI/stdin/print 与网关共用）：等待装配收口、执行命令、
+	 * 把 handler 返回的 agent-input 结果转成一条真实操作者输入（经 Host.send 同一
+	 * 路径 → Subject.accept）。Router 不直接给 Subject 发消息；未知命令与 handler
+	 * 异常以 throw 表达——本地消费者显示、网关返回拒绝，不静默吞掉。
+	 */
+	async submitOperatorCommand(
+		rawText: string,
+		mode: "direct" | "steer" | "followUp" = "followUp",
+		source?: InputSource,
+	): Promise<void> {
+		await this.startCompletion;
+		this.assertAccepting();
+		const outcome = await this.commands.dispatch(rawText);
+		if (!outcome.handled) return;
+		const agentInput = outcome.agentInput;
+		if (!agentInput) return; // 本地管理命令（/help、/model 等），无输入要投递
+		await this.submitOperatorInput(agentInput, mode, source);
+	}
+
+	/**
+	 * 结构化 Skill 显式调用（网关 skill.invoke）：与 /skill 命令共用同一展开函数，
+	 * 不经命令 Router、不接受任意斜杠命令。
+	 */
+	async submitSkillInvocation(
+		name: string,
+		args: string,
+		mode: "direct" | "steer" | "followUp" = "followUp",
+		source?: InputSource,
+	): Promise<void> {
+		await this.startCompletion;
+		this.assertAccepting();
+		const expanded = await this.skills.invoke(name, args);
+		await this.submitOperatorInput(expanded, mode, source);
+	}
+
+	/** 命令展开结果 → 一条真实操作者输入：投递规则（direct 忙时升级、空闲直启）
+	 * 单点归 Subject.pushInput，Host 只表达交互契约与来源。 */
+	private submitOperatorInput(
+		spec: { text: string; displayText?: string; data?: unknown },
+		mode: "direct" | "steer" | "followUp",
+		source?: InputSource,
+	): Promise<void> {
+		this.assertAccepting();
+		return this.subject.pushInput(spec.text, {
+			mode,
+			source: source ?? { kind: "user", type: "operator", origin: "external" },
+			...(spec.displayText !== undefined ? { displayText: spec.displayText } : {}),
+			...(spec.data !== undefined ? { data: spec.data } : {}),
+		});
 	}
 
 	/** 当前会话历史的消息条数，供消费者显示恢复信息。 */
@@ -521,6 +599,7 @@ export class UinaHost {
 		// 装配顺序只表达启动依赖（命令注册、工具注册、History View/Context Source 注册）。
 		// 请求装配顺序不依赖这里：History View 单一所有者（compaction）+ Context Source
 		// 由 Composer 按稳定身份排序；systemPrompt 保持静态（前缀缓存合同）。
+		await this.extensionHost.activateBuiltin("skills", this.skills.activate);
 		await this.extensionHost.activateBuiltin(
 			"session-tools",
 			activateSessionTools(() => this.rootSession),
@@ -533,7 +612,48 @@ export class UinaHost {
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
 		await this.extensionHost.activateBuiltin("world-framework", activateWorldFramework);
 		await this.extensionHost.load();
+		// Skill 来源在全部扩展激活后装配：项目/扩展资源根已就位；刷新发布 read_skill
+		// 与 Catalog（首次真实模型请求仍要等 startCompletion 装配门）。
+		await this.refreshSkills();
 		await this.subject.getContextSnapshot();
+	}
+
+	/** Skill 来源装配（§4 优先级表）：数值越小越优先。 */
+	private collectSkillSources(): SkillSource[] {
+		// 完整覆写（嵌入方/测试）：来源集合完全由调用方给定，不继承默认装配。
+		if (this.options.skillSources) return [...this.options.skillSources];
+		const sources: SkillSource[] = [];
+		const push = (ownerId: string, directory: string): void => {
+			sources.push({ ownerId, directory, priority: sources.length });
+		};
+		// 1. Host 显式指定的 Skill 根：明确指定时不可用要报诊断（缺失默认来源不报）。
+		for (const [index, root] of (this.options.skillRoots ?? []).entries()) {
+			const directory = resolve(this.options.cwd, root);
+			if (!existsSync(directory)) {
+				this.emit({ type: "notice", text: `[Skill] 显式来源不可用（目录缺失）: ${directory}` });
+				continue;
+			}
+			push(`explicit:${index}`, directory);
+		}
+		// 2. 工作区
+		push("workspace", join(this.options.cwd, ".uina", "skills"));
+		// 3. 从 cwd 到 Git 根之间的 .agents/skills/：越靠近 cwd 越优先；不在 Git 仓库只扫 cwd。
+		for (const directory of agentsSkillAncestors(this.options.cwd, (candidate) => existsSync(join(candidate, ".git"))))
+			push("agents", directory);
+		// 4. 主体 Profile（目录不预创建）
+		if (this.options.profile) push("profile", join(this.options.profile.root, "skills"));
+		// 5. Uina 用户全局目录（UINA_HOME 或 homedir 的 .uina）
+		push("user", join(process.env.UINA_HOME ?? homedir(), ".uina", "skills"));
+		// 6. 用户全局 ~/.agents/skills/（始终系统用户目录，不随 UINA_HOME 改变）
+		push("agents-user", join(homedir(), ".agents", "skills"));
+		// 7. 活跃扩展资源根下的 skills/（激活成功且拥有独占资源根；多入口共享根已去重）
+		for (const { ownerId, root } of this.extensionHost.activeResourceRoots())
+			push(`ext:${ownerId}`, join(root, "skills"));
+		return sources;
+	}
+
+	private refreshSkills(): Promise<void> {
+		return this.skills.refresh(this.collectSkillSources());
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
@@ -564,23 +684,28 @@ export class UinaHost {
 			void this.subject
 				.waitForIdle()
 				.then(() => this.runReload())
-				.catch(() => undefined);
+				.catch((error) => this.emit({ type: "error", text: `重载失败: ${errorMessage(error)}` }));
 			return;
 		}
 		await this.runReload();
 	}
 
 	private async runReload(): Promise<void> {
-		this.reloading++;
+		// 重载准入门覆盖 Host 输入与扩展输入两条通道：资源替换边界期间不放入
+		// 新的 Agent 回合（需要拒绝时明确报错，不静默丢消息）。
+		this.state.reloading++;
 		try {
 			await this.subject.waitForIdle();
 			await Promise.allSettled([...this.directRuns.values()]);
 			if (this.state.stopping) throw new Error("宿主正在关闭");
 			await this.extensionHost.reload();
+			// 项目扩展集合可能已变：Skill 快照必须基于现存有效来源重建发布
+			//（卸载不留幽灵目录，Catalog 反映新有效集或收缩撤下失效来源）。
+			await this.refreshSkills();
 			await this.subject.getContextSnapshot();
 			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
 		} finally {
-			this.reloading--;
+			this.state.reloading--;
 		}
 	}
 
