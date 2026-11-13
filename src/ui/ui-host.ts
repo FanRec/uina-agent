@@ -15,7 +15,6 @@ import type {
 import { createSlotRegistry, type SlotAck } from "../presentation/composition/slots.js";
 import { toReadableError } from "../presentation/copy.js";
 import type { AssistantNode, PresentationNode, ThinkingNode, ToolNode, TurnNode } from "../presentation/projection.js";
-import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import type { SessionEntry } from "../session/types.js";
 import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
 import { type CommandItem, formatSuggestionCardLines, InputLine } from "./components/editor/index.js";
@@ -24,7 +23,6 @@ import {
 	type CompactionCardData,
 	type CompactionReplayDecoration,
 	type ExternalContextCardData,
-	type PromptContextCardData,
 	TranscriptContainer,
 } from "./components/transcript/index.js";
 import {
@@ -143,8 +141,6 @@ export class UIHost implements UIHostContextPort {
 	private cwd: string;
 	private lastUsage?: RequestUsage;
 	private contextSegments?: ContextSegments;
-	/** 最近一次有效提示词快照，供对话流与 /prompt 查询共用。 */
-	private promptSnapshot?: PromptContextCardData;
 
 	// 运行与动画状态
 	private running = false;
@@ -664,19 +660,8 @@ export class UIHost implements UIHostContextPort {
 		entries: readonly SessionEntry[],
 		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
-		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
-		const latest = promptSnapshots.at(-1);
-		this.promptSnapshot = latest
-			? {
-					kind: "prompt",
-					id: latest.id,
-					turnNumber: latest.turnNumber,
-					systemPrompt: latest.systemPrompt,
-					injections: latest.injections,
-				}
-			: undefined;
-		this.transcript.loadSession(entries, nodes, decorations, promptSnapshots);
+		this.transcript.loadSession(entries, nodes, decorations);
 		this.scroll.resetTail();
 		this.requestRender();
 	}
@@ -691,9 +676,8 @@ export class UIHost implements UIHostContextPort {
 		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		turnNumber?: number,
-		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
-		this.loadSession(entries, nodes, decorations, promptSnapshots);
+		this.loadSession(entries, nodes, decorations);
 		if (turnNumber !== undefined) {
 			this.transcript.startTurn(turnNumber, "");
 			this.activityLine.start("thinking", "正在思考与生成回复...");
@@ -722,16 +706,6 @@ export class UIHost implements UIHostContextPort {
 		this.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 		// 流式增量只写状态，不驱动帧：帧由统一心跳（50ms）产出，与模型交付速率解耦；
 		// 回合期间 setBusy(true) 保证心跳在跑。
-	}
-
-	addPromptSnapshot(snapshot: PromptContextCardData): void {
-		this.promptSnapshot = snapshot;
-		this.transcript.addPromptSnapshot(snapshot);
-		this.requestRender();
-	}
-
-	getPromptSnapshot(): PromptContextCardData | undefined {
-		return this.promptSnapshot;
 	}
 
 	addExternalInput(input: ExternalContextCardData): void {

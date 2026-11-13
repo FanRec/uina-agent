@@ -471,6 +471,17 @@ export class UinaHost {
 		this.extensionHost.attachUI(ui);
 	}
 
+	/** 最近一次真实发送的活动请求观察（只读；preview 走 inspectRequest，独立身份）。
+	 * /prompt 等检查面经此端口消费，不直接 import Subject 或访问扩展 Registry。 */
+	getRequestObservation(): import("../agent/loop.js").ActiveRequestObservation | undefined {
+		return this.subject.getRequestObservation();
+	}
+
+	/** 当前请求预览（纯读装配；独立身份，不冒充"刚刚实际发送"）。 */
+	inspectRequest(): Promise<import("../core/types.js").RequestInspection> {
+		return this.subject.inspectRequest();
+	}
+
 	/** 消费者渲染所需的全部事实，一次取齐。 */
 	snapshot(): HostSnapshot {
 		const model = this.subject.getModel();
@@ -505,20 +516,11 @@ export class UinaHost {
 	private async assembleCapabilities(): Promise<void> {
 		// 先发布一次恢复基线快照：扩展装配（伴生服务预热、world 启动）可能拖住
 		// start 数十秒，上下文条先以恢复出的历史基线可见。start 末尾的快照在全部
-		// transformContext 装配完成后重算，仍是权威收口。
+		// 扩展装配完成后重算，仍是权威收口。
 		await this.subject.getContextSnapshot();
-		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
-		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
-		// 激活顺序：compaction → world-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
-		// 注册者（world-framework 视口帧、具身状态帧）无论注册先后恒排在非 tail 之后——
-		// 完整层序：帧投影(convertToLlm) → compaction 裁剪 → 项目扩展注入 → tail 尾帧 →
-		// 请求级预算门(Subject) → 协议校验(validateContext)。基础 systemPrompt 保持静态；
-		// 扩展可在回合边界通过 turn.prepare 添加稳定说明，可变世界状态只经尾部帧注入，
-		// 不进系统提示（前缀缓存合同）。
-		// 该顺序是能力语义依赖的硬合同（compaction 必须先裁剪、为后注入的记忆块留出
-		// 预算；尾帧恒在最末尾），由 tests/projection-order.test.ts 持有——重排激活顺序
-		// 或 tail 相位规则而不更新该测试属于破坏性变更。
-		// ────────────────────────────────────────────────────────────────
+		// 装配顺序只表达启动依赖（命令注册、工具注册、History View/Context Source 注册）。
+		// 请求装配顺序不依赖这里：History View 单一所有者（compaction）+ Context Source
+		// 由 Composer 按稳定身份排序；systemPrompt 保持静态（前缀缓存合同）。
 		await this.extensionHost.activateBuiltin(
 			"session-tools",
 			activateSessionTools(() => this.rootSession),

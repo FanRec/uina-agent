@@ -7,17 +7,14 @@ import type {
 	ContextValue,
 	RequestProjection,
 } from "../src/core/types.js";
-import { filterCompactionMessages, isRuntimePerception } from "../src/extensions/compaction/index.js";
-import { immutableProjection } from "../src/runtime/guard.js";
 
-const projection = (messages: RequestProjection["messages"]): RequestProjection =>
-	immutableProjection({
-		projectionId: "base",
-		modelKey: "test/mock",
-		messages,
-		tools: [],
-		thinkingLevel: "off",
-	});
+const projection = (messages: RequestProjection["messages"]): RequestProjection => ({
+	projectionId: "base",
+	modelKey: "test/mock",
+	messages,
+	tools: [],
+	thinkingLevel: "off",
+});
 
 const base = () =>
 	projection([
@@ -133,10 +130,9 @@ describe("Request Composer（Context Source 装配）", () => {
 		const messages = result.projection.messages;
 		const prefix = messages[1]!;
 		const perception = messages[3]!;
+		// 标记即合同：guidance 不进 History View，perception 不进历史摘要。
 		expect(prefix.context?.kind).toBe("runtime.guidance");
-		expect(isRuntimePerception(prefix)).toBe(false);
 		expect(perception.context?.kind).toBe("runtime.perception");
-		expect(isRuntimePerception(perception)).toBe(true);
 	});
 
 	it("文件式 guidance 的编译元数据随 trace 透传（对账用）", () => {
@@ -293,14 +289,14 @@ describe("Request Composer（Context Source 装配）", () => {
 		expect(result.assembly.sources.map((s) => s.key)).toEqual(["a::b", "z::a"]);
 	});
 
-	it("runtime.perception 标记被 Compaction 过滤排除（不压进历史摘要）", () => {
+	it("runtime.perception 快照不承载 entryId，不进入历史映射（压缩边界不可达）", () => {
 		const result = compose(base(), {
 			contributions: [dynamic("world", "env", "observation", "快照内容", { origin: "external" })],
 		});
-		const messages = result.projection.messages as never[];
-		expect(isRuntimePerception(result.projection.messages[2]!)).toBe(true);
-		const filtered = filterCompactionMessages(messages) as RequestProjection["messages"];
-		expect(filtered).toHaveLength(2);
-		expect(filtered.some((m) => m.content.includes("快照内容"))).toBe(false);
+		const perception = result.projection.messages[2]!;
+		expect(perception.context?.kind).toBe("runtime.perception");
+		// 快照消息是请求级装配产物：没有 canonical 条目身份，History View / 压缩边界
+		// 不会把它映射进历史。
+		expect(perception.context?.entryId).toBeUndefined();
 	});
 });

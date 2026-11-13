@@ -338,7 +338,6 @@ export class PresentationProjection {
 			// ── 这些 Fact 不产生展示节点：由域专属表面（状态行、卡片、面板）表达。 ──
 			case "usage.reported":
 			case "context.updated":
-			case "context.prepared":
 			case "model.selected":
 			case "thinking.selected":
 			case "compaction.started":

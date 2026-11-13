@@ -1,15 +1,15 @@
 /**
- * Host 装配顺序合同（host.start() 注释引用本文件）：
- * 帧投影(convertToLlm) → transformContext 链（compaction 裁剪 → 项目扩展注入 → tail 相位尾帧）
- * → 预算门 → 协议校验。
+ * 请求装配顺序合同（信息注入体系）：
+ * 帧投影(convertToLlm) → History View（compaction，唯一所有者）→ 工具声明（一次收口）
+ * → Request Composer（guidance 固定前缀 / 运行时参考块）→ 预算门 → 协议校验。
  *
- * 以项目扩展占位 hook（注入上下文块）验证：
- * 1. compaction 先于项目扩展 hook 运行（后者收到的是已裁剪、已带摘要的消息）；
- * 2. 上下文块注入在摘要之后、tail 尾帧之前；
- * 3. 帧组原子性保持（最新外部输入以完整三消息组到达 Provider；多组帧并存合法）；
+ * 以项目扩展的 observation Source 验证：
+ * 1. 摘要是 History View 的首位历史（紧随 System），远期历史被裁剪；
+ * 2. 运行时参考块（Context Source）装配在 History 之后，不进历史、不进 system；
+ * 3. 帧组原子性保持（最新外部输入以完整两消息组到达 Provider）；
  * 4. 请求级预算门通过（远期历史被裁剪，回合不因超预算失败）。
  *
- * 重排 host.start() 的激活顺序、tail 相位规则或请求管线顺序而不更新本测试，属于破坏性变更。
+ * 重排请求管线顺序而不更新本测试，属于破坏性变更。
  */
 
 import { openJsonlSession } from "../src/session/jsonl-store.js";
@@ -17,8 +17,8 @@ import { UinaTestHarness } from "./harness/host/harness.js";
 import { describe, expect, test } from "./harness/index.js";
 import { Scenario } from "./harness/provider/scenario.js";
 
-describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上下文注入", () => {
-	test("超预算历史下：摘要先于上下文块、帧组原子、预算门通过", async ({ env }) => {
+describe("请求装配顺序合同：帧投影 → History View(compaction) → Context Source 装配", () => {
+	test("超预算历史下：摘要先于运行时参考块、帧组原子、预算门通过", async ({ env }) => {
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 		scenario
 			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
@@ -28,27 +28,16 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上
 			{ kind: "finish", reason: "stop" },
 		]);
 
-		// 占位扩展：记录收到的消息是否已带摘要/仍含远期历史，并在末尾注入上下文块。
+		// 占位扩展：经 Context Source 提供运行时参考块（只读快照，不写历史）。
 		await env.writeExtension(
 			"context-standin.mjs",
 			`
 			export default function activate(uina) {
-				uina.onHook("turn.transformContext", (projection) => {
-					const contents = projection.messages.map((m) => String(m.content ?? ""));
-					const previous = globalThis.__orderProbe;
-					const sawSummary = contents.some((c) => c.startsWith("[历史摘要] "));
-					globalThis.__orderProbe = {
-						sawSummary: Boolean(previous?.sawSummary) || sawSummary,
-						sawFarHistory: sawSummary
-							? contents.some((c) => c.includes("第0问"))
-							: previous?.sawFarHistory ?? contents.some((c) => c.includes("第0问")),
-					};
-					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[project context] 占位块" }] } };
+				uina.provideContext({
+					id: "standin",
+					kind: "observation",
+					read: () => ({ text: "[project context] 占位块", source: { type: "probe", origin: "internal" } }),
 				});
-				// tail 相位：注入一个可辨识的尾帧（模拟视口/具身快照），验证恒排在非 tail 注入之后。
-				uina.onHook("turn.transformContext", (projection) => {
-					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[TAIL] 瞬态尾帧占位" }] } };
-				}, { tail: true });
 			}
 		`,
 		);
@@ -70,22 +59,19 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上
 			expect(last).toBeDefined();
 			const contents = (last?.messages ?? []).map((m) => m.content ?? "");
 
-			// 1. compaction 先于项目扩展 hook：占位 hook 看到摘要已注入、远期历史已被裁剪。
-			const probe = (globalThis as { __orderProbe?: { sawSummary: boolean; sawFarHistory: boolean } }).__orderProbe;
-			expect(probe?.sawSummary).toBe(true);
-			expect(probe?.sawFarHistory).toBe(false);
-
-			// 2. 摘要紧随 leading system；上下文块在摘要之后；tail 尾帧在上下文块之后且位于消息组末尾。
+			// 1. 摘要是 History View 的首位历史，紧随 leading system；远期历史已被裁剪。
+			expect(contents[0]?.length).toBeGreaterThan(0);
 			expect(contents[1]?.startsWith("[历史摘要] ")).toBe(true);
+
+			// 2. 运行时参考块装配在 History 之后（Composer 的运行时参考容器），位于消息末尾。
 			const contextIndex = contents.findIndex((c) => c.includes("[project context] 占位块"));
 			expect(contextIndex).toBeGreaterThan(1);
-			expect(contents[contextIndex + 1]).toContain("[TAIL] 瞬态尾帧占位");
-			expect(contents[contents.length - 1]).toContain("[TAIL] 瞬态尾帧占位");
-			// systemPrompt 纯净性：扩展上下文块与尾帧文本都不得进入 system。
+			expect(contents[contextIndex]).toContain("[运行时参考信息");
+			expect(contents[contents.length - 1]).toContain("[project context] 占位块");
+			// systemPrompt 纯净性：运行时参考块不得进入 system。
 			expect(contents[0]).not.toContain("[project context]");
-			expect(contents[0]).not.toContain("[TAIL]");
 
-			// 3. 帧组原子：最新外部输入「跑一轮」以两消息帧到达（合成调用 + 回执），不再有解释性 user 通知。
+			// 3. 帧组原子：最新外部输入「跑一轮」以两消息帧到达（合成调用 + 回执）。
 			const messages = last?.messages ?? [];
 			const receiptIndex = messages.findIndex((m) => m.role === "tool" && String(m.content).includes("跑一轮"));
 			expect(receiptIndex).toBeGreaterThan(1);
@@ -94,13 +80,14 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上
 			expect(frameCall?.role === "assistant" ? frameCall.tool_calls : undefined).toEqual([
 				{ id: expect.any(String), name: "external_event_frame", args: {} },
 			]);
+			// 帧组在参考块之前：快照消息不落在历史帧与合成调用之间。
+			expect(receiptIndex).toBeLessThan(contextIndex);
 
 			// 4. 预算门通过：最终请求不含被裁剪的远期历史，回合成功（请求已发出）。
 			expect(contents.some((c) => c.includes("第0问"))).toBe(false);
 			expect(scenario.calls.length).toBeGreaterThanOrEqual(1);
 		} finally {
 			await uina.dispose();
-			delete (globalThis as { __orderProbe?: unknown }).__orderProbe;
 		}
 	});
 });

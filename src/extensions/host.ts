@@ -10,9 +10,8 @@
  */
 
 import { errorMessage } from "../core/errors.js";
-import type { ChatMsg, ContextCollection, ContextRead, ContextSource, RequestProjection } from "../core/types.js";
-import type { DeepReadonly, InjectionProvenance, OutputEvent, RuntimeEvent } from "../runtime/events.js";
-import { immutableProjection } from "../runtime/guard.js";
+import type { ChatMsg, ContextCollection, ContextRead, ContextSource } from "../core/types.js";
+import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import {
 	type HookContributions,
 	type HookHandler,
@@ -75,99 +74,27 @@ type RegistryHandler = (input: never) => unknown;
 interface RegisteredHandler {
 	readonly handler: RegistryHandler;
 	readonly scopeId?: string;
-	/** transformContext 尾部相位：无论注册先后，恒排在非 tail 注册者之后（瞬态尾部注入专用）。 */
-	readonly tail?: boolean;
 }
 
 export type RuntimeScopeFilter = readonly string[] | undefined;
-
-/** provenance 预览截断宽度（首行级，约一屏可读）。 */
-const PREVIEW_LIMIT = 80;
-/** 单次聚合运行登记的 provenance 上限（链长受扩展数约束，此上限只防病态注册）。 */
-const LEDGER_LIMIT = 64;
-
-function firstLinePreview(text: string): string {
-	const line = text.split("\n", 1)[0] ?? "";
-	return line.length > PREVIEW_LIMIT ? `${line.slice(0, PREVIEW_LIMIT)}…` : line;
-}
-
-function messagesCharTotal(messages: readonly ChatMsg[]): number {
-	let total = 0;
-	for (const message of messages) total += message.content.length;
-	return total;
-}
-
-/** 单个 handler 贡献的 provenance 记录组（一 handler 可贡献多种 kind）。 */
-function prepareContributions(extension: string, res: HookContributions["turn.prepare"]): InjectionProvenance[] {
-	const records: InjectionProvenance[] = [];
-	if (res.messages?.length) {
-		records.push({
-			extension,
-			kind: "messages",
-			messageCount: res.messages.length,
-			chars: messagesCharTotal(res.messages as readonly ChatMsg[]),
-			preview: firstLinePreview(res.messages[0].content),
-		});
-	}
-	if (res.systemPrompt !== undefined) {
-		records.push({
-			extension,
-			kind: "systemPrompt",
-			chars: res.systemPrompt.length,
-			preview: firstLinePreview(res.systemPrompt),
-		});
-	}
-	if (res.model !== undefined) {
-		records.push({
-			extension,
-			kind: "model",
-			chars: 0,
-			preview: `${res.model.providerId}/${res.model.id}`,
-		});
-	}
-	if (res.thinkingLevel !== undefined) {
-		records.push({
-			extension,
-			kind: "thinkingLevel",
-			chars: 0,
-			preview: res.thinkingLevel,
-		});
-	}
-	return records;
-}
-
-/** transformContext 单步的量级变化摘要（messages 恒在，tools 有变化时才追加）。 */
-function transformDeltaPreview(prev: RequestProjection, next: RequestProjection): string {
-	const prevCount = prev.messages.length;
-	const nextCount = next.messages.length;
-	const charDelta = messagesCharTotal(next.messages) - messagesCharTotal(prev.messages);
-	const signed = (value: number): string => `${value >= 0 ? "+" : ""}${value}`;
-	let preview = `消息 ${prevCount}→${nextCount} · 字符 ${signed(charDelta)}`;
-	if (next.tools.length !== prev.tools.length) {
-		preview += ` · 工具 ${signed(next.tools.length - prev.tools.length)}`;
-	}
-	return preview;
-}
 
 export class ExtensionHost {
 	private handlers = new Map<string, Set<RegisteredHandler>>();
 	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
 	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
-	/** Context Source 注册表（信息注入重构）：provideContext 的持有方，随激活作用域注销。 */
+	/** Context Source 注册表（信息注入体系）：provideContext 的持有方，随激活作用域注销。 */
 	protected readonly contextSources = new ContextSourceRegistry();
+	/** History View 提供者槽位（信息注入体系）：单一所有者，重复注册明确报错；
+	 * 无提供者时 project 为 identity。随激活作用域注销。 */
+	private historyView?: {
+		readonly owner: string;
+		readonly view: (history: readonly ChatMsg[]) => readonly ChatMsg[];
+		readonly isActive: () => boolean;
+	};
 	/** 同进程共享值表（M1）：零语义，不做序列化，与 services 的纯数据通道互补。 */
 	private readonly sharedValues = new Map<string, unknown>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
-	/** 最近一次 turn.transformContext 聚合运行的逐扩展贡献登记（上下文检视拉取口）。
-	 * prepare 侧不需要字段：贡献随 runTurnPrepare 结果/事件返回，单一事实源。 */
-	private lastTransformLedger: InjectionProvenance[] = [];
-
-	/** 最近一次 turn.transformContext 链的逐扩展贡献（检视器打开时实时读，非事件流——
-	 * transformContext 每请求运行，事件会刷屏；并发 scope 下共享登记，语义为"最近一次"）。 */
-	lastTransformInjections(): readonly InjectionProvenance[] {
-		return [...this.lastTransformLedger];
-	}
 
 	/** 订阅事实事件：只观察"已经发生的"，无返回协议。干预注册请用 onHook。 */
 	on<T extends ExtensionEvent["type"]>(
@@ -197,14 +124,8 @@ export class ExtensionHost {
 		};
 	}
 
-	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。
-	 * options.tail 仅对 turn.transformContext 有语义：tail 注册者恒排在非 tail 之后（按各自注册序），
-	 * 用于瞬态尾部注入（视口/具身快照帧）落在一切历史注入之后。其余 hook 忽略该选项。 */
-	onHook<K extends HookName>(
-		hook: K,
-		handler: HookHandler<K>,
-		options?: { scopeId?: string; tail?: boolean },
-	): () => void {
+	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。 */
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { scopeId?: string }): () => void {
 		let set = this.hookHandlers.get(hook);
 		if (!set) {
 			set = new Set();
@@ -213,7 +134,6 @@ export class ExtensionHost {
 		const entry: RegisteredHandler = {
 			handler: handler as unknown as RegistryHandler,
 			...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }),
-			...(options?.tail ? { tail: true } : {}),
 		};
 		set.add(entry);
 		return () => {
@@ -222,12 +142,38 @@ export class ExtensionHost {
 	}
 
 	/**
-	 * 注册 Context Source（信息注入重构）：owner 强制使用激活作用域身份，不由 Source
+	 * 注册 Context Source（信息注入体系）：owner 强制使用激活作用域身份，不由 Source
 	 * 自报；返回注销句柄。这是 Source 的唯一注册入口——没有第二条 onHook("context...")
 	 * 链，避免"注册 Source"与"Context Hook"两种重复写法。
 	 */
 	provideContext(owner: string, source: ContextSource, isActive: () => boolean): () => void {
 		return this.contextSources.register(owner, source, isActive);
+	}
+
+	/**
+	 * 注册 History View（信息注入体系）：压缩后的可见历史的唯一提供者槽位。
+	 * 同一 Host 同时只允许一个提供者；重复注册明确报错。视图只接收历史消息、
+	 * 返回合法的历史消息序列；只读、无副作用。可替换函数槽，不建多层 Hook 链。
+	 */
+	registerHistoryView(
+		owner: string,
+		view: (history: readonly ChatMsg[]) => readonly ChatMsg[],
+		isActive: () => boolean,
+	): () => void {
+		if (this.historyView) {
+			throw new Error(`History View 已由 ${this.historyView.owner} 注册；同一 Host 只允许一个提供者`);
+		}
+		this.historyView = { owner, view, isActive };
+		return () => {
+			if (this.historyView?.owner === owner) this.historyView = undefined;
+		};
+	}
+
+	/** history.project 端口（RuntimeHooks.history）：单一提供者，不活跃视为未注册。 */
+	projectHistory(history: readonly ChatMsg[]): readonly ChatMsg[] {
+		const view = this.historyView;
+		if (!view || !view.isActive()) return history;
+		return view.view(history);
 	}
 
 	/** context.collect 端口（RuntimeHooks.context）：只读收集当前注册快照，无干预返回协议。 */
@@ -356,40 +302,7 @@ export class ExtensionHost {
 		return modified ? { result: current.result, details: current.details, images: current.images } : undefined;
 	}
 
-	/** turn.transformContext：链式的纯 RequestProjection 变换。 */
-	async runTransformContext(projection: RequestProjection, scope?: RuntimeScopeFilter): Promise<RequestProjection> {
-		const all = this.hookEntriesFor("turn.transformContext", scope);
-		const ledger: InjectionProvenance[] = (this.lastTransformLedger = []);
-		if (all.length === 0) return projection;
-		const steps = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)];
-
-		let currentProjection: RequestProjection = immutableProjection(projection);
-		for (const entry of steps) {
-			try {
-				const res = (await entry.handler(currentProjection as never)) as
-					| HookContributions["turn.transformContext"]
-					| undefined;
-				if (res?.projection) {
-					const next = immutableProjection(res.projection as RequestProjection);
-					if (ledger.length < LEDGER_LIMIT) {
-						ledger.push({
-							extension: entry.scopeId ?? "(internal)",
-							kind: "projection",
-							messageCount: next.messages.length - currentProjection.messages.length,
-							chars: messagesCharTotal(next.messages) - messagesCharTotal(currentProjection.messages),
-							preview: transformDeltaPreview(currentProjection, next),
-						});
-					}
-					currentProjection = next;
-				}
-			} catch (err) {
-				this.emitError("turn.transformContext", err);
-			}
-		}
-		return currentProjection;
-	}
-
-	/** turn.preflight：所有决策看同一个只读投影，归并优先级 fail > rebuild > send。 */
+	/** turn.preflight：所有决策看同一个只读投影与明确历史视图，归并优先级 fail > rebuild > send。 */
 	async runPreflight(
 		input: HookInputs["turn.preflight"],
 		scope?: RuntimeScopeFilter,
@@ -423,74 +336,6 @@ export class ExtensionHost {
 		}
 	}
 
-	/**
-	 * turn.prepare：systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加。
-	 * 返回值是全链聚合后的回合准备结果（RuntimeHooks.turn.prepare 的形状）。
-	 * 回合注入只有两条路径：prepare（回合边界）与 transformContext（每请求）。
-	 */
-	async runTurnPrepare(
-		input: HookInputs["turn.prepare"],
-		scope?: RuntimeScopeFilter,
-	): Promise<
-		| Readonly<{
-				messages?: readonly ChatMsg[];
-				systemPrompt?: string;
-				model?: import("../core/types.js").Model;
-				thinkingLevel?: import("../core/types.js").ThinkingLevel;
-				/** 逐扩展贡献 provenance（与合并结果同源登记，随结果单一事实源返回）。 */
-				injections: readonly InjectionProvenance[];
-		  }>
-		| undefined
-	> {
-		const entries = this.hookEntriesFor("turn.prepare", scope);
-		const messages: ChatMsg[] = [];
-		let currentPrompt = input.systemPrompt;
-		let currentModel: HookContributions["turn.prepare"]["model"];
-		let currentThinking: HookContributions["turn.prepare"]["thinkingLevel"];
-		let modified = false;
-		const ledger: InjectionProvenance[] = [];
-
-		for (const entry of entries) {
-			try {
-				const res = (await entry.handler(
-					Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never,
-				)) as HookContributions["turn.prepare"] | undefined;
-				if (res) {
-					const records = prepareContributions(entry.scopeId ?? "(internal)", res);
-					if (records.length > 0 && ledger.length < LEDGER_LIMIT) ledger.push(...records);
-					if (res.messages?.length) {
-						messages.push(...(res.messages as ChatMsg[]));
-						modified = true;
-					}
-					if (res.systemPrompt !== undefined) {
-						currentPrompt = res.systemPrompt;
-						modified = true;
-					}
-					if (res.model !== undefined) {
-						currentModel = res.model;
-						modified = true;
-					}
-					if (res.thinkingLevel !== undefined) {
-						currentThinking = res.thinkingLevel;
-						modified = true;
-					}
-				}
-			} catch (err) {
-				this.emitError("turn.prepare", err);
-			}
-		}
-
-		return modified
-			? {
-					messages: messages.length > 0 ? messages : undefined,
-					systemPrompt: currentPrompt !== input.systemPrompt ? currentPrompt : undefined,
-					...(currentModel !== undefined ? { model: currentModel } : {}),
-					...(currentThinking !== undefined ? { thinkingLevel: currentThinking } : {}),
-					injections: ledger,
-				}
-			: undefined;
-	}
-
 	/** turn.shouldStop：短路链——任一 stop=true 即收尾。 */
 	async runShouldStop(input: HookInputs["turn.shouldStop"], scope?: RuntimeScopeFilter): Promise<boolean> {
 		for (const handler of this.hooksFor("turn.shouldStop", scope)) {
@@ -522,33 +367,6 @@ export class ExtensionHost {
 				if (res?.headers) current = res.headers;
 			} catch (err) {
 				this.emitError("provider.transformHeaders", err);
-			}
-		}
-		return current;
-	}
-
-	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。 */
-	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。
-	 * 纯聚合器（P1-3）：入侧视图已冻结、链步 shallow rebuild + 浅冻，零深拷贝。 */
-	async runTransformPayload(
-		provider: string,
-		payload: DeepReadonly<unknown>,
-		scope?: RuntimeScopeFilter,
-	): Promise<unknown> {
-		const handlers = this.hooksFor("provider.transformPayload", scope);
-		if (handlers.length === 0) return payload;
-
-		let current = payload;
-		for (const handler of handlers) {
-			try {
-				const res = (await handler(Object.freeze({ provider, payload: current }) as never)) as
-					| HookContributions["provider.transformPayload"]
-					| undefined;
-				if (res !== undefined && res.payload !== undefined) {
-					current = Object.freeze(res.payload) as typeof current;
-				}
-			} catch (err) {
-				this.emitError("provider.transformPayload", err);
 			}
 		}
 		return current;

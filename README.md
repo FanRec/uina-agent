@@ -350,7 +350,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 
 ## 扩展
 
-项目扩展放在工作目录的 `.uina/extensions/`，在默认导出的 `activate(api)` 里注册工具、命令、服务或上下文裁剪策略（`turn.transformContext` 链）：
+项目扩展放在工作目录的 `.uina/extensions/`，在默认导出的 `activate(api)` 里注册工具、命令、服务、信息贡献（`provideContext`）或历史裁剪策略（`registerHistoryView`）：
 
 ```ts
 export default function activate(api) {

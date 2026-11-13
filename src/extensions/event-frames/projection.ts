@@ -156,16 +156,6 @@ function placeFrame(placed: readonly ChatMsg[], options: EventFrameOptions): Cha
 	return started ? eventFrameMessages(options) : [leadingFrameMessage(options)];
 }
 
-/** 把一份帧接到消息尾部：首位降级、其余保持合成回执。
- * 泛型只为兼容 DeepReadonly 视图（hook 链消息是冻结快照，不要求可变 ChatMsg）。 */
-export function appendEventFrame<T extends { role: string }>(
-	messages: readonly T[],
-	options: EventFrameOptions,
-): readonly T[] {
-	const frame = placeFrame(messages as unknown as readonly ChatMsg[], options);
-	return [...messages, ...(frame as unknown as T[])];
-}
-
 /** 没有稳定身份就不能合成回执：帧组的原子性、去重与恢复都靠它。 */
 function missingEventId(message: AgentMessage | ChatMsg): Error {
 	const content = String(message.content ?? "");
@@ -173,8 +163,8 @@ function missingEventId(message: AgentMessage | ChatMsg): Error {
 	return new Error(
 		`外部事件缺少稳定 eventId，无法合成 external_event_frame 回执。` +
 			`消息内容开头：「${preview}${content.length > 60 ? "…" : ""}」。` +
-			`修复指引：turn.prepare 注入的 user 消息需带 context.kind 标注为内部信息；` +
-			`需要作为外部事件呈现的输入必须在接入层提供 input 或 id 元数据。`,
+			`修复指引：需要作为外部事件呈现的输入必须在接入层提供 input 或 id 元数据；` +
+			`运行时快照类信息应注册为 Context Source（provideContext），不进入历史。`,
 	);
 }
 

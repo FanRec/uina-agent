@@ -37,6 +37,21 @@ import {
 
 const WIDTHS = [40, 56, 64, 80, 120, 160, 200];
 
+const promptPortStub = (view?: import("../src/ui/components/transcript/context-card.js").PromptRequestCardData) =>
+	({
+		requestObservation: async () => view,
+		inspectRequest: async () =>
+			view ?? {
+				kind: "prompt",
+				basis: "preview",
+				modelKey: "m",
+				systemPrompt: "",
+				messageCount: 0,
+				toolCount: 0,
+				sources: [],
+			},
+	}) as import("../src/ui/components/transcript/context-card.js").PromptPort;
+
 describe("布局原语：宽度守卫", () => {
 	it("renderPanel 每行精确 boxWidth", () => {
 		for (const boxWidth of [20, 40, 54, 78, 92, 120, 200]) {
@@ -126,8 +141,9 @@ describe("浮层整框宽度一致", () => {
 		assertUniform("picker empty", new ModelPicker(undefined, []).formatLines(80, 100), 80);
 	});
 
-	it("prompt 查询面板", () => {
-		const prompt = new PromptOverlay(undefined);
+	it("prompt 查询面板", async () => {
+		const prompt = new PromptOverlay(promptPortStub());
+		await prompt.ready;
 		for (const width of [40, 64, 80, 120]) {
 			assertUniform(`prompt(${width})`, prompt.render(width, 24), width);
 		}

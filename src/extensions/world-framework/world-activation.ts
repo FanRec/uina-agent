@@ -41,7 +41,6 @@ export class WorldActivation {
 	async start(): Promise<void> {
 		try {
 			await this.definition.onStart?.(this.context);
-			this.registerEnvironmentGuide();
 			const rawTool = createWorldTool(this.definition, {
 				getRuntime: () => this.host.runtime,
 			});
@@ -61,38 +60,6 @@ export class WorldActivation {
 			await this.rollback(cause);
 			throw cause;
 		}
-	}
-
-	/**
-	 * 静态环境指引：世界提供短正文，框架在回合边界把它追加到本轮 systemPrompt。
-	 *
-	 * 每个回合一次的环境认知（不变的原则），当前世界细节不由这里提供。getter 由世界
-	 * 决定此刻是否适用；这里只做同步纯读，不读世界事实、不写 Session、不落历史。
-	 *
-	 * turn.prepare 的合并规则是"后写覆盖先写"，且 host 会把上一份 systemPrompt 作为
-	 * 本 handler 的入参；因此这里**只追加**，多个启用世界（以及 MCP 等扩展）可以依次
-	 * 组合，不会互相擦掉。停用由 track 绑定的 scope 自动摘除 handler。
-	 */
-	private registerEnvironmentGuide(): void {
-		const provide = this.definition.environmentGuide;
-		if (!provide) return;
-		const { pi } = this.host;
-		const name = this.definition.name;
-		this.track(
-			pi.onHook("turn.prepare", ({ systemPrompt }) => {
-				if (!this.scope.active) return;
-				let guide: string | null;
-				try {
-					guide = provide();
-				} catch {
-					// 静态 getter 抛错不能把整个回合准备链打断；本轮不注入即可。
-					return;
-				}
-				const text = guide?.trim();
-				if (!text) return;
-				return { systemPrompt: `${systemPrompt}\n\n[world:${name}:environment]\n${text}` };
-			}),
-		);
 	}
 
 	async stop(): Promise<void> {
@@ -155,6 +122,17 @@ export class WorldActivation {
 		return {
 			signal: this.scope.signal,
 			delivery: pi.delivery?.(`world:${this.definition.name}`),
+			// Context Source 薄转发端口：只加世界局部前缀并跟踪注销，不做第二层注册表。
+			// 停用后注册明确失败；注销句柄随世界 ResourceScope 自动执行（含启动失败回滚）。
+			provideContext: pi.provideContext
+				? (source) => {
+						if (!this.scope.active) throw new Error("世界已停用: " + this.definition.name);
+						if (source.id.startsWith("world:"))
+							throw new Error(`World Source id 不允许自带 "world:" 前缀（Framework 自动添加）: ${source.id}`);
+						const dispose = pi.provideContext({ ...source, id: `world:${this.definition.name}/${source.id}` });
+						return this.track(dispose);
+					}
+				: undefined,
 			submitInput: pi.submitInput
 				? (input) =>
 						pi.submitInput!(input, { deliveryScope: `world:${this.definition.name}`, signal: this.scope.signal })

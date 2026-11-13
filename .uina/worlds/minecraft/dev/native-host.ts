@@ -128,6 +128,11 @@ let firstActionMs: number | undefined;
 let firstObservationMs: number | undefined;
 host.subscribe((event) => {
 	rhythm?.onHostEvent(event);
+	// 请求观测（只读）：模型开始输出即该请求已装配完成——从只读活动请求观察取消息
+	// 做 eventId 匹配，替代旧 turn.transformContext 观察；onRequest 内部幂等去重。
+	if (rhythm && event.type === "output_start" && event.channel === "content") {
+		rhythm.onRequest({ messages: host.getRequestObservation()?.projection.messages ?? [] });
+	}
 	if (event.type === "usage_update") {
 		calibrationUsage.set(event.usage.callId, event.usage);
 		if (feedbackMode && modelMode && calibrationUsage.size >= 12) {
@@ -161,13 +166,17 @@ host.subscribe((event) => {
 let pi!: ExtensionAPI, context!: ServiceCompanionContext;
 const chatNotices: WorldEvent[] = [];
 const world = createMinecraftWorld({ onExecutorAccess: probe.onExecutorAccess, legacyConfigPath: configPath });
-if (guideOverride !== undefined) {
-	const environmentGuide = world.environmentGuide!;
-	world.environmentGuide = () => (environmentGuide() === null ? null : guideOverride);
-}
 const start = world.onStart!;
 world.onStart = async (ctx) => {
 	if (rhythm) ctx = rhythm.wrap(ctx);
+	// 指南覆盖（--guide-file）：替换世界注册的 guidance 正文，注册生命周期不变。
+	if (guideOverride !== undefined && ctx.provideContext) {
+		const provide = ctx.provideContext;
+		ctx = {
+			...ctx,
+			provideContext: (source) => provide(source.kind === "guidance" ? { ...source, text: guideOverride } : source),
+		};
+	}
 	if (chatFlowMode) {
 		const emitEvent = ctx.emitEvent!;
 		ctx = {
@@ -230,13 +239,6 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-native-acceptance", (api) => {
 		pi = api;
-		if (rhythmFlowMode || (modelMode && (feedbackMode || tasksMode || autonomyMode || fixedExploreMode)))
-			api.onHook("turn.transformContext", (projection) => {
-				rhythm?.onRequest(projection);
-				return {
-					projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
-				};
-			});
 	});
 	activation = new WorldActivation(world, {
 		pi,
@@ -245,6 +247,9 @@ try {
 		notifyExposed() {},
 	});
 	await activation.start();
+	// 验收模式的工具可见性约束：从本测试实例的 Tool Broker 撤下非 Minecraft 工具，
+	// 使请求定义、工具执行权限与预算从源头一致（不再在请求边界过滤完整投影）。
+	for (const name of [...host["tools"].names()]) if (name !== "minecraft") host["tools"].remove(name);
 	if (autonomyMode) {
 		assert.equal((await direct("session", { op: "status" })).state, "disconnected");
 		const timer = setTimeout(() => host.interrupt(), 120000);

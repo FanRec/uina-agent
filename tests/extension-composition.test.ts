@@ -88,14 +88,18 @@ const compactionHost = (
 			await fn(controller.signal);
 		},
 		inspectRequest: async () => {
-			const projection = await value.runTransformContext({
+			// 信息注入体系：检查携带明确的 History View（压缩后可见历史），不从完整
+			// 投影反猜历史。
+			const history = value.projectHistory(bigHistory());
+			const projection = {
 				projectionId: "test",
 				modelKey: "mock/mock",
-				messages: bigHistory(),
-				tools: [],
-			});
+				messages: [...history],
+				tools: [] as never[],
+			};
 			return {
 				projection,
+				history,
 				measurement: {
 					inputTokens: estimateRequestTokens(projection.messages, projection.tools),
 					kind: "approximate" as const,
@@ -342,13 +346,13 @@ describe("extension composition", () => {
 		let api!: ExtensionAPI;
 		await activate(host, "picker", (value) => {
 			api = value;
-			expect(api.ui.openFeature({ name: "prompt", signal: caller.signal })).toBe(true);
+			expect(api.ui.openFeature({ name: "help", signal: caller.signal })).toBe(true);
 		});
 
 		expect(tui.hasOverlay).toBe(true);
 		caller.abort();
 		expect(tui.hasOverlay).toBe(false);
-		expect(api.ui.openFeature({ name: "prompt" })).toBe(true);
+		expect(api.ui.openFeature({ name: "help" })).toBe(true);
 		expect(tui.hasOverlay).toBe(true);
 		await host.dispose();
 		expect(tui.hasOverlay).toBe(false);
@@ -444,16 +448,26 @@ describe("extension composition", () => {
 		expect(tui.visibleText).toContain("模型切换失败");
 		expect(tui.visibleText).toContain("model selection failed");
 	});
-	it("collects independent context contributions after prompt transforms", async () => {
+	it("collects independent context contributions from multiple extensions in one request", async () => {
 		const host = runner(await temp());
 		const a = await activate(host, "a");
 		const b = await activate(host, "b");
-		a.onHook("turn.prepare", () => ({ systemPrompt: "changed" }));
-		a.onHook("turn.prepare", () => ({ messages: [{ role: "user", content: "memory" }] }));
-		b.onHook("turn.prepare", (ctx) => ({ messages: [{ role: "user", content: ctx.systemPrompt + ":skills" }] }));
-		const result = await host.runtimeHooks().turn.prepare({ prompt: "hi", systemPrompt: "initial" });
-		expect(result.messages?.map((m) => m.content)).toEqual(["memory", "changed:skills"]);
-		expect(result.systemPrompt).toBe("changed");
+		a.provideContext({
+			id: "memory",
+			kind: "observation",
+			read: () => ({ text: "memory", source: { type: "mem", origin: "internal" } }),
+		});
+		b.provideContext({
+			id: "skills",
+			kind: "capability",
+			read: () => ({ text: "skills", source: { type: "skills", origin: "internal" } }),
+		});
+		const result = await host
+			.runtimeHooks()
+			.context.collect({ modelKey: "mock/mock", signal: new AbortController().signal });
+		const texts = result.contributions.map((c) => (c.value as { text: string }).text);
+		expect(texts).toEqual(["memory", "skills"]);
+		expect(result.contributions.map((c) => c.owner)).toEqual(["builtin:a", "builtin:b"]);
 	});
 	it("renders tool details and Markdown through replaceable presentation contracts", async () => {
 		const host = runner(await temp());
@@ -504,9 +518,7 @@ describe("compaction capability event contract", () => {
 
 		const messages = bigHistory();
 		await force?.handler?.("");
-		const trimmed = (
-			await host.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages, tools: [] })
-		).messages;
+		const trimmed = host.projectHistory(messages);
 		expect(summaryCalls()).toBeGreaterThanOrEqual(1);
 		// 摘要消息紧随（无 leading system），尾部保留在预算内。
 		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
@@ -542,12 +554,7 @@ describe("compaction capability event contract", () => {
 		await activate(host, "compaction", activateCompaction);
 
 		await expect(host.registry.getCommand("compact")?.handler?.("")).resolves.toBeUndefined();
-		const projection = await host.runTransformContext({
-			projectionId: "after-failure",
-			modelKey: "mock/mock",
-			messages: bigHistory(),
-			tools: [],
-		});
+		const projection = { messages: host.projectHistory(bigHistory()) };
 
 		expect(terminal).toEqual(["failed"]);
 		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] "))).toBe(false);
@@ -572,12 +579,7 @@ describe("compaction capability event contract", () => {
 		await activate(host, "compaction", activateCompaction);
 
 		await host.registry.getCommand("compact")?.handler?.("");
-		const projection = await host.runTransformContext({
-			projectionId: "after-commit",
-			modelKey: "mock/mock",
-			messages: bigHistory(),
-			tools: [],
-		});
+		const projection = { messages: host.projectHistory(bigHistory()) };
 
 		expect(writes).toBe(1);
 		expect(terminal).toEqual(["completed"]);
@@ -611,8 +613,10 @@ it("skills and filesystem extensions compose through services and the existing t
 		status: "succeeded",
 		result: "Example skill instructions",
 	});
-	const prepared = await host.runtimeHooks().turn.prepare({ prompt: "hi", systemPrompt: "system" });
-	expect(prepared.messages?.[0].content).toContain("Available skills");
+	const collection = await host.runtimeHooks().context.collect({ modelKey: "m", signal: new AbortController().signal });
+	expect(collection.contributions.some((c) => (c.value as { text: string }).text.includes("Available skills"))).toBe(
+		true,
+	);
 	await host.reload();
 	expect(await consumer.callTool("read_skill", { name: "example" })).toMatchObject({
 		result: "Example skill instructions",

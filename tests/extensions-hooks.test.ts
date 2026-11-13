@@ -12,7 +12,7 @@ import type {
 } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
-import { guardRuntimeHooks } from "../src/runtime/guard.js";
+import { freezeProjection, guardRuntimeHooks } from "../src/runtime/guard.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { ToolBroker } from "../src/tools/broker.js";
@@ -232,16 +232,20 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(harness.getThinkingLevel()).toBe("high");
 	});
 
-	it("transforms context before sending request to provider", async () => {
+	it("injects runtime context through the Context Source port, not a request rewrite", async () => {
 		const host = new ExtensionHost();
-		host.onHook("turn.transformContext", (projection) => {
-			return {
-				projection: {
-					...projection,
-					messages: [...projection.messages, { role: "user", content: "【注入感知信息: 阳光明媚】" }],
-				},
-			};
-		});
+		const dispose = host.provideContext(
+			"ext:perception",
+			{
+				id: "weather",
+				kind: "observation",
+				read: () => ({
+					text: "阳光明媚",
+					source: { type: "weather", origin: "internal" },
+				}),
+			},
+			() => true,
+		);
 
 		let receivedMessages: any[] = [];
 		const pair = {
@@ -260,42 +264,69 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		});
 
 		await harness.run("你好");
+		dispose();
 
 		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(true);
+		// Source 注入是运行时参考消息：不属于历史，卸载后的下一请求不再出现。
+		await harness.run("再见");
+		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(false);
 	});
 
-	it("gives transforms an owned deeply-readonly projection snapshot", async () => {
+	it("projectHistory applies the single registered History View and freezes the boundary", async () => {
 		const host = new ExtensionHost();
-		let nestedFrozen = false;
-		host.onHook("turn.transformContext", (projection) => {
-			nestedFrozen = Object.isFrozen(projection.messages[0]);
-			expect(() => {
-				(projection.messages[0] as { content: string }).content = "mutated";
-			}).toThrow();
-			return undefined;
-		});
-		const input = testProjection([{ role: "user", content: "original" }]);
-		const result = await guardRuntimeHooks(createRuntimeHooks(host)).turn.transformContext(input);
-
-		expect(nestedFrozen).toBe(true);
-		expect(input.messages[0]?.content).toBe("original");
-		expect(result.messages[0]?.content).toBe("original");
+		const dispose = host.registerHistoryView(
+			"ext:compaction",
+			(history) => history.slice(-1),
+			() => true,
+		);
+		let inputFrozen = false;
+		const runtimeHooks: RuntimeHooks = {
+			...NO_RUNTIME_HOOKS,
+			history: {
+				project: (history) => {
+					inputFrozen = Object.isFrozen(history) && Object.isFrozen(history[0]);
+					return host.projectHistory(history);
+				},
+			},
+		};
+		const guarded = guardRuntimeHooks(runtimeHooks);
+		const history: ChatMsg[] = [
+			{ role: "user", content: "old" },
+			{ role: "assistant", content: "mid" },
+			{ role: "user", content: "new" },
+		];
+		const out = guarded.history.project(history);
+		expect(inputFrozen).toBe(true);
+		expect(out.map((m) => m.content)).toEqual(["new"]);
+		// 输出已冻结：hook 不得交付可变的历史序列。
+		expect(Object.isFrozen(out)).toBe(true);
+		dispose();
+		const identity = guarded.history.project(history);
+		expect(identity.map((m) => m.content)).toEqual(["old", "mid", "new"]);
 	});
 
-	it("passes already-guarded projections through the boundary without re-cloning", async () => {
+	it("allows only one History View owner; duplicate registration fails and dispose frees the slot", async () => {
 		const host = new ExtensionHost();
-		// hook 只透传（恒等变换）：入口已深冻结（marked），守卫不得再复制一份。
-		// 断言用的是标记穿透语义，返回类型上 DeepReadonly 断言回 RequestProjection。
-		host.onHook("turn.transformContext", (projection) => ({
-			projection: projection as unknown as RequestProjection,
-		}));
-		const guarded = guardRuntimeHooks(createRuntimeHooks(host));
-		const first = await guarded.turn.transformContext(testProjection([{ role: "user", content: "a" }]));
-		// 首次输出（未标记的 hook 自有对象 → copyProjection）必须已深冻结
-		expect(Object.isFrozen(first.messages[0])).toBe(true);
-		// 已标记投影二次过界：runner 链与 guard 之间零克隆、引用同一
-		const second = await guarded.turn.transformContext(first);
-		expect(second).toBe(first);
+		const first = host.registerHistoryView(
+			"ext:a",
+			(h) => h,
+			() => true,
+		);
+		expect(() =>
+			host.registerHistoryView(
+				"ext:b",
+				(h) => h,
+				() => true,
+			),
+		).toThrow(/只允许一个提供者/);
+		first();
+		const second = host.registerHistoryView(
+			"ext:b",
+			(h) => h,
+			() => true,
+		);
+		second();
+		expect(host.projectHistory([{ role: "user", content: "x" }])).toEqual([{ role: "user", content: "x" }]);
 	});
 
 	it("preflight receives the projection without cloning it when already guarded", async () => {
@@ -306,15 +337,15 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			return { action: "send" as const };
 		});
 		const guarded = guardRuntimeHooks(createRuntimeHooks(host));
-		const projection = testProjection([{ role: "user", content: "x" }]);
-		const first = await guarded.turn.transformContext(projection);
+		const projection = freezeProjection(testProjection([{ role: "user", content: "x" }]));
 		await guarded.turn.preflight({
-			projection: first,
+			projection,
+			history: [{ role: "user", content: "x" }],
 			measurement: { inputTokens: 1, kind: "approximate", source: "test" },
 			pass: 0,
 			signal: new AbortController().signal,
 		});
-		expect(received).toBe(first);
+		expect(received).toBe(projection);
 	});
 
 	it("aggregates preflight decisions as fail > rebuild > send and joins reasons", async () => {
@@ -324,6 +355,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host.onHook("turn.preflight", () => ({ action: "fail" as const, reason: "policy stop" }));
 		const result = await host.runPreflight({
 			projection: testProjection([{ role: "user", content: "input" }]),
+			history: [{ role: "user", content: "input" }],
 			measurement: { inputTokens: 10, kind: "approximate", source: "test" },
 			pass: 0,
 			signal: new AbortController().signal,
@@ -332,111 +364,10 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(result.reason).toBe("no objection；compaction needed；policy stop");
 	});
 
-	it("runs tail-phase transformContext handlers last regardless of registration order", async () => {
-		const host = new ExtensionHost();
-		const sequence: string[] = [];
-		const mark = (name: string) => () => {
-			sequence.push(name);
-			return undefined;
-		};
-		// tail 先注册：仍必须最后执行；非 tail 保持注册序。
-		host.onHook("turn.transformContext", mark("tailA"), { tail: true });
-		host.onHook("turn.transformContext", mark("normal1"));
-		host.onHook("turn.transformContext", mark("tailB"), { tail: true });
-		host.onHook("turn.transformContext", mark("normal2"));
-
-		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
-		await hooks.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
-		expect(sequence).toEqual(["normal1", "normal2", "tailA", "tailB"]);
-
-		// tail 注入者的产出在非 tail 注入者之后追加（链式聚合顺序）。
-		const host2 = new ExtensionHost();
-		host2.onHook("turn.transformContext", (projection) => ({
-			projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[normal]" }] },
-		}));
-		host2.onHook(
-			"turn.transformContext",
-			(projection) => ({
-				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[tail]" }] },
-			}),
-			{ tail: true },
-		);
-		const hooks2 = guardRuntimeHooks(createRuntimeHooks(host2));
-		const out = await hooks2.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
-		expect(out.messages.map((m) => m.content)).toEqual(["original", "[normal]", "[tail]"]);
-	});
-
-	it("passes frozen snapshots to transform handlers and accepts explicit replacements only", async () => {
-		const host = new ExtensionHost();
-		let frozen = false;
-		host.onHook("turn.transformContext", (projection) => {
-			frozen =
-				Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
-			return {
-				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "replacement" }] },
-			};
-		});
-		// P1-3 规则成文：clone+freeze 只发生在 guard 边界——所有 RuntimeHooks 出口
-		// （含 runner.runtimeHooks 旁路）统一过 guard，host.run* 是纯聚合器。
-		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
-		const transformed = await hooks.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
-		expect(frozen).toBe(true);
-		expect(transformed.messages.map((message) => message.content)).toEqual(["original", "replacement"]);
-	});
-
-	it("guards every RuntimeHooks implementation at the Subject boundary", async () => {
-		let inputFrozen = false;
-		let returned: Array<{ role: "user"; content: string }> | undefined;
-		let contextReturned!: () => void;
-		const contextReady = new Promise<void>((resolve) => {
-			contextReturned = resolve;
-		});
-		let releaseProvider!: () => void;
-		const providerGate = new Promise<void>((resolve) => {
-			releaseProvider = resolve;
-		});
-		const runtimeHooks: RuntimeHooks = {
-			...NO_RUNTIME_HOOKS,
-			turn: {
-				...NO_RUNTIME_HOOKS.turn,
-				transformContext: async (projection) => {
-					inputFrozen =
-						Object.isFrozen(projection) &&
-						Object.isFrozen(projection.messages) &&
-						Object.isFrozen(projection.messages[0]!);
-					returned = [{ role: "user", content: "replacement" }];
-					setTimeout(() => {
-						returned?.push({ role: "user", content: "late mutation" });
-						contextReturned();
-					}, 0);
-					return { ...projection, messages: returned };
-				},
-			},
-		};
-		let received = "";
-		const model = mockModel({ id: "guard-probe", name: "guard-probe" });
-		const stream: ModelStreamFn = async (_m, request, emit) => {
-			await providerGate;
-			received = request.messages.map((message) => message.content).join("\n");
-			emit({ kind: "finish", reason: "stop" });
-		};
-		const harness = SubjectHarness.create({ model, stream, runtimeHooks });
-		const run = harness.pushInput("original");
-		await contextReady;
-		releaseProvider();
-		await run;
-		await harness.waitForIdle();
-		expect(inputFrozen).toBe(true);
-		expect(received).toBe("replacement");
-	});
-
 	it("emits agent_start, turn_start, turn_end, agent_end, agent_settled", async () => {
 		const host = new ExtensionHost();
 		const sequence: string[] = [];
 
-		host.onHook("turn.prepare", () => {
-			sequence.push("turn.prepare");
-		});
 		host.on("agent_start", () => sequence.push("agent_start"));
 		host.on("turn_start", () => sequence.push("turn_start"));
 		host.on("turn_end", () => sequence.push("turn_end"));
@@ -452,7 +383,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 		await harness.run("测试生命周期");
 
-		expect(sequence).toEqual(["turn.prepare", "agent_start", "turn_start", "turn_end", "agent_end", "agent_settled"]);
+		expect(sequence).toEqual(["agent_start", "turn_start", "turn_end", "agent_end", "agent_settled"]);
 	});
 
 	it("keeps one active run through agent_end handlers and queues input received during settlement", async () => {
@@ -722,9 +653,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host.onHook("provider.transformHeaders", (input) => ({
 			headers: { ...input.headers, "X-Custom-Tenant": "tenant-123" },
 		}));
-		host.onHook("provider.transformPayload", (input) => {
-			return { payload: { ...(input.payload as Record<string, unknown>), custom_tag: "injected" } };
-		});
+		// 无通用 payload 变换：扩展不能在统一装配后偷改业务载荷（Headers 是传输凭据，保留）。
 
 		let afterResponseStatus = 0;
 		host.onHook("provider.observeResponse", (input) => {
@@ -779,7 +708,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 		expect(textOut).toBe("ok");
 		expect(receivedHeaders["x-custom-tenant"]).toBe("tenant-123");
-		expect(JSON.parse(receivedBody).custom_tag).toBe("injected");
+		expect(JSON.parse(receivedBody)).not.toHaveProperty("custom_tag");
 		expect(afterResponseStatus).toBe(200);
 	});
 
@@ -831,29 +760,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	});
 });
 
-describe("run-safety seams: prepare model swap and shouldStop", () => {
-	it("applies a model fact returned from turn.prepare with full setModel discipline", async () => {
-		const host = new ExtensionHost();
-		const baseModel = mockModel({ id: "base-model", name: "base" });
-		const nextModel = mockModel({ id: "next-model", name: "next" });
-		const events: string[] = [];
-		host.onHook("turn.prepare", () => ({ model: structuredClone(nextModel) }));
-		host.on("model_select", (event) => events.push(`model_select:${event.model}`));
-
-		const requested: string[] = [];
-		const stream: ModelStreamFn = async (model, _req, emit) => {
-			requested.push(model.id);
-			emit({ kind: "text", text: "ok" });
-			emit({ kind: "finish", reason: "stop" });
-		};
-		const harness = SubjectHarness.create({ model: baseModel, stream, runtimeHooks: createRuntimeHooks(host) });
-		await harness.run("hello");
-
-		expect(requested).toEqual(["next-model"]);
-		expect(harness.getModel().id).toBe("next-model");
-		expect(events).toEqual(["model_select:next"]);
-	});
-
+describe("run-safety seams: shouldStop", () => {
 	it("stops the tool loop between turns when an extension returns stop", async () => {
 		const host = new ExtensionHost();
 		host.onHook("turn.shouldStop", (input) => {

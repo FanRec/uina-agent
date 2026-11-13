@@ -94,7 +94,7 @@ const endpoint = api.shared("embodiment.endpoint:arm");
 
 registerProvider 与 registerModel 分别提供端点和能力事实；models.current/list/resolve/select/stream 使用公共模型入口，不接触凭据。能力未知时保持未知。
 
-压缩由官方 compaction capability 端到端拥有：checkpoint 经 appendEntry/auxiliary 持久化，正常的 turn.transformContext 把 raw prefix 投影成 summary + tail；超预算时 turn.preflight 请求 Core rebuild，不能直接修改已测量投影。journal 保留全量历史。`/compact` 空闲时立即执行，忙时在 turn.afterEnd 安全点执行。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
+压缩由官方 compaction capability 端到端拥有：checkpoint 经 appendEntry/auxiliary 持久化，`pi.registerHistoryView(view)` 把压缩后的可见历史（summary + tail）作为唯一提供者注册（每轮从 canonical 重新生成，只读无副作用）；超预算时 turn.preflight 请求 Core rebuild，不能直接修改已测量投影。journal 保留全量历史。`/compact` 空闲时立即执行，忙时在 turn.afterEnd 安全点执行。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
 
 registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、header/footer、overlay、输入对话框和编辑器操作通过 api.ui 使用。先判断 ui.hasUI()，无 UI 时不能把 select/input 的 undefined 或 confirm 的 false 当成人类答复。
 
@@ -102,9 +102,9 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 ## Hook 与贡献
 
-干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点：turn.prepare；纯 RequestProjection 链 turn.transformContext；只读决策 turn.preflight（fail > rebuild > send）；安全点 turn.afterEnd；turn.shouldStop；tools.beforeCall / transformResult；provider.transformHeaders / transformPayload / observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
+干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点：只读决策 turn.preflight（fail > rebuild > send）；安全点 turn.afterEnd；turn.shouldStop；tools.beforeCall / transformResult；provider.transformHeaders / observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
 
-只需追加上下文时返回 `{ projection: { ...projection, messages: [...projection.messages, 追加项] } }`。transform 必须无副作用：inspection 与真实发送会重复运行，不能消费事件、持久化或触发外部工作。后激活者收到前者输出；输入为深只读快照。注册时可传 `{ tail: true }`，tail 注册者恒排在非 tail 之后，用于瞬态尾部注入；可变世界状态不落 Session、不进 systemPrompt。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
+**扩展没有修改完整请求的通用通道**。要向模型提供信息，用 `pi.provideContext(source)`（见 docs/extensions.md 的 Context Source 一节）；要做历史裁剪，用 `pi.registerHistoryView(view)`（单一所有者，只读无副作用——inspection 与真实发送每轮从 canonical 重新生成视图，不能消费事件、持久化或触发外部工作）。不设 System 拼接、消息追加或工具筛选入口；provider 没有 payload 变换。
 
 ## 清理与验证
 

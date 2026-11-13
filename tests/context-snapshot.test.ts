@@ -13,12 +13,11 @@ describe("ContextSnapshot", () => {
 			"startup-context.mjs",
 			`
 			export default function activate(uina) {
-				uina.onHook("turn.transformContext", (projection) => ({
-					projection: {
-						...projection,
-						messages: [...projection.messages, { role: "user", content: "界".repeat(2000) }],
-					},
-				}));
+				uina.provideContext({
+					id: "startup",
+					kind: "observation",
+					read: () => ({ text: "界".repeat(2000), source: { type: "startup", origin: "internal" } }),
+				});
 			}
 		`,
 		);
@@ -75,13 +74,21 @@ describe("ContextSnapshot", () => {
 			release = resolve;
 		});
 		const extensions = new ExtensionHost();
-		extensions.onHook("turn.transformContext", async (projection) => {
-			if (projection.modelKey.endsWith("/old")) {
-				entered();
-				await oldRelease;
-			}
-			return undefined;
-		});
+		extensions.provideContext(
+			"probe",
+			{
+				id: "gate",
+				kind: "capability",
+				read: async ({ modelKey }: { modelKey: string }) => {
+					if (modelKey.endsWith("/old")) {
+						entered();
+						await oldRelease;
+					}
+					return { text: "ok", source: { type: "probe", origin: "internal" } };
+				},
+			},
+			() => true,
+		);
 		const harness = SubjectHarness.create({
 			model: mockModel({ id: "old", name: "old" }),
 			runtimeHooks: createRuntimeHooks(extensions),
@@ -113,16 +120,24 @@ describe("ContextSnapshot", () => {
 			release = resolve;
 		});
 		const extensions = new ExtensionHost();
-		extensions.onHook("turn.transformContext", async (projection) => {
-			const hasUser = projection.messages.some(
-				(message) => message.role === "user" && message.content === "active-input",
-			);
-			if (!hasUser) {
-				entered();
-				await staleRelease;
-			}
-			return undefined;
-		});
+		let reads = 0;
+		extensions.provideContext(
+			"probe",
+			{
+				id: "gate",
+				kind: "capability",
+				read: async () => {
+					reads++;
+					if (reads === 1) {
+						// 第一次 read 属于 idle inspection；真实请求装配会再次读取。
+						entered();
+						await staleRelease;
+					}
+					return { text: "ok", source: { type: "probe", origin: "internal" } };
+				},
+			},
+			() => true,
+		);
 		const harness = SubjectHarness.create({
 			model: mockModel({ id: "interleave", contextWindow: 100_000 }),
 			runtimeHooks: createRuntimeHooks(extensions),

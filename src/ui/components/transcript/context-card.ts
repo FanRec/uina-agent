@@ -1,18 +1,39 @@
 import type { ImageContent } from "../../../core/content.js";
 import { imageNotice } from "../../../core/content.js";
 import type { InputSource } from "../../../core/types.js";
-import type { InjectionProvenance } from "../../../runtime/events.js";
 import { C, stripAnsi, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { fitLine, wrapLine } from "../../layout/fit.js";
 
-export interface PromptContextCardData {
+/**
+ * /prompt 检查卡数据（信息注入体系）：只描述两类事实——
+ * - basis="prepared"：最近准备交给 Provider 的活动语义请求（可能尚无 Wire 摘要，
+ *   不虚称"已发送成功"）；
+ * - basis="preview"：按当前状态预测的预览（独立身份，纯读装配）。
+ */
+export interface PromptRequestCardData {
 	kind: "prompt";
 	id?: string;
-	turnNumber: number;
+	basis: "prepared" | "preview";
+	/** prepared 时是活动请求的 requestId；preview 时是独立预览 id。 */
+	requestId?: string;
+	modelKey: string;
 	systemPrompt: string;
-	injections: readonly InjectionProvenance[];
-	previousSystemPrompt?: string;
+	messageCount: number;
+	toolCount: number;
+	/** 预览请求携带测量；活动请求观察只携带装配事实，测量可能未获知。 */
+	measurement?: { inputTokens: number; kind: "exact" | "approximate" };
+	sources: readonly { owner: string; id: string; kind: string; status: string; reason?: string }[];
+	/** Provider Wire 摘要（实际准备发送载荷）；Provider 未接入观察时缺省，不得伪造。 */
+	wire?: { hash: string; bytes: number; messageCount?: number; toolCount?: number };
+}
+
+/** /prompt 的 Host 只读查询端口（UI 不直接 import Subject 或访问扩展 Registry）。 */
+export interface PromptPort {
+	/** 最近准备交给 Provider 的活动语义请求；无记录返回 undefined。 */
+	requestObservation(): Promise<PromptRequestCardData | undefined>;
+	/** 当前预览（纯读装配，未发送）。 */
+	inspectRequest(): Promise<PromptRequestCardData>;
 }
 
 export interface ExternalContextCardData {
@@ -24,7 +45,7 @@ export interface ExternalContextCardData {
 	images?: readonly ImageContent[];
 }
 
-export type ContextCardData = PromptContextCardData | ExternalContextCardData;
+export type ContextCardData = PromptRequestCardData | ExternalContextCardData;
 
 export class ContextCardComponent {
 	private expanded = false;
@@ -43,9 +64,10 @@ export class ContextCardComponent {
 		const boxWidth = Math.max(32, Math.min(width, 100));
 		const innerWidth = Math.max(1, boxWidth - 6);
 		const border = this.data.kind === "external" ? C.cyan : C.suggestion;
-		const title = this.data.kind === "external" ? "◇ 外部注入" : "◆ 提示词变更";
-		const state = this.data.kind === "external" ? this.externalTitle() : `第 ${this.data.turnNumber} 回合`;
-		const tag = ` ${title} · ${state} `;
+		const title =
+			this.data.kind === "external" ? "◇ 外部注入" : this.data.basis === "prepared" ? "◆ 最近请求准备" : "◆ 当前预览";
+		const state = this.data.kind === "external" ? this.externalTitle() : (this.data.requestId ?? "");
+		const tag = ` ${title}${state ? ` · ${state}` : ""} `;
 		const top = `  ${border}╭─${C.bold}${tag}${C.reset}${border}${"─".repeat(Math.max(2, boxWidth - visibleWidth(tag) - 5))}╮${C.reset}`;
 		const rows = this.data.kind === "external" ? this.externalRows(innerWidth) : this.promptRows(innerWidth);
 		const body = rows.map((row) => {
@@ -62,20 +84,44 @@ export class ContextCardComponent {
 	}
 
 	private promptRows(width: number): string[] {
-		const data = this.data as PromptContextCardData;
-		const rows = [
-			`${C.text}${data.systemPrompt.length}${C.reset} 字符 · ${data.injections.length} 个来源 · ${this.changeSummary()} ` +
-				`${C.dim}${this.expanded ? "收起" : "Ctrl+O 或 /prompt 查看全文"}${C.reset}`,
-		];
-		if (data.injections.length === 0) rows.push(`  ${C.inactive}└─ 无额外来源${C.reset}`);
+		const data = this.data as PromptRequestCardData;
+		const rows: string[] = [];
+		rows.push(
+			`${C.text}model ${C.reset}${data.modelKey} · ${C.text}${data.messageCount}${C.reset} 条语义消息 · ` +
+				`${C.text}${data.toolCount}${C.reset} 个工具 · ` +
+				(data.measurement
+					? `估算 ${data.measurement.inputTokens} tokens（${data.measurement.kind === "exact" ? "精确" : "近似"}）`
+					: "token 测量未获知"),
+		);
+		if (data.basis === "prepared") {
+			rows.push(
+				`  ${C.dim}这是最近准备交给 Provider 的语义请求；不证明已成功发送。可能早于扩展重载、回溯或模型切换。${C.reset}`,
+			);
+		} else {
+			rows.push(`  ${C.dim}这是按当前状态预测的预览（未发送）。${C.reset}`);
+		}
+		const included = data.sources.filter((s) => s.status === "included");
+		const others = data.sources.filter((s) => s.status !== "included");
+		if (included.length === 0 && others.length === 0) rows.push(`  ${C.inactive}└─ 无 Context Source 贡献${C.reset}`);
 		else {
-			data.injections.forEach((item, index) => {
-				const branch = index === data.injections.length - 1 ? "└─" : "├─";
-				rows.push(`  ${C.suggestion}${branch}${C.reset} ${item.extension} · ${injectionLabel(item)}`);
+			included.forEach((s, index) => {
+				const branch = index === included.length - 1 && others.length === 0 ? "└─" : "├─";
+				rows.push(`  ${C.suggestion}${branch}${C.reset} ${s.owner}/${s.id} · ${s.kind}`);
+			});
+			others.forEach((s, index) => {
+				const branch = index === others.length - 1 ? "└─" : "├─";
+				rows.push(
+					`  ${C.inactive}${branch}${C.reset} ${s.owner}/${s.id} · ${s.status}${s.reason ? ` · ${s.reason}` : ""}`,
+				);
 			});
 		}
+		rows.push(
+			data.wire
+				? `  ${C.dim}Wire 摘要：${data.wire.hash.slice(0, 12)}… · ${data.wire.bytes} bytes${data.wire.messageCount !== undefined ? ` · ${data.wire.messageCount} msgs` : ""}${data.wire.toolCount !== undefined ? ` · ${data.wire.toolCount} tools` : ""}${C.reset}`
+				: `  ${C.inactive}Wire 摘要：未提供${C.reset}`,
+		);
 		if (this.expanded) {
-			rows.push(`${C.dim}最终 system prompt${C.reset}`);
+			rows.push(`${C.dim}系统提示词（System 段）${C.reset}`);
 			for (const line of wrapLine(sanitizeRenderText(data.systemPrompt), Math.max(1, width - 2)))
 				rows.push(`  ${C.dim}${line}${C.reset}`);
 		}
@@ -93,25 +139,5 @@ export class ContextCardComponent {
 		if (this.expanded || lines.length <= 3) rows.push(...lines.map((line) => `  ${C.text}${line}${C.reset}`));
 		else rows.push(`  ${C.text}${lines.slice(0, 3).join(" ")}…${C.reset}`);
 		return rows;
-	}
-
-	private changeSummary(): string {
-		const data = this.data as PromptContextCardData;
-		if (data.previousSystemPrompt === undefined) return "首次建立";
-		const delta = data.systemPrompt.length - data.previousSystemPrompt.length;
-		return `正文${delta === 0 ? "有变化" : `${delta > 0 ? "+" : ""}${delta} 字符`}`;
-	}
-}
-
-function injectionLabel(item: InjectionProvenance): string {
-	switch (item.kind) {
-		case "messages":
-			return `${item.messageCount ?? 0} 条消息 · ${item.chars} 字符`;
-		case "systemPrompt":
-			return `系统提示词 · ${item.chars} 字符`;
-		case "projection":
-			return `投影${item.preview ? ` · ${item.preview}` : ""}`;
-		default:
-			return item.preview || item.kind;
 	}
 }

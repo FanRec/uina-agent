@@ -33,21 +33,22 @@ export default async function activate(api: ExtensionAPI): Promise<void> {
 		}
 	}
 	api.registerService("skills.discover/v1", discover);
-	api.onHook("turn.prepare", async () => {
-		const skills = await api.callService<Skill[]>("skills.discover/v1", null, { signal: api.signal });
-		if (!skills.length) return undefined;
-		return {
-			messages: [
-				{
-					role: "user",
-					content:
-						"[Available skills]\n" +
-						skills.map((s) => s.name + ": " + s.path).join("\n") +
-						"\nUse read_skill to read instructions when relevant.",
-				},
-			],
-		};
-	});
+	// 信息注入体系：可发现的 Skill 索引注册为轻量 capability（激活时发现一次并缓存；
+	// read 是纯读，不消费状态）。完整 SKILL.md 继续由 read_skill 按需打开。
+	const cached = await discover();
+	if (cached.length > 0) {
+		api.provideContext({
+			id: "capability",
+			kind: "capability",
+			read: () => ({
+				text:
+					"[Available skills]\n" +
+					cached.map((s) => s.name + ": " + s.path).join("\n") +
+					"\nUse read_skill to read instructions when relevant.",
+				source: { type: "skills.index", origin: "internal" },
+			}),
+		});
+	}
 	api.registerTool({
 		def: {
 			type: "function",

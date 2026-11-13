@@ -56,13 +56,10 @@ describe("event frame compaction", () => {
 			},
 		});
 		await runner.activateBuiltin("compaction", activateCompaction);
-		const input = [
-			{ role: "system" as const, content: "system" },
-			...frame("e1", "OLD ".repeat(1600)),
-			...frame("e2", "current request"),
-		];
-		const base = projection(input);
-		const first = await runner.runTransformContext(base);
+		// History View 的输入是纯历史（不含 System）；System 由 Subject 装配进投影。
+		const historyInput = [...frame("e1", "OLD ".repeat(1600)), ...frame("e2", "current request")];
+		const firstView = runner.projectHistory(historyInput);
+		const first = projection([{ role: "system" as const, content: "system" }, ...firstView]);
 		const measurement = {
 			inputTokens: estimateRequestTokens(first.messages, first.tools),
 			kind: "approximate" as const,
@@ -70,12 +67,14 @@ describe("event frame compaction", () => {
 		};
 		const decision = await runner.runPreflight({
 			projection: first,
+			history: firstView,
 			measurement,
 			pass: 0,
 			signal: new AbortController().signal,
 		});
 		expect(decision.action).toBe("rebuild");
-		const out = (await runner.runTransformContext(base)).messages;
+		// rebuild 从 canonical 重新生成历史视图（不在上轮输出上二次叠加）。
+		const out = [{ role: "system" as const, content: "system" }, ...runner.projectHistory(historyInput)];
 		expect(() => p.validateContext!(out, { model: scenario.model, tools: [EVENT_FRAME_TOOL] })).not.toThrow();
 		expect(out.some((m) => m.content.startsWith("[历史摘要]"))).toBe(true);
 		expect(out.some((m) => m.context?.input?.eventId === "e1")).toBe(false);
@@ -125,21 +124,22 @@ describe("event frame compaction", () => {
 		const plain = await open();
 		try {
 			const plainBase = projection(messages);
-			const plainFirst = await plain.runner.runTransformContext(plainBase);
 			const plainMeasurement = {
 				inputTokens: inputTokenBudget({ contextWindow: window })!,
 				kind: "approximate" as const,
 				source: "test",
 			};
 			const plainDecision = await plain.runner.runPreflight({
-				projection: plainFirst,
+				projection: plainBase,
+				history: messages,
 				measurement: plainMeasurement,
 				pass: 0,
 				signal: new AbortController().signal,
 			});
 			expect(plainDecision.action).toBe("send");
-			const unchanged = (await plain.runner.runTransformContext(plainBase)).messages;
-			expect(unchanged).toEqual(messages);
+			// 历史预算充足：History View 是 identity（同一引用），零摘要、零请求。
+			const unchanged = plain.runner.projectHistory(messages);
+			expect(unchanged).toBe(messages);
 			expect(plain.scenario.calls).toHaveLength(0);
 		} finally {
 			await plain.runner.dispose();
@@ -147,20 +147,20 @@ describe("event frame compaction", () => {
 		const armed = await open();
 		try {
 			const armedBase = { ...projection(messages), tools: requestToolDefs([], [EVENT_FRAME_TOOL]) };
-			const armedFirst = await armed.runner.runTransformContext(armedBase);
 			const armedMeasurement = {
 				inputTokens: inputTokenBudget({ contextWindow: window })! + 1,
 				kind: "approximate" as const,
 				source: "test",
 			};
 			const armedDecision = await armed.runner.runPreflight({
-				projection: armedFirst,
+				projection: armedBase,
+				history: messages,
 				measurement: armedMeasurement,
 				pass: 0,
 				signal: new AbortController().signal,
 			});
 			expect(armedDecision.action).toBe("rebuild");
-			const trimmed = (await armed.runner.runTransformContext(armedBase)).messages;
+			const trimmed = armed.runner.projectHistory(messages);
 			expect(armed.scenario.calls.length).toBeGreaterThanOrEqual(1);
 			expect(trimmed.some((message) => message.content.includes("[历史摘要]"))).toBe(true);
 		} finally {

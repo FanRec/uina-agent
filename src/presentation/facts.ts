@@ -14,7 +14,7 @@ import type {
 	ThinkingLevel,
 	ToolResultStatus,
 } from "../core/types.js";
-import type { DeepReadonly, InjectionProvenance } from "../runtime/events.js";
+import type { DeepReadonly } from "../runtime/events.js";
 
 export type FactOrigin = "live" | "replay";
 
@@ -69,12 +69,6 @@ export type FactPayload =
 	  }
 	| { readonly kind: "usage.reported"; readonly usage: RequestUsage; readonly estimated: boolean }
 	| { readonly kind: "context.updated"; readonly snapshot: ContextSnapshot }
-	| {
-			readonly kind: "context.prepared";
-			readonly turn: number;
-			readonly systemPrompt: string;
-			readonly injections: readonly InjectionProvenance[];
-	  }
 	| { readonly kind: "model.selected"; readonly model: string }
 	| { readonly kind: "thinking.selected"; readonly level: ThinkingLevel }
 	| { readonly kind: "compaction.started"; readonly operationId: string }

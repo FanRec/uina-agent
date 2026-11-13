@@ -85,19 +85,6 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 		case "context_update":
 			return [live({ kind: "context.updated", snapshot: event.snapshot }, at)];
 
-		case "context_prepare":
-			return [
-				live(
-					{
-						kind: "context.prepared",
-						turn: event.turnNumber,
-						systemPrompt: sanitizeExternal(event.systemPrompt),
-						injections: event.injections.map((item) => ({ ...item, preview: sanitizeExternal(item.preview) })),
-					},
-					at,
-				),
-			];
-
 		case "model_select":
 			return [live({ kind: "model.selected", model: event.model }, at)];
 

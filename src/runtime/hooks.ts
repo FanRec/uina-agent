@@ -4,17 +4,20 @@ import type {
 	ContextCollection,
 	ContextRead,
 	FinishReason,
-	Model,
 	RequestProjection,
-	ThinkingLevel,
 	TokenMeasurement,
 	ToolResultStatus,
 } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 
+/**
+ * Provider 协议观察与 Header 注入的窄端口。
+ * 没有 payload 变换：Provider Wire 编码归 Provider Adapter 所有，扩展不得在
+ * 统一装配与预算校验之后偷改消息或工具声明（Header 注入是传输凭据，不属于
+ * Context 注入，予以保留）。
+ */
 export interface ProviderHooks {
 	transformHeaders(provider: string, headers: Readonly<Record<string, string>>): Promise<Record<string, string>>;
-	transformPayload(provider: string, payload: DeepReadonly<unknown>): Promise<unknown>;
 	observeResponse(
 		input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>,
 	): Promise<void>;
@@ -27,27 +30,28 @@ export interface ProviderHooks {
  * Event = 系统告诉世界"这件事已经发生了"——无返回值，单流广播（RuntimeEvent）。
  * 干预注册只能用这里的名字（onHook），事实订阅只能用 RuntimeEvent 的 type（on）。
  * 两个词表不得混居：混居会让扩展作者无法分辨自己在影响系统还是在观察系统。
+ *
+ * 信息注入体系：扩展提供信息走 provideContext（Context Source）与 registerHistoryView
+ * （History View），不存在修改完整请求的通用 Hook。
  */
 export type HookName =
-	| "turn.prepare"
-	| "turn.transformContext"
 	| "turn.preflight"
 	| "turn.afterEnd"
 	| "turn.shouldStop"
 	| "tools.beforeCall"
 	| "tools.transformResult"
 	| "provider.transformHeaders"
-	| "provider.transformPayload"
 	| "provider.observeResponse";
 
 /** 各干预注册点的输入（只读化由 HookHandler 统一施加，形状与 RuntimeHooks 对应方法的入参一致）。 */
 export interface HookInputs {
-	"turn.prepare": { readonly prompt: string; readonly systemPrompt: string };
-	"turn.transformContext": RequestProjection;
 	/** signal = 当前主体活动的取消信号（preflight 为 turn signal，afterEnd 为 post-turn
 	 * signal）。长 IO 工作必须监听它；它与扩展生命周期信号（pi.signal）正交。 */
 	"turn.preflight": {
 		readonly projection: RequestProjection;
+		/** 本次装配实际采用的 History View（压缩后可见历史）：不含 System、Guidance、
+		 * 当前动态 Source 与工具定义。预算规划据此进行，不得从完整投影里反猜历史。 */
+		readonly history: readonly ChatMsg[];
 		readonly measurement: TokenMeasurement;
 		readonly pass: number;
 		readonly signal: AbortSignal;
@@ -81,7 +85,6 @@ export interface HookInputs {
 		readonly details?: unknown;
 	};
 	"provider.transformHeaders": { readonly provider: string; readonly headers: Readonly<Record<string, string>> };
-	"provider.transformPayload": { readonly provider: string; readonly payload: unknown };
 	"provider.observeResponse": {
 		readonly provider: string;
 		readonly status: number;
@@ -94,13 +97,6 @@ export interface HookInputs {
  * RuntimeHooks 对应方法的返回值 = 所有扩展贡献按合并规则聚合后的结果。
  */
 export interface HookContributions {
-	"turn.prepare": {
-		readonly messages?: readonly ChatMsg[];
-		readonly systemPrompt?: string;
-		readonly model?: Model;
-		readonly thinkingLevel?: ThinkingLevel;
-	};
-	"turn.transformContext": { readonly projection?: RequestProjection | DeepReadonly<RequestProjection> };
 	"turn.preflight": { readonly action?: "send" | "rebuild" | "fail"; readonly reason?: string };
 	"turn.afterEnd": Record<string, never>;
 	"turn.shouldStop": { readonly stop?: boolean };
@@ -111,7 +107,6 @@ export interface HookContributions {
 		readonly details?: unknown;
 	};
 	"provider.transformHeaders": { readonly headers?: Record<string, string> };
-	"provider.transformPayload": { readonly payload?: unknown };
 	"provider.observeResponse": void;
 }
 
@@ -125,14 +120,11 @@ export type HookHandler<K extends HookName> = (
  *
  * | hook                        | 合并规则                                   |
  * | --------------------------- | ------------------------------------------ |
- * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加 |
- * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
  * | turn.preflight              | 归并：fail > rebuild > send；只读投影决策    |
  * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
  * | tools.beforeCall            | 短路：任一 block=true 即拦截，后续不再询问      |
  * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖（status 除外——执行事实由流水线独占） |
  * | provider.transformHeaders   | 链式：后一个收到前一个的输出，整组替换          |
- * | provider.transformPayload   | 链式：后一个收到前一个的输出，整组替换          |
  * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
  */
 
@@ -143,30 +135,25 @@ export function warnIgnoredToolStatus(contribution: object | null | undefined): 
 	}
 }
 
+/**
+ * History View（压缩后可见历史）合同：输入是 canonical history 经现有 ProjectionPolicy
+ * convertToLlm（含历史 Event Frame）之后的 History 消息；输出必须是合法的 History 消息
+ * 序列。只读、同步、无副作用：不更新 Checkpoint、不提交候选、不发事件。
+ */
+export type HistoryView = (history: readonly ChatMsg[]) => readonly ChatMsg[];
+
 export interface RuntimeHooks {
+	/** 历史投影窄端口：Subject 在装配前取得可见历史；无提供者时为 identity。
+	 * 单一所有者（同一 Host 只允许一个提供者），由 Compaction 等 History 形塑者注册。 */
+	readonly history: {
+		project(history: readonly ChatMsg[]): readonly ChatMsg[];
+	};
 	readonly turn: {
-		/**
-		 * 回合边界准备：可注入消息、改写 systemPrompt，也可直接给出新的 Model 事实
-		 * 或 thinking 档位（Subject 在安全点以 setModel 的完整纪律应用：失效 usage 锚、
-		 * 广播 model_select）。对应 Pi 的 prepareNextTurn。
-		 */
-		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<
-			Readonly<{
-				messages?: readonly ChatMsg[];
-				systemPrompt?: string;
-				model?: Model;
-				thinkingLevel?: ThinkingLevel;
-				/** 聚合层登记的逐扩展贡献 provenance（观测事实，与合并结果同源，见 InjectionProvenance）。 */
-				injections?: readonly import("./events.js").InjectionProvenance[];
-			}>
-		>;
-		/** Pure projection transform. Handlers must not consume events, persist state or
-		 * perform external effects merely because inspection ran. */
-		transformContext(projection: DeepReadonly<RequestProjection>): Promise<RequestProjection>;
 		/** Read-only post-measurement decision. Core applies fail > rebuild > send. */
 		preflight(
 			input: Readonly<{
 				projection: DeepReadonly<RequestProjection>;
+				history: readonly ChatMsg[];
 				measurement: TokenMeasurement;
 				pass: number;
 				readonly signal: AbortSignal;
@@ -210,10 +197,10 @@ export interface RuntimeHooks {
 	};
 	readonly provider: ProviderHooks;
 	/**
-	 * Context Source 只读端口（信息注入重构）：收集当前激活扩展注册的 Source 快照。
+	 * Context Source 只读端口：收集当前激活扩展注册的 Source 快照。
 	 * 不是 Hook 链——没有 onHook 注册入口，扩展经 provideContext 注册、Registry 持有；
 	 * collect 每次调用固定注册快照、按 Source 身份稳定返回，单 Source 失败不阻断其余。
-	 * 调用方（Request Composer）在旧 transformContext 之后、测量/预检之前调用一次。
+	 * 调用方（Request Composer 链）在 History View 与工具声明之后、测量/预检之前调用一次。
 	 */
 	readonly context: {
 		collect(input: Readonly<ContextRead>): Promise<ContextCollection>;

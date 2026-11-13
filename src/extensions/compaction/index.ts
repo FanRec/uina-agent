@@ -53,20 +53,8 @@ interface StreamMessageView {
 	readonly tool_calls?: readonly { readonly name: string; readonly args?: unknown }[];
 }
 
-export function isRuntimePerception(message: Pick<StreamMessageView, "context">): boolean {
-	const source = message.context?.input?.source;
-	return (
-		message.context?.kind === "runtime.perception" ||
-		(source?.kind === "runtime" && source.origin === "internal" && source.type === "runtime.perception")
-	);
-}
-
-export function filterCompactionMessages<T extends StreamMessageView>(messages: readonly T[]): T[] {
-	return messages.filter((message) => !isRuntimePerception(message));
-}
-
 /** 估算口径必须与 preflight 测量（measureRequestContext）及真实发送
- * （loop buildContext 的 model.thinkingReplay）一致。 */
+ * （loop prepareProjection 的 model.thinkingReplay）一致。 */
 export function estimateStreamTokens(messages: readonly StreamMessageView[], countThinking = false): number {
 	return estimateRequestTokens(messages as readonly ChatMsg[], [], countThinking);
 }
@@ -94,36 +82,11 @@ export function semanticUnits(
 
 /**
  * 寻找保留尾部的切分边界。
- * @param messages 过滤掉 runtime perception 的上下文消息序列
+ * @param messages History View（明确的可见历史；不含 System/Guidance/动态 Source）
  * @param targetKeepTokens 期望保留的最近历史 token 数（如 20_000，或小窗口下的安全预算）
  * @param countThinking 是否包含 thinking token
  * @param maxTailBudget 尾部单步/结果允许占用的最大上下文上限（防止最新单步超窗口，缺省为 targetKeepTokens）
  */
-/**
- * 固定扩展前缀（runtime.guidance）不是历史：它在每次请求装配时重新出现在 System
- * 之后，Compaction 不能把它当可裁剪历史，也不能把它的成本当作可释放预算。
- * 返回剔除前缀后的裁剪视图与前缀成本（token 估算，与 perceptionCost 同口径）。
- */
-export function splitGuidancePrefix<T extends StreamMessageView>(
-	messages: readonly T[],
-): { history: T[]; guidanceCostTokens: number } {
-	let hasPrefix = false;
-	const prefix: T[] = [];
-	const history: T[] = [];
-	for (const message of messages) {
-		if (message.context?.kind === "runtime.guidance") {
-			hasPrefix = true;
-			prefix.push(message);
-		} else {
-			history.push(message);
-		}
-	}
-	return {
-		history,
-		guidanceCostTokens: hasPrefix ? estimateRequestTokens(prefix as readonly ChatMsg[], []) : 0,
-	};
-}
-
 export function findTrimBoundary(
 	messages: readonly StreamMessageView[],
 	targetKeepTokens: number,
@@ -131,20 +94,16 @@ export function findTrimBoundary(
 	maxTailBudget?: number,
 ): number | null {
 	if (estimateStreamTokens(messages, countThinking) <= targetKeepTokens) return null;
-	let systemEnd = 0;
-	while (messages[systemEnd]?.role === "system") systemEnd++;
-	const systemTokens = estimateStreamTokens(messages.slice(0, systemEnd), countThinking);
-
 	const tailCeiling = maxTailBudget ?? targetKeepTokens;
 	let accumulatedTokens = 0;
 	let keepFrom = messages.length;
-	const units = semanticUnits(messages, countThinking).filter((u) => u.start >= systemEnd);
+	const units = semanticUnits(messages, countThinking);
 
 	for (let i = units.length - 1; i >= 0; i--) {
 		const unit = units[i]!;
-		// 如果最新单步（第一项）本身超过了 targetKeepTokens，只要它仍落在整个上下文可用预算内即可保留
+		// 如果最新单步（第一项）本身超过了 targetKeepTokens，只要它仍落在历史可用预算内即可保留
 		if (accumulatedTokens === 0 && unit.tokens > targetKeepTokens) {
-			if (systemTokens + unit.tokens > tailCeiling) {
+			if (unit.tokens > tailCeiling) {
 				throw new Error(`最新单步上下文或工具结果已超过预算（budget=${tailCeiling}），无法安全截取历史`);
 			}
 			keepFrom = unit.start;
@@ -163,32 +122,22 @@ export function findTrimBoundary(
 	if (keepFrom >= messages.length) {
 		throw new Error(`最新单步上下文或工具结果已超过预算（budget=${tailCeiling}），无法安全截取历史`);
 	}
-	return keepFrom > systemEnd ? keepFrom : null;
+	return keepFrom > 0 ? keepFrom : null;
 }
 
+/** 把现役 Checkpoint 应用到明确的 History View：摘要插入历史首位，尾部从
+ * tailStartsAtEntryId 起原样保留（Event Frame 分组与真实工具对不拆散）。
+ * 边界失效（历史被回溯/截断）返回 undefined，调用方退回 identity。 */
 function renderCheckpoint<T extends StreamMessageView>(
 	messages: readonly T[],
 	checkpoint: CompactionCheckpoint,
 ): Array<T | { role: "user"; content: string; context: { kind: string } }> | undefined {
 	const tailIndex = messages.findIndex((message) => message.context?.entryId === checkpoint.tailStartsAtEntryId);
 	if (tailIndex < 0) return undefined;
-	let systemEnd = 0;
-	while (messages[systemEnd]?.role === "system") systemEnd++;
 	return [
-		...messages.slice(0, systemEnd),
 		{ ...summaryMessage(checkpoint.summary), context: { kind: SUMMARY_ENTRY_TYPE } },
 		...messages.slice(tailIndex),
 	];
-}
-
-function compactedMessages<T extends StreamMessageView>(
-	source: readonly T[],
-	checkpoint: CompactionCheckpoint,
-): Array<T | { role: "user"; content: string; context: { kind: string } }> | undefined {
-	const perception = source.filter((message) => isRuntimePerception(message)) as T[];
-	const rendered = renderCheckpoint(filterCompactionMessages(source), checkpoint);
-	if (!rendered) return undefined;
-	return [...rendered, ...perception];
 }
 
 function requestBearing(entries: readonly HydratedSessionEntry[]): HydratedSessionEntry[] {
@@ -675,26 +624,21 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			});
 		await emitProgress(operationId, "planning");
 		if (inspection.inputBudget === undefined) throw new Error("当前模型上下文窗口未知，无法安全压缩");
-		const messages = filterCompactionMessages(inspection.projection.messages as readonly StreamMessageView[]);
+		// 明确的历史视图：不含 System、固定 Guidance、当前动态 Source——不从这里之外的
+		// 消息里按 role/kind 反猜历史。非历史部分（System + Guidance + 当前动态 Source）
+		// 与工具声明是每次请求重新出现的固定开销，先从预算里预留。
+		const history = inspection.history as readonly StreamMessageView[];
+		const historySet = new Set<unknown>(inspection.history);
+		const nonHistory = inspection.projection.messages.filter((message) => !historySet.has(message));
 		const toolCost = estimateRequestTokens([], inspection.projection.tools);
-		const perceptionCost = estimateRequestTokens(
-			inspection.projection.messages.filter((m) => isRuntimePerception(m as StreamMessageView)) as readonly ChatMsg[],
-			[],
-		);
-		// 固定扩展前缀不参与裁剪映射，但成本必须从消息预算里预留（每次请求都会重新出现）。
-		const { history: trimmable, guidanceCostTokens } = splitGuidancePrefix(messages);
-		// perception 与固定前缀不参与裁剪但会重新出现，必须先从消息预算里扣掉。
-		const messageBudget = Math.max(0, inspection.inputBudget - toolCost - perceptionCost - guidanceCostTokens);
+		const nonHistoryCost = estimateRequestTokens(nonHistory as readonly ChatMsg[], []);
 		const countThinking = (pi.models.current().thinkingReplay ?? "none") !== "none";
-		// system prompt 每次请求都在，必须先从保留尾预算里扣掉，否则大 prompt 会让
-		// system + 摘要 + 尾部在重建时超出输入预算。摘要至少保留截断标记的固定开销，
-		// 摘要正文不足时按 summaryBudget 截断，不再为它预留整块预算挤掉尾部。
-		let systemEnd = 0;
-		while (trimmable[systemEnd]?.role === "system") systemEnd++;
-		const systemCost = estimateStreamTokens(trimmable.slice(0, systemEnd), countThinking);
-		const trimBudget = Math.max(0, messageBudget - TRUNCATION_OVERHEAD);
-		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, Math.max(0, trimBudget - systemCost));
-		const boundary = findTrimBoundary(trimmable, targetKeepTokens, countThinking, trimBudget);
+		// 历史可用预算 = 输入预算 − 固定开销 − 工具声明；摘要至少保留截断标记的固定开销，
+		// 摘要正文不足时按 summaryBudget 截断，不为它预留整块预算挤掉尾部。
+		const historyBudget = Math.max(0, inspection.inputBudget - toolCost - nonHistoryCost);
+		const trimBudget = Math.max(0, historyBudget - TRUNCATION_OVERHEAD);
+		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, trimBudget);
+		const boundary = findTrimBoundary(history, targetKeepTokens, countThinking, trimBudget);
 		if (boundary === null) {
 			await pi.emitEvent({
 				type: "session_compact",
@@ -705,20 +649,20 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			return "noop";
 		}
 		const coverTarget = boundary;
-		const coveredIds = entryIds(trimmable, 0, coverTarget);
-		const tailIds = entryIds(trimmable, coverTarget, trimmable.length);
+		const coveredIds = entryIds(history, 0, coverTarget);
+		const tailIds = entryIds(history, coverTarget, history.length);
 		const previous = activeCheckpoint();
 		const coveredThroughEntryId = coveredIds.at(-1) ?? previous?.coveredThroughEntryId;
 		const tailStartsAtEntryId = tailIds[0];
 		if (!coveredThroughEntryId || !tailStartsAtEntryId) throw new Error("无法将压缩边界映射到 canonical history");
 
-		const history = pi.history();
-		const tailEntryIndex = history.findIndex((entry) => entry.id === tailStartsAtEntryId);
+		const entries = pi.history();
+		const tailEntryIndex = entries.findIndex((entry) => entry.id === tailStartsAtEntryId);
 		if (tailEntryIndex < 0)
 			throw new Error(
-				`无法将压缩边界唯一映射到 canonical history（tail=${tailStartsAtEntryId}, covered=${coveredThroughEntryId}, entries=${history.map((entry) => entry.id).join(",")})`,
+				`无法将压缩边界唯一映射到 canonical history（tail=${tailStartsAtEntryId}, covered=${coveredThroughEntryId}, entries=${entries.map((entry) => entry.id).join(",")})`,
 			);
-		const prefixBearing = requestBearing(history);
+		const prefixBearing = requestBearing(entries);
 		const coveredBearingIndex = prefixBearing.findIndex((entry) => entry.id === coveredThroughEntryId);
 		if (coveredBearingIndex < 0)
 			throw new Error(
@@ -733,8 +677,9 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const lastActivityChars = { thinking: 0, text: 0 };
 		let summary = await requestSummary(
 			pi,
-			// coverTarget 是裁剪视图（trimmable）的索引：固定前缀不是历史，不进摘要输入。
-			trimmable.slice(0, coverTarget),
+			// coverTarget 是历史视图的索引：非历史部分（System/Guidance/动态 Source）不在
+			// 摘要输入里。
+			history.slice(0, coverTarget),
 			instruction,
 			signal ?? pi.signal,
 			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
@@ -750,8 +695,8 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		);
 
 		// 计算摘要可用的精确上限，保证重建请求 100% 落入可用预算
-		const tailCost = estimateStreamTokens(trimmable.slice(coverTarget), countThinking);
-		const summaryBudget = messageBudget - systemCost - tailCost - REBUILD_HEADROOM_TOKENS;
+		const tailCost = estimateStreamTokens(history.slice(coverTarget), countThinking);
+		const summaryBudget = historyBudget - tailCost - REBUILD_HEADROOM_TOKENS;
 		const maxSummaryMessageTokens = Math.max(TRUNCATION_OVERHEAD, Math.min(MAX_SUMMARY_MESSAGE_TOKENS, summaryBudget));
 		if (summaryMessageTokens(summary) > maxSummaryMessageTokens) {
 			summary = truncateSummary(summary, maxSummaryMessageTokens);
@@ -768,7 +713,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				coveredBearingIndex,
 				source: reason,
 				tokensBefore: inspection.measurement.inputTokens,
-				retainedTailEntries: history.length - tailEntryIndex,
+				retainedTailEntries: entries.length - tailEntryIndex,
 			},
 		};
 		await emitProgress(operationId, "measuring", "重建并测量压缩后的请求");
@@ -906,18 +851,18 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		return undefined;
 	});
 
-	pi.onHook("turn.transformContext", async (projection) => {
-		const source = projection.messages as readonly StreamMessageView[];
+	// History View（信息注入体系）：压缩是唯一的历史形塑者。只读、无副作用——
+	// 不更新 Checkpoint、不提交候选；inspectRequest 与真实请求都可安全调用。
+	// 每轮装配从 canonical 重建历史视图，不存在"在上轮输出上二次压缩"。
+	pi.registerHistoryView((history) => {
 		// activeCheckpoint() 内部已做有效性校验；这里再校验一次会让每请求多算一遍
 		// 38MB 历史的前缀哈希（实测 ~200ms）。staged 候选由本扩展自己构造，无需校验。
 		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
-		if (!checkpoint) return undefined;
-		const messages = compactedMessages(source, checkpoint);
-		if (!messages) return undefined;
-		return { projection: { ...projection, messages: [...messages] } as RequestProjection };
+		if (!checkpoint) return history;
+		return renderCheckpoint(history, checkpoint) ?? history;
 	});
 
-	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {
+	pi.onHook("turn.preflight", async ({ projection, history, measurement, pass, signal }) => {
 		const budget = inputTokenBudget(pi.models.current(), projection.thinkingLevel);
 		if (pass > 0 && staged) {
 			const candidateId = staged.operationId;
@@ -937,6 +882,8 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		try {
 			const inspection: RequestInspection = {
 				projection: projection as RequestProjection,
+				// guard 已深冻结该视图；DeepReadonly 视图与 ChatMsg 结构同形，收口为合同类型。
+				history: history as readonly ChatMsg[],
 				measurement,
 				contextWindow: pi.models.current().contextWindow,
 				inputBudget: budget,

@@ -14,6 +14,8 @@ import type { UIHost } from "./ui-host.js";
 
 export interface UIFeatureOptions {
 	sessionPort?: SessionAccess;
+	/** /prompt 的 Host 只读查询端口（最近准备请求 + 当前预览）。未提供时 /prompt 明确不可用。 */
+	promptPort?: import("./components/transcript/context-card.js").PromptPort;
 }
 
 export function installUIFeatures(
@@ -119,17 +121,21 @@ export function installUIFeatures(
 			),
 		);
 
-	register("prompt", (action) =>
+	register("prompt", (action) => {
+		if (!options.promptPort) {
+			host.notify("/prompt 不可用：宿主未提供请求检查端口", "warning");
+			return;
+		}
 		host.showPanel(
 			"prompt",
 			(close) => {
-				const view = new PromptOverlay(host.getPromptSnapshot());
+				const view = new PromptOverlay(options.promptPort!);
 				view.onClose = close;
 				return view;
 			},
 			action.signal,
-		),
-	);
+		);
+	});
 
 	return {
 		dispose: () => {

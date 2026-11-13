@@ -3,7 +3,7 @@ import type { ProjectionPolicy } from "../../agent/projection.js";
 import { projectEventFrames } from "./projection.js";
 import { assertEventFrameContext, EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL, isEventFrame } from "./protocol.js";
 
-export { appendEventFrame, contentAddressedEventId, eventFrameMessages } from "./projection.js";
+export { contentAddressedEventId, eventFrameMessages, projectEventFrames } from "./projection.js";
 export {
 	assertEventFrameContext,
 	EVENT_FRAME_PROMPT,

@@ -3,12 +3,12 @@ import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
 import type { ChatMsg, InputSource } from "../src/core/types.js";
 import {
-	appendEventFrame,
 	assertEventFrameContext,
 	EVENT_FRAME_TOOL,
 	EVENT_FRAME_TOOL_NAME,
 	eventFrameMessages,
 	frameCallId,
+	projectEventFrames,
 } from "../src/extensions/event-frames/index.js";
 import type { ImageContent } from "../src/core/content.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
@@ -90,14 +90,12 @@ describe("event frame on the provider wire", () => {
 	});
 
 	it("Anthropic：帧落在首位时降级成 user 消息，不会以 assistant 开场", () => {
-		const messages = appendEventFrame([{ role: "system", content: "你是 Uina。" }], {
-			eventId,
-			text: hostileText,
-			source: operator,
-			receivedAt,
-		});
+		// 历史投影的第一条外部输入先做首位降级判断：只有 system 时不能合成工具对。
+		const messages = projectEventFrames([
+			{ role: "user", content: hostileText, input: { eventId, source: operator, receivedAt } },
+		] as never[]) as ChatMsg[];
 		const wire = anthropicMessages({
-			messages: messages as ChatMsg[],
+			messages,
 			providerHooks: NO_RUNTIME_HOOKS.provider,
 		}) as Array<{ role: string; content: unknown }>;
 

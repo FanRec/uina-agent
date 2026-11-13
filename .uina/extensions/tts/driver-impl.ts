@@ -41,11 +41,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 	private observedAt?: number;
 	private lastError?: { stage: string; reason: string; observedAt: number };
 	private admissionTail: Promise<void> = Promise.resolve();
-	private onFact?: (fact: {
-		kind: "delivery_failed" | "delivery_unknown" | "interrupted";
-		summary: string;
-		causeRef: string;
-	}) => void;
+	private onFact?: (fact: { kind: "delivery_failed" | "delivery_unknown"; summary: string; causeRef: string }) => void;
 	private onResolution?: (causeRef: string) => void;
 
 	constructor(

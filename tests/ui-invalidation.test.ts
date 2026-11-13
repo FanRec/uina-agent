@@ -29,7 +29,6 @@ const STEPS: Step[] = [
 	// history 分支：结果落在已结算轮的旧工具上
 	(t) => t.addToolDone(toolDoneNode("read_file", "补充内容", 20, "succeeded", "call-1")),
 	(t) => t.addToolDone(toolDoneNode("exec_command", "重试成功", 120, "succeeded", "call-2")),
-	(t) => t.addPromptSnapshot({ kind: "prompt", id: "p1", turnNumber: 2, systemPrompt: "sys", injections: [] }),
 	(t) => t.addCustomMessage({ customType: "demo", content: "hello" }),
 	(t) =>
 		t.addCompaction({

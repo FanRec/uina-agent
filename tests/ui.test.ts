@@ -1919,12 +1919,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const harness = createTestTUI();
 			try {
 				const signal = new AbortController();
-				expect(harness.host.openFeature({ name: "prompt", signal: signal.signal })).toBe(true);
+				expect(harness.host.openFeature({ name: "help", signal: signal.signal })).toBe(true);
 				expect(harness.hasOverlay).toBe(true);
 
 				harness.host.closeModal();
 				expect(harness.hasOverlay).toBe(false);
-				expect(harness.host.openFeature({ name: "prompt" })).toBe(true);
+				expect(harness.host.openFeature({ name: "help" })).toBe(true);
 				signal.abort();
 				expect(harness.hasOverlay).toBe(true);
 				harness.host.closeModal();

@@ -7,29 +7,28 @@ import type {
 	RequestAssemblyTrace,
 	RequestProjection,
 } from "../core/types.js";
-import { immutableProjection } from "../runtime/guard.js";
+import { freezeProjection } from "../runtime/guard.js";
 
 /**
- * Request Composer（信息注入重构）：把 Context Source 贡献按确定规则写进一次请求投影。
+ * Request Composer（信息注入体系）：把 Context Source 贡献按确定规则写进一次请求投影。
  *
  * 职责边界：只做确定性位置、稳定排序、按 Source 身份去重与来源报告；不生成内容、
  * 不做语义理解或重要度评分。来源展示外壳统一由这里的稳定格式化函数渲染——扩展
  * 不自行拼接 [系统] 前缀，也不自由渲染容器。
  *
- * 装配规则（docs/refactor/Uina-LLM-Context-Injection-Refactor-Design.md §2/§7）：
+ * 装配规则（docs/refactor/Uina-Context-Injection-Wiring-Cleanup-Refactor.md §1/§2）：
  * - guidance 是固定扩展前缀：所有扩展的文件式与内联 guidance 合并为一条 user 消息，
- *   插在首条 System 之后、其余消息之前；每个 Source 至多一个章节，按 (owner, id)
+ *   插在首条 System 之后、History 之前；每个 Source 至多一个章节，按 (owner, id)
  *   字典序稳定排序（字节序，与扩展加载时间无关）。同样的 Source 集合与文本产生
  *   字节一致的前缀正文；无有效 guidance 时不创建空消息。
  * - 固定前缀不进入 Canonical History、不算真实用户输入；以 context.kind=
- *   "runtime.guidance" 标记（区别于 runtime.perception），Compaction 据此把它排除出
- *   历史裁剪视图并预留成本；本消息在旧变换之后装配，天然位于裁剪范围之外。
- * - capability 与 observation 属于当前请求快照：排在经旧变换完成的对话历史之后；
- *   能力在前、观察在后，同类按 key 稳定排序。纯文本贡献合并成一条"运行时参考信息"
- *   user 消息；含图片的贡献各占一条消息以保持图文对应。
- * - 快照消息以 context.kind="runtime.perception" 标记：现有 Compaction 的
- *   filterCompactionMessages/isRuntimePerception 按此标记排除快照，不把临时信息
- *   写进历史摘要。
+ *   "runtime.guidance" 标记。History View 的输入不含本消息：Guidance 每次请求重新
+ *   装配，压缩预算把它作为不可裁剪的固定开销预留。
+ * - capability 与 observation 属于当前请求快照：排在 History 之后；能力在前、观察在后，
+ *   同类按 key 稳定排序。纯文本贡献合并成一条"运行时参考信息" user 消息；含图片的
+ *   贡献各占一条消息以保持图文对应。
+ * - 快照消息以 context.kind="runtime.perception" 标记：它们不在 History View 的输入里
+ *   （History View 只接收历史），也不会进入任何历史摘要。
  * - 外部观察是低信任数据：正文以 JSON 字符串编码渲染，无法伪造容器或条目结构；
  *   内部来源（受信任扩展自身状态）按原文缩进渲染。
  * - 无贡献时原样返回输入投影（同一引用），保证"零 Source 请求与基线一致"。
@@ -298,7 +297,10 @@ export function composeContextSources(input: ComposeContextInput): ComposedConte
 	}
 
 	return {
-		projection: immutableProjection({
+		// 原地冻结（不克隆）：输入投影与历史消息已冻结，本函数只新建消息数组与
+		// guidance/perception 消息对象；保持历史消息对象引用同一，使 inspection.history
+		// 与 projection.messages 的历史段可按引用对应。
+		projection: freezeProjection({
 			projectionId: randomUUID(),
 			modelKey: projection.modelKey,
 			messages,

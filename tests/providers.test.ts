@@ -417,11 +417,6 @@ describe("Provider hooks and model discovery", () => {
 						expect(Object.isFrozen(headers)).toBe(true);
 						return { ...headers, "x-test": "1" };
 					},
-					async transformPayload(_provider, payload) {
-						order.push("payload");
-						expect(Object.isFrozen(payload)).toBe(true);
-						return payload;
-					},
 					async observeResponse(input) {
 						order.push(`response:${input.status}`);
 					},
@@ -429,7 +424,7 @@ describe("Provider hooks and model discovery", () => {
 			},
 			() => {},
 		);
-		expect(order).toEqual(["headers", "payload", "response:200"]);
+		expect(order).toEqual(["headers", "response:200"]);
 	});
 
 	it("surfaces model discovery failures instead of swallowing them", async () => {

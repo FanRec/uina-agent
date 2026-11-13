@@ -52,6 +52,13 @@ export interface ServiceCompanionContext {
 	delivery?: import("../../core/types.js").HostDeliveryPort;
 	/** 取消信号（当宿主或世界关闭时触发） */
 	signal: AbortSignal;
+	/**
+	 * 注册模型可见信息（信息注入体系，可选通用能力）：世界经现有 Context Source
+	 * 体系注册 guidance/capability/observation，Framework 自动给局部 id 添加稳定的
+	 * `world:<name>/` 前缀（调用者只声明局部 id，不得重复前缀或伪造 Registry owner）。
+	 * Registry owner 是框架扩展的真实激活身份；注册句柄随世界 ResourceScope 停用自动撤销。
+	 */
+	provideContext?: (source: import("../../core/types.js").ContextSource) => () => void;
 	/** 投递输入/机会至主脑信道（可选通用能力） */
 	submitInput?: (input: import("../../agent/loop.js").AgentInput) => Promise<void>;
 	emitEvent?: (event: WorldEvent) => Promise<EventSubmission>;
@@ -162,19 +169,6 @@ export interface WorldDef {
 
 	/** 世界支持的查询与操作动作字典。 */
 	actions: Record<string, ActionDef>;
-
-	/**
-	 * 静态环境指引（可选）：世界活动且其环境认知适用时返回一段短正文，否则 null。
-	 *
-	 * 每个回合一次、不随事实变化的环境认知与实践原则。框架在 turn.prepare 把非空正文
-	 * 追加到本轮 systemPrompt 末尾，多个启用世界各自追加、互不覆盖；不写 Session
-	 * canonical history，不注入为用户消息。当前世界细节由世界自己的工具按需读取。
-	 *
-	 * 实现必须是同步、纯读、无副作用的 getter：不得读取世界事实、消费事件、启动 Run
-	 * 或做磁盘 IO（正文由世界在 onStart 预载到内存）。返回 null 表示本回合不适用，
-	 * 例如此刻没有该世界的活动会话。
-	 */
-	environmentGuide?: () => string | null;
 
 	/**
 	 * 工具执行模式声明（可选，默认 parallel）。

@@ -2,9 +2,9 @@
  * Subject 只保留运行安全点调度与事件广播；record 构建、投影推导与 journal
  * 追加都由这里完成，保证持久化纪律单点实现。
  *
- * 回溯不携带压缩：journal 保留全量历史，presented line 每请求由
- * compaction capability 的 transformContext 无状态裁剪重建——回溯重暴露的
- * 超长历史由同一条裁剪路径收敛（L1 一语义一入口）。
+ * 回溯不携带压缩：journal 保留全量历史，可见历史每请求由 History View
+ * （compaction 的无状态裁剪）从 canonical 重建——回溯重暴露的超长历史由
+ * 同一条裁剪路径收敛（L1 一语义一入口）。
  *
  * candidate 提交序（"投影失败 = 不落盘"）：常驻状态只读 → checkRecord 校验 →
  * 在候选切片上先行投影 → 最后 appendRewind（store 内部 isRecord + checkRecord

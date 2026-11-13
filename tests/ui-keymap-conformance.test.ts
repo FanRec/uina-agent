@@ -55,11 +55,26 @@ function trajectorySource(nodes: TrajectoryNode[]): TrajectoryEventSource {
 	return { list: () => nodes, aggregate: () => [] };
 }
 
+const promptPortStub = (view?: import("../src/ui/components/transcript/context-card.js").PromptRequestCardData) =>
+	({
+		requestObservation: async () => view,
+		inspectRequest: async () =>
+			view ?? {
+				kind: "prompt",
+				basis: "preview",
+				modelKey: "m",
+				systemPrompt: "",
+				messageCount: 0,
+				toolCount: 0,
+				sources: [],
+			},
+	}) as import("../src/ui/components/transcript/context-card.js").PromptPort;
+
 describe("键位一致性：结构", () => {
 	const overlays: readonly [string, { keymap(): unknown }][] = [
 		["help", new HelpMenu([])],
 		["effort", new EffortSlider("high", ["off", "high", "max"])],
-		["prompt", new PromptOverlay(undefined)],
+		["prompt", new PromptOverlay(promptPortStub())],
 		["picker", new ModelPicker("p/m1", GROUPS)],
 		["trajectory", new TrajectoryScene(trajectorySource([]))],
 		["branch", new BranchInspectorOverlay({} as never)],
@@ -121,14 +136,20 @@ describe("F1：轨迹页脚不再承诺不存在的 Enter 展开", () => {
 });
 
 describe("F3：提示词浮层方向键与位置指示", () => {
-	it("页脚声明 ↑/↓ 且滚动生效；Esc 关闭", () => {
-		const prompt = new PromptOverlay({
-			kind: "prompt",
-			id: "p1",
-			turnNumber: 1,
-			systemPrompt: Array.from({ length: 40 }, (_, i) => `第 ${i} 行系统提示`).join("\n"),
-			injections: [],
-		});
+	it("页脚声明 ↑/↓ 且滚动生效；Esc 关闭", async () => {
+		const prompt = new PromptOverlay(
+			promptPortStub({
+				kind: "prompt",
+				basis: "prepared",
+				requestId: "p1",
+				modelKey: "m",
+				systemPrompt: Array.from({ length: 40 }, (_, i) => `第 ${i} 行系统提示`).join("\n"),
+				messageCount: 2,
+				toolCount: 1,
+				sources: [],
+			}),
+		);
+		await prompt.ready;
 		const text = stripAnsi(prompt.render(80, 24).join("\n"));
 		expect(text).toContain("↑/↓ 1 行");
 		expect(text).toContain("第 1-");

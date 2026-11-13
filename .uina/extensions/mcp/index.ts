@@ -39,9 +39,27 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 	} catch (error) {
 		api.reportError(error instanceof Error ? error : new Error(String(error)));
 	}
-	const capabilityIndex = snapshot ? buildCapabilityIndex(snapshot) : undefined;
-	if (capabilityIndex) {
-		api.onHook("turn.prepare", ({ systemPrompt }) => ({ systemPrompt: `${systemPrompt}\n\n${capabilityIndex}` }));
+	// 信息注入体系：全局已配置服务的名称与用途注册为简短 capability（替代旧 System
+	// 追加索引）。read() 与 Proxy Tool 同一套只读 resolveMcpConfig() 按次解析，不启动
+	// 服务、不刷新目录、不改信任状态；"已配置"不等于"已在线/已发现工具"，调用步骤由
+	// Proxy 工具自身承载，这里不重复。项目级未信任配置不进常驻目录（信任门归 Proxy）。
+	if (snapshot && buildCapabilityIndex(snapshot)) {
+		api.provideContext({
+			id: "capability",
+			kind: "capability",
+			read: () => {
+				let current: McpConfigSnapshot;
+				try {
+					current = resolveMcpConfig(api.cwd);
+				} catch {
+					// 配置暂时不可解析：如实返回 null（不保留旧成功值），Proxy 的 status 可查。
+					return null;
+				}
+				const text = buildCapabilityIndex(current);
+				if (!text) return null;
+				return { text, source: { type: "mcp.config", origin: "internal" } };
+			},
+		});
 	}
 
 	// 仅自动启动全局配置中显式 autoStart 的 server：全局配置已获信任，
@@ -75,6 +93,8 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 	};
 }
 
+/** 全局已配置服务的简短 capability 正文：与旧 System 索引同一授权范围（仅全局有效配置），
+ * 不扩大到项目级未信任配置；"已配置不等于已在线"。 */
 function buildCapabilityIndex(snapshot: McpConfigSnapshot): string | undefined {
 	const services = [...snapshot.servers.entries()].filter(
 		(entry): entry is [string, { kind: "valid"; config: ResolvedServerConfig }] =>
@@ -87,9 +107,7 @@ function buildCapabilityIndex(snapshot: McpConfigSnapshot): string | undefined {
 		return `- ${name}：${purpose || "用途未说明，可通过 MCP 工具探索。"}`;
 	});
 	return [
-		"## MCP 能力索引",
-		"以下服务已配置，但不保证在线或目录最新。可按需或主动探索，通过 MCP 工具发现并调用。",
-		"",
+		"以下 MCP 服务已配置（已配置不等于已在线或已发现工具；查询、连接与按需启动经 MCP 工具进行）：",
 		...rows,
 	].join("\n");
 }

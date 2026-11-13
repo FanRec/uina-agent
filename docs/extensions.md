@@ -44,9 +44,9 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 ## 上下文组合
 
-干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**；`pi.onHook(hook)` 注册干预。turn.prepare 后写覆盖/消息聚合；transformContext、tools.transformResult、provider transform 链式传递；preflight 按 `fail > rebuild > send` 归并；shouldStop、beforeCall 短路；afterEnd 是 awaited 安全点；observeResponse 纯观察。
+干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**；`pi.onHook(hook)` 注册干预。tools.transformResult 链式传递；preflight 按 `fail > rebuild > send` 归并；shouldStop、beforeCall 短路；afterEnd 是 awaited 安全点；observeResponse 纯观察。
 
-回合注入只有两条时机：`turn.prepare`（回合边界；贡献形状 messages 聚合追加）与 `turn.transformContext`（每请求）。turn.prepare handler 不接收取消信号——回合中断后其结果会被丢弃；扩展自身的生命期取消用 api.signal。
+**不存在修改完整请求的通用 Hook**。扩展提供模型可见信息的唯一入口是 `pi.provideContext(source)`（信息贡献）与 `pi.registerHistoryView(view)`（历史裁剪，单一所有者）；扩展不得改写 System、消息序列或工具声明。provider 只有 `transformHeaders`（传输凭据）与 `observeResponse`（审计）——没有 payload 变换。回合中断经 api.signal 与 preflight 的 signal 传导；扩展自身的生命期取消用 api.signal。
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
@@ -60,7 +60,7 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 `read()` 是只读快照：不得持久写入、推进游标、消费事件、触发模型请求或产生业务副作用；`inspectRequest()` 读取它不会让状态消失。返回值不进会话历史、不唤醒主体；需要可靠送达的事实走 `submitInput`。Source id 只在自己扩展内命名，同一激活范围内重名注册会被拒绝。
 
-运行时在旧 `turn.transformContext` 之后、测量/预检之前收集快照并装配：所有扩展的 guidance（文件式与内联）合并为 **System 之后、历史之前的唯一一条固定 User 前缀**（以 `runtime.guidance` 标记，Host 在消息首部声明"不是操作者本轮提出的新请求"；章节按 (owner, id) 字典序稳定排序，同样的 Source 集合与文本产生逐字节一致的前缀）；capability/observation 作为"运行时参考信息（不是用户新请求）"的 user 消息附在历史之后，能力在前、观察在后，按来源身份稳定排序。动态快照每次请求重新读取，不累积上次注入；固定前缀只在注册/注销/Reload 时变化，且位于 Compaction 历史裁剪范围之外（其成本计入压缩预算）。
+运行时按确定性规则装配：Subject 先把 canonical history 经协议投影转成 **History**，交给 History View（压缩后的可见历史），再收集 Context Source 快照并经 Request Composer 装配——所有扩展的 guidance（文件式与内联）合并为 **System 之后、History 之前的唯一一条固定 User 前缀**（以 `runtime.guidance` 标记，Host 在消息首部声明"不是操作者本轮提出的新请求"；章节按 (owner, id) 字典序稳定排序，同样的 Source 集合与文本产生逐字节一致的前缀）；capability/observation 作为"运行时参考信息（不是用户新请求）"的 user 消息附在 History 之后，能力在前、观察在后，按来源身份稳定排序。动态快照每次请求重新读取，不累积上次注入；固定前缀只在注册/注销/Reload 时变化，且不在 History View 的输入里（其成本计入压缩预算）。
 
 ### 扩展 Prompt 文件机制（文件式 guidance）
 
@@ -78,18 +78,18 @@ export default async function activate(pi: ExtensionAPI) {
 
 ## 压缩与上下文裁剪
 
-压缩（上下文窗口管理）由 official compaction capability 端到端拥有。journal 保留全量历史；滚动摘要以 `uina.compaction.summary` checkpoint（Auxiliary）持久化，重启后从 `pi.auxiliary()` 重载。`runCompaction` 只生成 checkpoint；正常的 `turn.transformContext` 读取 checkpoint，把 raw prefix 投影成低权限的普通 user 历史摘要 + 原文 tail。
+压缩（上下文窗口管理）由 official compaction capability 端到端拥有。journal 保留全量历史；滚动摘要以 `uina.compaction.summary` checkpoint（Auxiliary）持久化，重启后从 `pi.auxiliary()` 重载。History View 是压缩的接线口：`pi.registerHistoryView(view)` 注册"压缩后的可见历史"的唯一提供者（同一宿主只允许一个；重复注册明确失败），每轮装配从 canonical history 重新生成视图——摘要插入历史首位、尾部原样保留，不在上轮输出上二次压缩。
 
 三个词各归各位：
 
 - `history()` = canonical history（主线 hydrated entries 只读）。
 - `auxiliary()` = capability durable state（私有持久状态的写入经 `appendEntry`，读回经 `auxiliary()`）。
-- compaction = `turn.transformContext`（应用 checkpoint）+ `turn.preflight`（请求 rebuild）+ `appendEntry`（事务提交）+ `auxiliary`（重启重载）。
+- compaction = `registerHistoryView`（应用 checkpoint 的历史视图）+ `turn.preflight`（请求 rebuild）+ `appendEntry`（事务提交）+ `auxiliary`（重启重载）。
 
-- 自动压缩：完整 projection 测量超出 input budget 后，preflight 生成候选 checkpoint 并返回 rebuild；Core 从 canonical history 重跑整条 transform 链。单次 preparation 最多 rebuild 一次，重建不改善或仍超限即明确失败。
+- 自动压缩：完整 projection 测量超出 input budget 后，preflight 生成候选 checkpoint 并返回 rebuild；Core 从 canonical history 重跑整条装配路径（History View 重新生成）。单次 preparation 最多 rebuild 一次，重建不改善或仍超限即明确失败。压缩预算预留 System + Guidance + 当前动态 Source + 工具声明等不可裁剪开销；Guidance/动态内容超预算而历史不可压缩时明确失败，不裁 System 或最新输入，不伪造 checkpoint。
 - 大前缀摘要逐轮按“system 提示 + 已有摘要 + 当前历史块 + instruction”的完整请求重新计算容量；放不下的单个历史单位只在摘要输入里分片，checkpoint coverage 仍按完整单位提交。每完成一块报告真实块数；已有摘要无法安全放回模型时明确失败，不发送超预算请求。
 - 手动压缩：`/compact [instruction]` 空闲时在命令内立即完成；忙时立即发布 queued 状态，在 `turn.afterEnd`、队列恢复前完成。完成后立即重新测量 ContextSnapshot，不等待下一条输入。
-- 扩展自定义裁剪策略：在同一条 `turn.transformContext` Interceptor 链上注册（后激活者收到前者的输出，链式传递）；与 Memory/RAG 等注入扩展共存。
+- 扩展自定义裁剪策略：经 `pi.registerHistoryView(view)` 接管历史视图（单一所有者——与官方 compaction 同时激活会明确失败，见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)）。
 - 事实出口只有 `session_compact_start`、`session_compact_progress` 和统一终态 `session_compact(status=completed|failed|cancelled|noop)`；progress 只报告 phase，不伪造百分比。
 
 Session Core 零压缩词汇：journal 不存在压缩记录类型，Session Store 不提供压缩追加接口，投影不解释任何压缩载荷。压缩在 Session 层只留下两样现役事实：capability 写的 `uina.compaction.summary` custom entry 与 `session_compact` 事件。
@@ -114,7 +114,7 @@ Markdown transformer 只处理 user/assistant 显示文本，带角色、流式�
 
 - [workspace-tools](../src/extensions/workspace-tools/index.ts)：默认内置文件读写、图片读取、文件 renderer；Host `workspaceTools: false` 可禁用，公开 replace 注册可替换。
 - [skills](../examples/extensions/skills/index.ts)：skills.discover/v1、上下文目录与 read_skill；后者调用 workspace-tools 的 read_file。
-- [custom-compaction](../examples/extensions/custom-compaction/index.ts)：在 turn.transformContext 链上提供自定义裁剪策略。
+- [custom-compaction](../examples/extensions/custom-compaction/index.ts)：经 registerHistoryView 提供确定性折叠策略（History View 接缝示例）。
 
 技能示例展示组合合同，不声称实现完整 Pi skill 元数据规范。目录来源、技能选择和提示词属于扩展；文件工具没有下沉到 Core。
 

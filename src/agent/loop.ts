@@ -29,18 +29,13 @@ import type {
 	Usage,
 } from "../core/types.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
-import { guardRuntimeHooks, immutableProjection } from "../runtime/guard.js";
+import { freezeHistory, freezeProjection, guardRuntimeHooks } from "../runtime/guard.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
-import {
-	listPromptSnapshots,
-	PROMPT_SNAPSHOT_ENTRY_TYPE,
-	promptSnapshotFingerprint,
-} from "../session/prompt-snapshots.js";
 import { projectInputMessage } from "../session/recovery.js";
 import type { RewindRequest, RewindResult, SessionStore } from "../session/types.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
-import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
+import { defaultSystemPrompt, measureRequestContext } from "./context.js";
 import { composeContextSources } from "./composer.js";
 import {
 	type ProjectionPolicy,
@@ -154,7 +149,7 @@ type ToolBatchResult = import("../tools/broker.js").ToolExecutionResult & {
  *
  * 与 preview（inspectRequest，按当前状态预测、独立 ID）严格区分：这里记录的是
  * preflight 完成后真正交付给 Provider Adapter 的语义请求、来源装配追踪，以及
- * Provider 最终发送前的 Wire 摘要（transformPayload 之后、HTTP 之前，只记录
+ * Provider 最终发送前的 Wire 摘要（协议编码完成之后、HTTP 之前，只记录
  * 哈希与量级，不保存原始正文）。投影正文不入 Journal。
  */
 export interface ActiveRequestObservation {
@@ -246,7 +241,6 @@ export class Subject {
 	/** 最近一次真实发送的活动请求观察（active_semantic + wire，requestId 关联）。 */
 	private activeRequest?: ActiveRequestObservation;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
-	private lastPromptFingerprint?: string;
 	private readonly inputDeliveries = new Map<string, InputDeliveryAttempt>();
 	private readonly toolDeliveries = new Map<string, ToolDeliveryAttempt>();
 	private deliveryOrder = 0;
@@ -393,7 +387,6 @@ export class Subject {
 		this.streamFn = streamFn;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
-		this.lastPromptFingerprint = listPromptSnapshots(this.store?.state.auxiliary ?? []).at(-1)?.fingerprint;
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
@@ -430,32 +423,6 @@ export class Subject {
 			return;
 		}
 		return this.runtimeHooks.events.emit(event);
-	}
-
-	/**
-	 * 回合边界上下文构成事实（context_prepare）：prepare 应用后、agent_start 前。
-	 * systemPrompt = 本次准备最终生效全文；注入 provenance 来自聚合层登记（无注入为空数组——
-	 * "零注入"本身是要看到的事实）。必须 await：与 agent_start 的 emit 保持单流时序承诺。
-	 */
-	private async dispatchContextPrepare(
-		turnNumber: number,
-		prepared: Awaited<ReturnType<RuntimeHooks["turn"]["prepare"]>> | undefined,
-	): Promise<void> {
-		const systemPrompt = prepared?.systemPrompt ?? this.systemPrompt;
-		const injections = prepared?.injections ?? [];
-		const fingerprint = promptSnapshotFingerprint(systemPrompt, injections);
-		if (fingerprint !== this.lastPromptFingerprint) {
-			try {
-				await this.store?.appendCustomEntry({
-					customType: PROMPT_SNAPSHOT_ENTRY_TYPE,
-					data: { turnNumber, fingerprint, systemPrompt, injections },
-				});
-				this.lastPromptFingerprint = fingerprint;
-			} catch (error) {
-				this.reportError(error);
-			}
-		}
-		await this.dispatch({ type: "context_prepare", turnNumber, systemPrompt, injections });
 	}
 
 	/**
@@ -526,7 +493,7 @@ export class Subject {
 		return this.activeRequest ? structuredClone(this.activeRequest) : undefined;
 	}
 
-	/** Wire 观察出口：Provider Adapter 在最后一次 transformPayload 之后回调，只观察。 */
+	/** Wire 观察出口：Provider Adapter 在协议编码完成、HTTP 发送之前回调，只观察。 */
 	private observeWire(observation: import("../core/types.js").ProviderWireObservation): void {
 		if (!this.activeRequest || observation.requestId !== this.activeRequest.requestId) return;
 		this.activeRequest = { ...this.activeRequest, wire: observation };
@@ -541,7 +508,7 @@ export class Subject {
 		// preview：与活动请求同一套纯读装配（含 Context Source 快照），但使用独立身份，
 		// 不冒充"刚刚实际发送"。
 		const requestId = `preview-${randomUUID()}`;
-		const { projection, assembly } = await this.prepareProjection(model, this.systemPrompt, []);
+		const { projection, assembly, history } = await this.prepareProjection(model, this.systemPrompt);
 		const measurement = measureRequestContext(
 			projection,
 			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
@@ -549,6 +516,7 @@ export class Subject {
 		);
 		return {
 			projection,
+			history,
 			measurement,
 			contextWindow: model.contextWindow,
 			inputBudget: inputTokenBudget(model, projection.thinkingLevel),
@@ -684,17 +652,8 @@ export class Subject {
 			if (!this.interrupted && !pending.signal?.aborted) {
 				this.activity = "turn";
 				const turn = ++this.turnSeq;
-				const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
-				await this.applyPreparedRuntime(prepared);
-				await this.dispatchContextPrepare(turn, prepared);
 				await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
-				await this.runTurn(
-					undefined,
-					turn,
-					this.model,
-					prepared.systemPrompt ?? this.systemPrompt,
-					prepared.messages ? [...prepared.messages] : [],
-				);
+				await this.runTurn(undefined, turn, this.model);
 			}
 			return { requestId: pending.requestId, status: "committed", rewindId };
 		} finally {
@@ -1148,17 +1107,12 @@ export class Subject {
 			}
 			if (options.needsEnqueueEvent) await this.publishInputAccepted(queuedInput!);
 
-			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
-			await this.applyPreparedRuntime(prepared);
-			await this.dispatchContextPrepare(turn, prepared);
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
 			await this.runTurn(
 				text,
 				turn,
 				this.model,
-				prepared.systemPrompt ?? this.systemPrompt,
-				prepared.messages ? [...prepared.messages] : [],
 				queuedInput,
 				() => {
 					if (inputState) inputState.committed = true;
@@ -1184,8 +1138,6 @@ export class Subject {
 		text: string | undefined,
 		turn: number,
 		model = this.model,
-		systemPrompt = this.systemPrompt,
-		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 		queuedInput?: QueuedMessage,
 		onInputCommitted?: () => void,
 		queuedInputs: QueuedMessage[] = queuedInput ? [queuedInput] : [],
@@ -1218,8 +1170,6 @@ export class Subject {
 			turnStarted = true;
 			const outcome = await this.decide(
 				model,
-				systemPrompt,
-				beforeMessages,
 				(nextTurn) => {
 					currentTurn = nextTurn;
 				},
@@ -1329,42 +1279,18 @@ export class Subject {
 		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item, { queuedInputs: batch });
 	}
 
-	/** Applies runtime-provided model/thinking facts at a run-safety point.
-	 * Model swaps reuse setModel's full discipline (usage-anchor invalidation +
-	 * model_select broadcast); thinking swaps clamp against the current model. */
-	private async applyPreparedRuntime(
-		prepared: Readonly<{ model?: Model; thinkingLevel?: ThinkingLevel }>,
-	): Promise<void> {
-		if (
-			prepared.model &&
-			!(prepared.model.id === this.model.id && prepared.model.providerId === this.model.providerId)
-		) {
-			await this.setModel(prepared.model);
-		}
-		if (prepared.thinkingLevel !== undefined && prepared.thinkingLevel !== this.preferredThinkingLevel) {
-			this.setThinkingLevel(prepared.thinkingLevel);
-		}
-	}
-
 	private async decide(
 		model: Model = this.model,
-		systemPrompt = this.systemPrompt,
-		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 		onTurnTransition?: (nextTurn: number) => void,
 		getCurrentTurn?: () => number,
 	): Promise<DecisionOutcome> {
 		const applyRewind = async (): Promise<boolean> => {
 			if (!(await this.applyPendingRewind())) return false;
-			const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
-			await this.applyPreparedRuntime(prepared);
-			await this.dispatchContextPrepare(this.turnSeq, prepared);
 			// 换模型/换档即刻生效于本 decide 循环的下一次请求（安全点已过，口径统一）。
 			model = this.model;
-			systemPrompt = prepared.systemPrompt ?? this.systemPrompt;
-			beforeMessages = prepared.messages ? [...prepared.messages] : [];
 			return true;
 		};
-		// A scheduled rewind commits before turn preparation, so each request always sees
+		// A scheduled rewind commits before the next request assembly, so each request always sees
 		// the mainline that is about to be sent — never a projection the rewind is about to replace.
 		// 预算口径 = processed（真正进入执行流水线的调用），防的是失控循环的模型请求预算，
 		// 不是"成功副作用"配额——无效/未知工具即便 not_started 也消耗预算，模型无法靠无效调用绕过上限。
@@ -1376,9 +1302,9 @@ export class Subject {
 			}
 
 			await applyRewind();
-			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
-			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
-			const prepared = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
+			// 回合内暴涨由 History View（compaction）收敛：上下文窗口管理唯一入口，
+			// 每请求装配时从 canonical 重建可见历史——这里不再有 between-step 压缩体检。
+			const prepared = await this.prepareProjectionForSend(model, this.currentSignal());
 			if (!prepared) {
 				await this.emitInterrupted();
 				return { kind: "aborted" };
@@ -1386,7 +1312,7 @@ export class Subject {
 			const { projection, assembly } = prepared;
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			// 活动请求观察：preflight 完成后、调用 Provider 前固定（active_semantic）；
-			// Wire 摘要由 Provider Adapter 在最后一次 transformPayload 之后回填。
+			// Wire 摘要由 Provider Adapter 在协议编码完成之后回填。
 			this.activeRequest = {
 				requestId: callId,
 				modelKey: projection.modelKey,
@@ -1487,12 +1413,12 @@ export class Subject {
 
 	private async prepareProjectionForSend(
 		model: Model,
-		systemPrompt: string,
-		beforeMessages: readonly (AgentMessage | ChatMsg)[],
 		turnSignal: AbortSignal,
-	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace } | undefined> {
+	): Promise<
+		{ projection: RequestProjection; assembly: RequestAssemblyTrace; history: readonly ChatMsg[] } | undefined
+	> {
 		for (let pass = 0; pass <= 1; pass++) {
-			const { projection, assembly } = await this.prepareProjection(model, systemPrompt, beforeMessages, turnSignal);
+			const { projection, assembly, history } = await this.prepareProjection(model, this.systemPrompt, turnSignal);
 			// 投影与测量是同步 CPU（全量历史构建 + JSON 序列化）。不在这里割断，
 			// 事件循环会连同 TUI 心跳、输出流一起被冻住（实测单次 1.4s）。
 			await yieldToLoop();
@@ -1502,7 +1428,13 @@ export class Subject {
 				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
 				{ countThinking: (model.thinkingReplay ?? "none") !== "none" },
 			);
-			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass, signal: turnSignal });
+			const decision = await this.runtimeHooks.turn.preflight({
+				projection,
+				history,
+				measurement,
+				pass,
+				signal: turnSignal,
+			});
 			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
 			if (decision.action === "rebuild") {
 				if (pass >= 1) throw new Error(decision.reason ?? "请求重建后仍需要再次重建");
@@ -1522,92 +1454,62 @@ export class Subject {
 			this.contextInspectionSeq++;
 			this.publishContextSnapshot(
 				this.contextSnapshot(
-					{ projection, measurement, contextWindow: model.contextWindow, inputBudget: budget },
+					{ projection, history, measurement, contextWindow: model.contextWindow, inputBudget: budget },
 					"active_request",
 				),
 			);
-			return { projection, assembly };
+			return { projection, assembly, history };
 		}
 		throw new Error("请求准备失败");
 	}
 
 	/**
-	 * 单次模型语义请求的装配（信息注入重构后的收敛点）：
-	 * 1. 基础投影：System/Persona + canonical history 投影 + 临时 beforeMessages；
-	 * 2. 旧 turn.transformContext（含 Compaction）——遗留高级接缝，语义保持不变；
-	 * 3. 读取 Context Source 注册快照并经 RequestComposer 装配（guidance 进首条
-	 *    System 专属区域，capability/observation 作为运行时参考消息附在历史之后），
-	 *    附带 AssemblyTrace；此后测量、预检、预算门与协议校验都看合成后的完整投影。
+	 * 单次模型语义请求的装配（信息注入体系的唯一收敛点）：
+	 * 1. History：canonical history 经 ProjectionPolicy.convertToLlm（协议形塑，含历史
+	 *    Event Frame）→ History View（唯一所有者压缩后的可见历史）；
+	 * 2. 工具声明收口：可执行工具 + 该历史所需的协议工具，只计算一次；
+	 * 3. Context Source 收集并经 RequestComposer 装配（guidance 进 System 后固定前缀，
+	 *    capability/observation 作为运行时参考消息附在历史之后），附带 AssemblyTrace；
+	 *    此后测量、预检、预算门与协议校验都看合成后的完整投影。
 	 *
-	 * rebuild（预检 pass>0）从第 1 步重跑整条链：Source 重新读取，不累积上一次临时贡献。
+	 * rebuild（预检 pass>0）从第 1 步重跑整条路径：History View 从 canonical 重新生成，
+	 * 不在上一次输出上叠加；Source 重新读取，不累积旧贡献。
 	 */
 	private async prepareProjection(
 		model: Model,
 		systemPrompt: string,
-		beforeMessages: readonly (AgentMessage | ChatMsg)[],
 		signal?: AbortSignal,
-	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace }> {
-		const built = [
-			...buildContext({
-				history: this.history,
-				systemPrompt,
-				thinkingReplay: model.thinkingReplay,
-				convertToLlm: this.projection.convertToLlm,
-			}),
-			...this.projection.convertToLlm(beforeMessages, { thinkingReplay: model.thinkingReplay }),
-		];
-		const messages = built;
-		const base: RequestProjection = immutableProjection({
+	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace; history: readonly ChatMsg[] }> {
+		// 1. canonical history → 协议投影（历史 Event Frame 在此形塑；守卫冻结，hook 不可变改）
+		const history = freezeHistory(this.projection.convertToLlm(this.history, { thinkingReplay: model.thinkingReplay }));
+		// 2. History View（单一所有者：Compaction；无提供者时 identity）
+		const visibleHistory = this.runtimeHooks.history.project(history);
+		// 3. 工具声明：按最终可见历史决定（Event Frame 声明跟随实际帧），此后不再被任何
+		//    通用 Hook 改写。
+		const tools = requestToolDefs(this.tools.defs(), this.requiredContextTools(visibleHistory));
+		const base: RequestProjection = freezeProjection({
 			projectionId: randomUUID(),
 			modelKey: modelKey(model),
-			messages,
-			tools: this.declaredTools(messages),
+			messages: [{ role: "system", content: systemPrompt }, ...visibleHistory],
+			tools,
 			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 		});
 		await yieldToLoop();
-		// 中断发生在让出点之后时，不再执行投影变换；调用方会在下一个检查点收尾。
-		if (signal?.aborted) return { projection: base, assembly: { sources: [] } };
-		const transformed = await this.runtimeHooks.turn.transformContext(base);
-		if (transformed.projectionId !== base.projectionId || transformed.modelKey !== base.modelKey) {
-			throw new Error("turn.transformContext 不得修改 projectionId 或 modelKey");
-		}
-		if (
-			transformed.thinkingLevel !== undefined &&
-			transformed.thinkingLevel !== "off" &&
-			!model.thinkingLevels?.includes(transformed.thinkingLevel)
-		) {
-			throw new Error(`turn.transformContext 返回模型不支持的 thinking level: ${transformed.thinkingLevel}`);
-		}
-		// 声明跟随最终投影：帧可能由尾部注入在这一步之后才出现。只补缺的上下文工具，
-		// 不把 hook 对工具集的选择覆盖掉（限制工具面是合法用法）。
-		const merged = immutableProjection({
-			...transformed,
-			tools: this.mergeContextTools(transformed.tools, transformed.messages),
-		});
-		// 新 Source 装配在旧变换之后、测量/预检之前（兼容 Compaction 的必要边界）：
 		// preview 也走同一套纯读装配；inspectRequest 无活动信号，用永不触发的空信号。
 		// 请求已取消时停止继续装配（read 是纯读，但没必要为将丢弃的请求再读一轮）。
-		if (signal?.aborted) return { projection: merged, assembly: { sources: [] } };
+		if (signal?.aborted) return { projection: base, assembly: { sources: [] }, history: visibleHistory };
 		const collection = await this.runtimeHooks.context.collect({
 			modelKey: modelKey(model),
 			signal: signal ?? new AbortController().signal,
 		});
-		return composeContextSources({ projection: merged, collection });
+		const composed = composeContextSources({ projection: base, collection });
+		return { projection: composed.projection, assembly: composed.assembly, history: visibleHistory };
 	}
 
-	/** 下一次模型请求会声明的工具：可执行工具 + 这份投影需要的上下文工具。
+	/** 下一次模型请求会声明的工具：可执行工具 + 这份历史需要的上下文工具。
 	 * 压缩预算与请求门共用这一份，不能只数可执行工具。 */
 	declaredTools(messages: readonly ChatMsg[]): ToolDef[] {
 		return requestToolDefs(this.tools.defs(), this.requiredContextTools(messages));
-	}
-
-	/** 变换之后的声明：保留 hook 给的工具集，只把帧需要的声明补回来。 */
-	private mergeContextTools(tools: readonly ToolDef[], messages: readonly ChatMsg[]): ToolDef[] {
-		const needed = this.requiredContextTools(messages);
-		if (needed.length === 0) return [...tools];
-		const present = new Set(tools.map((tool) => tool.function.name));
-		const missing = needed.filter((tool) => !present.has(tool.function.name));
-		return missing.length === 0 ? [...tools] : requestToolDefs(tools, missing);
 	}
 
 	private requiredContextTools(messages: readonly ChatMsg[]): readonly ToolDef[] {
@@ -1919,8 +1821,8 @@ export class Subject {
 		);
 	}
 
-	// Subject 无压缩编排：上下文窗口管理唯一入口 = compaction capability 的
-	// turn.transformContext 每请求裁剪；journal 保留全量历史。
+	// Subject 无压缩编排：上下文窗口管理唯一入口 = compaction 扩展的 History View
+	// 每请求裁剪（从 canonical 重建可见历史）；journal 保留全量历史。
 
 	private async appendMessage(message: AgentMessage): Promise<void> {
 		const entryId = message.id ?? randomUUID();

@@ -199,7 +199,7 @@ export interface ModelStreamRequestOptions {
 	onRecovered?: (attempt: number) => void;
 	/** 请求关联诊断 id（不进入 Provider 网络载荷）；来自 ModelRequest.requestId。 */
 	requestId?: string;
-	/** Wire 观察出口：最后一次 transformPayload 之后、HTTP 序列化发送之前回调。 */
+	/** Wire 观察出口：协议编码完成、HTTP 序列化发送之前回调（实际准备发送载荷的摘要）。 */
 	onWire?: (observation: import("../core/types.js").ProviderWireObservation) => void;
 }
 
@@ -222,22 +222,14 @@ export async function sendModelStreamRequest(options: ModelStreamRequestOptions)
 	const headers = copyValue(
 		await options.hooks.transformHeaders(options.providerId, readonlySnapshot(options.headers)),
 	);
-	// Wire 观察发生在最后一次 transformPayload 之后、HTTP 序列化发送之前：transformPayload
-	// 改写文本或工具时，before/after 摘要差异必须可观察。序列化只为 fetch 做一次，
-	// before 摘要仅在存在观察出口时额外计算。
-	const bodyPayload = copyValue(
-		await options.hooks.transformPayload(options.providerId, readonlySnapshot(options.body)),
-	);
-	const serializedBody = JSON.stringify(bodyPayload);
+	// Wire 观察发生在协议编码完成之后、HTTP 序列化发送之前：摘要对应实际准备发送的
+	// 载荷。不存在通用 payload 变换——扩展没有绕过统一装配与预算校验改写载荷的通道。
+	const serializedBody = JSON.stringify(options.body);
 	if (options.onWire) {
-		const before = wirePayloadSummary(options.body);
-		const after = wirePayloadSummary(bodyPayload, serializedBody);
 		options.onWire({
 			requestId: options.requestId,
 			provider: options.providerId,
-			before,
-			after,
-			transformed: before.hash !== after.hash,
+			payload: wirePayloadSummary(options.body, serializedBody),
 		});
 	}
 

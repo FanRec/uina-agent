@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,7 +34,7 @@ async function endpoint(handler: (body: string) => void): Promise<string> {
 }
 
 describe("Provider Wire 观察（真实请求可对账）", () => {
-	it("观察发生在最后一次 transformPayload 之后、HTTP 发送之前；载荷被改写时差异可观察", async () => {
+	it("摘要对应实际准备发送的载荷：哈希与量级与 HTTP body 一致；不携带正文", async () => {
 		let receivedBody = "";
 		const base = await endpoint((body) => {
 			receivedBody = body;
@@ -47,16 +48,7 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 			model,
 			{
 				messages: [{ role: "user", content: "原始消息" }],
-				providerHooks: {
-					...NO_RUNTIME_HOOKS.provider,
-					transformPayload: async (_provider, payload) => {
-						const body = payload as { messages: { role: string; content: string }[] };
-						return {
-							...body,
-							messages: [{ role: "user", content: "改写后的消息" }, ...body.messages.slice(1)],
-						};
-					},
-				},
+				providerHooks: NO_RUNTIME_HOOKS.provider,
 				requestId: "stream-1-1",
 				onWireObservation: (observation) => observations.push(observation),
 			},
@@ -68,17 +60,16 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 		const wire = observations[0]!;
 		expect(wire.requestId).toBe("stream-1-1");
 		expect(wire.provider).toBe("test-provider");
-		expect(wire.transformed).toBe(true);
-		expect(wire.before.hash).not.toBe(wire.after.hash);
-		expect(wire.after.messageCount).toBe(1);
-		// Wire 观察描述的是真正发送的载荷：HTTP body 与 after 摘要一致
-		expect(receivedBody).toContain("改写后的消息");
-		expect(receivedBody).not.toContain("原始消息");
+		expect(wire.payload.messageCount).toBe(1);
+		// Wire 摘要描述真正发送的载荷：哈希即 HTTP body 的序列化指纹
+		const expectedHash = createHash("sha256").update(receivedBody).digest("hex");
+		expect(wire.payload.hash).toBe(expectedHash);
+		expect(receivedBody).toContain("原始消息");
 		// 摘要只含哈希与量级，不携带原始正文
-		expect(JSON.stringify(wire)).not.toContain("改写后的消息");
+		expect(JSON.stringify(wire)).not.toContain("原始消息");
 	});
 
-	it("未改写时 transformed=false，before/after 摘要一致", async () => {
+	it("已知形状补齐 messageCount/toolCount；无观察出口时零成本", async () => {
 		const base = await endpoint(() => {});
 		const provider = createOpenAIProvider("test-provider", { baseUrl: base, apiKey: "test" });
 		const model: Model = { id: "m", name: "m", providerId: "test-provider", contextWindow: 4096 };
@@ -100,9 +91,8 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 			() => {},
 		);
 		const wire = observations[0]!;
-		expect(wire.transformed).toBe(false);
-		expect(wire.before).toEqual(wire.after);
-		expect(wire.after.toolCount).toBe(1);
+		expect(wire.payload.messageCount).toBe(1);
+		expect(wire.payload.toolCount).toBe(1);
 	});
 
 	it("Subject 建立请求级 requestId，Wire 观察与活动请求观察通过同一 ID 对账", async () => {
@@ -113,9 +103,7 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 				req.onWireObservation?.({
 					requestId: req.requestId,
 					provider: "mock",
-					before: { hash: "semantic", bytes: 10, messageCount: req.messages.length },
-					after: { hash: "semantic", bytes: 10, messageCount: req.messages.length },
-					transformed: false,
+					payload: { hash: "semantic", bytes: 10, messageCount: req.messages.length },
 				});
 				onDelta({ kind: "text", text: "好的" });
 				onDelta({ kind: "finish", reason: "stop" });
@@ -128,7 +116,6 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 		expect(observation).toBeDefined();
 		expect(observation!.requestId).toMatch(/^stream-\d+-\d+$/);
 		expect(observation!.wire?.requestId).toBe(observation!.requestId);
-		expect(observation!.wire?.transformed).toBe(false);
 		expect(observation!.projection.messages.length).toBeGreaterThan(0);
 		expect(observation!.assembly.sources).toEqual([]);
 	});
@@ -142,9 +129,7 @@ describe("Provider Wire 观察（真实请求可对账）", () => {
 					wires.push({
 						requestId: req.requestId,
 						provider: "mock",
-						before: { hash: "x", bytes: 1 },
-						after: { hash: "x", bytes: 1 },
-						transformed: false,
+						payload: { hash: "x", bytes: 1 },
 					});
 					req.onWireObservation?.(wires[wires.length - 1]!);
 				}

@@ -5,22 +5,28 @@ import { PromptOverlay } from "../src/ui/features/overlays/prompt-overlay.js";
 
 const prompt: ContextCardData = {
 	kind: "prompt",
-	turnNumber: 2,
+	basis: "prepared",
+	requestId: "stream-2-1",
+	modelKey: "mock/mock",
 	systemPrompt: "BASE PROMPT\n[Memory] keep the user context",
-	injections: [
-		{ extension: "builtin:base", kind: "systemPrompt", chars: 11, preview: "BASE PROMPT" },
-		{ extension: "builtin:memory", kind: "messages", messageCount: 1, chars: 20, preview: "[Memory]" },
+	messageCount: 4,
+	toolCount: 2,
+	measurement: { inputTokens: 1_234, kind: "approximate" },
+	sources: [
+		{ owner: "builtin:memory", id: "facts", kind: "observation", status: "included" },
+		{ owner: "builtin:gone", id: "g", kind: "guidance", status: "unregistered", reason: "已注销" },
 	],
-	previousSystemPrompt: "BASE PROMPT",
 };
 
 describe("ContextCardComponent", () => {
-	it("renders a readable collapsed prompt card and expands the full prompt", () => {
+	it("renders a readable prepared-request card and expands the system prompt", () => {
 		const card = new ContextCardComponent(prompt);
 		const collapsed = stripAnsi(card.render(80).join("\n"));
-		expect(collapsed).toContain("提示词变更");
-		expect(collapsed).toContain("builtin:memory");
+		expect(collapsed).toContain("最近请求准备");
+		expect(collapsed).toContain("builtin:memory/facts");
+		expect(collapsed).toContain("未提供"); // Wire 未提供时不伪造
 		expect(collapsed).not.toContain("keep the user context");
+		expect(collapsed).not.toContain("已发送");
 
 		card.toggle();
 		const expanded = stripAnsi(card.render(80).join("\n"));
@@ -47,9 +53,34 @@ describe("ContextCardComponent", () => {
 		card.toggle();
 		for (const line of card.render(42)) expect(visibleWidth(stripAnsi(line))).toBeLessThanOrEqual(42);
 	});
-	it("/prompt 面板直接展示最终 system prompt 正文", () => {
-		const rendered = new PromptOverlay(prompt).render(100).join("\n");
-		expect(stripAnsi(rendered)).toContain("BASE PROMPT");
-		expect(stripAnsi(rendered)).toContain("keep the user context");
+	it("/prompt 面板展示最近准备请求；无请求记录时显示明确标注的预览", async () => {
+		const port = {
+			requestObservation: async () => prompt as never,
+			inspectRequest: async () =>
+				({
+					kind: "prompt",
+					basis: "preview",
+					modelKey: "mock/mock",
+					systemPrompt: "PREVIEW PROMPT",
+					messageCount: 1,
+					toolCount: 0,
+					sources: [],
+				}) as never,
+		};
+		const prepared = new PromptOverlay(port);
+		await prepared.ready;
+		const rendered = stripAnsi(prepared.render(100).join("\n"));
+		expect(rendered).toContain("最近请求准备");
+		expect(rendered).toContain("BASE PROMPT");
+		expect(rendered).toContain("keep the user context");
+
+		const preview = new PromptOverlay({
+			requestObservation: async () => undefined,
+			inspectRequest: (port as { inspectRequest: () => Promise<never> }).inspectRequest,
+		});
+		await preview.ready;
+		const previewText = stripAnsi(preview.render(100).join("\n"));
+		expect(previewText).toContain("当前预览");
+		expect(previewText).toContain("未发送");
 	});
 });

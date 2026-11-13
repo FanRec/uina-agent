@@ -2,9 +2,6 @@ import type { QueuedMessage } from "../agent/queue.js";
 import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 
-/** 上下文构成 provenance（context_prepare 事件载荷成员；UI 消费者经本模块取型）。 */
-export type { InjectionProvenance } from "../runtime/events.js";
-
 /**
  * 宿主 → 消费者的有序事件流。
  *

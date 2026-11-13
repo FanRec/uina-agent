@@ -79,7 +79,8 @@ export const actionSchemas: Record<string, Record<string, unknown>> = {
 /**
  * 工具 description 只负责"入口在哪、什么时候用"，不再承载 API 长文。
  *
- * 环境认知与实践原则由 WorldDef.environmentGuide 在活动会话时以 ENV_PROMPT.md 注入；
+ * 环境认知与实践原则由世界在 onStart 把 ENV_PROMPT.md 注册为 Context Source guidance
+ * （激活生命周期）注入；连接资格由同一生命周期的简短 capability 提供；
  * 运行时注入的 mc.* 合同、schedule 语义、Body/Window 用法与场景策略由
  * describe {kind:'guide',name:'…'} 按需返回的官方只读 Guide 承载；
  * 能力/程序/蓝图的精确 schema 由 describe 的 descriptor 与 library.get 承载；

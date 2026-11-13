@@ -1,52 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
-import { estimateRequestTokens } from "../src/agent/context.js";
-import type { ChatMsg } from "../src/core/types.js";
-import { estimateStreamTokens, splitGuidancePrefix } from "../src/extensions/compaction/index.js";
 import { describe, expect, it } from "vitest";
 import { IsolatedEnv, Scenario, UinaTestHarness } from "./harness/index.js";
 
-const msg = (role: ChatMsg["role"], content: string, context?: ChatMsg["context"]): ChatMsg =>
-	({ role, content, ...(context ? { context } : {}) }) as ChatMsg;
-
-describe("Compaction 与固定扩展前缀（A10）", () => {
-	it("runtime.guidance 前缀被剔除出裁剪视图，成本单独预留；历史条目原样保留", () => {
-		const prefixText = "前缀正文".repeat(50);
-		const messages = [
-			msg("system", "系统提示"),
-			msg("user", prefixText, { kind: "runtime.guidance" }),
-			msg("user", "第一问", { entryId: "e1" }),
-			msg("assistant", "第一答", { entryId: "e2" }),
-			msg("user", "第二问", { entryId: "e3" }),
-		];
-		const { history, guidanceCostTokens } = splitGuidancePrefix(messages);
-		expect(history).toEqual([messages[0], messages[2], messages[3], messages[4]]);
-		// 携带 entryId 的历史条目全部保留：压缩边界到 canonical history 的映射不受影响
-		expect(history.filter((m) => m.context?.entryId)).toHaveLength(3);
-		// 前缀成本与同口径估算一致（非零：预留进消息预算）
-		expect(guidanceCostTokens).toBe(estimateRequestTokens([messages[1]!] as readonly ChatMsg[], []));
-		expect(guidanceCostTokens).toBeGreaterThan(0);
-	});
-
-	it("没有前缀时裁剪视图不变、成本为零；前缀消息不计入历史 token 估算", () => {
-		const messages = [
-			msg("system", "系统提示"),
-			msg("user", "第一问", { entryId: "e1" }),
-			msg("assistant", "第一答", { entryId: "e2" }),
-		];
-		const { history, guidanceCostTokens } = splitGuidancePrefix(messages);
-		expect(history).toEqual(messages);
-		expect(guidanceCostTokens).toBe(0);
-		// 对照：若前缀未被剔除，历史 token 估算会包含它
-		const withPrefix = [
-			messages[0]!,
-			msg("user", "固定前缀".repeat(100), { kind: "runtime.guidance" }),
-			...messages.slice(1),
-		];
-		const split = splitGuidancePrefix(withPrefix);
-		expect(estimateStreamTokens(split.history, false)).toBe(estimateStreamTokens(messages, false));
-	});
-
+describe("Compaction 与固定扩展前缀（信息注入体系）", () => {
 	it("端到端：压缩摘要不含固定前缀正文，重建后的请求前缀仍在 System 之后", async () => {
 		const env = await IsolatedEnv.create({ prefix: "uina-compact-guidance-" });
 		await env.writeExtension(

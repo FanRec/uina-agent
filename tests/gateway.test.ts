@@ -239,10 +239,6 @@ describe("OpenAI gateway", () => {
 					events.push(`headers:${provider}`);
 					return { ...headers, "x-injected": "1" };
 				},
-				async transformPayload(provider, payload) {
-					events.push(`payload:${provider}`);
-					return { ...(payload as Record<string, unknown>), extra: true };
-				},
 				async observeResponse(res) {
 					events.push(`resp:${res.provider}:${res.status}:${res.headers["x-server-meta"]}`);
 				},
@@ -250,9 +246,10 @@ describe("OpenAI gateway", () => {
 		});
 
 		expect(stream).toBeInstanceOf(ReadableStream);
-		expect(events).toEqual(["headers:test-prov", "payload:test-prov", "resp:test-prov:200:ok"]);
+		// payload 变换已删除：扩展没有绕过统一装配修改业务载荷的通道。
+		expect(events).toEqual(["headers:test-prov", "resp:test-prov:200:ok"]);
 		expect(capturedHeaders["x-injected"]).toBe("1");
-		expect(JSON.parse(capturedBody)).toEqual({ prompt: "hello", extra: true });
+		expect(JSON.parse(capturedBody)).toEqual({ prompt: "hello" });
 	});
 
 	it("503 后按退避重试并在恢复时发出恢复事实", async () => {

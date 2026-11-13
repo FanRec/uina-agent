@@ -11,7 +11,7 @@ import activateMemory, { MEMORY_ENTRY_TYPE } from "./helpers/memory-capability.j
 /**
  * Memory 派生实验（P0 冻结概念 allowlist 的第五关实证）：
  * 一个真实的"持久记忆"能力完全经公开 pi 接缝实现——
- *   turn.prepare（systemPrompt 注入）+ turn.transformContext（上下文注入）
+ *   observation Source（每次请求的只读快照，同一事实只出现一次）
  *   + pi.appendEntry / pi.auxiliary（capability 私有 durable state），
  * 全程零触碰 CanonicalState / session reducer / recovery / Subject 内部。
  */
@@ -37,7 +37,7 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 		}
 	});
 
-	it("记忆经 auxiliary 落盘、经 prepare/transformContext 生效，且不进主线与 safeTargets", async () => {
+	it("记忆经 auxiliary 落盘、经 observation Source 生效，且不进主线与 safeTargets", async () => {
 		const store = new MemorySessionStore();
 		const runner = new ExtensionRunner({
 			cwd: process.cwd(),
@@ -75,19 +75,19 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 			expect(store.state.safeTargets.has(record.id)).toBe(false);
 		}
 
-		// 2. 跑一回合：prepare 注入 systemPrompt，transformContext 注入记忆上下文。
+		// 2. 跑一回合：观察 Source 经 Request Composer 注入一条运行时参考消息（单份）。
 		await harness.run("你好");
 
 		expect(requests).toHaveLength(1);
-		expect(requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("[已知记忆]"))).toBe(
-			true,
-		);
-		expect(
-			requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("用户偏好简洁回复")),
-		).toBe(true);
-		expect(requests[0]!.messages.some((m) => (m.content as string).includes("[记忆上下文] 用户偏好简洁回复"))).toBe(
-			true,
-		);
+		const memoryMessages = requests[0]!.messages.filter((m) => (m.content as string).includes("用户偏好简洁回复"));
+		// 同一事实只出现一次：Source 装配是请求级快照，不写历史、不重复注入。
+		expect(memoryMessages).toHaveLength(1);
+		expect(memoryMessages[0]!.role).toBe("user");
+		expect(memoryMessages[0]!.context?.kind).toBe("runtime.perception");
+		expect(memoryMessages[0]!.content).toContain("[已知记忆]");
+		// 系统提示词保持静态：记忆不进 system（前缀缓存合同）。
+		expect(requests[0]!.messages[0]!.role).toBe("system");
+		expect(requests[0]!.messages[0]!.content).not.toContain("[已知记忆]");
 
 		// 3. 回溯不影响 capability 私有状态：auxiliary 只增不减，重读仍可得。
 		const targetId = store.state.entries[0]!.id;
@@ -100,8 +100,8 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 			reason: "derivation",
 		});
 		await remember!.handler!("回溯后新增的记忆");
-		// 提示词快照也属于 auxiliary：它记录本回合真正生效的 system prompt，供 /prompt 与回放使用。
-		expect(store.state.auxiliary).toHaveLength(3);
+		// auxiliary 只承载 capability 私有状态（旧 prompt snapshot 通道已删除）。
+		expect(store.state.auxiliary).toHaveLength(2);
 		expect(
 			store.state.auxiliary.filter((record) => (record as { customType?: string }).customType === MEMORY_ENTRY_TYPE),
 		).toHaveLength(2);

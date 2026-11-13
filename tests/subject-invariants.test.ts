@@ -97,32 +97,42 @@ function firstCallGatedToolStream() {
 }
 
 describe("不变量：accepted input 不得无归属地消失", () => {
-	it("direct 输入在 prepare 失败后归还队列，且 input_accepted 只发一次", async () => {
-		let failPrepare = true;
+	it("direct 输入在请求准备失败后已是 canonical 事实：留在历史，不重复受理也不消失", async () => {
+		// 信息注入体系下，请求准备（装配/预检）发生在输入提交之后：preflight 失败时
+		// 输入已经落 canonical 历史。它不得无归属地消失，也不能退回队列造成重复受理。
+		let failPreflight = true;
 		const runtimeHooks: typeof NO_RUNTIME_HOOKS = {
 			...NO_RUNTIME_HOOKS,
 			turn: {
 				...NO_RUNTIME_HOOKS.turn,
-				prepare: async (input) => {
-					if (failPrepare) throw new Error("注入的 prepare 故障");
-					return { systemPrompt: input.systemPrompt };
+				preflight: async () => {
+					if (failPreflight) throw new Error("注入的 preflight 故障");
+					return { action: "send" as const };
 				},
 			},
 		};
 		const h = SubjectHarness.create({ runtimeHooks, store: new MemorySessionStore() });
 		const accepted: string[] = [];
+		const settled: string[] = [];
 		h.subject.subscribe((event) => {
 			if (event.type === "input_accepted") accepted.push(event.inputId);
+			if (event.type === "input_settled" && event.outcome === "committed") settled.push(event.inputId);
 		});
 		await h.pushInput("待恢复");
 		await h.waitForIdle();
+		// input_accepted 只发一次；输入已 committed（durable 事实），不留在队列。
 		expect(accepted).toHaveLength(1);
-		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["待恢复"]);
-		failPrepare = false;
-		await h.subject.resumePending();
-		await h.waitForIdle();
+		expect(settled).toHaveLength(1);
 		expect(h.queuedSnapshot()).toHaveLength(0);
 		expect(h.history.some((message) => message.role === "user" && message.content === "待恢复")).toBe(true);
+
+		// 恢复后下一请求从完整历史出发（含失败轮的输入），不再重放队列。
+		failPreflight = false;
+		await h.pushInput("继续");
+		await h.waitForIdle();
+		expect(h.queuedSnapshot()).toHaveLength(0);
+		const userTexts = h.history.filter((m) => m.role === "user").map((m) => m.content);
+		expect(userTexts).toEqual(["待恢复", "继续"]);
 	});
 
 	it("emits input_settled after a deferred world input is committed", async () => {

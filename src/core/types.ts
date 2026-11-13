@@ -295,8 +295,8 @@ export interface ModelRequest {
 	 */
 	requestId?: string;
 	/**
-	 * Wire 观察出口（只观察，无返回协议）：在最后一次 transformPayload 之后、HTTP
-	 * 序列化发送之前回调。观察方不得借它修改请求。
+	 * Wire 观察出口（只观察，无返回协议）：在协议编码完成、HTTP 序列化发送之前回调。
+	 * 观察方不得借它修改请求。
 	 */
 	onWireObservation?: (observation: ProviderWireObservation) => void;
 }
@@ -313,14 +313,11 @@ export interface WirePayloadSummary {
 	readonly toolCount?: number;
 }
 
-/** 一次真实发送的 Provider Wire 观察（transformPayload 之后、HTTP 之前）。 */
+/** 一次真实发送的 Provider Wire 观察：实际准备发送载荷的摘要（HTTP 序列化之前）。 */
 export interface ProviderWireObservation {
 	readonly requestId?: string;
 	readonly provider: string;
-	readonly before: WirePayloadSummary;
-	readonly after: WirePayloadSummary;
-	/** before 与 after 摘要不同即 true：说明 transformPayload 改变了载荷。 */
-	readonly transformed: boolean;
+	readonly payload: WirePayloadSummary;
 }
 
 /**
@@ -359,6 +356,10 @@ export interface ContextSnapshot {
 
 export interface RequestInspection {
 	readonly projection: RequestProjection;
+	/** 本次装配实际采用的 History View（压缩后可见历史）：与 projection.messages 中的
+	 * 历史段同一对象集合；不含 System、固定 Guidance、当前动态 Source 与工具定义。
+	 * 历史压缩（Compaction）据此规划边界与预算，不从完整投影里按 role/kind 反猜。 */
+	readonly history: readonly ChatMsg[];
 	readonly measurement: TokenMeasurement;
 	readonly contextWindow?: number;
 	readonly inputBudget?: number;

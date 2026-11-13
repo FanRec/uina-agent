@@ -70,11 +70,18 @@ export interface ExtensionAPI {
 	/**
 	 * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
-	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
-	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { tail?: boolean }): () => void;
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>): () => void;
 	/**
-	 * 声明式提供模型可见信息（信息注入重构）：扩展信息贡献的推荐入口。
+	 * 注册 History View（信息注入体系）：压缩后的可见历史的唯一提供者。同一宿主
+	 * 同时只允许一个提供者；重复注册直接报错。视图只接收 History 消息（canonical
+	 * history 经协议投影后的序列，不含 System/Guidance/当前动态 Source），返回合法
+	 * 的历史消息序列；只读、无副作用——不得更新状态、提交候选或发事件。随激活
+	 * 作用域自动注销。
+	 */
+	registerHistoryView(view: import("../runtime/hooks.js").HistoryView): () => void;
+	/**
+	 * 声明式提供模型可见信息（信息注入体系）：扩展信息贡献的唯一注册入口。
 	 *
 	 * - guidance：稳定、可信用法/协议（注册时确定，不随在线状态变化）；
 	 * - capability：当前能做什么（动态状态快照，不可用时返回 null）；
@@ -673,7 +680,7 @@ export class ExtensionRunner extends ExtensionHost {
 				own(dispose);
 				return dispose;
 			},
-			onHook: (hook, handler, options) => {
+			onHook: (hook, handler) => {
 				assertActive();
 				const wrapped: HookHandler<HookName> = async (input) => {
 					try {
@@ -683,9 +690,13 @@ export class ExtensionRunner extends ExtensionHost {
 						return undefined;
 					}
 				};
-				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id, ...(options?.tail ? { tail: true } : {}) });
+				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id });
 				own(dispose);
 				return dispose;
+			},
+			registerHistoryView: (view) => {
+				assertActive();
+				return ownRegistration(this.registerHistoryView(scope.id, view, () => scope.active));
 			},
 			provideContext: ((raw: ContextSource | FileGuidanceSource) => {
 				assertActive();

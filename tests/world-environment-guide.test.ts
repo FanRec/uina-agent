@@ -1,29 +1,41 @@
-/** 静态 ENV 接缝：只在世界适用时注入、可组合、停用即摘除、不写消息历史。 */
+/** World Context Source 薄转发端口：前缀命名、激活生命周期、停用即摘除、不写历史。 */
 import { expect, test } from "vitest";
+import type { ContextSource } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
-import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import type { WorldDef } from "../src/extensions/world-framework/types.js";
 import { WorldActivation } from "../src/extensions/world-framework/world-activation.js";
 
-const BASE = "BASE SYSTEM PROMPT";
 const GUIDE_A = "世界甲：环境认知甲";
 const GUIDE_B = "世界乙：环境认知乙";
 
+interface Registered {
+	readonly owner: string;
+	readonly source: ContextSource;
+	readonly isActive: () => boolean;
+}
+
+/** pi 最小桩：只实现 WorldActivation 用到的端口；provideContext 透传给宿主。 */
 function makeHost() {
 	const host = new ExtensionHost();
-	const hooks = createRuntimeHooks(host);
+	const registered: Registered[] = [];
 	const pi = {
 		subject: undefined,
 		cwd: process.cwd(),
 		isBusy: () => false,
 		registerTool: () => () => {},
 		on: () => () => {},
-		onHook: (hook: string, handler: unknown, options?: { tail?: boolean }) =>
-			host.onHook(hook as never, handler as never, options as never),
+		provideContext: (source: ContextSource): (() => void) => {
+			// owner 注入是 ExtensionRunner 的职责；这里用宿主同款注册（owner=桩身份），
+			// World 转发层的合同（前缀 + 生命周期）由注册列表断言。
+			const entry: Registered = { owner: "stub:framework", source, isActive: () => true };
+			registered.push(entry);
+			return () => {
+				const index = registered.indexOf(entry);
+				if (index >= 0) registered.splice(index, 1);
+			};
+		},
 	} as never;
-	const prepare = async (): Promise<{ systemPrompt?: string; messages?: readonly unknown[] }> =>
-		(await hooks.turn.prepare({ prompt: "用户输入", systemPrompt: BASE })) as never;
-	return { host, pi, prepare };
+	return { host, pi, registered };
 }
 
 function activate(def: WorldDef, pi: never) {
@@ -35,118 +47,90 @@ function activate(def: WorldDef, pi: never) {
 	});
 }
 
-const definition = (name: string, guide: () => string | null): WorldDef => ({
+const definition = (name: string): WorldDef => ({
 	name,
 	description: `probe ${name}`,
 	actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
-	environmentGuide: guide,
+	async onStart(ctx) {
+		ctx.provideContext!({ id: "guidance", kind: "guidance", text: name === "mc" ? GUIDE_A : GUIDE_B });
+	},
 });
 
-test("环境指引只在 getter 适用时注入本回合 systemPrompt，停用后 hook 摘除", async () => {
-	const { pi, prepare } = makeHost();
-	let applicable = false;
-	const activation = activate(
-		definition("mc", () => (applicable ? GUIDE_A : null)),
-		pi,
-	);
+test("World 经薄转发端口注册 Context Source：框架加 world:<name>/ 前缀，停用即摘除", async () => {
+	const { pi, registered } = makeHost();
+	const activation = activate(definition("mc"), pi);
 	await activation.start();
 	try {
-		// 没有活动会话：非 MC 任务不该背这段常驻文本。
-		const idle = await prepare();
-		expect(idle.systemPrompt).toBeUndefined();
-		expect(idle.messages ?? []).toEqual([]);
-
-		applicable = true;
-		const active = await prepare();
-		expect(active.systemPrompt).toContain(BASE);
-		expect(active.systemPrompt).toContain("[world:mc:environment]");
-		expect(active.systemPrompt).toContain(GUIDE_A);
-		// 只改 systemPrompt，不注入用户/助手消息，也不落 Session。
-		expect(active.messages ?? []).toEqual([]);
-
-		// 每回合各自取一次，不累积、不重复追加。
-		const again = await prepare();
-		expect(again.systemPrompt).toBe(active.systemPrompt);
-		expect(again.systemPrompt?.split("[world:mc:environment]").length).toBe(2);
-
-		applicable = false;
-		expect((await prepare()).systemPrompt).toBeUndefined();
+		expect(registered).toHaveLength(1);
+		expect(registered[0]!.owner).toBe("stub:framework");
+		expect(registered[0]!.source.id).toBe("world:mc/guidance");
+		expect(registered[0]!.source.kind).toBe("guidance");
 	} finally {
 		await activation.stop();
 	}
-	// scope 关闭后 handler 已注销，即便 getter 又适用也不再注入。
-	applicable = true;
-	expect((await prepare()).systemPrompt).toBeUndefined();
+	// World 关闭时一并撤销所有 Source；下一次激活不得留下旧注册。
+	expect(registered).toHaveLength(0);
 });
 
-test("多个启用世界依次追加，互不覆盖，且与既有 turn.prepare 扩展可组合", async () => {
-	const { host, pi, prepare } = makeHost();
-	// 模拟 MCP 扩展：同样在 turn.prepare 追加 capability index。
-	host.onHook(
-		"turn.prepare",
-		({ systemPrompt }: { systemPrompt: string }) => ({ systemPrompt: `${systemPrompt}\n\n[MCP INDEX]` }),
-		{} as never,
-	);
-	const a = activate(
-		definition("mc", () => GUIDE_A),
-		pi,
-	);
-	const b = activate(
-		definition("music", () => GUIDE_B),
-		pi,
-	);
+test("多世界同名局部 ID 互不冲突；启动失败时注册随回滚撤下", async () => {
+	const { pi, registered } = makeHost();
+	const a = activate(definition("mc"), pi);
+	const b = activate(definition("music"), pi);
 	await a.start();
 	await b.start();
 	try {
-		const result = await prepare();
-		expect(result.systemPrompt).toContain(BASE);
-		expect(result.systemPrompt).toContain("[MCP INDEX]");
-		expect(result.systemPrompt).toContain("[world:mc:environment]");
-		expect(result.systemPrompt).toContain("[world:music:environment]");
-		expect(result.systemPrompt).toContain(GUIDE_A);
-		expect(result.systemPrompt).toContain(GUIDE_B);
+		expect(registered.map((entry) => entry.source.id).sort()).toEqual(["world:mc/guidance", "world:music/guidance"]);
 	} finally {
 		await b.stop();
 		await a.stop();
 	}
-});
+	expect(registered).toHaveLength(0);
 
-test("静态 getter 抛错不打断回合准备链，也不污染其它世界", async () => {
-	const { pi, prepare } = makeHost();
-	const broken = activate(
-		definition("broken", () => {
-			throw new Error("getter failed");
-		}),
-		pi,
-	);
-	const healthy = activate(
-		definition("healthy", () => GUIDE_B),
-		pi,
-	);
-	await broken.start();
-	await healthy.start();
-	try {
-		const result = await prepare();
-		expect(result.systemPrompt).toContain(GUIDE_B);
-		expect(result.systemPrompt).not.toContain("[world:broken:environment]");
-	} finally {
-		await healthy.stop();
-		await broken.stop();
-	}
-});
-
-test("未声明 environmentGuide 的世界不产生任何回合注入", async () => {
-	const { pi, prepare } = makeHost();
-	const plain: WorldDef = {
-		name: "plain",
-		description: "no guide",
-		actions: { noop: { description: "noop", run: () => ({ result: "ok", status: "succeeded" as const }) } },
+	// onStart 抛错：已注册的 Source 随启动回滚撤下。
+	const failing: WorldDef = {
+		...definition("broken"),
+		async onStart(ctx) {
+			ctx.provideContext!({ id: "guidance", kind: "guidance", text: "正文" });
+			throw new Error("启动失败");
+		},
 	};
-	const activation = activate(plain, pi);
+	const broken = activate(failing, pi);
+	await expect(broken.start()).rejects.toThrow("启动失败");
+	expect(registered).toHaveLength(0);
+});
+
+test("停用后注册明确失败；调用者不能重复前缀或伪造前缀", async () => {
+	const { pi, registered } = makeHost();
+	let captured: import("../src/extensions/world-framework/types.js").ServiceCompanionContext | undefined;
+	const def: WorldDef = {
+		...definition("mc"),
+		async onStart(ctx) {
+			captured = ctx;
+			ctx.provideContext!({ id: "guidance", kind: "guidance", text: GUIDE_A });
+		},
+	};
+	const activation = activate(def, pi);
 	await activation.start();
-	try {
-		expect((await prepare()).systemPrompt).toBeUndefined();
-	} finally {
-		await activation.stop();
-	}
+	expect(registered).toHaveLength(1);
+
+	await activation.stop();
+	expect(registered).toHaveLength(0);
+	// 停用后经同一端口注册：明确失败，不留半个 Source。
+	expect(() => captured!.provideContext!({ id: "guidance", kind: "guidance", text: "迟到的正文" })).toThrow(
+		/世界已停用/,
+	);
+	expect(registered).toHaveLength(0);
+
+	// 局部 id 不允许自带 "world:" 前缀（Framework 自动添加，防止重复前缀）。
+	const fake = activate(
+		{
+			...definition("fake"),
+			async onStart(ctx) {
+				ctx.provideContext!({ id: "world:fake/guidance", kind: "guidance", text: "正文" });
+			},
+		},
+		pi,
+	);
+	await expect(fake.start()).rejects.toThrow(/不允许自带/);
+	expect(registered).toHaveLength(0);
 });

@@ -1,4 +1,5 @@
-import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
+import type { ChatMsg } from "../core/types.js";
+import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
 
@@ -10,9 +11,10 @@ import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
  */
 export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilter): RuntimeHooks {
 	const hooks: RuntimeHooks = {
+		history: {
+			project: (history: readonly ChatMsg[]): readonly ChatMsg[] => host.projectHistory(history),
+		},
 		turn: {
-			prepare: async (input) => (await host.runTurnPrepare(input, scope)) ?? {},
-			transformContext: (projection) => host.runTransformContext(projection as never, scope),
 			preflight: (input) => host.runPreflight(input as never, scope),
 			afterEnd: (input) => host.runAfterEnd(input as never, scope),
 			shouldStop: async (input) => ({ stop: await host.runShouldStop(input, scope) }),
@@ -24,8 +26,6 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 		provider: {
 			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) =>
 				host.runTransformHeaders(provider, headers, scope),
-			transformPayload: (provider: string, payload: DeepReadonly<unknown>) =>
-				host.runTransformPayload(provider, payload, scope),
 			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) =>
 				host.runObserveResponse(input, scope),
 		},

@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { convertToLlm } from "../src/agent/context.js";
-import type { ModelStreamFn, RequestProjection, ToolResultStatus } from "../src/core/types.js";
+import type { ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { ToolBroker, type ToolExecutionResult } from "../src/tools/broker.js";
 import { mockTool, SubjectHarness } from "./harness/index.js";
@@ -26,23 +27,11 @@ function hooksWithTransform(
 	transform: (input: { name: string; result: string; status: ToolResultStatus }) => Partial<ToolExecutionResult>,
 ): RuntimeHooks {
 	return {
-		turn: {
-			prepare: async () => ({}),
-			transformContext: async (projection: RequestProjection) => projection,
-			preflight: async () => ({ action: "send" as const }),
-			afterEnd: async () => {},
-			shouldStop: async () => ({}),
-		},
+		...NO_RUNTIME_HOOKS,
 		tools: {
-			beforeCall: async () => ({}),
+			...NO_RUNTIME_HOOKS.tools,
 			transformResult: async (input) => transform({ name: input.name, result: input.result, status: input.status }),
 		},
-		provider: {
-			transformHeaders: async (_provider: string, headers: Record<string, string>) => headers,
-			transformPayload: async (_provider: string, payload: unknown) => payload,
-			observeResponse: async () => {},
-		},
-		context: { collect: async () => ({ contributions: [], omitted: [] }) },
 		events: {
 			emit: async (_event: RuntimeEvent) => {},
 			observe: () => {},

@@ -207,7 +207,7 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 					);
 					break;
 				}
-				// system 消息不属于展示事实（它由 context.prepared 表达）。
+				// system 消息不属于展示事实（系统提示词不进转录视图）。
 				break;
 			}
 

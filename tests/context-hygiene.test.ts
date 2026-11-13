@@ -1,4 +1,4 @@
-import { buildContext } from "../src/agent/context.js";
+import { convertToLlm, defaultSystemPrompt } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
 import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js";
@@ -7,27 +7,24 @@ import { isRecord } from "../src/session/recovery.js";
 import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
-	it("emits a single head system message and never a trailing one", () => {
+	it("history projection never emits system messages; the Subject prepends exactly one head", () => {
 		const history: ChatMsg[] = [
 			{ role: "user", content: "hello" },
 			{ role: "assistant", content: "hi there" },
 			{ role: "user", content: "what is next?" },
 		];
 
-		const context = buildContext({
-			history,
-			systemPrompt: "You are Uina.",
-		});
+		const context = convertToLlm(history);
 
-		// First message is system; runtime events ride the mainline as
-		// runtime-input custom messages, not system-prompt concatenation.
-		expect(context[0]?.role).toBe("system");
-		expect(context[0]?.content).toContain("You are Uina.");
+		// System 归 Subject 装配（prepareProjection 只前置一条）；历史投影自身不发 system，
+		// runtime events ride the mainline as runtime-input custom messages, not
+		// system-prompt concatenation.
+		expect(context.filter((m) => m.role === "system").length).toBe(0);
+		expect(defaultSystemPrompt()).toContain("Uina");
 
 		// Last message MUST NOT be a system message
 		expect(context.at(-1)?.role).toBe("user");
 		expect(context.at(-1)?.content).toBe("what is next?");
-		expect(context.filter((m) => m.role === "system").length).toBe(1);
 	});
 
 	it("filters out ghost empty assistant messages (interrupted without content)", () => {
@@ -38,14 +35,11 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "user", content: "question 2" },
 		];
 
-		const context = buildContext({
-			history,
-			thinkingReplay: "none",
-		});
+		const context = convertToLlm(history, { thinkingReplay: "none" });
 
 		// Ghost empty assistant message must not be sent
-		expect(context.map((m) => m.role)).toEqual(["system", "user", "user"]);
-		expect(context.map((m) => m.content)).toEqual([expect.any(String), "question 1", "question 2"]);
+		expect(context.map((m) => m.role)).toEqual(["user", "user"]);
+		expect(context.map((m) => m.content)).toEqual(["question 1", "question 2"]);
 	});
 
 	it("retains thinking on every assistant frame under all replay", () => {
@@ -57,7 +51,7 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "tool", tool_call_id: "c1", content: "ok" },
 		];
 
-		const context = buildContext({ history, thinkingReplay: "all" });
+		const context = convertToLlm(history, { thinkingReplay: "all" });
 		const assistants = context.filter((m) => m.role === "assistant");
 		expect(assistants[0]?.thinking).toBe("t1");
 		expect(assistants[1]?.thinking).toBe("t2");
@@ -76,9 +70,7 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "user", content: "try again" },
 		];
 
-		const context = buildContext({
-			history,
-		});
+		const context = convertToLlm(history);
 
 		const assistantMsg = context.find((m) => m.role === "assistant");
 		expect(assistantMsg).toBeDefined();
@@ -104,11 +96,9 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			},
 		];
 
-		const context = buildContext({
-			history,
-		});
+		const context = convertToLlm(history);
 
-		expect(context.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool"]);
+		expect(context.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
 		const assistantMsg = context.find((m) => m.role === "assistant");
 		expect(assistantMsg?.tool_calls?.length).toBe(1);
 		expect(assistantMsg?.tool_calls?.[0]?.id).toBe("call-1");

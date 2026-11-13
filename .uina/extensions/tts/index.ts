@@ -81,7 +81,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 	);
 
 	const recordPerception = async (fact: {
-		kind: "interrupted" | "delivery_failed" | "delivery_unknown";
+		kind: "delivery_failed" | "delivery_unknown";
 		summary: string;
 		causeRef?: string;
 	}): Promise<void> => {
@@ -515,12 +515,13 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 				stopLevelStream();
 				const result = await driver.interrupt();
 				if (result.outcome === "unknown" || result.outcome === "failed") {
+					// 无源身份的临时事实：进 VoicePerception 的单槽临时位，随下一个真实
+					// 解决证据退出。"已被主动打断"是一次性事实，不代表持续待处理问题，
+					// 不作为长驻观察。
 					await recordPerception({
 						kind: result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed",
 						summary: `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason}。`,
 					});
-				} else if (result.outcome === "interrupted") {
-					await recordPerception({ kind: "interrupted", summary: "上一段声音被主动打断，后续内容未交付。" });
 				}
 			})().finally(() => {
 				interruption = null;

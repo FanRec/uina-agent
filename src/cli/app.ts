@@ -10,7 +10,7 @@ import { releaseProfileLock, resolveProfile } from "../host/profile.js";
 import { PresentationController } from "../presentation/controller.js";
 import type { ToolModel } from "../presentation/projection/tools.js";
 import type { ToolNode } from "../presentation/projection.js";
-import { listPromptSnapshots } from "../session/prompt-snapshots.js";
+import type { PromptRequestCardData } from "../ui/components/transcript/context-card.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
 import { renderToolBlock } from "../ui/render-text.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
@@ -100,12 +100,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		const message = record.event;
 		if (message.type === "session_rewind") {
 			const auxiliary = host.auxiliaryEntries();
-			tui!.consume(
-				record,
-				compactionDecorations(auxiliary, message.entries),
-				listPromptSnapshots(auxiliary),
-				auxiliary,
-			);
+			tui!.consume(record, compactionDecorations(auxiliary, message.entries), auxiliary);
 			return;
 		}
 		tui!.consume(record);
@@ -464,17 +459,19 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				registry: host.extensionRegistry,
 				features: {
 					sessionPort: host.session,
+					promptPort: {
+						requestObservation: async () => {
+							const observation = host.getRequestObservation();
+							return observation ? toPromptCard(observation, "prepared") : undefined;
+						},
+						inspectRequest: async () => toPromptCard(await host.inspectRequest(), "preview"),
+					},
 				},
 			});
 			tui.initialize(snapshot);
 			if (host.restoredEntries.length > 0) {
 				const decorations = compactionDecorations(host.restoredAuxiliary, host.restoredEntries);
-				tui.restoreSession(
-					host.restoredEntries,
-					decorations,
-					listPromptSnapshots(host.restoredAuxiliary),
-					host.restoredAuxiliary,
-				);
+				tui.restoreSession(host.restoredEntries, decorations, host.restoredAuxiliary);
 			}
 			host.attachExtensionUI(tui.extensionUI);
 			tui.onIntent((intent) =>
@@ -546,4 +543,50 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	} else if (initialPrompt !== undefined) {
 		submitInitialPromptInteractive(initialPrompt);
 	}
+}
+
+/** Host 请求事实 → /prompt 检查卡（组合根侧的窄转换；不携带完整语义正文）。 */
+function toPromptCard(
+	source: {
+		requestId?: string;
+		projection: {
+			readonly modelKey: string;
+			readonly messages: readonly { readonly role: string; readonly content: unknown }[];
+			readonly tools: readonly unknown[];
+		};
+		measurement?: { readonly inputTokens: number; readonly kind: "exact" | "approximate" };
+		assembly?: {
+			readonly sources: readonly {
+				readonly owner: string;
+				readonly id: string;
+				readonly kind: string;
+				readonly status: string;
+				readonly reason?: string;
+			}[];
+		};
+		wire?: {
+			readonly payload: {
+				readonly hash: string;
+				readonly bytes: number;
+				readonly messageCount?: number;
+				readonly toolCount?: number;
+			};
+		};
+	},
+	basis: "prepared" | "preview",
+): PromptRequestCardData {
+	const messages = source.projection.messages;
+	const system = messages.find((message) => message.role === "system");
+	return {
+		kind: "prompt",
+		basis,
+		...(source.requestId !== undefined ? { requestId: source.requestId } : {}),
+		modelKey: source.projection.modelKey,
+		systemPrompt: typeof system?.content === "string" ? system.content : "",
+		messageCount: messages.length,
+		toolCount: source.projection.tools.length,
+		...(source.measurement ? { measurement: source.measurement } : {}),
+		sources: source.assembly?.sources ?? [],
+		...(source.wire ? { wire: source.wire.payload } : {}),
+	};
 }

@@ -29,21 +29,43 @@ const overlays = () => [
 	new HelpMenu(),
 	new TrajectoryScene({ list: () => [], aggregate: () => [] }),
 	new BranchInspectorOverlay(emptySession),
-	new PromptOverlay(),
-	new PromptOverlay({
-		kind: "prompt",
-		id: "prompt-test",
-		turnNumber: 1,
-		systemPrompt: "system prompt line\n".repeat(30),
-		injections: [],
-	}),
+	new PromptOverlay(promptPortStub()),
+	new PromptOverlay(
+		promptPortStub({
+			kind: "prompt",
+			basis: "prepared",
+			requestId: "p1",
+			modelKey: "m",
+			systemPrompt: "system prompt line\n".repeat(30),
+			messageCount: 2,
+			toolCount: 1,
+			sources: [],
+		}),
+	),
 ];
 
+const promptPortStub = (view?: import("../src/ui/components/transcript/context-card.js").PromptRequestCardData) =>
+	({
+		requestObservation: async () => view,
+		inspectRequest: async () =>
+			view ?? {
+				kind: "prompt",
+				basis: "preview",
+				modelKey: "m",
+				systemPrompt: "",
+				messageCount: 0,
+				toolCount: 0,
+				sources: [],
+			},
+	}) as import("../src/ui/components/transcript/context-card.js").PromptPort;
+
 describe("responsive TUI overlays", () => {
-	it("keeps every built-in panel within narrow and short terminal viewports", () => {
+	it("keeps every built-in panel within narrow and short terminal viewports", async () => {
 		for (const width of [40, 50, 80, 120]) {
 			for (const height of [8, 12, 24]) {
 				for (const overlay of overlays()) {
+					// 异步加载完成的 prompt 面板与一次性渲染的面板遵循同一宽度约束。
+					if (overlay instanceof PromptOverlay) await overlay.ready;
 					const lines = overlay.render(width, height);
 					expect(lines.length, `${overlay.constructor.name} ${width}x${height}`).toBeLessThanOrEqual(height);
 					for (const [index, line] of lines.entries()) {

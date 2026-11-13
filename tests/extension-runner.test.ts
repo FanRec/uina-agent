@@ -125,9 +125,7 @@ describe("project extension runner", () => {
 		const env = await createEnv();
 		const runner = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker() });
 		await runner.activateBuiltin("root-context", (pi) => {
-			pi.onHook("turn.transformContext", (projection) => ({
-				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "root-only" }] },
-			}));
+			pi.registerHistoryView((history) => [...history, { role: "user", content: "root-only" }]);
 		});
 		let received = "";
 		const model: Model = Scenario.create().model;

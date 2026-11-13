@@ -510,14 +510,11 @@ try {
 	await host.start();
 	await host["extensionHost"].activateBuiltin("mc-i2-acceptance", (api) => {
 		pi = api;
-		// This acceptance task explicitly exercises Minecraft alone. Keep unrelated
-		// shell/session tools out of the model request through the public hook.
-		if (modelMode)
-			api.onHook("turn.transformContext", (projection) => ({
-				projection: { ...projection, tools: projection.tools.filter((tool) => tool.function.name === "minecraft") },
-			}));
 	});
 	await startWorld();
+	// 真模型验收只练 Minecraft：从本测试实例的 Tool Broker 撤下非 Minecraft 工具，
+	// 使请求定义、工具执行权限与预算从源头一致（不再在请求边界过滤完整投影）。
+	if (modelMode) for (const name of [...host["tools"].names()]) if (name !== "minecraft") host["tools"].remove(name);
 	await step("bounded dedicated survival scene is observed", prepareScene);
 	if (modelMode) await modelScenario();
 	else

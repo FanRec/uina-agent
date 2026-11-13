@@ -57,24 +57,33 @@ describe("MCP 外部扩展装载", () => {
 		});
 		try {
 			await runner.load();
-			const prepare = () => runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "base prompt" });
-			const first = await prepare();
-			expect(first?.systemPrompt).toContain("## MCP 能力索引");
-			expect(first?.systemPrompt).toContain(
-				"以下服务已配置，但不保证在线或目录最新。可按需或主动探索，通过 MCP 工具发现并调用。",
-			);
-			expect(first?.systemPrompt).toContain("- tavily：网页搜索与内容提取；用于获取最新信息、调查话题及核验事实。");
-			expect(first?.systemPrompt).toContain("- other：用途未说明，可通过 MCP 工具探索。");
-			expect(first?.systemPrompt).toContain("- constructor：用途未说明，可通过 MCP 工具探索。");
-			expect(first?.systemPrompt).not.toContain("fixture-secret");
-			expect(first?.systemPrompt).not.toContain("example.test");
-			expect(first?.systemPrompt).not.toContain("missing");
+			const collect = async () => {
+				const result = await runner.runtimeHooks().context.collect({
+					modelKey: "m",
+					signal: new AbortController().signal,
+				});
+				return result.contributions.find((c) => c.kind === "capability");
+			};
+			const read = async () => {
+				const capability = await collect();
+				expect(capability).toBeDefined();
+				return (capability!.value as { text: string }).text;
+			};
+			const first = await read();
+			expect(first).toContain("以下 MCP 服务已配置");
+			expect(first).toContain("已配置不等于已在线或已发现工具");
+			expect(first).toContain("- tavily：网页搜索与内容提取；用于获取最新信息、调查话题及核验事实。");
+			expect(first).toContain("- other：用途未说明，可通过 MCP 工具探索。");
+			expect(first).toContain("- constructor：用途未说明，可通过 MCP 工具探索。");
+			expect(first).not.toContain("fixture-secret");
+			expect(first).not.toContain("example.test");
+			expect(first).not.toContain("missing");
 
 			writeConfig("网页搜索与正文提取；用于核验近期事件。");
 			await runner.reload();
-			const reloaded = await prepare();
-			expect(reloaded?.systemPrompt).toContain("- tavily：网页搜索与正文提取；用于核验近期事件。");
-			expect(reloaded?.systemPrompt).not.toContain("用于获取最新信息");
+			const reloaded = await read();
+			expect(reloaded).toContain("- tavily：网页搜索与正文提取；用于核验近期事件。");
+			expect(reloaded).not.toContain("用于获取最新信息");
 		} finally {
 			await runner.dispose();
 			if (previousHome === undefined) delete process.env.UINA_HOME;
@@ -103,8 +112,12 @@ describe("MCP 外部扩展装载", () => {
 		});
 		try {
 			await runner.load();
-			const result = await runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "base prompt" });
-			expect(result?.systemPrompt).toBeUndefined();
+			// 没有全局有效配置时不注册 capability Source：项目级未信任配置不进常驻目录。
+			const result = await runner.runtimeHooks().context.collect({
+				modelKey: "m",
+				signal: new AbortController().signal,
+			});
+			expect(result.contributions.filter((c) => c.kind === "capability")).toHaveLength(0);
 		} finally {
 			await runner.dispose();
 			if (previousHome === undefined) delete process.env.UINA_HOME;

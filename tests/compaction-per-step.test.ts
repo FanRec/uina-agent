@@ -1,6 +1,6 @@
 /**
  * 自动压缩语义：上下文窗口管理归 official compaction capability，
- * 经 turn.transformContext 每请求裁剪——journal 保留全量历史，Subject 内存
+ * 经 History View（压缩扩展的每请求历史裁剪）——journal 保留全量历史，Subject 内存
  * 视图不被自动截断，摘要以 uina.compaction.summary custom entry 持久化。
  *
  * 回合内暴涨的安全网 = 每请求裁剪本身：工具输出让上下文越过阈值后，
@@ -41,7 +41,7 @@ async function persistHistory(
 	await opened.store.close();
 }
 
-describe("自动压缩：capability 经 transformContext 每请求裁剪", () => {
+describe("自动压缩：经 History View 每请求裁剪", () => {
 	test("滚动摘要按已有摘要动态取下一块，所有摘要请求均不超输入预算", async ({ env }) => {
 		await persistHistory(
 			env,

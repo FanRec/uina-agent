@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "../../src/extensions/runner.js";
  * Memory 派生实验 capability（tests fixture，非生产代码）。
  *
  * 派生测试证明：一个真实的"持久记忆"能力完全经公开 pi 接缝实现——
- * prepare（systemPrompt 注入）+ transformContext（上下文注入）+ appendEntry/
+ * observation Source（每次请求的只读快照，同一事实只出现一次）+ appendEntry/
  * auxiliary（capability 私有 durable state），零触碰内核内部状态。
  * 本文件的 import 即测试侧审定的白名单。
  */
@@ -32,20 +32,16 @@ export default function activateMemory(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.onHook("turn.prepare", (input) => {
-		const facts = readFacts(pi);
-		if (facts.length === 0) return undefined;
-		return { systemPrompt: `${input.systemPrompt}\n\n[已知记忆]\n- ${facts.join("\n- ")}` };
-	});
-
-	pi.onHook("turn.transformContext", (projection) => {
-		const facts = readFacts(pi);
-		if (facts.length === 0) return undefined;
-		return {
-			projection: {
-				...projection,
-				messages: [...projection.messages, { role: "user", content: `[记忆上下文] ${facts.join("；")}` }],
-			},
-		};
+	pi.provideContext({
+		id: "memory",
+		kind: "observation",
+		read: () => {
+			const facts = readFacts(pi);
+			if (facts.length === 0) return null;
+			return {
+				text: `[已知记忆]\n- ${facts.join("\n- ")}`,
+				source: { type: "memory.facts", origin: "internal" },
+			};
+		},
 	});
 }

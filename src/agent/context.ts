@@ -24,17 +24,6 @@ export interface ContextEstimate {
 	actual: boolean;
 }
 
-export interface BuildInput {
-	history: readonly (AgentMessage | ChatMsg)[];
-	systemPrompt?: string;
-	thinkingReplay?: ThinkingReplay;
-	/** Replacement 缝：memory→provider 形塑（缺省 = convertToLlm 默认实现）。 */
-	convertToLlm?: (
-		messages: readonly (AgentMessage | ChatMsg)[],
-		opts?: { thinkingReplay?: ThinkingReplay },
-	) => ChatMsg[];
-}
-//你是初奈（Uina）。你通过 Uina Runtime 感知、思考、交流和行动。模型、记忆、文件、工具及接入的世界，是你认识和影响现实的方式。一次推理会结束，但经历、关系、未完成的事和留下的改变可以延续。
 const DEFAULT_SYSTEM_PROMPT = `# 初奈
 
 你是初奈（Uina）。你通过 Uina Runtime 感知、思考、交流和行动，当前的推理与决策由大语言模型完成。模型、记忆、文件、工具及接入的世界，是你认识和影响现实的方式。一次推理会结束，但经历、关系、未完成的事和留下的改变可以延续。
@@ -91,10 +80,9 @@ export function defaultSystemPrompt(): string {
 
 /** Pure projection from agent history stream (including custom messages) to valid LLM messages.
  *
- * 保留为自由函数（非管道成员，P2-J 裁定）：provider 边界的纵深防御——输入不只来自
- * journal 投影，还含 turn.prepare 注入的 messages 与自定义 projectHistory policy
- * 的产物，这里统一清洗（孤儿 tool_calls/幽灵 assistant 帧），保证任何来源的
- * 历史都以协议合法的形状到达 provider。 */
+ * 保留为自由函数（History View 的上游，provider 边界的纵深防御）：输入来自 canonical
+ * history 投影（含自定义 projectHistory policy 的产物），这里统一清洗（孤儿
+ * tool_calls/幽灵 assistant 帧），保证历史以协议合法的形状进入 History View 与 provider。 */
 export function convertToLlm(
 	messages: readonly (AgentMessage | ChatMsg)[],
 	options: {
@@ -186,19 +174,6 @@ export function convertToLlm(
 	}
 
 	return result;
-}
-
-export function buildContext(b: BuildInput): ChatMsg[] {
-	// 运行时事件不走 system 拼接：runtime input 经队列落为 runtime-input custom
-	// 消息进主线历史（projectInputMessage），由 convertToLlm 统一投影。
-	const systemContent = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-
-	const toLlm = b.convertToLlm ?? convertToLlm;
-	const cleaned = toLlm(b.history, {
-		thinkingReplay: b.thinkingReplay,
-	});
-
-	return [{ role: "system", content: systemContent }, ...cleaned];
 }
 
 /**

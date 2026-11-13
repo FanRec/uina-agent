@@ -9,10 +9,7 @@ import type { PresentationIntent } from "../presentation/actions.js";
 import { PresentationController } from "../presentation/controller.js";
 import type { AssistantNode, ThinkingNode, ToolNode, TurnNode } from "../presentation/projection.js";
 import { sanitizeExternal } from "../presentation/sanitize.js";
-import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
-import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
-import type { PromptContextCardData } from "./components/transcript/context-card.js";
 import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
 import { installUIFeatures, type UIFeatureOptions } from "./features.js";
 import { UIHost, type UIHostOptions } from "./ui-host.js";
@@ -34,8 +31,6 @@ export class InteractiveTUI {
 	private readonly host: UIHost;
 	private readonly controller = new PresentationController();
 	private readonly featureDisposer: () => void;
-	private lastPromptFingerprint?: string;
-	private previousSystemPrompt?: string;
 
 	/**
 	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
@@ -128,14 +123,10 @@ export class InteractiveTUI {
 	restoreSession(
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
-		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
-		const latest = promptSnapshots.at(-1);
-		this.lastPromptFingerprint = latest?.fingerprint;
-		this.previousSystemPrompt = latest?.systemPrompt;
 		const view = this.controller.replaceAll(entries, auxiliary);
-		this.host.loadSession(entries, view.transcript, decorations, promptSnapshots);
+		this.host.loadSession(entries, view.transcript, decorations);
 	}
 
 	/**
@@ -145,7 +136,6 @@ export class InteractiveTUI {
 	consume(
 		record: HostEventRecord,
 		rewindDecorations: readonly CompactionReplayDecoration[] = [],
-		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 		auxiliary: readonly (SessionEventRecord | SessionCustomEntryRecord)[] = [],
 	): void {
 		const m = record.event;
@@ -161,7 +151,7 @@ export class InteractiveTUI {
 
 			case "session_rewind": {
 				const view = this.controller.replaceAll(m.entries, auxiliary, m.turnNumber);
-				this.host.replayRewind(m.entries, view.transcript, rewindDecorations, m.turnNumber, promptSnapshots);
+				this.host.replayRewind(m.entries, view.transcript, rewindDecorations, m.turnNumber);
 				break;
 			}
 			case "turn_start": {
@@ -187,24 +177,6 @@ export class InteractiveTUI {
 			case "context_update":
 				this.host.setContext(m.snapshot);
 				break;
-
-			case "context_prepare": {
-				const fingerprint = promptSnapshotFingerprint(m.systemPrompt, m.injections);
-				if (fingerprint !== this.lastPromptFingerprint) {
-					const snapshot: PromptContextCardData = {
-						kind: "prompt",
-						id: `prompt-${m.turnNumber}-${fingerprint.slice(0, 12)}`,
-						turnNumber: m.turnNumber,
-						systemPrompt: m.systemPrompt,
-						injections: [...m.injections],
-						...(this.previousSystemPrompt === undefined ? {} : { previousSystemPrompt: this.previousSystemPrompt }),
-					};
-					this.host.addPromptSnapshot(snapshot);
-					this.lastPromptFingerprint = fingerprint;
-					this.previousSystemPrompt = m.systemPrompt;
-				}
-				break;
-			}
 
 			case "external_input":
 				this.host.addExternalInput({

@@ -51,14 +51,8 @@ export function createMinecraftWorld(
 	let validator: ProgramValidator | null = null;
 	let closing: Promise<void> | null = null;
 	let detachAbort: (() => void) | null = null;
-	/** onStart 预载的静态环境正文；getter 是同步纯读，不在这里做 IO。 */
-	let environmentText: string | null = null;
 	/** 本次 activation 的真实数据根（`<worldDataDir>`）；离线目录摘要只读它的 addons/。 */
 	let minecraftRoot: string | null = null;
-	const connectedSession = () => {
-		const session = controller?.session;
-		return session?.executor.status().side?.connection === "ready" ? session : null;
-	};
 
 	const close = (): Promise<void> =>
 		(closing ??= (async () => {
@@ -72,7 +66,6 @@ export function createMinecraftWorld(
 			await validator?.close().catch(() => {});
 			validator = null;
 			library = null;
-			environmentText = null;
 			minecraftRoot = null;
 			detachAbort?.();
 			detachAbort = null;
@@ -204,12 +197,6 @@ export function createMinecraftWorld(
 		description: nativeGuide,
 		executionMode: "parallel",
 		defaultState: { enabled: false },
-		/**
-		 * 静态环境认知：只在有活动 Minecraft 会话的回合注入，避免污染纯聊天。
-		 * 正文在 onStart 预载；这里同步返回，不读世界事实、不产生副作用。
-		 * 当前位置、背包、地形由 observe 按需读取；连接回执只在新建 ready visit 时给一次起点。
-		 */
-		environmentGuide: () => (connectedSession() ? environmentText : null),
 		actions: Object.fromEntries(
 			Object.entries(actionSchemas).map(([name, parameters]) => [
 				name,
@@ -249,7 +236,28 @@ export function createMinecraftWorld(
 			if (ctx.signal.aborted) throw new Error("Minecraft activation already cancelled");
 			minecraftRoot = ctx.worldDataDir;
 			// 静态资源与包一起发布（copy-assets.mjs）；缺文件必须显式失败，不能静默少一段教学。
-			environmentText = await readFile(new URL("./ENV_PROMPT.md", import.meta.url), "utf8");
+			const environmentText = await readFile(new URL("./ENV_PROMPT.md", import.meta.url), "utf8");
+			// 信息注入体系：静态指南按世界激活生命周期注册为 guidance（描述"有连接时如何
+			// 行动"，不宣称当前已连接）；简短 capability 让模型无需查询即可判断当前是否
+			// 可操作。两者都随本激活作用域撤销；长目录、Program、建造指南继续由 describe/
+			// Guide/Library 按需读取，不常驻注入。
+			if (ctx.provideContext) {
+				ctx.provideContext({ id: "guidance", kind: "guidance", text: environmentText });
+				ctx.provideContext({
+					id: "capability",
+					kind: "capability",
+					read: () => {
+						// 同步纯读：只读当前连接状态，不触发请求、不改状态。
+						const status = controller?.status();
+						if (!controller || status?.state !== "connected") return null;
+						const allowed = status.active?.actionsAllowed ?? false;
+						return {
+							text: `Minecraft 会话当前已连接${allowed ? "，可执行动作" : "，动作门未放行（不可行动）"}。`,
+							source: { type: "minecraft.session", origin: "internal" },
+						};
+					},
+				});
+			}
 			// 常驻层：静态 Catalog describe、共享 Library 与 SessionController；不读取固定连接、不打开 Bot。
 			validator = createProgramValidator();
 			library = createLibrary({

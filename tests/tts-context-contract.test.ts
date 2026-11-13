@@ -7,18 +7,40 @@ import { VoicePerception } from "../.uina/extensions/voice/perception.js";
 import { VoiceSession } from "../.uina/extensions/voice/session.js";
 import { createVoiceTool } from "../.uina/extensions/voice/tool.js";
 import { estimateRequestTokens } from "../src/agent/context.js";
+import { composeContextSources } from "../src/agent/composer.js";
 import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
 import type { ChatMsg, RequestProjection } from "../src/core/types.js";
-import { filterCompactionMessages } from "../src/extensions/compaction/index.js";
 import { assertEventFrameContext, EVENT_FRAME_KIND } from "../src/extensions/event-frames/protocol.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 
-const request: RequestProjection = {
+const base: RequestProjection = {
 	projectionId: "p",
 	modelKey: "m",
 	tools: [],
 	messages: [{ role: "user" as const, content: "continue" }],
 };
+
+/** 经真实 Request Composer 装配 Voice 观察值的完整请求（与生产路径同一装配规则）。 */
+function composedWithObservation(voice: VoicePerception): RequestProjection {
+	const value = voice.observationValue();
+	const { projection } = composeContextSources({
+		projection: base,
+		collection: {
+			contributions: value
+				? [
+						{
+							key: "builtin:voice::observation",
+							owner: "builtin:voice",
+							kind: "observation",
+							value,
+						},
+					]
+				: [],
+			omitted: [],
+		},
+	});
+	return projection;
+}
 
 /**
  * 上一版（三消息）观察格式的冻结副本，只作度量基线：它不引用当前实现，所以不会随重构漂移。
@@ -51,7 +73,8 @@ function legacyObservation(text: string, notice: string): ChatMsg[] {
 		},
 	];
 }
-describe("Voice projection and model-facing contracts", () => {
+
+describe("Voice 观察与模型可见合同（信息注入体系）", () => {
 	it("keeps structured failure evidence in tool content instead of object coercion", async () => {
 		const tool = createTtsTool({
 			recover: async () => ({ status: "unknown", reason: { stop: "not confirmed", epoch: "old" } }),
@@ -61,14 +84,15 @@ describe("Voice projection and model-facing contracts", () => {
 		expect(result.result).not.toContain("[object Object]");
 		expect(result.status).toBe("unknown");
 	});
-	it("measures the real wire projection against the previous three-message observation format", () => {
+
+	it("观察经 Context Source 装配为一条运行时参考消息，比旧三消息帧格式更短", () => {
 		const summary = "上一段台词尚未确认是否播完；不要当作用户已经听见。";
 		const legacyNotice =
 			"[运行时通知] 以下为语音输出状态瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。";
-		const previous = [...request.messages, ...legacyObservation(`[语音输出状态] ${summary}`, legacyNotice)];
+		const previous = [...base.messages, ...legacyObservation(`[语音输出状态] ${summary}`, legacyNotice)];
 		const voice = new VoicePerception();
 		voice.record({ kind: "delivery_unknown", summary }, "cause");
-		const current = voice.transform(request);
+		const current = composedWithObservation(voice);
 		const before = {
 			messageCount: previous.length,
 			characters: JSON.stringify(toWireMessages([...previous])).length,
@@ -79,61 +103,58 @@ describe("Voice projection and model-facing contracts", () => {
 			characters: JSON.stringify(toWireMessages([...current.messages])).length,
 			estimatedTokens: estimateRequestTokens(current.messages),
 		};
-		console.log(
-			"Voice wire observation metrics",
-			JSON.stringify({ baseline: "previous three-message observation format, same fact and request", before, after }),
-		);
 		expect(after.messageCount).toBeLessThan(before.messageCount);
 		expect(after.characters).toBeLessThan(before.characters);
 		expect(after.estimatedTokens).toBeLessThan(before.estimatedTokens);
 		expect(JSON.stringify(toWireMessages([...current.messages]))).toContain(summary);
-		voice.prepare(current);
-		voice.consume();
-		expect(voice.transform(request).messages).toEqual(request.messages);
 	});
-	it("keeps real Voice frames protocol-valid and out of compaction", () => {
+
+	it("观察不再生成 Event Frame：无合成调用、无帧协议标记，快照标为 runtime.perception", () => {
 		const voice = new VoicePerception();
 		voice.record({ kind: "delivery_unknown", summary: "旧发声未确认。" }, "source");
-		const projection = voice.transform(request);
+		const projection = composedWithObservation(voice);
+		// 不抛：帧协议校验只在帧在场时有要求；这里根本没有帧。
 		expect(() => assertEventFrameContext(projection.messages)).not.toThrow();
-		expect(filterCompactionMessages(projection.messages)).toEqual(request.messages);
+		const serialized = JSON.stringify(projection.messages);
+		expect(serialized).not.toContain(EVENT_FRAME_KIND);
+		expect(serialized).not.toContain("external_event_frame");
+		expect(projection.messages.at(-1)?.context?.kind).toBe("runtime.perception");
 	});
-	it("inspection does not consume facts and an actual response consumes only prepared versions", () => {
+
+	it("inspection does not consume facts; unresolved facts stay visible across requests", () => {
 		const voice = new VoicePerception();
 		voice.record({ kind: "delivery_unknown", summary: "first" }, "source");
-		const inspected = voice.transform(request);
-		expect(voice.peek()?.summary).toBe("first");
-		voice.prepare(inspected);
+		const inspected = composedWithObservation(voice);
+		expect(JSON.stringify(inspected.messages)).toContain("first");
+		// read 是纯读：未解决事实在下一次请求继续可见
+		expect(JSON.stringify(composedWithObservation(voice).messages)).toContain("first");
+
+		// 同一 causeRef 更新替换旧内容
 		voice.record({ kind: "delivery_failed", summary: "newer" }, "source");
-		voice.consume();
-		expect(voice.peek()?.summary).toBe("newer");
-		voice.prepare(voice.transform(request));
-		voice.consume();
-		expect(voice.transform(request).messages).toEqual(request.messages);
+		expect(JSON.stringify(composedWithObservation(voice).messages)).toContain("newer");
+		expect(JSON.stringify(composedWithObservation(voice).messages)).not.toContain("first");
+
+		// 真实解决后退出
+		voice.resolve("source");
+		expect(composedWithObservation(voice).messages).toEqual(base.messages);
 	});
-	it("groups repeated facts without dropping different reasons", () => {
+
+	it("不同源的不同事实分别可见；同一 causeRef 不按 summary 合并计数", () => {
 		const voice = new VoicePerception();
-		voice.record({ kind: "delivery_failed", summary: "same" }, "a");
-		voice.record({ kind: "delivery_failed", summary: "same" }, "b");
-		voice.record({ kind: "delivery_unknown", summary: "other" }, "c");
-		const projection = voice.transform(request);
-		const body = (projection.messages.at(-1) as { content: string }).content;
-		expect(body).toContain("2 段");
-		expect(body).toContain("other");
+		voice.record({ kind: "delivery_failed", summary: "源 A 失败。" }, "a");
+		voice.record({ kind: "delivery_failed", summary: "源 A 失败。" }, "a"); // 同源更新：替换
+		voice.record({ kind: "delivery_unknown", summary: "源 C 未知。" }, "c");
+		const body = (composedWithObservation(voice).messages.at(-1) as { content: string }).content;
+		expect(body).toContain("源 A 失败。");
+		expect(body).toContain("源 C 未知。");
+		expect(body.match(/源 A 失败/g)).toHaveLength(1);
 	});
-	it("captures exact projected causes, including escaped text, rather than matching later similar facts", () => {
+
+	it("没有未解决事实时不注入任何消息（零 Source 请求与基线一致）", () => {
 		const voice = new VoicePerception();
-		const fact = { kind: "delivery_unknown" as const, summary: 'reply says "unknown"\nnot completed' };
-		voice.record(fact, "old");
-		const projection = voice.transform(request);
-		voice.record(fact, "new");
-		voice.prepare(projection);
-		voice.consume();
-		expect(voice.peek()).toEqual(fact);
-		voice.prepare(voice.transform(request));
-		voice.consume();
-		expect(voice.peek()).toBeNull();
+		expect(composedWithObservation(voice)).toBe(base);
 	});
+
 	it("exposes completion evidence in actual OpenAI wire content", async () => {
 		const tts = createTtsTool({
 			test: async () => ({ scope: "playback", status: "succeeded", playback_completed: true, path: "streaming" }),
@@ -146,6 +167,7 @@ describe("Voice projection and model-facing contracts", () => {
 		expect(JSON.stringify(wire)).toContain("流式");
 		expect(JSON.stringify(wire)).not.toContain("details");
 	});
+
 	it("sends the evidence and current schema through a real gateway HTTP request", async () => {
 		let received = "";
 		const server = createServer((req, response) => {
@@ -199,6 +221,7 @@ describe("Voice projection and model-facing contracts", () => {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
 	});
+
 	it("rejects old recovery switches and irrelevant cross-action parameters", () => {
 		const Ajv = createRequire(import.meta.url)("ajv");
 		const ajv = new Ajv();

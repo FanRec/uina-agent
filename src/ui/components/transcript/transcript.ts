@@ -22,7 +22,6 @@ import type {
 	ToolNode,
 	TurnNode,
 } from "../../../presentation/projection.js";
-import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
 import { projectInputMessage } from "../../../session/recovery.js";
 import type { SessionEntry } from "../../../session/types.js";
 import type { Component } from "../../core/types.js";
@@ -35,12 +34,7 @@ import {
 	formatErrorCardLines,
 	formatThinkingLines,
 } from "./cards.js";
-import {
-	ContextCardComponent,
-	type ContextCardData,
-	type ExternalContextCardData,
-	type PromptContextCardData,
-} from "./context-card.js";
+import { ContextCardComponent, type ContextCardData, type ExternalContextCardData } from "./context-card.js";
 import { formatDiffCardLines } from "./diff-view.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
@@ -722,12 +716,6 @@ export class TranscriptContainer implements Component {
 		this.timeline.push({ kind: "compaction", record });
 	}
 
-	addPromptSnapshot(snapshot: PromptContextCardData): void {
-		// 轮内=尾部重排；timeline=尾部追加（buildSettledBlocks 按 builtItems 差额物化）
-		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: snapshot });
-		else this.timeline.push({ kind: "contextCard", card: snapshot });
-	}
-
 	addExternalInput(input: ExternalContextCardData): void {
 		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: input });
 		else this.timeline.push({ kind: "contextCard", card: input });
@@ -824,7 +812,6 @@ export class TranscriptContainer implements Component {
 		entries: readonly SessionEntry[],
 		nodes: readonly PresentationNode[],
 		decorations: readonly CompactionReplayDecoration[] = [],
-		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
 		this.clear();
 		const toolNodes = new Map<string, ToolNode>();
@@ -865,29 +852,7 @@ export class TranscriptContainer implements Component {
 			list.push(decoration);
 			decorationsByEntry.set(decoration.beforeEntryId, list);
 		}
-		let promptIndex = 0;
-		const appendPromptSnapshot = (snapshot: PromptSnapshotRecord): void => {
-			const item: Extract<TurnItem, { kind: "contextCard" }> = {
-				kind: "contextCard",
-				card: {
-					kind: "prompt",
-					id: snapshot.id,
-					turnNumber: snapshot.turnNumber,
-					systemPrompt: snapshot.systemPrompt,
-					injections: snapshot.injections,
-				},
-			};
-			if (current) current.items.push(item);
-			else this.timeline.push(item);
-		};
 		for (const entry of entries) {
-			while (
-				promptIndex < promptSnapshots.length &&
-				(entry.seq === undefined || promptSnapshots[promptIndex]!.seq < entry.seq)
-			) {
-				appendPromptSnapshot(promptSnapshots[promptIndex]!);
-				promptIndex++;
-			}
 			const before = entry.id ? decorationsByEntry.get(entry.id) : undefined;
 			if (before) {
 				commit();
@@ -1000,10 +965,6 @@ export class TranscriptContainer implements Component {
 					callId: msg.tool_call_id,
 				});
 			}
-		}
-		while (promptIndex < promptSnapshots.length) {
-			appendPromptSnapshot(promptSnapshots[promptIndex]!);
-			promptIndex++;
 		}
 		commit();
 		this.invalidate();
