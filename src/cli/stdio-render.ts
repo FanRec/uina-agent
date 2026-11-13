@@ -16,7 +16,8 @@ type LineFormatter = (message: HostEvent) => string | null;
 const STDIO_LINES: {
 	[K in HostEvent["type"]]?: (m: Extract<HostEvent, { type: K }>) => string | null;
 } = {
-	output_update: (m) => (m.channel !== "content" ? null : sanitizeTerminalText(m.text)),
+	// 模型 content 的可见正文只来自 expression 语义事件；原始 delta 仅用于记录诊断。
+	expression: (m) => (m.event.kind === "text" ? sanitizeTerminalText(m.event.text) : null),
 	turn_start: (m) => `\n${m.userText ? `你 > ${m.userText}\n` : ""}Uina > `,
 	turn_end: () => "\n",
 	session_rewind: (m) => `\n[会话回溯] ${m.fromId} → ${m.targetId}；退出路径只读，外部状态未撤销。\n`,

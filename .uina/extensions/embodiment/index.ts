@@ -1,14 +1,12 @@
-import { CUE_DISPATCH_SHARED, CUE_PLAYBACK_OWNER_SHARED, type CuePlaybackOwner } from "./playback-cues.js";
+import { CUE_DISPATCH_SHARED, type CueDispatcher } from "./playback-cues.js";
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
 import { WORLD_EXPOSED_SHARED_NAME, type WorldExposedRegistry } from "../../../src/extensions/world-framework/types.js";
 import { BodyRouter } from "./body-router.js";
-import { StreamingTagStripper } from "./tag-stripper.js";
 import { createBodyTool } from "./tools.js";
 import { BODY_ENDPOINT_EXPOSED_PREFIX, type BodyEndpoint } from "./types.js";
 
 export * from "./types.js";
 export * from "./body-router.js";
-export * from "./tag-stripper.js";
 export * from "./tools.js";
 
 /** 结构校验：共享表里的值必须真的满足 BodyEndpoint 行为契约，否则拒绝并报错。 */
@@ -27,10 +25,14 @@ function isBodyEndpoint(value: unknown): value is BodyEndpoint {
 
 /**
  * 激活具身扩展 (Embodiment Extension)
+ *
+ * 输出表达体系：本扩展注册 <cue> Marker 语法，只消费 Output Interpretation 的
+ * marker 语义事件（Speech 外的线索按流语义顺序执行一次；Speech 内的线索由
+ * Speech 按播放边界驱动），不再自行解析模型原文，也没有 TUI 剥标签转换器——
+ * 展示文字由 Presentation 从语义事件生成，标签不会出现。
  */
 export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRouter; dispose: () => void } {
 	const router = new BodyRouter();
-	const stripper = new StreamingTagStripper();
 
 	// 1. 从宿主同进程共享表拉取世界暴露的具身端点。
 	//
@@ -91,7 +93,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	};
 
 	// 先订阅后拉取：订阅建立之前发生的暴露不会被后续拉取错过；拉取本身幂等，
-	// 两步顺序颠倒会在“共享表在同步与订阅之间才出现/变更”时留下丢失窗口。
+	// 两步顺序颠倒会在"共享表在同步与订阅之间才出现/变更"时留下丢失窗口。
 	const exposedFeed = pi.shared(WORLD_EXPOSED_SHARED_NAME) as WorldExposedRegistry | undefined;
 	const unsubscribeExposed = exposedFeed?.subscribe(syncExposedEndpoints);
 	syncExposedEndpoints();
@@ -100,9 +102,15 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	const bodyTool = createBodyTool(router, recordStateChange);
 	const unregisterTool = pi.registerTool(bodyTool);
 
-	// 3. 监听输出流，流式剥离并分发 <cue> 标签。
-	//    只消费 cues：清洗后的正文由 voice/tts 各自的清洗器独立负责，此处不做二手转交。
-	//
+	// 3. 注册 cue Marker 语法与派发表：Output Interpretation 的 marker 语义事件是
+	//    唯一来源；Speech 外的线索按该流语义顺序执行一次，不等待 TTS。
+	//    （消费前验证 Body 能力仍有效：离线/暂停端点由 router.dispatchCue 拒绝并报告。）
+	pi.registerOutputTag({
+		name: "cue",
+		kind: "marker",
+		attributes: { id: "required-string", target: "optional-string" },
+	});
+
 	//    未被任何身体响应的 cue 必须可见——否则「cue 到底通没通」无法判定
 	//    （2026-09-21 的真实缺陷正是别名 cue 被静默丢弃，用户只能靠肉眼猜）。
 	//    按 cueId 去重：同一未知线索只报一次；一旦之后成功送达就移出集合，
@@ -132,43 +140,22 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 
 	const unshareDispatch = pi.share(CUE_DISPATCH_SHARED, {
 		dispatch: (cue: { id: string; target?: string }) => dispatch(cue.id, cue.target),
-	});
-	const playbackOwnsOutput = (event: object) =>
-		(pi.shared(CUE_PLAYBACK_OWNER_SHARED) as CuePlaybackOwner | undefined)?.ownsOutput(event) === true;
-	pi.on("turn_start", () => stripper.reset());
-	pi.on("output_update", (event) => {
-		if (event.channel === "content") {
-			const { cues } = stripper.processChunk(event.text);
-			for (const cue of cues) {
-				if (!playbackOwnsOutput(event)) dispatch(cue.id, cue.target);
-			}
-		}
-	});
+	} satisfies CueDispatcher);
 
-	pi.on("output_end", (event) => {
-		if (event.channel === "content") {
-			const { cues } = stripper.flush();
-			for (const cue of cues) {
-				if (!playbackOwnsOutput(event)) dispatch(cue.id, cue.target);
-			}
-		}
+	pi.on("expression", (event) => {
+		const e = event.event;
+		// 只有位于任何 Block 之外的 marker 归具身直接执行；Block 内的线索是语音的
+		// 时间锚点，由 Speech 按音频事实或文本降级路径驱动。
+		if (e.kind !== "marker" || e.blockId !== undefined || e.name !== "cue") return;
+		const id = e.attributes.id;
+		if (!id) return;
+		dispatch(id, e.attributes.target);
 	});
 
-	// 4. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
-	//    确保 TUI / Markdown 渲染视图干净自然，不泄露动作标签代码给终端用户。
-	//    转换器属终端 facet：无终端 surface（capabilities().richText=false）跳过注册。
-	const unregisterMarkdown =
-		pi.ui.terminal === undefined || !pi.ui.capabilities().richText
-			? undefined
-			: pi.ui.terminal.registerMarkdownTransformer("embodiment.strip-cues", (md) =>
-					md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
-				);
-
-	// 5. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
+	// 4. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
 	//    不再 safeStop（急停会暂停身体，过度惩罚一次回合打断；边界规范 §5）。
 	//    进程收尾（pi.signal abort）仍走 stopAll 急停，属显式拆除语义。
 	pi.on("turn_aborted", () => {
-		stripper.reset();
 		void router.interruptAll();
 	});
 
@@ -176,6 +163,37 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		void router.stopAll();
 	};
 	pi.signal.addEventListener("abort", onAbort);
+
+	// 5. 模型信息环境：cue 语法 Guidance（文件式）+ 主导身体的 Cue 目录 Capability。
+	const guidance = pi.provideContext({
+		id: "cue-guide",
+		kind: "guidance",
+		file: "prompts/cue.md",
+	});
+	void guidance.catch((error) =>
+		pi.reportError(`[Embodiment] 线索指南注册失败: ${error instanceof Error ? error.message : String(error)}`),
+	);
+
+	pi.provideContext({
+		id: "body-cues",
+		kind: "capability",
+		read: () => {
+			const primary = router.getPrimaryEndpoint();
+			if (!primary) return null;
+			const state = primary.state();
+			if (!state.online || state.paused) return null;
+			// 按声明顺序最多 6 个合法 Cue ID，附带已声明的简短含义；不编造动作描述。
+			const cues = primary
+				.affordance()
+				.cues.slice(0, 6)
+				.map((cue) => (cue.description ? `${cue.id}（${cue.description}）` : cue.id));
+			if (cues.length === 0) return null;
+			return {
+				text: `主导身体 ${primary.bodyId} 可响应的轻量线索：${cues.join("、")}。`,
+				source: { type: "body.affordance", origin: "internal" },
+			};
+		},
+	});
 
 	const dispose = () => {
 		unshareDispatch();
@@ -185,7 +203,6 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		}
 		registered.clear();
 		unregisterTool?.();
-		unregisterMarkdown?.();
 		pi.signal.removeEventListener("abort", onAbort);
 		void router.stopAll();
 	};

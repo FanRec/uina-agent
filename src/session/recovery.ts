@@ -760,6 +760,52 @@ function isValidInputProvenance(value: unknown): boolean {
 		return false;
 	return prov.source === undefined || isInputSource(prov.source);
 }
+
+/** 表达语义注解（输出表达体系）的入库形状校验：只认已注册协议的确定形状，
+ * 防止"可写不可读"的 journal 记录。 */
+function isValidExpressionAnnotation(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const annotation = value as Record<string, unknown>;
+	if (annotation.version !== 1) return false;
+	if (typeof annotation.streamId !== "string" || annotation.streamId.length === 0) return false;
+	if (!Array.isArray(annotation.tags)) return false;
+	return annotation.tags.every((tag) => {
+		if (!tag || typeof tag !== "object") return false;
+		const item = tag as Record<string, unknown>;
+		if (typeof item.name !== "string" || item.name.length === 0) return false;
+		switch (item.kind) {
+			case "block_start":
+				return isValidRawRange(item.rawRange);
+			case "block_end":
+				if (item.reason !== "closed" && item.reason !== "ended" && item.reason !== "interrupted") return false;
+				// 显式关闭有区间；隐式收尾不占原文。
+				return item.reason === "closed" ? isValidRawRange(item.rawRange) : item.rawRange === undefined;
+			case "marker":
+				if (item.attributes === undefined || typeof item.attributes !== "object" || Array.isArray(item.attributes))
+					return false;
+				for (const [key, val] of Object.entries(item.attributes as Record<string, unknown>)) {
+					if (!key || typeof val !== "string") return false;
+				}
+				return (item.blockId === undefined || typeof item.blockId === "string") && isValidRawRange(item.rawRange);
+			default:
+				return false;
+		}
+	});
+}
+
+function isValidRawRange(value: unknown): boolean {
+	if (!Array.isArray(value) || value.length !== 2) return false;
+	const [start, end] = value as unknown[];
+	return (
+		typeof start === "number" &&
+		Number.isSafeInteger(start) &&
+		start >= 0 &&
+		typeof end === "number" &&
+		Number.isSafeInteger(end) &&
+		end > start
+	);
+}
+
 export function isRecord(value: unknown): value is SessionRecord {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
@@ -856,6 +902,7 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 	if (message.role !== "assistant") return true;
 	if (message.thinking !== undefined && typeof message.thinking !== "string") return false;
 	if (message.thinkingSignature !== undefined && typeof message.thinkingSignature !== "string") return false;
+	if (message.expression !== undefined && !isValidExpressionAnnotation(message.expression)) return false;
 	if (message.usage !== undefined) {
 		if (!message.usage || typeof message.usage !== "object") return false;
 		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"])

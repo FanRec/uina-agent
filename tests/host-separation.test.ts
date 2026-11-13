@@ -29,25 +29,23 @@ export default function activate(uina) {
 `;
 
 describe("RC-1 宿主与消费者分离", () => {
-	test("voice 工具与 TTS 离线解耦，启动后进入模型请求", async ({ env, scenario }) => {
-		const voicePath = fileURLToPath(new URL("../.uina/extensions/voice/index.ts", import.meta.url));
+	test("speech 工具与 TTS 离线解耦，启动后进入模型请求", async ({ env, scenario }) => {
+		const speechPath = fileURLToPath(new URL("../.uina/extensions/speech/index.ts", import.meta.url));
 		const uina = await UinaTestHarness.create({
 			env,
 			scenario,
 			autoStart: false,
-			hostOptions: { extensionPaths: [voicePath] },
+			hostOptions: { extensionPaths: [speechPath] },
 		});
 		try {
-			expect(uina.host.subject.declaredTools([]).some((tool) => tool.function.name === "voice")).toBe(false);
+			expect(uina.host.subject.declaredTools([]).some((tool) => tool.function.name === "speech")).toBe(false);
 			await uina.start();
-			const status = await uina.callTool("voice", { action: "status" });
+			const status = await uina.callTool("speech", { action: "status" });
 			expect(status.status).toBe("succeeded");
-			expect(status.result).toContain("发声服务未连接");
-			expect(status.result).not.toContain("开麦中");
-			expect(status.result).not.toContain("已连接");
+			expect(status.result).toContain("驱动未挂载");
 			await uina.send("测试工具声明");
 			await uina.waitForIdle();
-			expect(scenario.calls[0]?.tools?.some((tool) => tool.function.name === "voice")).toBe(true);
+			expect(scenario.calls[0]?.tools?.some((tool) => tool.function.name === "speech")).toBe(true);
 		} finally {
 			await uina.dispose();
 		}

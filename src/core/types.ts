@@ -205,6 +205,12 @@ export interface AssistantAgentMessage {
 	thinkingSignature?: string;
 	providerReplay?: ProviderReplay;
 	tool_calls?: CompletedToolCall[];
+	/**
+	 * 表达语义注解（输出表达体系）：仅当本消息的 content 中出现了已识别的输出标签时
+	 * 写入，与 content 同一条记录原子持久化；记录已识别标签的原文区间/类型/属性与
+	 * Block 身份，不保存清洗过的全文。历史展示与模型历史视图据此剔除标签原文。
+	 */
+	expression?: import("./expression.js").ExpressionAnnotation;
 	status?: AssistantStatus;
 	usage?: Usage;
 	timestamp?: string;

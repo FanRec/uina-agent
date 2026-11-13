@@ -101,6 +101,13 @@ export interface ExtensionAPI {
 		(source: import("../core/types.js").ContextSource): () => void;
 		(source: import("../core/types.js").FileGuidanceSource): Promise<() => void>;
 	};
+	/**
+	 * 注册输出标签（输出表达体系）：声明本扩展拥有的模型输出标记语法。注册名在
+	 * 一个 Host 内唯一，重名拒绝并报告所有者；随激活作用域自动注销。已开始的
+	 * content 流按其 output_start 冻结的语法快照解释；标签只产生限制在表现域内的
+	 * 表达事件，不是工具调用。
+	 */
+	registerOutputTag(tag: import("../core/expression.js").OutputTagRegistration): () => void;
 	/** 主体绑定：profile 模式下的只读资源根；非 profile 模式为 undefined。
 	 * 扩展从这里拿路径，不从模型参数或 cwd 猜测——隔离边界由 Host 装配保证。 */
 	readonly subject: { subjectId: string; sessionId: string; memoryRoot: string; stateRoot: string } | undefined;
@@ -707,6 +714,10 @@ export class ExtensionRunner extends ExtensionHost {
 				// owner 由 Registry 注入真实激活身份：扩展无法通过字符串伪造其他扩展的 Source。
 				return ownRegistration(this.provideContext(scope.id, raw as ContextSource, () => scope.active));
 			}) as ExtensionAPI["provideContext"],
+			registerOutputTag: (tag) => {
+				assertActive();
+				return ownRegistration(this.registerOutputTag(scope.id, tag, () => scope.active));
+			},
 			registerTool: (tool, options) => {
 				assertActive();
 				return ownRegistration(

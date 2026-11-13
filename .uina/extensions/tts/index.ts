@@ -1,43 +1,44 @@
-import { PlaybackCueDelivery } from "./cue-delivery.js";
-import {
-	CUE_DISPATCH_SHARED,
-	CUE_PLAYBACK_OWNER_SHARED,
-	createCueOutputOwnership,
-	type CueDispatcher,
-} from "../embodiment/playback-cues.js";
-import type { SpeechSegment } from "./stream-parser.js";
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
 import type {
 	TurnStartEvent,
-	OutputInterruptedEvent,
-	OutputUpdateEvent,
-	OutputEndEvent,
+	TurnEndEvent,
 } from "../../../src/runtime/events.js";
 import { WORLD_EXPOSED_SHARED_NAME, type WorldExposedRegistry } from "../../../src/extensions/world-framework/types.js";
-import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, isVoiceLevelSink, type VoiceLevelSink } from "../voice/events.js";
+import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
 import { loadConfig } from "./config.js";
 import { TtsBridgeClient, readPlaybackLevel, type PlaybackEvent } from "./client.js";
 import { ensureCompanion } from "./companion.js";
 import { ensureSubtitleService } from "./subtitle-companion.js";
-import { StreamParser } from "./stream-parser.js";
 import { TtsVoiceOutputDriver } from "./driver-impl.js";
+import type { InterruptResult } from "./delivery-facts.js";
 
 import { createTtsTool } from "./tool.js";
 import { createTtsGenerateTool } from "./generate.js";
-import { loadVoicePreferences } from "../voice/preferences.js";
 
-export * from "./delivery.js";
-export * from "./driver-impl.js";
+export * from "./delivery-facts.js";
 export * from "./client.js";
 export * from "./config.js";
 
 /** 进度探测周期。只在"还有音频在路上"时运行，静默即停。 */
 const PROGRESS_POLL_INTERVAL_MS = 1000;
 
+/** 结构校验：共享表里的值必须真的具备电平接收端契约（消费方职责留在消费方）。 */
+function isVoiceLevelSink(value: unknown): value is VoiceLevelSink {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as Record<string, unknown>;
+	return typeof candidate.processLevel === "function" && typeof candidate.reset === "function";
+}
+
+/**
+ * TTS 交付层（输出表达体系）：Driver/Bridge 只负责合成与当前物理播放、
+ * Session/Epoch、停止/恢复、字幕电平与进程所有权。哪些普通模型输出应读出、
+ * Cue 文本语法、分句与 Utterance 业务全部归 Speech 扩展；本扩展经
+ * `tts_delivery:*` 服务向 Speech 提供交付端口，并把播放事实回推给它的
+ * `speech_delivery:on_playback`。
+ */
 export default async function activate(pi: ExtensionAPI): Promise<void | (() => Promise<void>)> {
 	const config = loadConfig();
 	const client = new TtsBridgeClient(config.serviceUrl, config.requestTimeoutMs);
-	const outputs = new Map<string, { parser: StreamParser; trace: string | null; ended: boolean }>();
 	const driver = new TtsVoiceOutputDriver(client, config.generationTimeoutMs);
 	let companionHandle: Awaited<ReturnType<typeof ensureCompanion>> | undefined;
 	driver.setRestartBridge(async (signal, timeoutMs) => {
@@ -72,34 +73,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			return { status: "unknown", ownership: "owned", reason: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	const initialPreferences = await loadVoicePreferences(pi);
-	if (initialPreferences.muted) await driver.setMuted(true);
-	let readAssistantText = initialPreferences.readAssistantText;
 	pi.registerTool(createTtsTool(driver));
 	pi.registerTool(
 		createTtsGenerateTool({ cwd: pi.cwd, client, signal: pi.signal, timeoutMs: config.generationTimeoutMs }),
 	);
-
-	const recordPerception = async (fact: {
-		kind: "delivery_failed" | "delivery_unknown";
-		summary: string;
-		causeRef?: string;
-	}): Promise<void> => {
-		if (
-			typeof pi.hasService !== "function" ||
-			!pi.hasService("voice_perception:record") ||
-			typeof pi.callService !== "function"
-		)
-			return;
-		await pi.callService("voice_perception:record", { fact, causeRef: fact.causeRef }).catch(() => undefined);
-	};
-	driver.setFactListener((fact) => {
-		void recordPerception(fact);
-	});
-	driver.setResolutionListener((causeRef) => {
-		if (pi.hasService?.("voice_perception:record"))
-			void pi.callService("voice_perception:record", { causeRef, resolved: true }).catch(() => undefined);
-	});
 
 	// 1. 伴生服务管理（所有权自律：谁拉起谁销毁）
 	// 句柄由本激活函数持有：若拉起了进程，在返回的 teardown 中 await stop()，
@@ -116,7 +93,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 	})();
 	// 伴生服务后台预热：ensureCompanion 可能 spawn Python 桥并轮询健康检查
 	// （startupTimeoutMs 配置 30s），同步 await 会拖住 host.start、把 TUI 首个
-	// 上下文快照推迟十几秒。改为后台启动；speak 提交前等待就绪，teardown 等待收尾。
+	// 上下文快照推迟十几秒。改为后台启动；提交前等待就绪，teardown 等待收尾。
 	const companionStartup = (async () => {
 		try {
 			companionHandle = await ensureCompanion(config, pi.signal);
@@ -124,9 +101,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			driver.setOnline(true);
 		} catch (err) {
 			driver.setBridgeOwnership("unknown");
-			// 降级是连接事实，不是用户偏好：只标记离线，不改 muted（§4.3）。
+			// 降级是连接事实，不是用户偏好：只标记离线，不改 muted。
 			driver.setOnline(false);
-			const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`;
+			const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式（可经 speech/tts 工具重试）: ${err instanceof Error ? err.message : String(err)}`;
 			// 这是可恢复的能力降级，不是扩展生命周期错误。reportError 会产生
 			// extension_error 红色错误事件，导致 Uina 刚启动就被错误打断；这里只做警告通知。
 			if (pi.ui?.notify) pi.ui.notify(degradedMessage, "warning", 8000);
@@ -156,50 +133,76 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 		return cleanupPromise;
 	};
 	try {
-		// 2. 注册向下驱动服务（遵循 Uina IPC 序列化规范，纯数据交互）
-		pi.registerService("voice_driver:set_muted", async (input: { muted: boolean }) => {
-			if (input?.muted)
-				for (const state of outputs.values()) {
-					state.ended = true;
-					state.parser.reset();
-				}
-			return await driver.setMuted(Boolean(input?.muted));
-		});
-		pi.registerService("voice_driver:set_text_reading", async (input: { enabled: boolean }) => {
-			readAssistantText = Boolean(input?.enabled);
-			return { success: true };
+		// 2. 交付端口（Speech 的唯一物理执行面）：utteranceId 是 Speech 侧表达身份，
+		//    Driver Source（trace）在本层映射与持有。
+		const utteranceSources = new Map<string, string>();
+		const sourceOf = (utteranceId: string): string | undefined => utteranceSources.get(utteranceId);
+
+		pi.registerService("tts_delivery:submit", async (input) => {
+			const { utteranceId, text } = (input ?? {}) as { utteranceId?: string; text?: string };
+			if (typeof utteranceId !== "string" || !utteranceId || typeof text !== "string" || !text)
+				return { status: "not_started", reason: "交付参数不完整" };
+			await companionStartup;
+			let trace = sourceOf(utteranceId);
+			if (!trace) {
+				trace = driver.beginSource(utteranceId);
+				utteranceSources.set(utteranceId, trace);
+			}
+			const result = await driver.submitSegment(text, undefined, undefined, trace);
+			if (result.status === "accepted" || result.status === "unknown") {
+				startLevelStream();
+				ensureProgressPolling();
+			}
+			return { ...result, traceId: trace };
 		});
 
-		pi.registerService(
-			"voice_driver:speak",
-			async (input: { text?: string; replace?: boolean; invocationId?: string } | undefined, context) => {
-				context.signal.throwIfAborted();
-				// 启动已改为后台预热：提交前等待伴生服务就绪（或确认失败降级），
-				// 避免首批 speak 撞上未完成 spawn 的半启动桥。
-				await companionStartup;
-				const result = await driver.speak(
-					typeof input?.text === "string" ? input.text : "",
-					typeof input?.invocationId === "string" ? input.invocationId : undefined,
-					input?.replace === true,
-					context.signal,
-				);
-				if (result.status === "accepted") {
-					startLevelStream();
-					ensureProgressPolling();
-				}
-				return result;
-			},
-		);
+		pi.registerService("tts_delivery:seal", async (input) => {
+			const utteranceId = (input as { utteranceId?: string } | undefined)?.utteranceId;
+			const trace = typeof utteranceId === "string" ? sourceOf(utteranceId) : undefined;
+			if (!trace) return { status: "not_started", reason: "该表达没有进行中的声音来源" };
+			try {
+				await driver.endSource(trace);
+				return { status: "sealed" };
+			} catch (error) {
+				return { status: "unknown", reason: error instanceof Error ? error.message : String(error) };
+			}
+		});
 
-		pi.registerService("voice_driver:interrupt", async (input?: { expectedTraceId?: string }) => {
-			const result = await driver.interrupt(input?.expectedTraceId);
+		pi.registerService("tts_delivery:stop", async (input) => {
+			const utteranceId = (input as { utteranceId?: string } | undefined)?.utteranceId;
+			const trace = typeof utteranceId === "string" ? sourceOf(utteranceId) : undefined;
+			if (utteranceId !== undefined && !trace)
+				return { outcome: "no_op", breakpoint: null, reason: "没有该表达的声音来源" };
+			const result: InterruptResult = await driver.interrupt(trace);
 			return result;
 		});
 
-		// 读取路径只有一条：交付快照。同步事实的跨扩展代理，不做第二份账。
-		pi.registerService("voice_driver:snapshot", async () => driver.snapshot());
+		pi.registerService("tts_delivery:set_muted", async (input) => {
+			const muted = (input as { muted?: unknown } | undefined)?.muted === true;
+			if (muted) {
+				utteranceSources.clear();
+				const result = await driver.setMuted(true);
+				stopProgressPolling();
+				stopLevelStream();
+				return result;
+			}
+			return await driver.setMuted(false);
+		});
 
-		// 3. 声学电平下发：桥侧电平 -> 具备口型的身体外壳
+		// 读取路径只有一条：交付快照。同步事实的跨扩展代理，不做第二份账。
+		pi.registerService("tts_delivery:snapshot", async () => driver.snapshot());
+
+		// 3. 播放事实回推：Driver 的状态迁移转发给 Speech 交付簿记（trace → utteranceId）。
+		driver.setPlaybackObserver((fact) => {
+			const utteranceId = [...utteranceSources.entries()].find(([, trace]) => trace === fact.traceId)?.[0];
+			if (!utteranceId) return;
+			if (typeof pi.hasService !== "function" || !pi.hasService("speech_delivery:on_playback")) return;
+			void pi
+				.callService("speech_delivery:on_playback", { ...fact, utteranceId })
+				.catch(() => undefined);
+		});
+
+		// 4. 声学电平下发：桥侧电平 -> 具备口型的身体外壳（生产者推、消费者只提供接收端）。
 		//
 		//    方向是"生产者推、消费者只提供接收端"：外壳用 ctx.expose 暴露 sink（世界只写、
 		//    读不到他人共享值），tts 用 pi.shared 拉取并按前缀筛选后推送。外壳因此不需要
@@ -243,21 +246,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 
 		let levelStream: AbortController | null = null;
 		let levelReady: Promise<boolean> | undefined;
-		let aborted = false;
 
-		const playbackCues = new PlaybackCueDelivery((cue) => {
-			(pi.shared?.(CUE_DISPATCH_SHARED) as CueDispatcher | undefined)?.dispatch(cue);
-		});
-		const cueOwner = createCueOutputOwnership((event) => {
-			const streamId = (event as { streamId?: string } | undefined)?.streamId;
-			const state = streamId ? outputs.get(streamId) : undefined;
-			return state ? state.trace !== null && !state.ended : canSpeak();
-		});
-		const unshareCueOwner = pi.share?.(CUE_PLAYBACK_OWNER_SHARED, cueOwner);
 		const pushLevel = (event: PlaybackEvent): void => {
 			if (!driver.ownsSource(event.trace_id)) return;
 			driver.receive(event);
-			playbackCues.receive(event);
 			if (!driver.isDelivering) {
 				stopProgressPolling();
 				resetLevelSinks();
@@ -331,7 +323,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 		// 不再额外挂 pi.signal 的 abort 监听 —— runner 卸载时本就是"先 abort、再跑 teardown"，
 		// 两条路清同一个东西，只会有两条路各自出错的余量。
 
-		// 4. 进度探测：唯一的 IO 读点，由事实拥有者自己推进。渲染路径永远只读内存快照。
+		// 5. 进度探测：唯一的 IO 读点，由事实拥有者自己推进。渲染路径永远只读内存快照。
 		let progressTimer: ReturnType<typeof setInterval> | null = null;
 
 		const stopProgressPolling = (): void => {
@@ -361,10 +353,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			progressTimer = timer;
 		};
 
-		// 5. 事实事件流闭环驱动
-		pi.on("turn_start", (e: TurnStartEvent) => {
-			aborted = false;
-			void e;
+		// 6. 回合边界：自动恢复与电平流仍归本扩展；输出/中断的语音业务全归 Speech。
+		pi.on("turn_start", (_e: TurnStartEvent) => {
 			// 伴生服务离线时不发无用请求，也就不会每回合刷一条错误
 			if (driver.isOnline) startLevelStream();
 			// Connection recovery and an unknown delivery barrier are independent.
@@ -376,122 +366,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 				.catch(() => undefined);
 		});
 
-		const submitTextSegment = async (segment: SpeechSegment, trace: string): Promise<void> => {
-			const result = await driver.submitSegment(segment.text, undefined, { cues: segment.cues }, trace);
-			if (result.status !== "accepted") {
-				if ((driver.isMuted || aborted) && (result.status === "not_started" || result.status === "cancelled"))
-					throw Object.assign(new Error(result.reason ?? "台词已取消"), { status: result.status });
-				await recordPerception({
-					kind: result.status === "unknown" || result.status === "uncertain" ? "delivery_unknown" : "delivery_failed",
-					causeRef: trace,
-					summary: `正文发声${result.status === "unknown" || result.status === "uncertain" ? "结果未知" : "失败"}：${result.reason ?? "来源存在未确认缺口"}。`,
-				});
-				throw Object.assign(new Error(result.reason ?? `TTS submit ${result.status}`), { status: result.status });
-			}
-			ensureProgressPolling();
-		};
-
-		/** A missing delivery acknowledgement does not prove the Bridge is offline. */
-		const reportSubmitFailure = (where: string, err: unknown): void => {
-			const status = (err as { status?: string })?.status;
-			if ((driver.isMuted || aborted) && (status === "not_started" || status === "cancelled")) return;
-			pi.reportError(
-				`[TTS] ${where}发声投递失败${status === "rejected" || status === "failed" ? "（本来源已封闭，后续来源可继续）" : "（提交或停止尚未确认）"}: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		};
-
-		const canSpeak = (): boolean => !aborted && readAssistantText && !driver.isMuted && driver.isOnline;
-
-		pi.on("output_update", async (e: OutputUpdateEvent) => {
-			if (e.channel !== "content" || !cueOwner.ownsOutput(e)) return;
-			const state = output(e.streamId);
-			if (!state.trace || state.ended) return;
-			if (!driver.acceptsSource(state.trace)) return;
-			const sentences = state.parser.feedSegments(e.text);
-			for (const s of sentences) {
-				try {
-					await submitTextSegment(s, state.trace);
-				} catch (err) {
-					reportSubmitFailure("正文", err);
-					break;
-				}
-			}
-		});
-
-		const output = (streamId: string) => {
-			let state = outputs.get(streamId);
-			if (!state) {
-				state = {
-					parser: new StreamParser({ maxSentenceChars: config.maxSentenceChars }),
-					trace: canSpeak() ? driver.beginSource(streamId) : null,
-					ended: false,
-				};
-				outputs.set(streamId, state);
-				if (state.trace) playbackCues.begin(state.trace);
-			}
-			return state;
-		};
-		pi.on("output_start", (event) => {
-			if (event.channel === "content") output(event.streamId);
-		});
-
-		const flushSpeech = (state: ReturnType<typeof output>): SpeechSegment[] => {
-			if (state.trace && !driver.acceptsSource(state.trace)) {
-				state.parser.reset();
-				return [];
-			}
-			const { segments, trailingCues } = state.parser.flushSegments();
-			// Tail-only tags belong after the final audible segment, never at text-generation time.
-			if (state.trace)
-				playbackCues.addTrailing(state.trace, driver.submittedSegments(state.trace) + segments.length, trailingCues);
-			return segments;
-		};
-
-		// 正文流收尾即冲刷尾部（§4.1）：不等整个 turn_end，工具回注后的新流也不会拖延最后一句。
-		pi.on("output_end", async (e: OutputEndEvent) => {
-			if (e.channel !== "content") return;
-			const state = outputs.get(e.streamId);
-			if (!state?.trace || state.ended) {
-				outputs.delete(e.streamId);
-				return;
-			}
-			for (const s of flushSpeech(state)) {
-				try {
-					await submitTextSegment(s, state.trace);
-				} catch (err) {
-					reportSubmitFailure("流尾句", err);
-					break;
-				}
-			}
-			state.ended = true;
-			try {
-				await driver.endSource(state.trace);
-			} catch (error) {
-				await recordPerception({
-					kind: "delivery_unknown",
-					causeRef: state.trace,
-					summary: "这段发声的结束未确认：" + String(error),
-				});
-			}
-			playbackCues.end(state.trace, driver.submittedSegments(state.trace));
-			outputs.delete(e.streamId);
-		});
-
-		pi.on("turn_end", async () => {
-			for (const state of outputs.values()) {
-				if (!state.trace || state.ended) continue;
-				for (const s of flushSpeech(state)) {
-					try {
-						await submitTextSegment(s, state.trace);
-					} catch (error) {
-						reportSubmitFailure("尾句", error);
-						break;
-					}
-				}
-				await driver.endSource(state.trace);
-			}
-			outputs.clear();
-			if (driver.currentTraceId) playbackCues.end(driver.currentTraceId, driver.currentSubmittedSegments);
+		pi.on("turn_end", (_e: TurnEndEvent) => {
 			// 文本说完了：若音频仍在物理播放或在途队列，保持电平流直到交付彻底完成；
 			// 仅在完全无在途音频时立即收束电平与口型复位。
 			if (driver.isDelivering) {
@@ -502,55 +377,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			}
 		});
 
-		let interruption: Promise<void> | null = null;
-		const interruptPlayback = (): Promise<void> => {
-			if (interruption) return interruption;
-			// 第一个 await 前冻结目标：旧轮的停止不能误杀已经开始交付的新轮声音（§10.1）。
-			const targetTraceId = driver.deliveryTraceId ?? driver.currentTraceId;
-			if (targetTraceId) playbackCues.cancel(targetTraceId);
-			if (driver.currentTraceId) playbackCues.cancel(driver.currentTraceId);
-			interruption = (async () => {
-				for (const state of outputs.values()) state.parser.reset();
-				stopProgressPolling();
-				stopLevelStream();
-				const result = await driver.interrupt();
-				if (result.outcome === "unknown" || result.outcome === "failed") {
-					// 无源身份的临时事实：进 VoicePerception 的单槽临时位，随下一个真实
-					// 解决证据退出。"已被主动打断"是一次性事实，不代表持续待处理问题，
-					// 不作为长驻观察。
-					await recordPerception({
-						kind: result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed",
-						summary: `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason}。`,
-					});
-				}
-			})().finally(() => {
-				interruption = null;
-			});
-			return interruption;
-		};
-
-		pi.on("output_interrupted", async (event: OutputInterruptedEvent) => {
-			if (event.channel !== "content") return;
-			const state = outputs.get(event.streamId);
-			if (!state?.trace) return;
-			state.ended = true;
-			state.parser.reset();
-			playbackCues.cancel(state.trace);
-			await driver.interrupt(state.trace);
-			outputs.delete(event.streamId);
-		});
-
-		pi.on("turn_aborted", async () => {
-			aborted = true;
-			await interruptPlayback();
-		});
-
 		// 卸载收束：先停探测与电平流，再等伴生进程真正退出（仅限本扩展拉起的进程）。
 		// 停止失败如实上抛，由 runner 的 teardown 路径上报，不静默吞掉。
 		return async () => {
 			const stopped = await Promise.allSettled([driver.dispose()]);
-			unshareCueOwner?.();
-			playbackCues.reset();
 			unsubscribeExposedFeed?.();
 			stopProgressPolling();
 			stopLevelStream();

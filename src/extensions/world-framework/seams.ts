@@ -9,7 +9,7 @@
  *
  * 一个接缝两个定义必然漂移（本项目 2026-09 与 2026-10 的两次真实缺陷均源于此）。
  * 世界与扩展**一律从本文件 import**，不得各自复制定义；`.uina/extensions/embodiment`
- * 与 `.uina/extensions/voice` 对这些名字只做 re-export。
+ * 与 `.uina/extensions/tts` 对这些名字只做 re-export。
  *
  * 归属边界：
  * - 消费方的结构校验（isBodyEndpoint / isVoiceLevelSink）留在各自消费方——"拒绝坏登记"

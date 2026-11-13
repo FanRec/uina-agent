@@ -9,9 +9,6 @@ import { pcmWav } from "./fixtures/pcm-wav.js";
 const mocks = vi.hoisted(() => ({ bridge: vi.fn(), subtitle: vi.fn() }));
 vi.mock("../.uina/extensions/tts/companion.js", () => ({ ensureCompanion: mocks.bridge }));
 vi.mock("../.uina/extensions/tts/subtitle-companion.js", () => ({ ensureSubtitleService: mocks.subtitle }));
-vi.mock("../.uina/extensions/voice/preferences.js", () => ({
-	loadVoicePreferences: async () => ({ muted: true, readAssistantText: false }),
-}));
 vi.mock("../.uina/extensions/tts/config.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../.uina/extensions/tts/config.js")>()),
 	loadConfig: () => ({
@@ -40,14 +37,18 @@ function api(controller = new AbortController()): ExtensionAPI {
 
 describe("TTS companion lifecycle", () => {
 	beforeEach(() => vi.resetAllMocks());
-	it("applies stored mute before exposing the driver", async () => {
+	it("exposes the delivery snapshot service", async () => {
 		mocks.bridge.mockResolvedValue({ didSpawn: false, stop: async () => {} });
 		mocks.subtitle.mockResolvedValue({ didSpawn: false, stop: async () => {} });
 		const pi = api();
 		const cleanup = await activate(pi);
 		try {
-			const snapshot = vi.mocked(pi.registerService).mock.calls.find(([name]) => name === "voice_driver:snapshot")![1];
-			expect(await snapshot(undefined, { callerId: "test", signal: pi.signal })).toMatchObject({ muted: true });
+			const snapshot = vi.mocked(pi.registerService).mock.calls.find(([name]) => name === "tts_delivery:snapshot")![1];
+			// 静音偏好归 Speech 扩展持有；TTS 交付快照只反映驱动事实（默认未静音）。
+			expect(await snapshot(undefined, { callerId: "test", signal: pi.signal })).toMatchObject({
+				online: true,
+				muted: false,
+			});
 		} finally {
 			if (cleanup) await cleanup();
 		}

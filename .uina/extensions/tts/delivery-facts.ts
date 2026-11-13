@@ -1,11 +1,11 @@
 /**
- * Uina VoiceOutputDriver 向下控制接缝定义 + 交付事实的单一说法
+ * Uina 语音交付事实的单一说法（输出表达体系 §5.1/§5.2）。
  *
  * 权威划分（只此一份，不设第二账本）：
- * - **文本归属提交方**：句子是 tts 扩展交给驱动的，所以断点能说出"是哪一句"。
+ * - **文本归属提交方**：句子是 Speech 交给驱动的，所以断点能说出"是哪一句"。
  * - **进度归属 bridge**：播完几句、哪句在播、念到第几字，只有物理层知道；驱动只代理。
  *
- * 读取路径也收敛成一条：`snapshot()` —— 同步、零 IO。
+ * 读取路径收敛成一条：`snapshot()` —— 同步、零 IO。
  * 刷新由拥有 IO 的一方（tts 扩展的进度探测）在后台推进，渲染路径永远只读内存快照。
  */
 
@@ -30,7 +30,7 @@ export type InterruptResult =
 export interface DeliverySnapshot {
 	readonly online: boolean;
 	readonly muted: boolean;
-	/** 本轮已提交句数（作者侧记账） */
+	/** 已提交句数（作者侧记账） */
 	readonly submittedSegments: number;
 	/** 已播完句数（桥侧物理事实） */
 	readonly spokenSegments: number;
@@ -49,18 +49,14 @@ export interface DeliverySnapshot {
 	readonly stopUnconfirmed?: boolean;
 }
 
-export interface VoiceOutputDriver {
-	/** 物理静音开闭（底层声卡静音或跳过发声投递）；开麦时顺手探活 */
-	setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }>;
-
-	/**
-	 * 立即掐断物理声音并返回基于字幕/播放时钟的估计断点
-	 * @param expectedTraceId 可选。若指定，则仅当当前播放 trace 与之一致时才掐断（消除异步竞态误杀下一轮）
-	 */
-	interrupt(expectedTraceId?: string): Promise<InterruptResult>;
-
-	/** 同步读交付快照。渲染路径唯一允许的读取方式。 */
-	snapshot(): DeliverySnapshot;
+/**
+ * 播放事实（Driver → Speech 的单向通知）：交付路径上的状态迁移。
+ * Speech 据此对齐 Cue 边界、维护"正在说"观察与交付结局。
+ */
+export interface PlaybackFact {
+	readonly traceId: string;
+	readonly segmentIndex: number;
+	readonly kind: "started" | "completed" | "failed";
 }
 
 /**

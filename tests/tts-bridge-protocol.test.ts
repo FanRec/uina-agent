@@ -95,13 +95,22 @@ async function completed(ids: string[]) {
 	throw new Error("Playback did not settle: " + logs);
 }
 
+/** speak 的整句提交在输出表达体系后由 Speech 承担：此处等价于
+ * beginSource → submitSegment → endSource 的最小编排。 */
+async function speakWhole(driver: TtsVoiceOutputDriver, text: string): Promise<{ task_id?: string; status: string }> {
+	const trace = driver.beginSource();
+	const admitted = await driver.submitSegment(text, undefined, undefined, trace);
+	await driver.endSource(trace);
+	return admitted;
+}
+
 describe("real TS to Python Voice protocol", () => {
 	it("reset cancels only its own session and cancelled sources reject late admissions", async () => {
 		const client = new TtsBridgeClient(url);
 		const own = new TtsVoiceOutputDriver(client);
 		const other = new TtsVoiceOutputDriver(client);
-		const old = await own.speak("old session");
-		const kept = await other.speak("other session");
+		const old = await speakWhole(own, "old session");
+		const kept = await speakWhole(other, "other session");
 		const stopped = await own.interrupt();
 		expect(["interrupted", "no_op"]).toContain(stopped.outcome);
 		const epoch = (await client.reconnect(own.sessionId)).epoch as string;
@@ -127,7 +136,7 @@ describe("real TS to Python Voice protocol", () => {
 		const failed = await driver.submitSegment("vendor failure");
 		const later = await driver.submitSegment("never play this following segment");
 		await driver.endSource();
-		const independent = await driver.speak("independent after failure");
+		const independent = await speakWhole(driver, "independent after failure");
 		const state = await completed([independent.task_id!]);
 		expect(state.tasks.find((task) => task.id === failed.task_id)?.state).toBe("failed");
 		if (later.task_id) expect(state.tasks.find((task) => task.id === later.task_id)?.state).not.toBe("completed");
@@ -154,7 +163,7 @@ describe("real TS to Python Voice protocol", () => {
 		await driver.endSource();
 		await completed([first.task_id!]);
 		expect(await driver.recover()).toMatchObject({ status: "succeeded", stoppedOldWork: false });
-		const next = await driver.speak("new speech");
+		const next = await speakWhole(driver, "new speech");
 		const result = await completed([next.task_id!]);
 		expect(result.tasks.filter((task) => task.id === first.task_id)).toHaveLength(1);
 	});
@@ -162,13 +171,15 @@ describe("real TS to Python Voice protocol", () => {
 		const client = new TtsBridgeClient(url);
 		expect((await client.compatibility()).compatible).toBe(true);
 		const driver = new TtsVoiceOutputDriver(client);
-		const first = await driver.speak("slow first");
-		const second = await driver.speak("second");
+		const first = await speakWhole(driver, "slow first");
+		const second = await speakWhole(driver, "second");
 		const state = await completed([first.task_id!, second.task_id!]);
 		expect(state.played.indexOf(first.task_id!.slice(0, -2))).toBeLessThan(
 			state.played.indexOf(second.task_id!.slice(0, -2)),
 		);
-		const replacement = await driver.speak("replacement", "replace", true);
+		// replace 的旧合同：停止确认后才受理新来源，片段序号从 1 重新开始。
+		await driver.interrupt();
+		const replacement = await speakWhole(driver, "replacement");
 		expect(replacement.status).toBe("accepted");
 		expect(replacement.task_id).toMatch(/:1$/);
 		await completed([replacement.task_id!]);

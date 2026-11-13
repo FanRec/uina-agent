@@ -11,6 +11,7 @@
 
 import type { ToolResultStatus } from "../core/types.js";
 import type { SessionCustomEntryRecord, SessionEntry, SessionEventRecord } from "../session/types.js";
+import { speechSayUtterance, visibleAssistantText } from "./expression-view.js";
 import type { FactDraft, FactPayload } from "./facts.js";
 import { sanitizeExternal } from "./sanitize.js";
 
@@ -153,8 +154,11 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 					if (message.thinking !== undefined && message.thinking.length > 0) {
 						facts.push(replay({ kind: "thinking.delta", text: sanitizeExternal(message.thinking), ...sourceSeq }, at));
 					}
-					if (message.content.length > 0) {
-						facts.push(replay({ kind: "assistant.delta", text: sanitizeExternal(message.content), ...sourceSeq }, at));
+					// 可见文字 = canonical 原文 − 已识别标签；旧的无注解历史一律原样显示，
+					// 不假设旧代码的正则就是未来语义，也不重新解释旧文本触发动作。
+					const visible = visibleAssistantText(message.content, message.expression);
+					if (visible.length > 0) {
+						facts.push(replay({ kind: "assistant.delta", text: sanitizeExternal(visible), ...sourceSeq }, at));
 					}
 					for (const call of message.tool_calls ?? []) {
 						const journal = tools.get(call.id);
@@ -189,6 +193,10 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 							journal?.finishedAt ?? at,
 						),
 					);
+					const utterance = speechSayUtterance(message.name ?? journal?.name ?? "", journal?.args, message.details);
+					if (utterance && (journal?.status ?? message.status) === "succeeded") {
+						facts.push(replay({ kind: "assistant.delta", text: sanitizeExternal(utterance.text) }, at));
+					}
 					break;
 				}
 				if (message.role === "custom") {

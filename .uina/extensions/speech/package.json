@@ -1,0 +1,7 @@
+{
+  "name": "@uina/extension-speech",
+  "version": "0.1.0",
+  "description": "Uina 语音表达扩展：Utterance 受理、<speech> 分句提交、停止/静音代次屏障与表达上下文",
+  "type": "module",
+  "main": "index.ts"
+}

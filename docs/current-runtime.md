@@ -99,9 +99,11 @@ World action 也必须返回该结构化合同；字符串结果不再隐式视�
 
 shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结论；启动后被中止（取消、超时）且效果不可确认时为 `unknown`，正文附已收集的部分输出与 reason——不推断成败，规则见 dev/DECISIONS.md「工具层修复（2026-10-29）」。JSONL、实时 transcript 和恢复 transcript 保留五种结果状态；旧消息未记录状态时显示未知。UI 收到中断请求不会擅自将运行中工具定为失败，随后确认的结果可以更新已结束轮次中的对应工具卡。
 
-## TTS 文件生成
+## 表达与语音输出
 
-Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断输出和瞬态上下文合同见 [Voice/TTS 当前合同](voice-tts/voice-tts-runtime.md)。声音协议版本为 2；外部旧 Bridge 需要由启动方更新重启。自动化与真实设备验证边界分别记录，不把受理或健康接口当成实际播放。
+模型输出表达经 Output Interpretation（`src/agent/expression.ts` + `src/core/expression.ts`）唯一解释：扩展经 `pi.registerOutputTag` 注册 `<speech>`（Block）与 `<cue>`（Marker）语法；每个 content 流的 `output_start` 冻结语法快照；语义 `expression` 事件经与原始 `output_*` 相同的观察分发入口广播，可见正文只来自语义文本，历史展示与模型历史视图按已识别标签的注解剔除标签原文（旧无注解历史原样显示）。含 `thinkingSignature/providerReplay` 回放的请求整段保持原文。
+
+Speech 扩展（`.uina/extensions/speech`）拥有 Utterance、语义分句、`speech` 工具（say/stop/status/set_muted）与持续 `muted` 偏好；TTS 扩展（`.uina/extensions/tts`）保留 Driver/Bridge、字幕电平与维护工具 `tts`/`tts_generate`，经 `tts_delivery:*` 服务向 Speech 提供交付端口并回推播放事实。Embodiment 扩展消费 Speech 外的 cue marker；Speech 内的 cue 按真实播放边界驱动，无音频时文本降级。表达受理 ≠ 音频受理 ≠ 播放完成；来源顺序、停止/静音代次屏障、当前分句观察与内部 runtime input 合同见 [Voice/TTS 当前合同](voice-tts/voice-tts-runtime.md)。声音协议版本为 2；外部旧 Bridge 需要由启动方更新重启。自动化与真实设备验证边界分别记录，不把受理或健康接口当成实际播放。
 
 实时字幕伴生服务由 TTS 扩展通过 `subtitle-companion.ts` 探测/启动；其独立实现位于 ThirdParty `realtime-subtitles` 项目。源码与模拟测试覆盖本地连接、队列和呈现逻辑，不证明 OBS、实际声卡时间同步或真实直播画面已验收；当前设计状态见 [实时字幕服务设计](proposals/voice/realtime-subtitle-service-design.md)。
 
@@ -238,7 +240,7 @@ Anthropic/Gemini 的 `providerReplay` 保存 adapter 自有的有序块与签名
 
 Job/Subagent/Cognition 扩展已于 2026-10-06 应要求整体移除：后台命令执行、子代理与长期记忆工具不复存在，`exec_command` 仅保留前台模式；会话 journal 中历史任务效果事实（task.dispatch）只作为不可解释的聚合事实保留。
 
-Host 级 SubjectProfile 仍可通过 `--profile` 显式启用，为主体绑定身份、session/settings 路径和资源根；`pi.subject` 仍供 World Framework 与 Voice 偏好存储使用。它不装配 Cognition，也不提供长期记忆整理能力。
+Host 级 SubjectProfile 仍可通过 `--profile` 显式启用，为主体绑定身份、session/settings 路径和资源根；`pi.subject` 仍供 World Framework 与 Speech 偏好存储使用。它不装配 Cognition，也不提供长期记忆整理能力。
 
 ## 进程生命周期与信号
 

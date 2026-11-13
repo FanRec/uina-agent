@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { validImages } from "../core/content.js";
 import { deliveryKey, validDeliveryTag } from "../core/delivery.js";
 import { errorMessage } from "../core/errors.js";
+import type { ExpressionAnnotation } from "../core/expression.js";
 import { inputTokenBudget, modelKey } from "../core/model.js";
 import type {
 	AgentMessage,
@@ -35,8 +36,9 @@ import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { projectInputMessage } from "../session/recovery.js";
 import type { RewindRequest, RewindResult, SessionStore } from "../session/types.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
-import { defaultSystemPrompt, measureRequestContext } from "./context.js";
 import { composeContextSources } from "./composer.js";
+import { defaultSystemPrompt, measureRequestContext } from "./context.js";
+import { OutputInterpreter } from "./expression.js";
 import {
 	type ProjectionPolicy,
 	type ResolvedProjection,
@@ -230,6 +232,8 @@ export class Subject {
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
 	private readonly measureContext?: SubjectOptions["measureContext"];
+	/** Output Interpretation（输出表达体系）：每个 content 流一份 Decoder，唯一接线。 */
+	private readonly interpreter = new OutputInterpreter();
 	/** 投影 Replacement 缝的现役实现（解析后两字段非空；本实例即单 owner）。 */
 	readonly projection: ResolvedProjection;
 	private lastRequestUsage?: RequestUsage;
@@ -423,6 +427,37 @@ export class Subject {
 			return;
 		}
 		return this.runtimeHooks.events.emit(event);
+	}
+
+	/**
+	 * Output Interpretation 的唯一接线（§4.4）：content 通道的生命周期事件先经
+	 * Subject 的同步解释，语义事件按序经同一 Output 观察分发入口广播，再广播原始
+	 * 生命周期事件。output_start 冻结语法快照；output_end/interrupted 先收尾语义
+	 * 事件再广播原始事件并释放 Decoder。thinking/tool 通道原样透传。
+	 */
+	private dispatchOutput(event: OutputEvent): void {
+		if (event.type === "expression" || event.channel !== "content") {
+			this.dispatch(event);
+			return;
+		}
+		switch (event.type) {
+			case "output_start":
+				this.interpreter.startStream(event.streamId, this.runtimeHooks.output.tags());
+				break;
+			case "output_update":
+				for (const semantic of this.interpreter.feed(event.streamId, event.text))
+					this.dispatch({ type: "expression", streamId: semantic.streamId, event: semantic });
+				break;
+			case "output_end":
+				for (const semantic of this.interpreter.finish(event.streamId, "completed"))
+					this.dispatch({ type: "expression", streamId: semantic.streamId, event: semantic });
+				break;
+			case "output_interrupted":
+				for (const semantic of this.interpreter.finish(event.streamId, "interrupted"))
+					this.dispatch({ type: "expression", streamId: semantic.streamId, event: semantic });
+				break;
+		}
+		this.dispatch(event);
 	}
 
 	/**
@@ -1320,7 +1355,7 @@ export class Subject {
 				assembly,
 			};
 			const callSeq = this.streamSeq;
-			const collector = new TurnStreamCollector(callId, (event) => this.dispatch(event), {
+			const collector = new TurnStreamCollector(callId, (event) => this.dispatchOutput(event), {
 				onUsage: (usage, timing) => void this.publishUsage(usage, callId, projection, callSeq, timing),
 				onRetry: (event) =>
 					this.dispatch(
@@ -1359,11 +1394,19 @@ export class Subject {
 			if (this.interrupted || this.currentSignal().aborted) {
 				collector.closeOutput("interrupted", "cancelled");
 				const partial = collector.getPartialOutput();
-				await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature);
+				await this.emitInterrupted(
+					partial.reply,
+					partial.thinking,
+					partial.thinkingSignature,
+					this.interpreter.takeAnnotation(callId),
+				);
 				return { kind: "aborted" };
 			}
 
-			const streamResult = this.dropReservedCalls(collector.validateAndFinalize());
+			const finalized = collector.validateAndFinalize();
+			// 注解在 output_end 收尾时已同步完成：与原文一起随 Assistant 消息原子提交。
+			finalized.expression = this.interpreter.takeAnnotation(callId);
+			const streamResult = this.dropReservedCalls(finalized);
 
 			if (streamResult.finishReason !== "tool_calls") {
 				await this.recordTerminalAssistant(streamResult);
@@ -1385,6 +1428,11 @@ export class Subject {
 				return { kind: "terminated", reason: "tool_call_limit", message: capText };
 			}
 
+			// 工具执行屏障（§4.4）：同一响应既有 content 又有 tool_calls 时，必须先等
+			// ExtensionHost.flush() 把此前的语义事件派发给扩展（Speech/Embodiment 已消费），
+			// 再执行这一批模型工具——否则 speech.stop/replace 可能先执行、旧 <speech>
+			// 后注册并复活声音。flush 只等待本地入队，不等音频网络或播放。
+			await this.runtimeHooks.events.flush();
 			const { stopped } = await this.settleToolExchange(streamResult);
 			processedToolCalls += proposedToolCalls;
 			if (processedToolCalls >= 100 && processedToolCalls % 50 === 0) {
@@ -1539,14 +1587,17 @@ export class Subject {
 
 	private async handleStreamError(collector: TurnStreamCollector, error: unknown): Promise<void> {
 		collector.closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");
+		const expression = this.interpreter.takeAnnotation(collector.streamId);
 		if (this.interrupted || this.currentSignal().aborted) {
 			const partial = collector.getPartialOutput();
-			await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature);
+			await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature, expression);
 			return;
 		}
 		const partial = collector.getPartialOutput();
 		if (partial.reply.trim() || partial.thinking.trim() || partial.thinkingSignature) {
-			await this.appendMessage(this.buildAssistantMessage(partial, { status: "error" }));
+			await this.appendMessage(
+				this.buildAssistantMessage({ ...partial, ...(expression ? { expression } : {}) }, { status: "error" }),
+			);
 		}
 		throw error;
 	}
@@ -1561,6 +1612,7 @@ export class Subject {
 			toolCalls?: CompletedToolCall[];
 			finishReason?: string;
 			usage?: Usage;
+			expression?: ExpressionAnnotation;
 		},
 		options: { status?: "complete" | "length" | "error" | "aborted"; timestamp?: string } = {},
 	): AgentMessage {
@@ -1571,6 +1623,7 @@ export class Subject {
 			thinkingSignature: result.thinkingSignature,
 			providerReplay: result.providerReplay,
 			...(result.toolCalls && result.toolCalls.length > 0 ? { tool_calls: result.toolCalls } : {}),
+			...(result.expression ? { expression: result.expression } : {}),
 			status: options.status ?? (result.finishReason === "length" ? "length" : "complete"),
 			usage: result.usage,
 			timestamp: options.timestamp ?? new Date().toISOString(),
@@ -2010,10 +2063,18 @@ export class Subject {
 		return this.abort.signal;
 	}
 
-	private async emitInterrupted(partial = "", thinking = "", thinkingSignature?: string): Promise<void> {
+	private async emitInterrupted(
+		partial = "",
+		thinking = "",
+		thinkingSignature?: string,
+		expression?: ExpressionAnnotation,
+	): Promise<void> {
 		if (partial.trim() || thinking.trim() || thinkingSignature) {
 			await this.appendMessage(
-				this.buildAssistantMessage({ reply: partial, thinking, thinkingSignature }, { status: "aborted" }),
+				this.buildAssistantMessage(
+					{ reply: partial, thinking, thinkingSignature, ...(expression ? { expression } : {}) },
+					{ status: "aborted" },
+				),
 			);
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
@@ -2056,6 +2117,7 @@ function isOutputEvent(event: RuntimeEvent): event is OutputEvent {
 		event.type === "output_start" ||
 		event.type === "output_update" ||
 		event.type === "output_end" ||
-		event.type === "output_interrupted"
+		event.type === "output_interrupted" ||
+		event.type === "expression"
 	);
 }

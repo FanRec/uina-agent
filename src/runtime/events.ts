@@ -31,6 +31,7 @@ export type RuntimeEvent =
 	| OutputUpdateEvent
 	| OutputEndEvent
 	| OutputInterruptedEvent
+	| ExpressionOutputEvent
 	| UsageUpdateEvent
 	| ContextUpdateEvent
 	| ProviderRetryEvent
@@ -212,7 +213,19 @@ export interface OutputInterruptedEvent {
 	readonly streamId: string;
 	readonly channel: "content" | "thinking" | "tool";
 	readonly reason: "external" | "self" | "cancelled" | "error";
-	readonly spokenUntil?: number;
+	/** 模型生成文本的 UTF-16 偏移；不是播放断点，禁止拿它描述音频已播位置。 */
+	readonly generatedCharOffset?: number;
+}
+
+/**
+ * 输出语义事件（输出表达体系）：Output Interpretation 对 content 通道的同步解释
+ * 结果，经与原始 output_* 相同的观察分发入口广播；语义事件先于同一增量的原始
+ * delta 派发。扩展只能同步推进语义状态或排入自有异步队列，不得等待 IO。
+ */
+export interface ExpressionOutputEvent {
+	readonly type: "expression";
+	readonly streamId: string;
+	readonly event: import("../core/expression.js").ExpressionEvent;
 }
 
 export interface QueueEvent {
@@ -255,4 +268,9 @@ export interface CustomEntryEvent {
 	readonly entry: { readonly customType: string; readonly data?: unknown };
 }
 
-export type OutputEvent = OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent;
+export type OutputEvent =
+	| OutputStartEvent
+	| OutputUpdateEvent
+	| OutputEndEvent
+	| OutputInterruptedEvent
+	| ExpressionOutputEvent;

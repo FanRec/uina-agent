@@ -32,6 +32,9 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 		context: {
 			collect: (input) => host.runCollectContext(input, scope),
 		},
+		output: {
+			tags: () => host.outputTagSnapshot(),
+		},
 		events: {
 			emit: (event: RuntimeEvent) => host.emit(event, scope),
 			observe: (event: OutputEvent) => host.emitObserved(event, scope),

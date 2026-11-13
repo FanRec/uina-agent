@@ -6,6 +6,7 @@
  */
 
 import type { HostEventRecord } from "../host/events.js";
+import { speechSayUtterance } from "./expression-view.js";
 import type { FactDraft, FactPayload } from "./facts.js";
 import { sanitizeExternal, sanitizeExternalDeep } from "./sanitize.js";
 
@@ -41,11 +42,15 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 			if (event.channel === "thinking") {
 				return [live({ kind: "thinking.delta", text: sanitizeExternal(event.text) }, at)];
 			}
-			if (event.channel === "content") {
-				return [live({ kind: "assistant.delta", text: sanitizeExternal(event.text) }, at)];
-			}
-			// tool 通道是工具参数的流式传输，展示由 tool.started/tool.finished 表达。
+			// 模型 content 的可见正文只来自 expression 语义事件；原始 delta 仅用于记录与
+			// 诊断，不再生成第二份 assistant.delta。
 			return [];
+		}
+
+		case "expression": {
+			// 语义展示视图：Block 内外的文字进入同一聊天文本流，标签不显示。
+			if (event.event.kind !== "text") return [];
+			return [live({ kind: "assistant.delta", text: sanitizeExternal(event.event.text) }, at)];
 		}
 
 		case "tool_call":
@@ -62,8 +67,8 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 				),
 			];
 
-		case "tool_result":
-			return [
+		case "tool_result": {
+			const facts: FactDraft[] = [
 				live(
 					{
 						kind: "tool.finished",
@@ -78,6 +83,14 @@ export function ingestLive(record: HostEventRecord): readonly FactDraft[] {
 					at,
 				),
 			];
+			// 独立 speech.say 的可见表达是另一条合法来源，只从已提交的 Canonical Tool
+			// Result 派生一份 Assistant Speech 文字；未受理/失败不生成“已说”文字。
+			const utterance = speechSayUtterance(event.toolName, event.args, event.details);
+			if (utterance && event.status === "succeeded") {
+				facts.push(live({ kind: "assistant.delta", text: sanitizeExternal(utterance.text) }, at));
+			}
+			return facts;
+		}
 
 		case "usage_update":
 			return [live({ kind: "usage.reported", usage: event.usage, estimated: false }, at)];

@@ -205,6 +205,11 @@ export interface RuntimeHooks {
 	readonly context: {
 		collect(input: Readonly<ContextRead>): Promise<ContextCollection>;
 	};
+	readonly output: {
+		/** 冻结当前输出标签注册快照（Output Interpretation）：每个 content 流的
+		 * output_start 调用一次；中途卸载不改变该流文本如何解释。 */
+		tags(): import("../core/expression.js").OutputTagSnapshot;
+	};
 	readonly events: {
 		emit(event: RuntimeEvent): Promise<void>;
 		observe(event: OutputEvent): void;

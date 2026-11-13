@@ -48,11 +48,14 @@ describe("事实入口：live/replay 均经 sanitizeExternal", () => {
 		const record: HostEventRecord = {
 			at: 1_700_000_000_000,
 			event: {
-				type: "output_update" as const,
+				type: "expression" as const,
 				streamId: "s1",
-				offset: 0,
-				channel: "content" as const,
-				text: "正文\x1b]52;c;zzz\x07注入\u202e反转",
+				event: {
+					kind: "text" as const,
+					streamId: "s1",
+					text: "正文\x1b]52;c;zzz\x07注入\u202e反转",
+					rawRange: [0, 20] as const,
+				},
 			},
 		};
 		const facts = ingestLive(record);

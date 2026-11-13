@@ -31,7 +31,13 @@ export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
 	if (!value || typeof value !== "object") return value as DeepReadonly<T>;
 	if ("type" in (value as object) && typeof (value as any).type === "string") {
 		const t = (value as any).type;
-		if (t === "output_update" || t === "output_start" || t === "output_end" || t === "output_interrupted") {
+		if (
+			t === "output_update" ||
+			t === "output_start" ||
+			t === "output_end" ||
+			t === "output_interrupted" ||
+			t === "expression"
+		) {
 			// 浅冻结输出事件是热路径特例：不标记（浅冻结 ≠ 深不可变）。
 			return Object.freeze({ ...(value as object) }) as DeepReadonly<T>;
 		}
@@ -117,10 +123,15 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 			// ContextRead 只携带字符串与 signal：signal 是运行时所有物，照 withSignal 纪律穿透。
 			collect: async (input: Readonly<ContextRead>) => readonlySnapshot(await hooks.context.collect(withSignal(input))),
 		}),
+		output: Object.freeze({
+			// 注册快照本身已冻结（Registry 产出），直接穿透。
+			tags: () => hooks.output.tags(),
+		}),
 		events: Object.freeze({
 			// DeepReadonly 视图传给 emit：契约形状是 RuntimeEvent，但只读性由 deepFreeze 保证。
 			emit: (event: RuntimeEvent) => hooks.events.emit(readonlySnapshot(event) as RuntimeEvent),
-			observe: (event: OutputEvent) => hooks.events.observe(readonlySnapshot(event)),
+			// DeepReadonly 会把 rawRange 元组放宽为数组：观察出口按契约形状穿透。
+			observe: (event: OutputEvent) => hooks.events.observe(readonlySnapshot(event) as OutputEvent),
 			flush: () => hooks.events.flush(),
 		}),
 		[GUARDED]: true,

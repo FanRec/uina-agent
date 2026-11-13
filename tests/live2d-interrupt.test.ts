@@ -247,6 +247,8 @@ describe("turn_aborted → interruptAll 分发（embodiment 集成）", () => {
 				shared: () => sharedFeed,
 				share: () => () => {},
 				registerTool: () => () => {},
+				registerOutputTag: () => () => {},
+				provideContext: () => Promise.resolve(() => {}),
 				ui: {
 					capabilities: () => ({
 						interactive: true,

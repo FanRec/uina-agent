@@ -21,6 +21,9 @@ export const NO_RUNTIME_HOOKS: RuntimeHooks = Object.freeze({
 	context: Object.freeze({
 		collect: async (_input: Readonly<ContextRead>): Promise<ContextCollection> => ({ contributions: [], omitted: [] }),
 	}),
+	output: Object.freeze({
+		tags: (): import("../core/expression.js").OutputTagSnapshot => new Map(),
+	}),
 	events: Object.freeze({
 		emit: async () => {},
 		observe: () => {},

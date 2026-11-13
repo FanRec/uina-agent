@@ -1,3 +1,4 @@
+import type { ExpressionAnnotation } from "../core/expression.js";
 import type {
 	CompletedToolCall,
 	FinishReason,
@@ -16,6 +17,8 @@ export interface StreamCollectorResult {
 	providerReplay?: ProviderReplay;
 	toolCalls: CompletedToolCall[];
 	finishReason: FinishReason;
+	/** 该流的输出语义注解（Output Interpretation 同步累积，随消息原子提交）。 */
+	expression?: ExpressionAnnotation;
 }
 
 export interface StreamCollectorOptions {
@@ -181,7 +184,7 @@ export class TurnStreamCollector {
 							streamId: this.streamId,
 							channel: "content",
 							reason: reason!,
-							spokenUntil: this.textOffset,
+							generatedCharOffset: this.textOffset,
 						},
 			);
 			this.hasEmittedContentStart = false;

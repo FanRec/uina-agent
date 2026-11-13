@@ -233,17 +233,20 @@ export class InteractiveTUI {
 				break;
 
 			case "output_update": {
-				if (m.channel === "thinking") {
-					// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
-					const node = nodes.find(
-						(candidate): candidate is ThinkingNode => candidate.kind === "thinking" && candidate.status === "running",
-					);
-					this.host.appendThinkingNode(node, sanitizeExternal(m.text));
-					break;
-				}
-				if (m.channel !== "content") break;
+				if (m.channel !== "thinking") break;
+				// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
+				const node = nodes.find(
+					(candidate): candidate is ThinkingNode => candidate.kind === "thinking" && candidate.status === "running",
+				);
+				this.host.appendThinkingNode(node, sanitizeExternal(m.text));
+				break;
+			}
+
+			case "expression": {
+				// 模型正文只来自 expression 语义事件；原始 content delta 不再驱动展示。
+				if (m.event.kind !== "text") break;
 				const node = nodes.find((candidate): candidate is AssistantNode => candidate.kind === "assistant");
-				this.host.appendAssistantNode(node, sanitizeExternal(m.text));
+				this.host.appendAssistantNode(node, sanitizeExternal(m.event.text));
 				break;
 			}
 
@@ -331,7 +334,7 @@ export class InteractiveTUI {
 			case "output_start":
 			case "output_end":
 			case "output_interrupted":
-				// 流式由 output_update 增量驱动，输出生命周期由回合收口表达。
+				// 流式正文由 expression 语义事件驱动，生命周期由回合收口表达。
 				break;
 			case "input_accepted":
 			case "input_settled":

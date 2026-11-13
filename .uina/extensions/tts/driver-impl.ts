@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
+import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, PlaybackFact } from "./delivery-facts.js";
 import { TtsSpeakError, type PlaybackEvent, type TtsBridgeClient } from "./client.js";
-import { hasPronounceableContent, StreamParser } from "./stream-parser.js";
 
 type Outcome = { status: string; task_id?: string; reason?: string };
 type Segment = { text: string; state: string; revealed?: number; uncertain?: boolean };
@@ -20,7 +19,7 @@ type Source = {
 const TERMINAL = new Set(["completed", "failed", "cancelled", "obsolete", "rejected"]);
 
 /** Submission identities and receipts belong here; playback belongs to the Bridge. */
-export class TtsVoiceOutputDriver implements VoiceOutputDriver {
+export class TtsVoiceOutputDriver {
 	readonly sessionId = "voice-" + randomUUID();
 	private _muted = false;
 	private _isOnline = true;
@@ -41,8 +40,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 	private observedAt?: number;
 	private lastError?: { stage: string; reason: string; observedAt: number };
 	private admissionTail: Promise<void> = Promise.resolve();
-	private onFact?: (fact: { kind: "delivery_failed" | "delivery_unknown"; summary: string; causeRef: string }) => void;
-	private onResolution?: (causeRef: string) => void;
+	/** 播放事实观察者（Speech 交付簿记的唯一物理事实来源）。 */
+	private onPlaybackFact?: (fact: PlaybackFact) => void;
 
 	constructor(
 		private readonly client: TtsBridgeClient,
@@ -57,11 +56,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 	setBridgeOwnership(value: "owned" | "external" | "unknown"): void {
 		this.bridgeOwnership = value;
 	}
-	setFactListener(handler: NonNullable<TtsVoiceOutputDriver["onFact"]>): void {
-		this.onFact = handler;
-	}
-	setResolutionListener(handler: (causeRef: string) => void): void {
-		this.onResolution = handler;
+	setPlaybackObserver(handler: (fact: PlaybackFact) => void): void {
+		this.onPlaybackFact = handler;
 	}
 	get isMuted(): boolean {
 		return this._muted;
@@ -124,9 +120,6 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 			)
 				this.sources.delete(id);
 		}
-	}
-	startTurn(_turnNumber: number): string {
-		return this.beginSource();
 	}
 	beginSource(_streamId?: string): string {
 		this.activeTrace = this.newSource().id;
@@ -270,49 +263,6 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 		this.pruneSources();
 		return outcome;
 	}
-	async speak(text: string, invocationId?: string, replace = false, signal?: AbortSignal): Promise<Outcome> {
-		signal?.throwIfAborted();
-		const parser = new StreamParser();
-		const normalized = [...parser.feed(text), ...parser.flush()].join("").trim();
-		if (!hasPronounceableContent(normalized)) return { status: "not_started", reason: "台词没有可朗读内容" };
-		if (invocationId && this.invocationResults.has(invocationId)) return this.invocationResults.get(invocationId)!;
-		if (this.maintenance || this._muted)
-			return {
-				status: "not_started",
-				reason: this.maintenance ? "正在恢复或测试声音，台词未提交" : "当前已静音，台词未提交",
-			};
-		if (!this._isOnline) {
-			const readiness = await this.client.compatibility();
-			if (!readiness.compatible)
-				return { status: "not_started", reason: readiness.reason ?? "发声服务不可用，台词未提交" };
-			this._isOnline = true;
-		}
-		if (replace) {
-			const stopped = await this.interrupt();
-			if (stopped.outcome === "unknown" || stopped.outcome === "failed")
-				return { status: stopped.outcome, reason: stopped.reason };
-		}
-		signal?.throwIfAborted();
-		const source = this.newSource();
-		const result = await this.submit(source, normalized, invocationId, undefined, signal);
-		if (result.status === "accepted" || result.status === "uncertain" || result.status === "unknown") {
-			try {
-				await this.endSource(source.id);
-			} catch (error) {
-				this.barrierKinds.add("seal");
-				const unknown = {
-					status: "unknown",
-					task_id: result.task_id,
-					reason:
-						(result.status === "accepted" ? "台词已受理，结束确认失败：" : "台词的提交与结束结果尚未确认：") +
-						String(error),
-				};
-				if (invocationId) this.invocationResults.set(invocationId, unknown);
-				return unknown;
-			}
-		}
-		return result;
-	}
 	snapshot(): DeliverySnapshot {
 		const entries = [...this.sources.values()].flatMap((s) =>
 			[...s.segments.entries()].map(([index, segment]) => ({ index, segment })),
@@ -346,6 +296,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 			this.barrierKinds.add("stop");
 		}
 		if (typeof detail.revealed_count === "number") segment.revealed = detail.revealed_count;
+		const previous = segment.state;
 		if (event.kind === "failed" || event.kind === "cancelled") {
 			segment.state = event.kind === "failed" ? "failed" : "cancelled";
 			source.closed = true;
@@ -353,19 +304,20 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 				if (other !== segment && !TERMINAL.has(other.state)) other.state = "cancelled";
 			if (event.kind === "failed") {
 				this.lastError = { stage: "合成或播放", reason: String(detail.error ?? "失败"), observedAt: Date.now() };
-				this.onFact?.({
-					kind: "delivery_failed",
-					causeRef: source.id,
-					summary: "这段发声未完成：" + this.lastError.reason,
-				});
 			}
 		} else if (detail.playback_completed === true || event.kind === "completed") segment.state = "completed";
 		else if (detail.playback_started === true || event.kind === "playback_started") segment.state = "playing";
 		else if (event.kind === "synthesizing") segment.state = "synthesizing";
+		this.notifyTransition(source.id, event.segment_index ?? 0, previous, segment.state);
 		this.observedAt = Date.now();
 		if (TERMINAL.has(segment.state)) this.updateReceipt(source, event.segment_index ?? 0, segment);
-		if (source.sealed && [...source.segments.values()].every((s) => s.state === "completed"))
-			this.onResolution?.(source.id);
+	}
+
+	private notifyTransition(traceId: string, segmentIndex: number, previous: string, current: string): void {
+		if (previous === current) return;
+		if (current === "playing") this.onPlaybackFact?.({ traceId, segmentIndex, kind: "started" });
+		else if (current === "completed") this.onPlaybackFact?.({ traceId, segmentIndex, kind: "completed" });
+		else if (current === "failed") this.onPlaybackFact?.({ traceId, segmentIndex, kind: "failed" });
 	}
 	private updateReceipt(source: Source, index: number, segment: Segment): void {
 		const taskId = source.id + ":" + index;
@@ -408,26 +360,21 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 					source.stopUnconfirmed = true;
 					this.barrierKinds.add("stop");
 				}
+				const previous = segment.state;
 				if (observed.state && TERMINAL.has(observed.state)) {
 					segment.state = observed.state;
 					if (observed.state === "failed") {
 						source.closed = true;
 						this.lastError = { stage: "合成或播放", reason: observed.error ?? "失败", observedAt: Date.now() };
-						this.onFact?.({
-							kind: "delivery_failed",
-							causeRef: source.id,
-							summary: "这段发声未完成：" + (observed.error ?? "合成或播放失败"),
-						});
 					}
 				} else if (observed.playback_completed || state.completed_segments?.some((s) => s.index === index))
 					segment.state = "completed";
 				else if (observed.playback_started || state.current_speaking?.index === index) segment.state = "playing";
 				segment.revealed = observed.revealed_count;
+				this.notifyTransition(source.id, index, previous, segment.state);
 				if (TERMINAL.has(segment.state)) this.updateReceipt(source, index, segment);
 			}
 			this.observedAt = Date.now();
-			if (source.sealed && [...source.segments.values()].every((s) => s.state === "completed"))
-				this.onResolution?.(source.id);
 		}
 		if (![...this.sources.values()].some((s) => [...s.segments.values()].some((v) => v.state === "unknown")))
 			this.barrierKinds.delete("admission");

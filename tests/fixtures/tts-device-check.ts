@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadSpeechPreferences, saveSpeechPreferences } from "../../.uina/extensions/speech/preferences.js";
 import { TtsBridgeClient, TtsSpeakError } from "../../.uina/extensions/tts/client.js";
 import { TtsVoiceOutputDriver } from "../../.uina/extensions/tts/driver-impl.js";
-import { loadVoicePreferences, saveVoicePreferences } from "../../.uina/extensions/voice/preferences.js";
 
 const child = spawn(
 	process.env.UINA_DEVICE_PYTHON ?? "E:/Uina/ThirdParty/gpt_sovits_v2pro/runtime/python.exe",
@@ -64,26 +64,51 @@ try {
 	const body = await driver.submitSegment("这是正文朗读验证。");
 	await driver.endSource();
 	record("body", await wait(body.task_id!));
-	const independent = await driver.speak("这是独立发声验证。", "device-independent");
+	const independentTrace = driver.beginSource("device-independent");
+	const independent = await driver.submitSegment(
+		"这是独立发声验证。",
+		"device-independent",
+		undefined,
+		independentTrace,
+	);
+	await driver.endSource(independentTrace);
 	record("independent-speak", await wait(independent.task_id!));
-	const queued = await driver.speak("这句话将被替换，不应阻挡下一句话。", "device-old");
-	const replaced = await driver.speak("这是替换后的新话。", "device-replace", true);
+	const oldTrace = driver.beginSource("device-old");
+	const queued = await driver.submitSegment("这句话将被替换，不应阻挡下一句话。", "device-old", undefined, oldTrace);
+	await driver.endSource(oldTrace);
+	// replace 的旧合同：停止确认后才受理新来源。
+	await driver.interrupt();
+	const replaceTrace = driver.beginSource("device-replace");
+	const replaced = await driver.submitSegment("这是替换后的新话。", "device-replace", undefined, replaceTrace);
+	await driver.endSource(replaceTrace);
 	record("replace", { old: queued, replacement: await wait(replaced.task_id!) });
-	const long = await driver.speak(
+	const longTrace = driver.beginSource("device-interrupt");
+	const long = await driver.submitSegment(
 		"这段话用于验证停止播放。声音开始后就会停止，不应继续读完后面的内容。",
 		"device-interrupt",
+		undefined,
+		longTrace,
 	);
+	await driver.endSource(longTrace);
 	await wait(long.task_id!, true);
 	record("interrupt", await driver.interrupt());
-	const mutedWork = await driver.speak("这段声音将被静音取消，后续内容不会重播。", "device-mute");
+	const mutedTrace = driver.beginSource("device-mute");
+	const mutedWork = await driver.submitSegment(
+		"这段声音将被静音取消，后续内容不会重播。",
+		"device-mute",
+		undefined,
+		mutedTrace,
+	);
+	await driver.endSource(mutedTrace);
 	record("mute", { work: mutedWork, stop: await driver.setMuted(true), test: await driver.test("playback") });
 	const root = await mkdtemp(join(tmpdir(), "uina-voice-device-"));
 	const preferencesApi = { path: join(root, "extension.ts"), subject: { stateRoot: root } } as never;
-	await saveVoicePreferences(preferencesApi, { muted: true, readAssistantText: true });
-	const restored = loadVoicePreferences(preferencesApi);
+	await saveSpeechPreferences(preferencesApi, { muted: true });
+	const restored = loadSpeechPreferences(preferencesApi);
 	const reloaded = new TtsVoiceOutputDriver(client);
 	await reloaded.setMuted((await restored).muted);
-	record("reload-muted", await reloaded.speak("不应播放的静音验证。"));
+	const mutedTrace2 = reloaded.beginSource("reload-muted");
+	record("reload-muted", await reloaded.submitSegment("不应播放的静音验证。", undefined, undefined, mutedTrace2));
 	await reloaded.dispose();
 	record("unmute", await driver.setMuted(false));
 	record("streaming-playback-test", await driver.test("playback"));
@@ -97,10 +122,19 @@ try {
 		}
 		return receipt;
 	};
-	const uncertain = await driver.speak("这是故障恢复前的唯一一遍台词。", "device-lost-reply");
+	const lostTrace = driver.beginSource("device-lost-reply");
+	const uncertain = await driver.submitSegment(
+		"这是故障恢复前的唯一一遍台词。",
+		"device-lost-reply",
+		undefined,
+		lostTrace,
+	);
+	await driver.endSource(lostTrace);
 	await wait(uncertain.task_id!);
 	record("controlled-recovery", { admission: uncertain, recovery: await driver.recover() });
-	const after = await driver.speak("恢复后可以继续说话。", "device-after-recover");
+	const afterTrace = driver.beginSource("device-after-recover");
+	const after = await driver.submitSegment("恢复后可以继续说话。", "device-after-recover", undefined, afterTrace);
+	await driver.endSource(afterTrace);
 	record("after-recovery", await wait(after.task_id!));
 	await driver.probe();
 	record("final-local-state", driver.snapshot());

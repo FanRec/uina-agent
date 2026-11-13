@@ -52,10 +52,23 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 	it("跨 step 的真实输出累加（多轮 stream→tool→stream）", () => {
 		const tui = createTestUI();
 		tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "跑两轮" }));
-		tui.consume(record({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "第一轮的输出" })); // 调用 1 有增量 → 有解码区间
+		// 输出表达体系：TUI 的生成计账由 expression 语义文本事件驱动（原始 content delta 不再进展示）。
+		tui.consume(
+			record({
+				type: "expression",
+				streamId: "s1",
+				event: { kind: "text", streamId: "s1", text: "第一轮的输出", rawRange: [0, 6] },
+			}),
+		); // 调用 1 有增量 → 有解码区间
 		tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 30 } }));
 		tui.consume(record({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" })); // 调用 1 收尾
-		tui.consume(record({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "第二轮的输出" })); // 调用 2 的增量
+		tui.consume(
+			record({
+				type: "expression",
+				streamId: "s1",
+				event: { kind: "text", streamId: "s1", text: "第二轮的输出", rawRange: [6, 12] },
+			}),
+		); // 调用 2 的增量
 		tui.consume(record({ type: "usage_update", usage: { callId: "call-2", outputTokens: 45 } }));
 		tui.consume(record({ type: "turn_end", turnNumber: 1 }));
 
@@ -81,7 +94,11 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			);
 			vi.setSystemTime(T0 + 8000); // +2s：正文生成
 			tui.consume(
-				record({ type: "output_update", streamId: "s1", offset: 2, channel: "content", text: "答".repeat(300) }),
+				record({
+					type: "expression",
+					streamId: "s1",
+					event: { kind: "text", streamId: "s1", text: "答".repeat(300), rawRange: [600, 900] },
+				}),
 			);
 			vi.setSystemTime(T0 + 9000);
 			tui.consume(record({ type: "turn_end", turnNumber: 1 }));
@@ -149,7 +166,11 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			tui.consume(record({ type: "turn_start", turnNumber: 1, userText: "看下这个文件" }));
 			vi.setSystemTime(T0 + 10);
 			tui.consume(
-				record({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来看看这个文件" }),
+				record({
+					type: "expression",
+					streamId: "s1",
+					event: { kind: "text", streamId: "s1", text: "我来看看这个文件", rawRange: [0, 8] },
+				}),
 			);
 			vi.setSystemTime(T0 + 3010); // 3 秒工具参数流式：UI 收不到任何增量
 			tui.consume(record({ type: "usage_update", usage: { callId: "call-1", outputTokens: 500 } }));

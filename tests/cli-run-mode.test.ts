@@ -66,18 +66,23 @@ describe("resolveExitCode", () => {
 });
 
 describe("formatStdioEventLine", () => {
-	it("output_update：content 通道剥 ANSI 后返回，其它通道 null", () => {
+	it("expression：text 语义事件剥 ANSI 后返回，marker/block 与原始 delta 均 null", () => {
 		expect(
 			formatStdioEventLine({
-				type: "output_update",
+				type: "expression",
 				streamId: "s",
-				offset: 0,
-				channel: "content",
-				text: "\u001b[2Jhi",
+				event: { kind: "text", streamId: "s", text: "\u001b[2Jhi", rawRange: [0, 4] },
 			}),
 		).toBe("hi");
 		expect(
-			formatStdioEventLine({ type: "output_update", streamId: "s", offset: 0, channel: "thinking", text: "hi" }),
+			formatStdioEventLine({
+				type: "expression",
+				streamId: "s",
+				event: { kind: "marker", streamId: "s", name: "cue", attributes: { id: "nod" }, rawRange: [0, 14] },
+			}),
+		).toBeNull();
+		expect(
+			formatStdioEventLine({ type: "output_update", streamId: "s", offset: 0, channel: "content", text: "hi" }),
 		).toBeNull();
 	});
 

@@ -92,7 +92,12 @@ const auxiliary: SessionEventRecord[] = [
 const liveEvents: HostEventRecord[] = [
 	record(T0, { type: "turn_start", turnNumber: 1, userText: "帮我检查目录" }),
 	record(T1, { type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "先看看命令" }),
-	record(T1, { type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来执行" }),
+	// 输出表达体系：模型正文的实时事实只来自 expression 语义事件（原始 content delta 不再展示）。
+	record(T1, {
+		type: "expression",
+		streamId: "s1",
+		event: { kind: "text", streamId: "s1", text: "我来执行", rawRange: [0, 4] },
+	}),
 	record(T1, { type: "tool_call", toolName: "exec_command", args: { command: "dir" }, callId: "call-1" }),
 	record(T2, {
 		type: "tool_result",
@@ -102,7 +107,11 @@ const liveEvents: HostEventRecord[] = [
 		status: "succeeded",
 		callId: "call-1",
 	}),
-	record(T3, { type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "做完了" }),
+	record(T3, {
+		type: "expression",
+		streamId: "s1",
+		event: { kind: "text", streamId: "s1", text: "做完了", rawRange: [0, 3] },
+	}),
 	record(T4, { type: "turn_end", turnNumber: 1 }),
 ];
 

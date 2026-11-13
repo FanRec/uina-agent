@@ -1,35 +1,29 @@
-# Voice / TTS current contract
+# Speech / TTS current contract
 
-## Everyday speech
+## Expression pipeline
 
-The `voice`, `tts`, and `tts_generate` tools remain separate. Content streams use the saved text-reading preference; explicit speech remains available when text reading is off. Thinking, receipts and logs do not become speech. Full-width parentheticals, code and cue markup use the existing speech parser; explicit speak uses the same cleaning rules and does not execute body cues.
+Model `content` is interpreted once by the Output Interpreter (Subject-owned, `src/agent/expression.ts`). Extensions register output tags (`<speech>` block, `<cue>` marker) via `pi.registerOutputTag`; each content stream freezes its tag snapshot at `output_start`. Semantic `expression` events share the raw output observation dispatch; the visible text comes only from semantic text events, and tags outside blocks are displayed, never spoken. Assistant messages persist a minimal `expression` annotation (tag ranges/attributes) atomically with the original content; old unannotated history is displayed as-is. Requests whose preserved history needs signature/native replay keep assistant text verbatim.
 
-Each activation owns one control session. Body streams and explicit invocations own independent sources with segment indices starting at one. Admission is serialized locally. The Bridge registers source order before synthesis, seals a source at output end, and executes ready playback outside the synthesis worker pool. Pending and ready work both count against the existing task resource capacity; the playback head retains admission credit and synthesis priority.
+`speech.say` text is plain text and never enters the decoder; its visible expression derives solely from the committed Tool Result's `details.speech` (`{version: 1, utteranceId, text, accepted: true}`).
 
-`speak` queues a new source. `replace=true` validates the new text before cancelling the frozen old sources; it admits a fresh source only after stopping is confirmed. Invocation retries do not repeat or interrupt audio, and return any later known completion/failure/cancellation evidence. Ordinary new input does not cancel old speech.
+## Utterances and delivery
 
-Mute stores the preference and immediately stops/cancels this activation's work. A failed or unknown stop is reported separately from the saved preference and remains visible in status. Unmute, recovery, reload and normal completion never replay old speech. Changing text-reading preference affects new streams.
+An utterance is one independent expression (a `<speech>` block or one `speech.say`), not a turn, stream or player task. Acceptance of expression ≠ audio admission ≠ playback completion; `not_played` means no audio ever entered the delivery path, and unknown stays unknown. The Speech extension owns utterances, segmentation, cue alignment, the `speech` tool (`say/stop/status/set_muted`) and the persistent `muted` preference (old `readAssistantText` is deleted, never migrated to mute). The TTS extension keeps the Driver/Bridge, subtitles, acoustic levels and the maintenance tools `tts` / `tts_generate`, and exposes the delivery port via `tts_delivery:*` services; playback facts flow back to Speech via `speech_delivery:on_playback`.
+
+Speech keeps one serial chain per utterance and a global control tail. Stop/interrupt/replace/mute first synchronously bump the local generation, clear unsubmitted segments and cues, and only then stop the driver source; late admissions cannot resurrect a stopped source, and an unknown stop keeps the physical barrier instead of claiming success. `replace=true` validates the new text first and refuses acceptance when the old output cannot be confirmed stopped.
+
+Cues inside speech are time anchors: a marker seals the left segment and binds to the start of the next pronounceable segment (`playback_started`); end cues fire after the last segment completes. Only when a closed block certainly has no audio in the delivery path (muted, offline, all rejected, pure cues) do its untriggered cues run once as a text fallback; interrupted blocks cancel them. Cues outside speech blocks are embodiment's business, dispatched once in stream order.
+
+## Context and events
+
+Guidance (expression syntax, cue semantics) is file-based; capability sources only report current negative limits (muted/offline/barrier) and return null when healthy; the observation source reports at most one line — the currently playing segment from trusted playback facts, null when nothing is verifiably playing. Unexpected interruption, async delivery failure/unknown and availability stages go through the existing runtime-input path (`runtime/internal`, deduplicated by stable identity), never as synthetic tool receipts. Ordinary progress, queueing and completion never notify the model; details stay in `speech.status` / `tts.inspect`.
 
 ## Evidence and recovery
 
-Voice protocol version 2 is advertised by `/health`. An incompatible external Bridge can be inspected but is not killed or reused for normal speech.
+Voice protocol version 2 is advertised by `/health`. An incompatible external Bridge can be inspected but is not killed or reused for normal speech. Cancellation distinguishes stopped, not-playing-and-closed, unknown and failed; reset freezes the old epoch before cancellation. `tts.recover` checks compatibility, reconnects, reconciles sources, and permits one confirmed reset per unresolved gap; restart requires an explicit target owned by this extension/Bridge. Maintenance rejects new speech instead of saving it for later. Background probing does not reset or restart.
 
-Cancellation distinguishes stopped, not-playing-and-closed, unknown and failed. Reset freezes the old epoch before cancellation, waits outside the registry lock, and enables the new epoch only after confirmed closure. Cancellation tombstones reject late admissions. Late replies update only their captured source. File and streaming playback share the cancellable PCM player.
-
-Default `tts.recover` checks compatibility, reconnects the session and feedback stream, and reconciles original sources. An unresolved gap permits one confirmed reset. Restart requires explicit `operation:"restart"` and a target managed by the current extension/Bridge. Maintenance rejects new speech instead of saving it for later. Background probing does not reset or restart.
-
-`tts.inspect` returns connection, synthesis-interface, player and local-record evidence. A component selection expands that component; raw health objects are not dumped into normal model text. Necessary conclusions, unknowns and executable arguments are in tool content, since Provider wire does not include `details`.
-
-Synthesis tests validate audio without playing it. Playback tests use the configured normal playback pipeline and wait for actual completion; mute prevents them. A successful playback receipt does not establish that a person heard it. Long tests use the configured generation timeout as a total deadline, including queued work, and cancel remaining work on timeout/disconnection.
-
-## Context
-
-Voice facts are deduplicated by cause/version. Projection and inspection are read-only. Preflight captures the included versions; real output or tool execution consumes only those versions. Unread facts survive turn completion. Confirmed resolution removes obsolete uncertainty without turning old incomplete speech into completed speech.
-
-Transient Voice frames retain the event-frame protocol and carry the generic internal `runtime.perception` source type. Compaction removes the whole transient group, not canonical tool receipts. Ordinary progress is not injected. Repeated equal summaries are grouped with their count; different reasons remain visible.
+`tts.inspect` returns connection, synthesis-interface, player and local-record evidence; conclusions and unknowns live in tool content because Provider wire does not include `details`. Synthesis tests validate audio without playing; playback tests use the normal pipeline and wait for actual completion; mute prevents them. A successful playback receipt does not establish that a person heard it.
 
 ## Verification boundary
-
-Previous automated and device evidence, plus this audit's repository-only checks and remaining acceptance boundaries, are recorded in [voice-tts-verification.md](voice-tts-verification.md). Historical full-suite and device results are snapshots, not proof for the current checkout.
 
 The automated protocol fixture runs the real Python HTTP/service/scheduling code with an observable test player and vendor, using temporary configuration. It does not establish real hardware behavior. Deployment requires matching TS and Python versions; reload alone cannot upgrade an external running Bridge. Real device receipt evidence and human listening feedback must be recorded separately.

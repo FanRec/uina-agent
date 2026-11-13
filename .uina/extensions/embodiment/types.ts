@@ -15,8 +15,8 @@ export {
 	type ExpressiveCueDef,
 } from "../../../src/extensions/world-framework/seams.js";
 
+/** 一次轻量表现性线索（来自 Output Interpretation 的 marker 语义事件）。 */
 export interface ExtractedCue {
 	id: string;
 	target?: string;
-	rawTag: string;
 }

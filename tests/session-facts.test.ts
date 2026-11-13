@@ -6,6 +6,7 @@ import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import execCommand from "../src/extensions/runtime-tools/exec-command/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
+import type { AgentMessage } from "../src/core/types.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
 import type { QueuedInput } from "../src/session/types.js";
 import { type Tool, ToolBroker } from "../src/tools/broker.js";
@@ -389,5 +390,76 @@ describe("SessionStore schema 边界", () => {
 		expect(store.readRecords()).toHaveLength(0);
 		await rejects(() => store.appendCustomMessage({ customType: "", content: "x" }));
 		expect(store.readRecords()).toHaveLength(0);
+	});
+
+	it("assistant 表达注解：合法形状入库，非法形状拒绝（防可写不可读）", async () => {
+		const store = new MemorySessionStore();
+		const rejects = (fn: () => unknown) => expect(Promise.resolve().then(fn)).rejects.toThrow();
+		const annotation = (tags: unknown) =>
+			({ role: "assistant", content: "x", expression: tags }) as unknown as AgentMessage;
+		const range = Object.freeze([2, 10]) as readonly [number, number];
+		// 合法：block 起止（显式关闭带区间、隐式收尾不带）与 marker。
+		await store.appendMessage(
+			annotation({
+				version: 1,
+				streamId: "s1",
+				tags: [
+					{ kind: "block_start", name: "speech", blockId: "speech-1", rawRange: range },
+					{ kind: "marker", name: "cue", blockId: "speech-1", attributes: { id: "nod" }, rawRange: range },
+					{ kind: "block_end", name: "speech", blockId: "speech-1", reason: "closed", rawRange: range },
+				],
+			}),
+		);
+		await store.appendMessage(
+			annotation({
+				version: 1,
+				streamId: "s2",
+				tags: [{ kind: "block_end", name: "speech", blockId: "speech-1", reason: "interrupted" }],
+			}),
+		);
+		expect(store.readRecords().filter((r) => r.kind === "message")).toHaveLength(2);
+		// 非法：版本、区间形状、未知 kind、closed 缺区间、隐式收尾带区间、属性值非字符串。
+		const store2 = new MemorySessionStore();
+		await rejects(() => store2.appendMessage(annotation({ version: 2, streamId: "s", tags: [] })));
+		await rejects(() =>
+			store2.appendMessage(
+				annotation({
+					version: 1,
+					streamId: "s",
+					tags: [{ kind: "block_start", name: "speech", blockId: "b", rawRange: [3, 2] }],
+				}),
+			),
+		);
+		await rejects(() =>
+			store2.appendMessage(annotation({ version: 1, streamId: "s", tags: [{ kind: "wat", name: "x" }] })),
+		);
+		await rejects(() =>
+			store2.appendMessage(
+				annotation({
+					version: 1,
+					streamId: "s",
+					tags: [{ kind: "block_end", name: "speech", blockId: "b", reason: "closed" }],
+				}),
+			),
+		);
+		await rejects(() =>
+			store2.appendMessage(
+				annotation({
+					version: 1,
+					streamId: "s",
+					tags: [{ kind: "block_end", name: "speech", blockId: "b", reason: "ended", rawRange: range }],
+				}),
+			),
+		);
+		await rejects(() =>
+			store2.appendMessage(
+				annotation({
+					version: 1,
+					streamId: "s",
+					tags: [{ kind: "marker", name: "cue", attributes: { id: 1 }, rawRange: range }],
+				}),
+			),
+		);
+		expect(store2.readRecords()).toHaveLength(0);
 	});
 });

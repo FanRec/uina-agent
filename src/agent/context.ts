@@ -1,3 +1,4 @@
+import { stripExpressionTags } from "../core/expression.js";
 import type {
 	AgentMessage,
 	ChatMsg,
@@ -124,9 +125,6 @@ export function convertToLlm(
 			case "assistant": {
 				const validToolCalls = msg.tool_calls?.filter((call) => pairedIds.has(call.id));
 				const tool_calls = validToolCalls && validToolCalls.length > 0 ? validToolCalls : undefined;
-				const content = typeof msg.content === "string" ? msg.content : "";
-				const hasContent = content.trim().length > 0;
-				const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
 				const replay = options.thinkingReplay ?? "none";
 				// DeepSeek thinking 模式逐帧校验 reasoning_content，回放范围由协议决定，
 				// 与这一轮有没有工具调用无关。
@@ -134,6 +132,16 @@ export function convertToLlm(
 				const thinking = carriesThinking ? msg.thinking : undefined;
 				const thinkingSignature = carriesThinking ? msg.thinkingSignature : undefined;
 				const hasThinking = Boolean(thinking && thinking.trim().length > 0);
+				// 模型历史视图（输出表达体系 §6.4）：保留历史需要原样回放签名/provider 原生
+				// 块时整段保持原文，不做局部剥离；否则用注解把已识别的表现性标签语义化为
+				// 普通文本（不改工具调用、工具结果、用户消息或 canonical），减少旧 Cue 被模仿。
+				// 该条件由单次请求的 thinkingReplay 统一决定，同请求内不出现部分改写。
+				const expressionAnnotation =
+					!carriesThinking && "expression" in msg && msg.expression ? msg.expression : undefined;
+				const rawContent = typeof msg.content === "string" ? msg.content : "";
+				const content = expressionAnnotation ? stripExpressionTags(rawContent, expressionAnnotation) : rawContent;
+				const hasContent = content.trim().length > 0;
+				const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
 
 				// Drop empty / cancelled assistant frames without text, thinking, or tool calls
 				if (!hasContent && !hasToolCalls && !hasThinking) {

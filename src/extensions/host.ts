@@ -9,7 +9,9 @@
  * 另负责扩展 Handler 注册与生命周期派发、异常安全隔离（单个扩展异常不阻塞核心运行）。
  */
 
+import { OutputTagRegistry } from "../agent/expression.js";
 import { errorMessage } from "../core/errors.js";
+import type { OutputTagRegistration, OutputTagSnapshot } from "../core/expression.js";
 import type { ChatMsg, ContextCollection, ContextRead, ContextSource } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import {
@@ -84,6 +86,9 @@ export class ExtensionHost {
 	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
 	/** Context Source 注册表（信息注入体系）：provideContext 的持有方，随激活作用域注销。 */
 	protected readonly contextSources = new ContextSourceRegistry();
+	/** 输出标签注册表（输出表达体系）：registerOutputTag 的持有方，随激活作用域注销；
+	 * 每个 content stream 的 output_start 冻结其语法快照。 */
+	private readonly outputTags = new OutputTagRegistry();
 	/** History View 提供者槽位（信息注入体系）：单一所有者，重复注册明确报错；
 	 * 无提供者时 project 为 identity。随激活作用域注销。 */
 	private historyView?: {
@@ -148,6 +153,20 @@ export class ExtensionHost {
 	 */
 	provideContext(owner: string, source: ContextSource, isActive: () => boolean): () => void {
 		return this.contextSources.register(owner, source, isActive);
+	}
+
+	/**
+	 * 注册输出标签（输出表达体系）：扩展声明自己拥有的输出标记语法；注册名在一个
+	 * Host 内唯一，重名拒绝并报告所有者。随激活作用域注销；已开始的流按其冻结的
+	 * 语法快照解释，不受中途注销影响。
+	 */
+	registerOutputTag(owner: string, tag: OutputTagRegistration, isActive: () => boolean): () => void {
+		return this.outputTags.register(owner, tag, isActive);
+	}
+
+	/** 当前活跃输出标签的注册快照（Subject 在每个 content 流的 output_start 冻结）。 */
+	outputTagSnapshot(): OutputTagSnapshot {
+		return this.outputTags.snapshot();
 	}
 
 	/**
