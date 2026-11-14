@@ -24,9 +24,8 @@ import { freezeProjection } from "../runtime/guard.js";
  * - 固定前缀不进入 Canonical History、不算真实用户输入；以 context.kind=
  *   "runtime.guidance" 标记。History View 的输入不含本消息：Guidance 每次请求重新
  *   装配，压缩预算把它作为不可裁剪的固定开销预留。
- * - capability 与 observation 属于当前请求快照：排在 History 之后；能力在前、观察在后，
- *   同类按 key 稳定排序。纯文本贡献合并成一条"运行时参考信息" user 消息；含图片的
- *   贡献各占一条消息以保持图文对应。
+ * - observation 属于当前请求快照：排在 History 之后，同类按 key 稳定排序。纯文本
+ *   贡献合并成一条"运行时参考信息" user 消息；含图片的贡献各占一条消息以保持图文对应。
  * - 快照消息以 context.kind="runtime.perception" 标记：它们不在 History View 的输入里
  *   （History View 只接收历史），也不会进入任何历史摘要。
  * - 外部观察是低信任数据：正文以 JSON 字符串编码渲染，无法伪造容器或条目结构；
@@ -237,12 +236,9 @@ export function composeContextSources(input: ComposeContextInput): ComposedConte
 		}
 	}
 
-	// ── capability / observation：历史之后的运行时参考消息 ──────────────
-	// 能力在前、观察在后；纯文本合并成一条，含图片的贡献单独成消息保持图文对应。
-	const orderedDynamic = [...dynamic].sort((a, b) => {
-		const rank = (kind: ContextContribution["kind"]): number => (kind === "capability" ? 0 : 1);
-		return rank(a.kind) - rank(b.kind) || byKey(a, b);
-	});
+	// ── observation：历史之后的运行时参考消息 ───────────────────────────
+	// 纯文本合并成一条，含图片的贡献单独成消息保持图文对应；按 key 稳定排序。
+	const orderedDynamic = [...dynamic].sort(byKey);
 	const textEntries: ContextContribution[] = [];
 	const imageEntries: ContextContribution[] = [];
 	for (const contribution of orderedDynamic) {

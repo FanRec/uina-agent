@@ -39,28 +39,10 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 	} catch (error) {
 		api.reportError(error instanceof Error ? error : new Error(String(error)));
 	}
-	// 信息注入体系：全局已配置服务的名称与用途注册为简短 capability（替代旧 System
-	// 追加索引）。read() 与 Proxy Tool 同一套只读 resolveMcpConfig() 按次解析，不启动
-	// 服务、不刷新目录、不改信任状态；"已配置"不等于"已在线/已发现工具"，调用步骤由
-	// Proxy 工具自身承载，这里不重复。项目级未信任配置不进常驻目录（信任门归 Proxy）。
-	if (snapshot && buildCapabilityIndex(snapshot)) {
-		api.provideContext({
-			id: "capability",
-			kind: "capability",
-			read: () => {
-				let current: McpConfigSnapshot;
-				try {
-					current = resolveMcpConfig(api.cwd);
-				} catch {
-					// 配置暂时不可解析：如实返回 null（不保留旧成功值），Proxy 的 status 可查。
-					return null;
-				}
-				const text = buildCapabilityIndex(current);
-				if (!text) return null;
-				return { text, source: { type: "mcp.config", origin: "internal" } };
-			},
-		});
-	}
+
+	// 发现不常驻注入（S6 收口）：Server 名称、用途与工具发现全部由 mcp 代理工具按次
+	// 读取配置（list/search 零连接），不再注册全局 Capability/静态 Guidance；配置修改
+	// 不要求 runtime_reload(resources)。具体 Server 信息由工具按次解析，见 proxy-tool。
 
 	// 仅自动启动全局配置中显式 autoStart 的 server：全局配置已获信任，
 	// 项目配置仍保留 UI 信任门并按需启动，避免启动阶段绕过安全确认。
@@ -91,23 +73,4 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 			// 临时目录回收尽力而为；不阻断扩展卸载。
 		}
 	};
-}
-
-/** 全局已配置服务的简短 capability 正文：与旧 System 索引同一授权范围（仅全局有效配置），
- * 不扩大到项目级未信任配置；"已配置不等于已在线"。 */
-function buildCapabilityIndex(snapshot: McpConfigSnapshot): string | undefined {
-	const services = [...snapshot.servers.entries()].filter(
-		(entry): entry is [string, { kind: "valid"; config: ResolvedServerConfig }] =>
-			entry[1].kind === "valid" && entry[1].config.source === "global",
-	);
-	if (services.length === 0) return undefined;
-	const rows = services.map(([name]) => {
-		const purposes = snapshot.mcpPurposes;
-		const purpose = purposes && Object.hasOwn(purposes, name) ? purposes[name]!.replace(/\s+/g, " ").trim() : undefined;
-		return `- ${name}：${purpose || "用途未说明，可通过 MCP 工具探索。"}`;
-	});
-	return [
-		"以下 MCP 服务已配置（已配置不等于已在线或已发现工具；查询、连接与按需启动经 MCP 工具进行）：",
-		...rows,
-	].join("\n");
 }

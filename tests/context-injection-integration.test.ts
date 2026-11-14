@@ -55,7 +55,7 @@ describe("Context Source 注入（真实 decide() 请求链）", () => {
 			await runner.activateBuiltin("alpha", (pi) => {
 				pi.provideContext({
 					id: "battery",
-					kind: "capability",
+					kind: "observation",
 					read: () => ({ text: "电量 80%", source: { type: "alpha.battery", origin: "internal" } }),
 				});
 				pi.provideContext({
@@ -213,7 +213,7 @@ describe("Context Source 注入（真实 decide() 请求链）", () => {
 			await runner.activateBuiltin("probe", (pi) => {
 				pi.provideContext({
 					id: "state",
-					kind: "capability",
+					kind: "observation",
 					read: () => ({ text: "就绪", source: { type: "probe.state", origin: "internal" } }),
 				});
 			});

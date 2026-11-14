@@ -19,13 +19,18 @@ import type { RuntimeScopeFilter } from "./host.js";
  *   的后半次读取混进同一次收集；已冻结作用域在读取中失效的，省略其贡献并记录注销。
  * - 单个 Source 失败/返回空不阻断其余；失败以 omitted 条目如实记录，不伪装成
  *   "环境无变化"，也不保留上次成功值。
+ * - 资源刷新（S2）经 replaceMany 在同一发布边界原位替换现役文件式 Guidance 的文本
+ *   与编译元数据：保留 Scope、key 与旧注销句柄的有效性，不建第二套注册表。
  * - 不做语义去重、重要度排序或缓存：当前 Source 返回值就是权威快照，排版归 Composer。
  */
 
 interface RegisteredSource {
 	readonly key: string;
 	readonly owner: string;
-	readonly source: ContextSource;
+	/** 注册身份令牌：replace 按令牌原位替换，注销句柄凭令牌核对所有权。 */
+	readonly token: object;
+	/** 可变字段：replaceMany 原位替换该对象（同一同步边界内完成，不跨 await 半更新）。 */
+	source: ContextSource;
 	/** 读取完成后再核一次活性：冻结作用域的贡献必须整条省略，不得半新半旧。 */
 	readonly isActive: () => boolean;
 }
@@ -44,9 +49,15 @@ export function validateContextSource(source: ContextSource): void {
 			throw new Error("guidance Source 的 requiresTool 必须是非空工具名");
 		return;
 	}
-	if (source.kind !== "capability" && source.kind !== "observation")
+	if (source.kind !== "observation")
 		throw new Error(`未知 ContextSource kind: ${String((source as { kind?: unknown }).kind)}`);
 	if (typeof source.read !== "function") throw new Error(`${source.kind} Source 必须提供 read(ctx)`);
+}
+
+/** 资源刷新的原位替换项：目标注册令牌 + 替换后的 Source。 */
+export interface ContextSourceReplacement {
+	readonly token: object;
+	readonly next: ContextSource;
 }
 
 export class ContextSourceRegistry {
@@ -60,11 +71,57 @@ export class ContextSourceRegistry {
 		if (this.sources.has(key)) {
 			throw new Error(`Context Source 重名: ${key}（同一激活范围内 id 必须唯一）`);
 		}
-		this.sources.set(key, { key, owner, source, isActive });
+		const entry: RegisteredSource = { key, owner, token: {}, source, isActive };
+		this.sources.set(key, entry);
 		return () => {
 			const current = this.sources.get(key);
-			if (current && current.source === source) this.sources.delete(key);
+			if (current && current.token === entry.token) this.sources.delete(key);
 		};
+	}
+
+	/**
+	 * 按注册键反查替换令牌（资源刷新登记用）。未注册返回 undefined。
+	 */
+	tokenOf(owner: string, id: string): object | undefined {
+		return this.sources.get(contextSourceKey(owner, id))?.token;
+	}
+
+	/** 按注册键反查当前 Source（资源刷新捕获回滚基线用）。未注册返回 undefined。 */
+	sourceOf(owner: string, id: string): ContextSource | undefined {
+		return this.sources.get(contextSourceKey(owner, id))?.source;
+	}
+
+	/** 现役文件式 Guidance 的编译指纹（资源版本计算用），按 key 稳定排序。
+	 * 只有携带编译元数据（文件式注册）的 guidance 参与；内联注册无指纹。 */
+	promptHashes(): readonly { key: string; hash: string }[] {
+		const hashes: { key: string; hash: string }[] = [];
+		for (const [key, entry] of this.sources) {
+			if (entry.source.kind === "guidance" && entry.source.prompt) {
+				hashes.push({ key, hash: entry.source.prompt.hash });
+			}
+		}
+		return hashes.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	}
+
+	/**
+	 * 资源刷新的发布边界（S2）：按注册令牌原位替换现役 Source（文本与编译元数据）。
+	 * 同步执行、不跨 await——发布中途不存在半更新的 Registry。任一令牌已注销
+	 * （Scope 被卸载）则整批拒绝：被卸载的 Scope 不参与刷新，不留部分替换。
+	 */
+	replaceMany(replacements: readonly ContextSourceReplacement[]): void {
+		const targets: RegisteredSource[] = [];
+		for (const replacement of replacements) {
+			const entry = [...this.sources.values()].find((candidate) => candidate.token === replacement.token);
+			if (!entry) {
+				throw new Error(`资源刷新目标已注销，整批替换保留旧版本: ${replacement.next.id}`);
+			}
+			validateContextSource(replacement.next);
+			targets.push(entry);
+		}
+		// 全部校验通过后才落替换：同一次发布边界内原子。
+		for (let index = 0; index < replacements.length; index++) {
+			targets[index]!.source = replacements[index]!.next;
+		}
 	}
 
 	/**
@@ -72,7 +129,7 @@ export class ContextSourceRegistry {
 	 * 快照顺序交出（Composer 再次按 key 排序，不依赖 Promise 完成次序）。
 	 */
 	async collect(input: Readonly<ContextRead>, scope?: RuntimeScopeFilter): Promise<ContextCollection> {
-		// 注册快照在入口同步固定：collect 进行期间的注册/注销不影响本次可见集合。
+		// 注册快照在入口同步固定：collect 进行期间的注册/注销/替换不影响本次可见集合。
 		const snapshot = [...this.sources.values()].filter((entry) => visible(entry.owner, scope));
 		const contributions: ContextContribution[] = [];
 		const omitted: ContextSourceTraceEntry[] = [];

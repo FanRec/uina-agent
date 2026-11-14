@@ -366,6 +366,40 @@ export interface ContextSnapshot {
 	readonly availableInputBudget?: number;
 	readonly measurementKind: "exact" | "approximate";
 	readonly segments?: ContextSegments;
+	/** 本次装配采用的已发布资源版本（System + 文件式 Guidance + Skill Catalog）。 */
+	readonly systemRevision?: string;
+	readonly systemSource?: string;
+}
+
+/** 当前已发布的主体 System 快照（Host 唯一发布者；Subject 持有并在每次请求准备时固定）。
+ * 已构建或发往 Provider 的请求不可原地改写；文件内容更新不回写历史。 */
+export interface SystemSnapshot {
+	/** 最终 role=system 正文（默认事件帧投影下含 Runtime Protocol 段）。 */
+	readonly text: string;
+	/** 选择来源：host-explicit / profile:<subjectId> / workspace / builtin。 */
+	readonly source: string;
+	/** 已发布资源集合的内容哈希（System 最终正文 + 文件式 Guidance + Skill Catalog）。
+	 * 资源无变化的重复 Reload 不推进该值。 */
+	readonly revision: string;
+	/** 主体 System 文件的编译入口（相对其资源根）；host-explicit 无文件来源。 */
+	readonly entry?: string;
+	/** 编译实际读取的文件（相对资源根）；host-explicit 无。 */
+	readonly sources?: readonly string[];
+}
+
+/** 资源刷新（runtime_reload resources / /reload resources）的业务结果。
+ * phase 是业务阶段（applied=已发布 / unchanged=保留旧版本），不是 ToolResult.status。 */
+export interface ResourceReloadOutcome {
+	readonly ok: boolean;
+	readonly phase: "applied" | "unchanged";
+	/** 发布成功时的资源版本（内容哈希）。 */
+	readonly revision?: string;
+	/** 资源内容与上一版本完全一致（不推进版本、不重复注册）。 */
+	readonly unchanged?: boolean;
+	/** 发布成功的摘要（System/Guidance/Skills 各自状态）。 */
+	readonly summary?: string;
+	/** 失败时的原因与来源定位（现行资源保持不变）。 */
+	readonly error?: string;
 }
 
 export interface RequestInspection {
@@ -377,6 +411,9 @@ export interface RequestInspection {
 	readonly measurement: TokenMeasurement;
 	readonly contextWindow?: number;
 	readonly inputBudget?: number;
+	/** 本次装配采用的已发布资源版本；与活动请求观察同一来源。 */
+	readonly systemRevision?: string;
+	readonly systemSource?: string;
 	/** 预览标记：本检视按当前状态预测请求，不承诺曾发送（活动请求观察另经 Subject 查询）。 */
 	readonly basis?: "preview";
 	/** 预览的独立身份；不冒充活动请求的 requestId。 */
@@ -386,19 +423,18 @@ export interface RequestInspection {
 }
 
 /**
- * Context Source 合同（信息注入重构）：扩展以声明方式提供三类模型可见信息。
+ * Context Source 合同（信息注入重构）：扩展以声明方式提供两类模型可见信息。
  *
  * - guidance：扩展作者写下的稳定、可信用法/协议；注册时确定，不随在线状态或请求内容变化。
- *   不允许把网页、游戏聊天、工具返回等外部数据转换成此类型。
- * - capability：当前能做什么（动态状态、可用入口、少量 Affordance）；不可用时返回简短
- *   真实状态或 null，不保留上次成功值。
- * - observation：此刻提供给模型的事实或证据（当前世界快照；未来也可承载已检索的记忆片段，
- *   用 source.type="memory.recall" 标出）。检索证据不等于当前发生的事件。
+ *   不允许把网页、游戏聊天、工具返回等外部数据转换成此类型。合法 Cue ID、用法目录等
+ *   领域知识全部由各扩展自己的 Guidance 描述，不设独立目录或动态注入。
+ * - observation：此刻提供给模型的事实或证据（当前世界快照、动作资格；未来也可承载
+ *   已检索的记忆片段，用 source.type="memory.recall" 标出）。检索证据不等于当前发生的事件。
  *
  * read() 是只读快照：不得持久写入、推进游标、消费事件、触发模型请求或产生业务副作用。
- * 新输入走 Input，历史走 Session，工具结果走 Tool Result——三者不是第四种上下文源。
+ * 新输入走 Input，历史走 Session，工具结果走 Tool Result——三者不是第三种上下文源。
  */
-export type ContextSourceKind = "guidance" | "capability" | "observation";
+export type ContextSourceKind = "guidance" | "observation";
 
 export interface ContextRead {
 	readonly modelKey: string;
@@ -456,7 +492,7 @@ export type ContextSource =
 	  }
 	| {
 			readonly id: string;
-			readonly kind: "capability" | "observation";
+			readonly kind: "observation";
 			read(ctx: Readonly<ContextRead>): Promise<ContextValue | null> | ContextValue | null;
 	  };
 

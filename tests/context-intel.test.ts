@@ -43,7 +43,7 @@ describe("extension runner source registry", () => {
 		await activate(host, "b", (api) => {
 			api.provideContext({
 				id: "cap",
-				kind: "capability",
+				kind: "observation",
 				read: () => ({ text: "能力正文", source: { type: "probe", origin: "internal" } }),
 			});
 		});

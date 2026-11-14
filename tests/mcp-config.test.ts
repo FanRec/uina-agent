@@ -240,6 +240,25 @@ describe("definitionFingerprint", () => {
 	it("内容变化即指纹变化", () => {
 		expect(definitionFingerprint({ command: "a" })).not.toBe(definitionFingerprint({ command: "b" }));
 	});
+
+	it("description 是发现元数据：单纯改描述不改变指纹、不触发重新授权（A12）", () => {
+		const base = definitionFingerprint({ command: "a", args: ["x"] });
+		expect(definitionFingerprint({ command: "a", args: ["x"], description: "观察桌面屏幕" })).toBe(base);
+		// 不同的 description 之间也同指纹：描述完全不参与指纹计算。
+		expect(definitionFingerprint({ command: "a", args: ["x"], description: "观察桌面屏幕" })).toBe(
+			definitionFingerprint({ command: "a", args: ["x"], description: "另一句描述" }),
+		);
+	});
+});
+
+describe("description 校验（S6.1）", () => {
+	it("description 必须是非空字符串；缺失/合法值通过校验", () => {
+		expect(validateServerDefinition("srv", { command: "a", description: "用途" })).not.toBeTypeOf("string");
+		expect(validateServerDefinition("srv", { command: "a" })).not.toBeTypeOf("string");
+		expect(validateServerDefinition("srv", { command: "a", description: "" })).toBeTypeOf("string");
+		expect(validateServerDefinition("srv", { command: "a", description: "   " })).toBeTypeOf("string");
+		expect(validateServerDefinition("srv", { command: "a", description: 42 })).toBeTypeOf("string");
+	});
 });
 
 describe("项目信任门", () => {

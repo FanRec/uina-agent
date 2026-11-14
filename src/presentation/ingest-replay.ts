@@ -111,6 +111,8 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 	const facts: FactDraft[] = [];
 	let turn = 0;
 	let turnOpen = false;
+	/** 相邻去重窗口：上一条目是 committed Input（user 来源）且已开回合并展示正文。 */
+	let pendingInputTurn = false;
 
 	/** 一个回合确认结束后才结算：已知中止/失败沿用 journal 的终局，否则只记"已结束"。 */
 	const closeTurn = (): void => {
@@ -129,10 +131,17 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 
 	for (const entry of input.entries) {
 		const at = parseJournalTime(entry.timestamp);
+		// "input:user 紧随 message:user"是旧式双写的去重窗口：只在相邻条目间生效，
+		// 不吞掉真实的连续发言（两条相同正文中间隔着 assistant 输出就是两个回合）。
+		const previousInputTurn = pendingInputTurn;
+		pendingInputTurn = false;
 		switch (entry.kind) {
 			case "message": {
 				const message = entry.message;
 				if (message.role === "user") {
+					// committed Input 已开回合并展示同一正文（journal 不保证独立 user message
+					// 条目）；仅当上一条目正是该 input 时按双写去重。
+					if (previousInputTurn) break;
 					closeTurn();
 					turn += 1;
 					turnOpen = true;
@@ -237,8 +246,23 @@ export function ingestReplay(input: ReplayInput): readonly FactDraft[] {
 							at,
 						),
 					);
+					break;
 				}
-				// 用户直接输入由紧随其后的 user message 表达；仅入队记录不产生展示节点。
+				// 真实参与者发言（操作者与外部参与者）从 committed Input 恢复：journal 不保证
+				// 独立 user message 条目（设计 §8.1 Replay Input 修复）。展示正文优先 displayText，
+				// 模型正文用 text；内部 display:false 的运行时输入不假装操作者，不产生展示节点。
+				if (source?.kind === "user") {
+					const display =
+						typeof entry.input.displayText === "string" && entry.input.displayText.trim()
+							? entry.input.displayText
+							: text;
+					closeTurn();
+					turn += 1;
+					turnOpen = true;
+					facts.push(replay({ kind: "turn.started", turn, userText: sanitizeExternal(display), images }, at));
+					pendingInputTurn = true;
+					break;
+				}
 				break;
 			}
 

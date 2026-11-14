@@ -200,6 +200,62 @@ describe("live/replay 事实等价", () => {
 	});
 });
 
+it("Replay 从 committed Input 恢复真实参与者发言：displayText 优先、相邻双写去重、内部运行时输入不假装操作者", () => {
+	const inputEntries: SessionEntry[] = [
+		{
+			kind: "input",
+			id: "i1",
+			seq: 1,
+			timestamp: T0,
+			input: {
+				id: "i1",
+				order: 1,
+				mode: "followUp",
+				text: "/reload 展开正文",
+				displayText: "/reload",
+				receivedAt: T0,
+				source: { kind: "user", type: "operator", origin: "external" },
+			},
+		},
+		// 旧式双写：紧随其后的 user message 与 input 同正文，不当作新回合。
+		{
+			kind: "message",
+			id: "legacy-u",
+			seq: 2,
+			timestamp: T0,
+			message: { role: "user", content: "/reload 展开正文", timestamp: T0 },
+		},
+		{
+			kind: "message",
+			id: "a9",
+			seq: 3,
+			timestamp: T1,
+			message: { role: "assistant", content: "完成", timestamp: T1 },
+		},
+		{
+			kind: "input",
+			id: "i2",
+			seq: 4,
+			timestamp: T2,
+			input: {
+				id: "i2",
+				order: 2,
+				mode: "followUp",
+				text: "内部通知正文",
+				receivedAt: T2,
+				source: { kind: "runtime", type: "runtime.reload", ref: "reload-1", origin: "internal" },
+			},
+		},
+	];
+	const facts = ingestReplay({ entries: inputEntries });
+	const turns = facts.filter((f) => f.kind === "turn.started");
+	expect(turns).toHaveLength(1);
+	expect(turns[0]).toMatchObject({ turn: 1, userText: "/reload" });
+	// 内部运行时输入不产生展示事实（不假装操作者发言）。
+	expect(facts.some((f) => f.kind === "turn.started" && f.userText === "内部通知正文")).toBe(false);
+	expect(facts.filter((f) => f.kind === "external")).toHaveLength(0);
+});
+
 describe("sanitizeExternal", () => {
 	it("移除 OSC 超链接与剪贴板序列", () => {
 		expect(sanitizeExternal("a\x1b]8;;https://evil.example\x07b\x1b]8;;\x07c")).toBe("abc");

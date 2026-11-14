@@ -85,7 +85,6 @@ const host = await UinaHost.create({
 	...(modelMode ? {} : { model, stream }),
 	profile: {
 		identity: { subjectId: "mc-i2-acceptance", displayName: "MC I2 acceptance" },
-		personaText: "",
 		root,
 		settingsDir: root,
 		resources: {

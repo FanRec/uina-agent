@@ -15,7 +15,7 @@ describe("ContextSourceRegistry", () => {
 			"ext-b",
 			{
 				id: "state",
-				kind: "capability",
+				kind: "observation",
 				read: () => ({ text: "在线", source: { type: "ext-b.state", origin: "internal" } }),
 			},
 			() => true,
@@ -26,7 +26,7 @@ describe("ContextSourceRegistry", () => {
 			{
 				key: "ext-b::state",
 				owner: "ext-b",
-				kind: "capability",
+				kind: "observation",
 				value: { text: "在线", source: { type: "ext-b.state", origin: "internal" } },
 			},
 		]);
@@ -68,8 +68,8 @@ describe("ContextSourceRegistry", () => {
 
 	it("read 返回 null 如实记录 empty；返回不合法形状记录 error", async () => {
 		const registry = new ContextSourceRegistry();
-		registry.register("x", { id: "nullish", kind: "capability", read: () => null }, () => true);
-		registry.register("y", { id: "garbage", kind: "capability", read: () => 42 as never }, () => true);
+		registry.register("x", { id: "nullish", kind: "observation", read: () => null }, () => true);
+		registry.register("y", { id: "garbage", kind: "observation", read: () => 42 as never }, () => true);
 		const { contributions, omitted } = await registry.collect(read());
 		expect(contributions).toEqual([]);
 		// 完成次序不构成承诺；按 id 归一后断言
@@ -147,7 +147,9 @@ describe("ContextSourceRegistry", () => {
 		expect(() => validateContextSource({ id: "  ", kind: "guidance", text: "x" } as never)).toThrow(/id/);
 		expect(() => validateContextSource({ id: "g", kind: "guidance", text: "  " } as never)).toThrow(/text/);
 		expect(() => validateContextSource({ id: "g", kind: "memo", text: "x" } as never)).toThrow(/kind/);
-		expect(() => validateContextSource({ id: "g", kind: "capability" } as never)).toThrow(/read/);
+		// capability 注入种类已删除（S7.1）：旧 kind 必须被拒绝，不留两条注册事实。
+		expect(() => validateContextSource({ id: "g", kind: "capability", read: () => null } as never)).toThrow(/kind/);
+		expect(() => validateContextSource({ id: "g", kind: "observation" } as never)).toThrow(/read/);
 		// "::" 是注册键分隔符：id 含它会让 key 无法唯一还原为 owner/id
 		expect(() => validateContextSource({ id: "a::b", kind: "guidance", text: "x" } as never)).toThrow(/分隔符/);
 		const registry = new ContextSourceRegistry();

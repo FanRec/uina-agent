@@ -16,6 +16,7 @@ import type {
 	Provider,
 	RequestInspection,
 	RequestUsage,
+	ResourceReloadOutcome,
 } from "../core/types.js";
 import { HEADLESS_CAPABILITIES } from "../presentation/surface.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
@@ -24,7 +25,8 @@ import type { Tool, ToolBroker, ToolExecutionResult } from "../tools/broker.js";
 import { type ExtensionEvent, type ExtensionEventHandler, ExtensionHost, type HookHandler } from "./host.js";
 import { ResourceScope } from "./lifecycle-scope.js";
 import { type DiscoveredExtensionEntry, discoverExtensionEntries, importExtension } from "./loader.js";
-import { compilePromptFile } from "./prompt-compiler.js";
+import { compilePromptFile, type CompiledPrompt } from "./prompt-compiler.js";
+import type { ContextSourceReplacement } from "./context-registry.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
 import type { CallOptions, ExtensionModelAccess, ExtensionModelRequest, ServiceHandler } from "./services.js";
@@ -172,8 +174,20 @@ export interface ExtensionAPI {
 	 * waitForIdle/dispose 等待。仅 idle 可进入；传入的 signal 在 Subject interrupt
 	 * 与扩展卸载时都会 abort。 */
 	runActivity(fn: (signal: AbortSignal) => Promise<void>): Promise<void>;
-	/** 重载项目扩展（与宿主 /reload 同一入口：忙时受理，空闲后执行）。 */
+	/** 重载项目扩展（与宿主 /reload 同一协调器：受理即排定，回合安全点执行）。 */
 	reload(): Promise<void>;
+	/**
+	 * 资源刷新（runtime_reload scope="resources"）：读取并编译当前选中的 System 文件
+	 * （Host 显式文本保留）、重编译全部现役文件式 Guidance、重新发现 Skill 快照，
+	 * 在一个发布边界原子替换。失败时现行资源完全不变。等待发布完成后返回。
+	 */
+	reloadResources?(): Promise<ResourceReloadOutcome>;
+	/**
+	 * 安排项目扩展换代（runtime_reload scope="extensions"）：受理即设置续队屏障与
+	 * 换代准入门，返回 reloadId；实际执行在回合安全点。重复请求合并到同一待执行
+	 * Reload（同一 reloadId）。不得在工具执行内等待换代完成。
+	 */
+	scheduleExtensionsReload?(): { reloadId: string };
 	/** 请求宿主关闭（消费者自定义关闭流程；未接入时走宿主 dispose）。 */
 	shutdown(): Promise<void>;
 	readonly signal: AbortSignal;
@@ -239,8 +253,12 @@ export interface ExtensionRunnerOptions {
 	)[];
 	/** 事实出口（pi.emitEvent → RuntimeEvent 单流广播）。 */
 	emitRuntimeEvent?: (event: import("../runtime/events.js").RuntimeEvent) => Promise<void>;
-	/** 宿主级扩展重载（pi.reload()）。 */
+	/** 宿主级扩展重载（pi.reload()，转接 Host 换代协调器）。 */
 	reload?: () => Promise<void>;
+	/** 资源刷新（pi.reloadResources()，转接 Host 资源发布边界）。 */
+	reloadResources?: () => Promise<ResourceReloadOutcome>;
+	/** 安排项目扩展换代（pi.scheduleExtensionsReload()，转接 Host 换代协调器）。 */
+	scheduleExtensionsReload?: () => { reloadId: string };
 	/** 消费者关闭流程（pi.shutdown()）。 */
 	shutdown?: () => Promise<void>;
 }
@@ -254,6 +272,15 @@ export class ExtensionRunner extends ExtensionHost {
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	/** 扩展资源根（Prompt 文件机制）：激活时由 Loader 发现结果注入，卸载时释放。 */
 	private readonly resourceRoots = new Map<string, string>();
+	/**
+	 * 现役文件式 Guidance 登记（S2 资源刷新）：注册身份（Scope+id）、入口、资源根与
+	 * Registry 替换令牌。Scope 注销时随注销句柄一并移除；prepare/publish 按原注册
+	 * 身份重编译与原位替换，不建第二套注册表。
+	 */
+	private readonly fileGuidance = new Map<
+		string,
+		{ key: string; owner: string; id: string; entry: string; root: string; token: object }
+	>();
 	private ui: ExtensionUIContext;
 	readonly registry = new ExtensionRegistry();
 
@@ -436,6 +463,80 @@ export class ExtensionRunner extends ExtensionHost {
 		return [...byRoot].map(([root, ownerId]) => ({ ownerId, root }));
 	}
 
+	/**
+	 * 资源刷新准备阶段（S2）：按原注册身份（owner/id/entry/root）重编译全部现役
+	 * 文件式 Guidance，并捕获当前注册 Source 作为回滚基线。全部成功才返回；
+	 * 任一编译失败抛出并附来源定位——准备阶段不触碰现役文本，失败即整批保留旧版本。
+	 */
+	async prepareFileGuidanceRefresh(): Promise<
+		readonly { key: string; compiled: CompiledPrompt; previous: ContextSource }[]
+	> {
+		const prepared: { key: string; compiled: CompiledPrompt; previous: ContextSource }[] = [];
+		for (const record of this.fileGuidance.values()) {
+			// 原注册身份重编译：入口与资源根不变，只重新读取文件内容。
+			const compiled = await compilePromptFile(record.entry, record.root).catch((error: unknown) => {
+				throw new Error(
+					`文件式 Guidance 重编译失败（${record.owner} / ${record.id}，入口 ${record.entry}）: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			});
+			if (!compiled.text.trim()) {
+				throw new Error(`文件式 Guidance 重编译结果为空文本（${record.owner} / ${record.id}）: ${record.entry}`);
+			}
+			const previous = this.contextSources.sourceOf(record.owner, record.id);
+			if (!previous || previous.kind !== "guidance") {
+				throw new Error(`文件式 Guidance 注册状态异常（找不到可回滚基线）: ${record.key}`);
+			}
+			prepared.push({ key: record.key, compiled, previous });
+		}
+		return prepared;
+	}
+
+	/**
+	 * 资源刷新发布阶段（S2）：在原注册身份下原位替换文本与编译来源元数据。
+	 * 保留 Scope、key 与旧注销句柄的有效性（同一 Registry、令牌不变）。
+	 * 同步执行，不跨 await 暴露半更新；替换前全量校验令牌（整批 all-or-nothing）。
+	 * 返回回滚闭包：同批后续发布步骤失败时恢复上一版本。
+	 */
+	publishFileGuidanceRefresh(
+		prepared: readonly { key: string; compiled: CompiledPrompt; previous: ContextSource }[],
+	): () => void {
+		if (prepared.length === 0) return () => undefined;
+		const replacements = prepared.map(({ key, compiled }) => {
+			const record = this.fileGuidance.get(key);
+			if (!record) throw new Error(`文件式 Guidance 登记已失效，整批替换保留旧版本: ${key}`);
+			return {
+				token: record.token,
+				next: {
+					id: record.id,
+					kind: "guidance" as const,
+					text: compiled.text,
+					prompt: { entry: compiled.entry, sources: compiled.sources, hash: compiled.hash },
+				} satisfies ContextSource,
+			};
+		});
+		this.contextSources.replaceMany(replacements);
+		const rollback: ContextSourceReplacement[] = prepared.map(({ key, previous }) => {
+			const record = this.fileGuidance.get(key)!;
+			return { token: record.token, next: previous };
+		});
+		return () => {
+			try {
+				this.contextSources.replaceMany(rollback);
+			} catch (error) {
+				// 回滚失败必须可见：不伪装恢复成功。
+				this.emitError("resource-refresh-rollback", error);
+			}
+		};
+	}
+
+	/** 现役文件式 Guidance 的编译指纹（资源版本计算用），按 key 稳定排序。
+	 * 委托 Registry：编译元数据（prompt.hash）由注册时透传，替换时更新。 */
+	fileGuidanceHashes(): readonly { key: string; hash: string }[] {
+		return this.contextSources.promptHashes();
+	}
+
 	/** Produces a dispatch view over this one Host; it never creates another owner.
 	 * 所有出口统一过 guard（clone+freeze 单点）：Subject 与 runToolDirect/callTool
 	 * 旁路同权，host.run* 由此敢假设输入只读；guard 幂等，重复包装零成本。 */
@@ -564,6 +665,16 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				if (!this.options.reload) throw new Error("宿主未提供扩展重载入口");
 				return this.options.reload();
+			},
+			reloadResources: () => {
+				assertActive();
+				if (!this.options.reloadResources) throw new Error("宿主未提供资源刷新入口");
+				return this.options.reloadResources();
+			},
+			scheduleExtensionsReload: () => {
+				assertActive();
+				if (!this.options.scheduleExtensionsReload) throw new Error("宿主未提供扩展换代协调入口");
+				return this.options.scheduleExtensionsReload();
 			},
 			shutdown: () => {
 				assertActive();
@@ -841,7 +952,8 @@ export class ExtensionRunner extends ExtensionHost {
 
 	/**
 	 * 文件式 guidance 注册：先完成全部校验与编译，再原子注册；失败不留半个 Source。
-	 * 异步编译期间作用域若已停用，不补注册过期 Source。
+	 * 异步编译期间作用域若已停用，不补注册过期 Source。注册身份（入口、资源根、
+	 * Registry 替换令牌）进入现役登记，供资源刷新按原身份重编译与原位替换。
 	 */
 	private registerFileGuidance(
 		scope: ResourceScope,
@@ -862,18 +974,41 @@ export class ExtensionRunner extends ExtensionHost {
 		return compilePromptFile(source.file, root).then((compiled) => {
 			if (!compiled.text.trim()) throw new Error(`Prompt 入口编译结果为空文本: ${compiled.entry}`);
 			if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}（编译期间扩展已卸载，未注册）`);
-			return ownRegistration(
-				this.provideContext(
-					scope.id,
-					{
-						id: source.id,
-						kind: "guidance",
-						text: compiled.text,
-						prompt: { entry: compiled.entry, sources: compiled.sources, hash: compiled.hash },
-					},
-					() => scope.active,
-				),
+			const key = `${scope.id}::${source.id}`;
+			const record = {
+				key,
+				owner: scope.id,
+				id: source.id,
+				entry: source.file,
+				root,
+				// 令牌在注册时由 Registry 分配；这里先占位，注册句柄返回后回填。
+				token: {} as object,
+			};
+			const registryDispose = this.provideContext(
+				scope.id,
+				{
+					id: source.id,
+					kind: "guidance",
+					text: compiled.text,
+					prompt: { entry: compiled.entry, sources: compiled.sources, hash: compiled.hash },
+				},
+				() => scope.active,
 			);
+			// 替换令牌从注册表按 owner+id 反查（注册刚成功，令牌必然存在）；失败回滚注册，
+			// 不留"注册了却不可刷新"的半个 Source。
+			const token = this.contextSources.tokenOf(scope.id, source.id);
+			if (!token) {
+				registryDispose();
+				throw new Error(`文件式 Guidance 注册状态异常（找不到注册令牌）: ${key}`);
+			}
+			record.token = token;
+			this.fileGuidance.set(key, record);
+			// Scope 卸载（或扩展自己调用手柄）必须同步移除现役登记：否则换代后留下陈旧
+			// 登记，后续资源刷新的 replaceMany 会因令牌缺失整批拒绝。
+			return ownRegistration(() => {
+				this.fileGuidance.delete(key);
+				registryDispose();
+			});
 		});
 	}
 }

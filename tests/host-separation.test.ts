@@ -208,18 +208,22 @@ describe("/reload 反馈", () => {
 
 		await uina.host.commands.dispatch("/reload");
 
-		// 受理回执立即出现，且此刻 reload 尚未执行（仍在忙）
+		// 受理回执立即出现（S3 协调器：受理即排定 + 设置屏障），且此刻 reload 尚未执行（仍在忙）
 		const earlyNotices = uina.events.filter("notice").map((e) => e.text);
-		expect(earlyNotices.some((text) => text.includes("本轮结束后") && text.includes("重新加载"))).toBe(true);
+		expect(earlyNotices.some((text) => text.includes("扩展换代已受理") && text.includes("自动执行"))).toBe(true);
 		expect(uina.events.filter("notice").some((e) => e.text.includes("已重新加载"))).toBe(false);
 		expect(uina.isBusy()).toBe(true);
 
-		// 放行回合 → reload 自动执行，带摘要的成功通知出现
+		// 放行回合 → reload 自动执行，带摘要的成功通知出现（轮询等待，不依赖固定时延）。
 		release();
 		await turnSettled;
 		await uina.waitForIdle();
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		const notices = uina.events.filter("notice").map((e) => e.text);
+		let notices: string[] = [];
+		for (let i = 0; i < 150; i++) {
+			notices = uina.events.filter("notice").map((e) => e.text);
+			if (notices.some((text) => text.includes("项目扩展已重新加载"))) break;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
 		expect(notices.some((text) => text.includes("项目扩展已重新加载"))).toBe(true);
 	});
 });

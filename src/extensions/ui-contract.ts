@@ -102,7 +102,10 @@ export interface BuiltinUIActions {
 	"effort-slider": EffortSliderAction;
 	trajectory: undefined;
 	history: undefined;
+	/** /prompt：稳定指导检视（System 含 Runtime Protocol、Guidance 来源、资源版本）。 */
 	prompt: undefined;
+	/** /context：完整请求检视（语义消息、工具声明、来源片段；区分真实请求与预览）。 */
+	context: undefined;
 }
 
 /** A complete typed application action, including the lifetime of any UI it opens. */

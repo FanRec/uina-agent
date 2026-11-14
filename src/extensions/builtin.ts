@@ -176,9 +176,17 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand({
 		name: "prompt",
-		description: "查看系统提示词、注入来源与最近一次模型请求的世界观察",
+		description: "查看稳定 System（含 Runtime Protocol）、Guidance 来源与已发布资源版本",
 		handler: () => {
 			ui.openFeature?.({ name: "prompt" });
+		},
+	});
+
+	pi.registerCommand({
+		name: "context",
+		description: "查看完整请求装配（消息/工具/来源片段；区分最近真实请求与预览）",
+		handler: () => {
+			ui.openFeature?.({ name: "context" });
 		},
 	});
 
@@ -206,8 +214,26 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand({
 		name: "reload",
-		description: "重载项目与本地扩展",
-		handler: () => pi.reload(),
+		description: "重载项目扩展并刷新本地资源（/reload resources 仅轻量刷新资源）",
+		hasArgs: true,
+		argumentHint: "[resources]",
+		handler: async (arg) => {
+			if (arg?.trim() === "resources") {
+				// /reload resources：只走轻量资源刷新（System/文件式 Guidance/Skills），
+				// 不做项目扩展换代；结果与真实发布边界一致。
+				if (!pi.reloadResources) throw new Error("宿主未提供资源刷新入口");
+				const outcome = await pi.reloadResources();
+				pi.ui.notify(
+					outcome.ok
+						? `资源已刷新${outcome.unchanged ? "（内容无变化）" : `：${outcome.summary ?? ""}`}。`
+						: `资源刷新失败，现行资源保持不变：${outcome.error ?? "未知原因"}`,
+					outcome.ok ? "info" : "warning",
+					5000,
+				);
+				return;
+			}
+			await pi.reload();
+		},
 	});
 
 	pi.registerCommand({

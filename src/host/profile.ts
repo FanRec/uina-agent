@@ -7,8 +7,9 @@
  * 3. 一个数据根恰好一个活动写入进程：wx 排他锁 + ownerToken/PID；
  *    锁存在即拒绝启动，明确报错——不自动偷锁（PID 可能被复用，时间过期不可靠）。
  *
- * profileArg 缺省时 resolveProfile 返回 undefined：调用方走原有路径解析，
- * 全部行为与 profile 机制引入前逐字节一致。
+ * Persona 收口（S1）：persona.md 运行时层已删除；主体身份并入唯一可编辑的
+ * system.md。本模块只检测"旧 Persona 尚未迁移"并给出可操作的迁移指引，
+ * 不在启动或 Reload 中自动创建/修改文件（一次性迁移走 scripts/migrate-persona.mjs）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -37,7 +38,6 @@ export interface SubjectProfileSessions {
 /** 不可变装配结果：Host 启动时解析一次，此后只读。 */
 export interface SubjectProfile {
 	readonly identity: SubjectProfileIdentity;
-	readonly personaText: string;
 	readonly resources: SubjectProfileResources;
 	readonly sessions: SubjectProfileSessions;
 	/** settings.json 所在目录（loadSettings/saveSettings 的 home 形参数）。 */
@@ -111,6 +111,30 @@ export function profileOwnerToken(profile: SubjectProfile): string | undefined {
 	return lockTokens.get(profile);
 }
 
+/** 旧 Persona 层迁移状态：persona.md 非空且 system.md 尚未建立 = 需要一次性迁移。 */
+export interface PersonaMigrationState {
+	readonly pending: boolean;
+	readonly personaPath?: string;
+	readonly systemPath?: string;
+}
+
+/** 读取迁移状态（不修改任何文件）：pending = true 时启动给出可操作指引，不静默丢弃旧 Persona。 */
+export function personaMigrationState(profileRoot: string): PersonaMigrationState {
+	const personaPath = join(profileRoot, "persona.md");
+	const systemPath = join(profileRoot, "system.md");
+	if (!existsSync(personaPath) || existsSync(systemPath)) return { pending: false };
+	let text = "";
+	try {
+		text = readFileSync(personaPath, "utf8")
+			.replace(/^\uFEFF/, "")
+			.trim();
+	} catch {
+		text = "（不可读）";
+	}
+	if (!text) return { pending: false };
+	return { pending: true, personaPath, systemPath };
+}
+
 /**
  * 解析主体 profile。profileArg 缺省返回 undefined（调用方走原有路径）。
  *
@@ -145,6 +169,17 @@ export function resolveProfile(options: ResolveProfileOptions): SubjectProfile |
 	}
 	const displayName = typeof parsed.displayName === "string" ? parsed.displayName : profileArg;
 
+	// 旧 Persona 不可静默丢失：persona.md 非空且未迁移出 system.md 时，
+	// 给出可操作的迁移指引并拒绝启动（迁移是一次性显式操作，见 scripts/migrate-persona.mjs）。
+	const migration = personaMigrationState(root);
+	if (migration.pending) {
+		throw new Error(
+			`主体 ${profileArg} 仍使用旧 persona.md（${migration.personaPath}），而 system.md 尚未建立。` +
+				`运行时不再读取 Persona 层；请执行一次性迁移：node scripts/migrate-persona.mjs ${profileArg}` +
+				`（迁移会以现行主体 System 正文加旧 Persona 生成 system.md，persona.md 保留为备份）。`,
+		);
+	}
+
 	const memoryRoot = contained(root, "memory");
 	const stateRoot = contained(root, "state");
 	const appDataRoot = contained(root, "app-data");
@@ -153,11 +188,6 @@ export function resolveProfile(options: ResolveProfileOptions): SubjectProfile |
 	for (const dir of [memoryRoot, stateRoot, appDataRoot, cacheRoot, sessionsDir]) {
 		mkdirSync(dir, { recursive: true });
 	}
-
-	const personaPath = join(root, "persona.md");
-	// 归一化在装配点一次完成：SubjectProfile 承载的是"此后只读"的净文本，
-	// 消费方（host 装配 systemPrompt）无需各自处理空白/BOM。trim 同时剥 UTF-8 BOM。
-	const personaText = existsSync(personaPath) ? readFileSync(personaPath, "utf8").trim() : "";
 
 	// 排他锁：wx 创建失败 = 已有活动进程持有该数据根。
 	const lockPath = join(stateRoot, LOCK_FILE);
@@ -175,7 +205,6 @@ export function resolveProfile(options: ResolveProfileOptions): SubjectProfile |
 
 	const profile: SubjectProfile = {
 		identity: { subjectId: profileArg, displayName },
-		personaText,
 		resources: { workspace: resolve(options.cwd), memoryRoot, stateRoot, appDataRoot, cacheRoot },
 		sessions: { sessionId: "default", journalPath: join(sessionsDir, "session.jsonl") },
 		settingsDir: root,

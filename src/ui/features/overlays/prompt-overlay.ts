@@ -14,6 +14,13 @@ import { panelInnerWidth, renderPanel } from "../../layout/panel.js";
  * /prompt 检查面（信息注入体系）：经 Host 只读端口显示最近准备交给 Provider 的
  * 语义请求；无请求记录时显示明确标注的"当前预览"。预览为纯读操作，可手动刷新。
  */
+export interface PromptOverlayOptions {
+	/** 面板标题（/prompt 与 /context 共用同一只读端口，标题区分语义）。 */
+	title?: string;
+	/** 初始展开状态：缺省展开（保持 /prompt 的既有 UX：System 正文直接可见）。 */
+	expanded?: boolean;
+}
+
 export class PromptOverlay implements Component, Focusable {
 	focused = true;
 	onClose?: () => void;
@@ -21,10 +28,17 @@ export class PromptOverlay implements Component, Focusable {
 	private totalLines = 0;
 	private view?: PromptRequestCardData;
 	private status: string | undefined;
+	private readonly title: string;
+	private readonly expandedDefault: boolean;
 	/** 首次装载完成的信号（测试与延迟渲染消费）。 */
 	readonly ready: Promise<void>;
 
-	constructor(private readonly port: PromptPort) {
+	constructor(
+		private readonly port: PromptPort,
+		options: PromptOverlayOptions = {},
+	) {
+		this.title = options.title ?? "提示词查询 · /prompt";
+		this.expandedDefault = options.expanded ?? true;
 		this.ready = this.refresh();
 	}
 
@@ -47,7 +61,11 @@ export class PromptOverlay implements Component, Focusable {
 	async refresh(): Promise<void> {
 		try {
 			const prepared = await this.port.requestObservation();
-			this.view = prepared ?? (await this.port.inspectRequest());
+			const base = prepared ?? (await this.port.inspectRequest());
+			// 当前已发布版本对照（可选端口）：Reload 后 /prompt 能同时显示"请求实际版本"
+			// 与"已发布新版本"，不把后者假称模型已看到。
+			const published = (await this.port.publishedSystem?.().catch(() => undefined)) ?? undefined;
+			this.view = published !== undefined && prepared ? { ...base, published } : base;
 			this.status = undefined;
 		} catch (error) {
 			this.status = `查询失败：${toReadableError(error)}`;
@@ -102,7 +120,7 @@ export class PromptOverlay implements Component, Focusable {
 				...this.view,
 				id: this.view.id ?? (this.view.basis === "prepared" ? "prompt-prepared" : "prompt-preview"),
 			});
-			card.toggle();
+			if (this.expandedDefault) card.toggle();
 			lines.push(...card.render(innerW));
 		} else if (this.status) {
 			lines.push(`${C.inactive}${this.status}${C.reset}`);
@@ -118,7 +136,7 @@ export class PromptOverlay implements Component, Focusable {
 				? `${hintsFor(this.keymap(), innerW)} · 第 ${this.offset + 1}-${last}/${lines.length} 行`
 				: hintsFor(this.keymap(), innerW);
 		return renderPanel({
-			title: "提示词查询 · /prompt",
+			title: this.title,
 			body: lines.slice(this.offset, this.offset + bodyHeight),
 			footer: `${C.inactive}${footer}${C.reset}`,
 			boxWidth,

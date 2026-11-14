@@ -9,11 +9,19 @@ import { activeProvider, loadConfig } from "../ai/config.js";
 import { ModelRegistry, modelKey } from "../ai/providers.js";
 import { loadSettings, saveSettings } from "../ai/settings.js";
 import { errorMessage } from "../core/errors.js";
-import type { InputSource, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
+import type {
+	InputSource,
+	Model,
+	ModelStreamFn,
+	Provider,
+	ResourceReloadOutcome,
+	SystemSnapshot,
+	ThinkingLevel,
+} from "../core/types.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import { CommandRouter } from "../extensions/commands.js";
 import activateCompaction from "../extensions/compaction/index.js";
-import { createEventFrameProfile } from "../extensions/event-frames/index.js";
+import { createEventFrameProfile, EVENT_FRAME_PROMPT } from "../extensions/event-frames/index.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { activateRuntimeTools } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
@@ -30,6 +38,7 @@ import type { SessionEntry, SessionStore } from "../session/types.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import type { HostEvent, HostEventListener, HostEventRecordListener, HostSnapshot } from "./events.js";
 import type { SubjectProfile } from "./profile.js";
+import { computeResourceRevision, composeSystemText, resolveSystemSubject } from "./system.js";
 
 /**
  * 宿主：主体生命期的所有者。
@@ -94,6 +103,16 @@ export class UinaHost {
 	private readonly skills = createSkillsCapability();
 	/** 消费者自定义关闭流程（start 时接入；pi.shutdown 与 /quit 经此关闭）。 */
 	private requestShutdown?: () => Promise<void>;
+	/** 当前已发布的 System 快照（Host 唯一发布者；Subject 持有同一身份做版本复核）。 */
+	private systemSnapshot!: SystemSnapshot;
+	/** 默认事件帧投影启用时的 Runtime Protocol 段（自定义 projection 不附加）。 */
+	private readonly protocolSection?: string;
+	/** Host 显式 System 文本（资源刷新不覆盖；undefined = 文件来源可选）。 */
+	private readonly hostExplicitSubjectText?: string;
+	/** 资源刷新串行尾：并发请求按序执行，发布边界互不交错。 */
+	private refreshResourcesTail: Promise<unknown> = Promise.resolve();
+	/** 唯一的待执行扩展换代（受理 Reload Intent 时设置；执行后清除）。 */
+	private pendingExtensionsReload?: { reloadId: string; done: Promise<void> };
 
 	private constructor(
 		private readonly options: UinaHostOptions,
@@ -115,10 +134,14 @@ export class UinaHost {
 		dispatch: (event: HostEvent) => void,
 		/** 共享的运行标志：关闭与重载准入门，钩子与扩展输入入口据此拒绝跨界的新工作。 */
 		private readonly state: { stopping: boolean; reloading: number },
+		system: { snapshot: SystemSnapshot; protocolSection?: string; hostExplicitSubjectText?: string },
 	) {
 		this.listeners = listeners;
 		this.recordListeners = recordListeners;
 		this.dispatch = dispatch;
+		this.systemSnapshot = system.snapshot;
+		if (system.protocolSection !== undefined) this.protocolSection = system.protocolSection;
+		if (system.hostExplicitSubjectText !== undefined) this.hostExplicitSubjectText = system.hostExplicitSubjectText;
 	}
 
 	/** 当前 canonical 会话的 auxiliary 登记（store 活状态的副本）。
@@ -229,15 +252,34 @@ export class UinaHost {
 				createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
 			// Host 默认装配事件帧 profile（外部输入以 external_event_frame 回执呈现，协议校验
 			// 随每请求执行；预算门仍归 Subject）。显式传入 projection/systemPrompt 的装配方
-			// （测试与组合根）完全覆盖默认值，不叠加。profile 存在时把主体 persona 追加为
-			// 身份段（profile 启动时解析一次此后只读，与"systemPrompt 保持完全静态"一致）。
+			// （测试与组合根）覆盖主体 System 段；默认投影启用时 Event Frame 协议段始终
+			// 附加——options.systemPrompt 只覆盖主体段，不能无意删除协议说明（S1 §3.3）。
+			// profile 不再携带 Persona 层：主体身份并入唯一可编辑 system.md（见 host/system.ts）。
 			const eventFrameProfile = createEventFrameProfile();
 			const resolvedProjection = options.projection ?? eventFrameProfile.projection;
-			const baseSystemPrompt = eventFrameProfile.systemPrompt;
-			// personaText 已在 resolveProfile 装配点归一化（trim），此处只做 truthy 判断。
-			const personaText = options.profile?.personaText;
-			const resolvedSystemPrompt =
-				options.systemPrompt ?? (personaText ? `${baseSystemPrompt}\n\n${personaText}` : baseSystemPrompt);
+			const useEventFrameProtocol = options.projection === undefined;
+			// 主体 System 段解析（S1 §3.1 选择规则）：Host 显式文本 > Profile system.md >
+			// 工作区 .uina/system.md > 内置默认。已存在但损坏/为空的文件直接报错，不静默退级。
+			const systemSubject = await resolveSystemSubject({
+				cwd: options.cwd,
+				...(options.systemPrompt !== undefined ? { explicitText: options.systemPrompt } : {}),
+				...(options.profile
+					? { profileRoot: options.profile.root, subjectId: options.profile.identity.subjectId }
+					: {}),
+			});
+			const hostExplicitSubjectText = options.systemPrompt !== undefined ? systemSubject.text : undefined;
+			const protocolSection = useEventFrameProtocol ? EVENT_FRAME_PROMPT : undefined;
+			const initialSubjectText = hostExplicitSubjectText ?? systemSubject.text;
+			const initialFinalText = composeSystemText(initialSubjectText, protocolSection);
+			// 启动基线版本：Guidance/Skill 尚未装配，先只锚定 System 正文；assembleCapabilities
+			// 收尾时按已注册 Guidance 与 Skill Catalog 重算发布版本。
+			const systemSnapshot: SystemSnapshot = {
+				text: initialFinalText,
+				source: systemSubject.source,
+				revision: computeResourceRevision(initialFinalText, [], ""),
+				...(systemSubject.entry !== undefined ? { entry: systemSubject.entry } : {}),
+				...(systemSubject.sources !== undefined ? { sources: systemSubject.sources } : {}),
+			};
 			const extensionHost = new ExtensionRunner({
 				// 主体绑定：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 				// undefined——旧扩展与测试零影响。
@@ -277,7 +319,13 @@ export class UinaHost {
 				history: () => store.state.entries,
 				auxiliary: () => store.state.auxiliary,
 				emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
+				// pi.reload() 留存并转接换代协调器（忙时受理、空闲同步执行的原语义）。
 				reload: () => hostSelf.reloadExtensions(),
+				reloadResources: () => hostSelf.refreshResources(),
+				scheduleExtensionsReload: () => {
+					const { reloadId } = hostSelf.scheduleExtensionsReload();
+					return { reloadId };
+				},
 				shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
 				tools,
 				delivery: (namespace) => subject.delivery(namespace),
@@ -324,7 +372,7 @@ export class UinaHost {
 			subject = new Subject(activeModel, streamFn, tools, {
 				store,
 				thinkingLevel,
-				systemPrompt: resolvedSystemPrompt,
+				system: systemSnapshot,
 				runtimeHooks: extensionHost.runtimeHooks(),
 				projection: resolvedProjection,
 				measureContext: (model, projection) =>
@@ -360,6 +408,11 @@ export class UinaHost {
 				recordListeners,
 				emit,
 				state,
+				{
+					snapshot: systemSnapshot,
+					...(protocolSection !== undefined ? { protocolSection } : {}),
+					...(hostExplicitSubjectText !== undefined ? { hostExplicitSubjectText } : {}),
+				},
 			));
 		} catch (error) {
 			await store.close().catch(() => undefined);
@@ -555,6 +608,11 @@ export class UinaHost {
 		return this.subject.getRequestObservation();
 	}
 
+	/** 当前已发布的 System 快照（/prompt 显示已发布版本与选用来源）。 */
+	getSystemSnapshot(): SystemSnapshot {
+		return structuredClone(this.systemSnapshot);
+	}
+
 	/** 当前请求预览（纯读装配；独立身份，不冒充"刚刚实际发送"）。 */
 	inspectRequest(): Promise<import("../core/types.js").RequestInspection> {
 		return this.subject.inspectRequest();
@@ -615,6 +673,8 @@ export class UinaHost {
 		// Skill 来源在全部扩展激活后装配：项目/扩展资源根已就位；刷新发布 read_skill
 		// 与 Catalog（首次真实模型请求仍要等 startCompletion 装配门）。
 		await this.refreshSkills();
+		// Guidance/Skill 首次装配完成后重算并发布资源版本（启动基线只锚定 System 正文）。
+		this.republishResourceRevision();
 		await this.subject.getContextSnapshot();
 	}
 
@@ -676,37 +736,140 @@ export class UinaHost {
 		);
 	}
 
-	async reloadExtensions(): Promise<void> {
-		this.assertAccepting();
-		// 忙时不阻塞命令派发：立即回执受理，等本轮（及队列）排空后后台执行。
-		if (this.subject.isBusy()) {
-			this.emit({ type: "notice", text: "已受理 /reload：本轮结束后自动重新加载项目扩展。" });
-			void this.subject
-				.waitForIdle()
-				.then(() => this.runReload())
-				.catch((error) => this.emit({ type: "error", text: `重载失败: ${errorMessage(error)}` }));
-			return;
+	/**
+	 * 人工 /reload 与 Agent runtime_reload(extensions) 共用的换代协调器（S3）：
+	 * 受理 Reload Intent 时即设置续队屏障与换代准入门（state.reloading 门 + Subject
+	 * queueHold），重复请求合并到同一待执行 Reload（同一 reloadId）；真正 Idle 后在
+	 * 准入门内执行 ExtensionRunner.reload() 与资源刷新，随后以内部 runtime Input
+	 * 交付最终事实，解除准入门并恢复原队列处理。
+	 */
+	scheduleExtensionsReload(): { reloadId: string; done: Promise<void> } {
+		if (this.state.stopping) throw new Error("宿主正在关闭");
+		if (this.pendingExtensionsReload) {
+			return { reloadId: this.pendingExtensionsReload.reloadId, done: this.pendingExtensionsReload.done };
 		}
-		await this.runReload();
+		const reloadId = randomUUID();
+		// 受理即关门（不等到 Idle 才设置）：后续输入按现有可见拒绝规则处理，回合尾的
+		// 自动续队被屏障暂停——避免回合尾与新输入在换代前抢跑。
+		this.state.reloading++;
+		this.subject.holdQueueResume();
+		this.emit({
+			type: "notice",
+			text: `扩展换代已受理（reloadId ${shortId(reloadId)}）：当前回合结算后自动执行，期间新输入会被拒绝，原有排队输入保留。`,
+		});
+		const execution = this.subject
+			.waitForIdle()
+			.then(() => Promise.allSettled([...this.directRuns.values()]))
+			.then(() => this.executeScheduledReload(reloadId));
+		const done = execution.catch(() => undefined);
+		this.pendingExtensionsReload = { reloadId, done };
+		return { reloadId, done };
 	}
 
-	private async runReload(): Promise<void> {
-		// 重载准入门覆盖 Host 输入与扩展输入两条通道：资源替换边界期间不放入
-		// 新的 Agent 回合（需要拒绝时明确报错，不静默丢消息）。
-		this.state.reloading++;
+	/** 换代执行：等待已在协调器受理时排定的安全点（Idle + 直连工具结算），执行重载，
+	 * 交付最终事实，解除准入门并恢复队列。 */
+	private async executeScheduledReload(reloadId: string): Promise<void> {
+		const intent = this.pendingExtensionsReload;
+		if (!intent || intent.reloadId !== reloadId) return; // 已被合并/清除：不重复执行
+		this.pendingExtensionsReload = undefined;
 		try {
-			await this.subject.waitForIdle();
-			await Promise.allSettled([...this.directRuns.values()]);
-			if (this.state.stopping) throw new Error("宿主正在关闭");
-			await this.extensionHost.reload();
-			// 项目扩展集合可能已变：Skill 快照必须基于现存有效来源重建发布
-			//（卸载不留幽灵目录，Catalog 反映新有效集或收缩撤下失效来源）。
-			await this.refreshSkills();
-			await this.subject.getContextSnapshot();
-			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
+			if (this.state.stopping) {
+				this.emit({ type: "notice", text: `扩展换代 ${shortId(reloadId)} 因宿主关闭而取消。` });
+				return;
+			}
+			const result = await this.runReloadCore();
+			// 最终事实交付：以稳定 reloadId 生成一次内部 runtime 来源 Input（非外部操作者/
+			// Event Frame）。走 Host 可信路径写入现有队列（屏障仍在，先落队不启动回合），
+			// 不经会被自身 Reload 门拒绝的扩展 pi.submitInput()。入队失败如实报告，不伪装已交付。
+			try {
+				await this.subject.acceptDeferred({
+					id: `runtime-reload-${reloadId}`,
+					mode: "followUp",
+					source: { kind: "runtime", origin: "internal", type: "runtime.reload", ref: reloadId },
+					text: this.reloadCompletionReport(reloadId, result),
+				});
+			} catch (error) {
+				this.emit({
+					type: "error",
+					text: `扩展换代完成报告未能入队（${shortId(reloadId)}）: ${errorMessage(error)}`,
+				});
+			}
 		} finally {
 			this.state.reloading--;
+			this.subject.releaseQueueResume();
+			// 解除准入门并恢复队列处理：完成报告（若已入队）与原有排队输入按既有来源/
+			// 顺序语义消费——完成报告保证在下一次模型决策前可见，已有输入不丢、不重排。
+			// 解除门与恢复队列之间可能有新输入直启回合：忙碌时交给既有队列消费纪律。
+			if (!this.subject.isBusy()) {
+				try {
+					await this.subject.resumePending();
+				} catch (error) {
+					this.emit({ type: "error", text: `换代后恢复队列失败: ${errorMessage(error)}` });
+				}
+			}
 		}
+	}
+
+	/** 换代最终报告：completed/partial/failed、实际有效扩展与资源状态，不声称全量应用。 */
+	private reloadCompletionReport(
+		reloadId: string,
+		result: { importError?: string; resources: ResourceReloadOutcome },
+	): string {
+		const project = this.extensionHost.diagnostics().filter((d) => d.id.startsWith("project:"));
+		const active = project.filter((d) => d.status === "active").length;
+		const failed = project.filter((d) => d.status === "failed");
+		const phase = result.importError !== undefined || failed.length > 0 ? "partial" : "completed";
+		const lines: string[] = [];
+		lines.push(`[扩展换代${phase === "completed" ? "已完成" : "部分完成"}（reloadId: ${shortId(reloadId)}）]`);
+		if (result.importError) lines.push(`预导入失败，旧项目扩展保持不变：${result.importError}`);
+		lines.push(
+			`当前有效项目扩展 ${active} 个${failed.length > 0 ? `；激活失败 ${failed.length} 个：${failed.map((f) => f.path).join("、")}` : ""}。`,
+		);
+		if (result.resources.ok) {
+			lines.push(`资源已按新激活集合刷新：${result.resources.summary ?? "System/文件式 Guidance/Skills 重新发布"}。`);
+		} else {
+			lines.push(
+				`资源刷新失败，System/文件式 Guidance/Skills 保持上一发布版本：${result.resources.error ?? "未知原因"}。`,
+			);
+		}
+		lines.push("原有排队输入已保留，本次通知后按原顺序继续处理。");
+		return lines.join("\n");
+	}
+
+	async reloadExtensions(): Promise<void> {
+		if (this.state.stopping) throw new Error("宿主正在关闭");
+		const merged = this.pendingExtensionsReload !== undefined;
+		const { done } = this.scheduleExtensionsReload();
+		if (merged) {
+			this.emit({ type: "notice", text: "扩展换代已在安排中，本次请求合并到同一待执行 Reload。" });
+			return;
+		}
+		// 空闲时同步执行完（人工命令看到最终结果）；忙时保持受理即返回的原语义。
+		if (!this.subject.isBusy()) await done;
+	}
+
+	/**
+	 * 扩展换代核心（准入门内执行）：预导入失败保留旧扩展；单扩展激活失败如实部分
+	 * 成功；资源按新激活集合刷新。结构性失败不吞掉——由调用方区分报告。
+	 */
+	private async runReloadCore(): Promise<{ importError?: string; resources: ResourceReloadOutcome }> {
+		await this.subject.waitForIdle();
+		await Promise.allSettled([...this.directRuns.values()]);
+		if (this.state.stopping) throw new Error("宿主正在关闭");
+		let importError: string | undefined;
+		try {
+			await this.extensionHost.reload();
+		} catch (error) {
+			// Pre-import 失败沿用 Runner 的"旧扩展不卸载"逻辑：如实记录，不声称全量应用。
+			importError = errorMessage(error);
+			this.emit({ type: "error", text: `扩展预导入失败，旧项目扩展保持不变: ${importError}` });
+		}
+		// 项目扩展集合可能已变：资源必须按新激活集合重建发布；资源失败如实报告实际状态
+		//（扩展有效集已改变 ≠ "旧版本全部保留"）。
+		const resources = await this.refreshResources();
+		await this.subject.getContextSnapshot();
+		this.emit({ type: "notice", text: this.reloadSummaryNotice() });
+		return { ...(importError !== undefined ? { importError } : {}), resources };
 	}
 
 	/** 重载完成通知：项目扩展激活数 + 失败摘要，让 reload 结果可观测而非一句空话。 */
@@ -718,6 +881,95 @@ export class UinaHost {
 		let text = `项目扩展已重新加载：${active} 个扩展激活`;
 		if (failed.length > 0) text += `，失败 ${failed.length}：${failed.map((f) => f.path).join("、")}`;
 		return text + "。";
+	}
+
+	/**
+	 * 资源刷新入口（S2）：runtime_reload(scope="resources")、/reload resources 与扩展
+	 * 换代共用。串行执行；Busy 时同样安全应用（请求级版本一致性检查防混版）。
+	 */
+	refreshResources(): Promise<ResourceReloadOutcome> {
+		const run: Promise<ResourceReloadOutcome> = this.refreshResourcesTail.then(() => this.runResourceReload());
+		this.refreshResourcesTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	/**
+	 * 资源刷新的"准备—发布"合同（§4.2）：准备阶段异步读盘（失败不触碰现役资源，
+	 * 整体拒绝发布）；发布阶段在同一同步边界替换 System、文件式 Guidance 与 Skill
+	 * 快照。内容无变化时不推进版本、不重复注册。单个无效 Skill 按现有宽容合同
+	 * 跳过并报告 diagnostics，不阻断其他有效 Skill 发布。
+	 */
+	private async runResourceReload(): Promise<ResourceReloadOutcome> {
+		try {
+			// ── 准备阶段 ────────────────────────────────────────────────────
+			const subject = await resolveSystemSubject({
+				cwd: this.options.cwd,
+				// Host 显式文本仍参与版本计算，但文件修改不覆盖该文本。
+				...(this.hostExplicitSubjectText !== undefined
+					? { explicitText: this.hostExplicitSubjectText }
+					: this.options.profile
+						? { profileRoot: this.options.profile.root, subjectId: this.options.profile.identity.subjectId }
+						: {}),
+			});
+			const guidance = await this.extensionHost.prepareFileGuidanceRefresh();
+			const skills = await this.skills.prepare(this.collectSkillSources());
+			// ── 版本计算与无变化短路 ────────────────────────────────────────
+			const finalText = composeSystemText(subject.text, this.protocolSection);
+			const revision = computeResourceRevision(
+				finalText,
+				guidance.map(({ key, compiled }) => ({ key, hash: compiled.hash })),
+				skills.catalogHash,
+			);
+			const summary =
+				`System ${subject.source}${subject.entry ? `（${subject.entry}）` : ""}；` +
+				`文件式 Guidance ${guidance.length} 项；Skills ${skills.snapshot.entries.length} 个` +
+				(skills.snapshot.diagnostics.length > 0 ? `（diagnostics ${skills.snapshot.diagnostics.length} 条）` : "") +
+				"。";
+			if (revision === this.systemSnapshot.revision) {
+				return { ok: true, phase: "applied", revision, unchanged: true, summary };
+			}
+			// ── 发布边界（同步；Guidance 替换先全量校验，Skills 发布自带回滚）──
+			const rollbackGuidance = this.extensionHost.publishFileGuidanceRefresh(guidance);
+			try {
+				this.skills.publish(skills);
+			} catch (error) {
+				rollbackGuidance();
+				throw error;
+			}
+			const snapshot: SystemSnapshot = {
+				text: finalText,
+				source: subject.source,
+				revision,
+				...(subject.entry !== undefined ? { entry: subject.entry } : {}),
+				...(subject.sources !== undefined ? { sources: subject.sources } : {}),
+			};
+			this.systemSnapshot = snapshot;
+			this.subject.setSystemSnapshot(snapshot);
+			return { ok: true, phase: "applied", revision, summary };
+		} catch (error) {
+			// 读取/编译/发布失败：现行资源完全不变，精确说明失败来源。
+			return {
+				ok: false,
+				phase: "unchanged",
+				error: errorMessage(error),
+			};
+		}
+	}
+
+	/** 按当前注册状态重算并发布资源版本（不重读文件；启动装配收尾与换代后校准用）。 */
+	private republishResourceRevision(): void {
+		const revision = computeResourceRevision(
+			this.systemSnapshot.text,
+			this.extensionHost.fileGuidanceHashes(),
+			this.skills.catalogHash(),
+		);
+		if (revision === this.systemSnapshot.revision) return;
+		const snapshot: SystemSnapshot = { ...this.systemSnapshot, revision };
+		this.systemSnapshot = snapshot;
+		this.subject.setSystemSnapshot(snapshot);
 	}
 
 	/** 关闭主体：等待活动结束、释放扩展、杀掉工具留下的分离子进程、关闭会话。 */
@@ -753,4 +1005,9 @@ export class UinaHost {
 		})();
 		return this.stopPromise;
 	}
+}
+
+/** 换代 reloadId 的短展示形式（通知与报告用；完整 id 携带在 Tool Result details 中）。 */
+function shortId(reloadId: string): string {
+	return reloadId.slice(0, 8);
 }

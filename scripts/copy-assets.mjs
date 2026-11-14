@@ -2,6 +2,14 @@ import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 const destination = new URL("../dist/src/ui/core/native/", import.meta.url);
 await mkdir(destination, { recursive: true });
 await cp(new URL("../src/ui/core/native/", import.meta.url), destination, { recursive: true });
+
+// 内置默认主体 System（S1 System 文件化）：权威内容是随包发布的资源文件。
+// pnpm start（tsx，读 src/）与 pnpm start:dist（读 dist/src/）必须拿到一致的默认文本，
+// 不能依赖开发机当前工作目录。
+const systemPromptsDst = new URL("../dist/src/agent/prompts/", import.meta.url);
+await mkdir(systemPromptsDst, { recursive: true });
+await cp(new URL("../src/agent/prompts/system.md", import.meta.url), new URL("system.md", systemPromptsDst));
+
 const mcNative = new URL("../dist/.uina/worlds/minecraft/executor/platform/native/", import.meta.url);
 await mkdir(mcNative, { recursive: true });
 await cp(

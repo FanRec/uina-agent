@@ -14,6 +14,7 @@
  * 工具与 Guidance 再报告失败，不留半更新的可见集。
  */
 
+import { createHash } from "node:crypto";
 import type { ToolExecutionResult } from "../../tools/broker.js";
 import type { ExtensionAPI, ExtensionActivation, ExtensionTeardown } from "../runner.js";
 import { renderCatalog } from "./catalog.js";
@@ -21,6 +22,16 @@ import { expandInvocation } from "./invoke.js";
 import { loadSnapshot } from "./loader.js";
 import { presentSkillBody, readSkillResource, resolveSkill } from "./read.js";
 import type { SkillSnapshot, SkillSource } from "./types.js";
+
+/** 资源刷新准备阶段的产物：候选快照 + 渲染后的 Catalog 文本及其哈希。
+ * 准备阶段只读盘，不触碰现役可见集；发布在同一同步边界完成。 */
+export interface PreparedSkillPublish {
+	readonly snapshot: SkillSnapshot;
+	/** 空快照（无有效 Skill）时为 undefined：发布时撤下 Catalog 与工具。 */
+	readonly catalog: string | undefined;
+	/** Catalog 文本哈希；无 Catalog 时为 ""（资源版本计算仍计入"无"这个状态）。 */
+	readonly catalogHash: string;
+}
 
 export interface SkillsCapability {
 	/** 内置激活入口：注册刷新管理（工具与 Guidance 首次 refresh 成功后发布）。 */
@@ -30,6 +41,12 @@ export interface SkillsCapability {
 	 * 无可用 Skill 时撤下工具与 Guidance；发布失败撤下过时可见集后重抛。
 	 */
 	refresh(sources: readonly SkillSource[]): Promise<void>;
+	/** 资源刷新准备（S2）：加载候选快照并渲染 Catalog，不改现役状态。 */
+	prepare(sources: readonly SkillSource[]): Promise<PreparedSkillPublish>;
+	/** 资源刷新发布边界（S2，同步）：一次性替换工具、Catalog Guidance 与读取快照。 */
+	publish(prepared: PreparedSkillPublish): void;
+	/** 当前已发布 Catalog 的内容哈希（未发布时为 ""）。 */
+	catalogHash(): string;
 	/** 结构化显式调用展开（网关 skill.invoke 与 /skill 命令共用同一函数）。 */
 	invoke(name: string, args: string): Promise<CommandAgentInputSpec>;
 }
@@ -47,6 +64,8 @@ export function createSkillsCapability(): SkillsCapability {
 	let disposeTool: (() => void) | undefined;
 	let active = false;
 	let api: ExtensionAPI | undefined;
+	/** 当前已发布 Catalog 的内容哈希（资源版本计算；未发布时为 ""）。 */
+	let publishedCatalogHash = "";
 
 	const withdrawGuidance = (): void => {
 		disposeGuidance?.();
@@ -152,43 +171,79 @@ export function createSkillsCapability(): SkillsCapability {
 		return () => {
 			active = false;
 			api = undefined;
+			publishedCatalogHash = "";
 			withdrawGuidance();
 			withdrawTool();
 		};
 	};
 
 	const refresh = async (sources: readonly SkillSource[]): Promise<void> => {
-		// 先完整构建候选快照与 Guidance 文本；失败不触碰现行可见集。
+		publish(await prepare(sources));
+	};
+
+	/** 准备阶段（S2）：只读盘构建候选快照与 Catalog 文本，不改现役状态。
+	 * 单个无效 Skill 按 Loader 宽容合同跳过并记入 diagnostics——这不是致命失败；
+	 * 只有目录读取等无法形成可信候选快照的错误才抛出（整体拒绝发布）。 */
+	const prepare = async (sources: readonly SkillSource[]): Promise<PreparedSkillPublish> => {
 		const loaded = await loadSnapshot(sources);
-		const next: SkillSnapshot = Object.freeze({
+		const snapshot: SkillSnapshot = Object.freeze({
 			entries: loaded.snapshot.entries,
 			diagnostics: loaded.snapshot.diagnostics,
 		});
+		const catalog = renderCatalog(snapshot);
+		return {
+			snapshot,
+			catalog,
+			catalogHash: catalog ? createHash("sha256").update(catalog, "utf8").digest("hex") : "",
+		};
+	};
+
+	/** 发布边界（S2，同步）：一次性替换 read_skill 工具、Catalog Guidance 与读取快照。
+	 * 发布验证失败时回滚到上一可见集——不留下"新 Catalog 搭旧读取快照"的半更新。 */
+	const publish = (prepared: PreparedSkillPublish): void => {
 		if (!active || !api) throw new Error("Skill 能力未激活，无法发布快照");
-		// 工具定义不随名单变化：有任一可调用 Skill 就保持注册，无则撤下。
-		if (next.entries.length > 0 && !disposeTool) disposeTool = api.registerTool(buildReadSkillTool());
-		else if (next.entries.length === 0 && disposeTool) withdrawTool();
+		const previous = { snapshot: current, disposeTool, disposeGuidance, hash: publishedCatalogHash };
 		try {
-			// 同 owner+id 重名拒绝：先撤旧再注册新。文本已在上面构建，失败恢复即可。
+			// 工具定义不随名单变化：有任一可调用 Skill 就保持注册，无则撤下。
+			if (prepared.snapshot.entries.length > 0 && !disposeTool) disposeTool = api.registerTool(buildReadSkillTool());
+			else if (prepared.snapshot.entries.length === 0 && disposeTool) withdrawTool();
+			// 同 owner+id 重名拒绝：先撤旧再注册新；文本已在准备阶段构建。
 			withdrawGuidance();
-			const catalog = renderCatalog(next);
-			if (catalog) {
+			if (prepared.catalog) {
 				disposeGuidance = api.provideContext({
 					id: "catalog",
 					kind: "guidance",
-					text: catalog,
+					text: prepared.catalog,
 					requiresTool: "read_skill",
 				});
 			}
 		} catch (error) {
-			// 发布失败：撤下过时可见集并清空现役快照，再报告失败——不留"工具已撤
-			// 而 /skill 仍可从旧快照展开"的半更新。
-			withdrawGuidance();
-			withdrawTool();
-			current = undefined;
+			// 回滚到上一可见集；回滚自身失败则诚实清空（不留半更新、不伪装成功）。
+			try {
+				withdrawGuidance();
+				withdrawTool();
+				if (previous.disposeTool) disposeTool = api.registerTool(buildReadSkillTool());
+				const previousCatalog = previous.snapshot ? renderCatalog(previous.snapshot) : undefined;
+				if (previous.disposeGuidance && previousCatalog) {
+					disposeGuidance = api.provideContext({
+						id: "catalog",
+						kind: "guidance",
+						text: previousCatalog,
+						requiresTool: "read_skill",
+					});
+				}
+				current = previous.snapshot;
+				publishedCatalogHash = previous.hash;
+			} catch {
+				withdrawGuidance();
+				withdrawTool();
+				current = undefined;
+				publishedCatalogHash = "";
+			}
 			throw error;
 		}
-		current = next;
+		current = prepared.snapshot;
+		publishedCatalogHash = prepared.catalogHash;
 	};
 
 	const invoke = async (name: string, args: string): Promise<CommandAgentInputSpec> => {
@@ -197,7 +252,7 @@ export function createSkillsCapability(): SkillsCapability {
 		return expandInvocation(snapshot, name, args);
 	};
 
-	return { activate, refresh, invoke };
+	return { activate, refresh, prepare, publish, catalogHash: () => publishedCatalogHash, invoke };
 }
 
 /** /skills 本地列表文本：名称、来源与诊断；错误信息包含 Skill 名称和来源。 */

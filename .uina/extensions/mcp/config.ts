@@ -23,6 +23,9 @@ export function catalogRecordPath(): string {
 }
 
 export interface McpServerDefinition {
+	/** 发现元数据（S6.1）：由配置作者提供的一句用途说明；不是 MCP Wire Protocol 字段。
+	 * 不进入执行配置指纹——单纯改描述不触发重新授权、断连或目录过期。 */
+	description?: string;
 	/** stdio：可执行命令与参数。 */
 	command?: string;
 	args?: string[];
@@ -61,7 +64,8 @@ export type ResolvedServer = { kind: "valid"; config: ResolvedServerConfig } | I
 
 export interface McpConfigSnapshot {
 	servers: Map<string, ResolvedServer>;
-	/** 用户级 Uina 专属用途说明；与 MCP server 定义及其指纹分离。 */
+	/** 过渡期兼容（S6.1）：旧 uina.mcpPurposes 映射，仅全局配置作用域解析；
+	 * Server 自带 description 时以 description 为准。迁移完成后删除。 */
 	mcpPurposes?: Record<string, string>;
 	/** 无活动协议交互持续闲置的倒计时预算，默认 10 分钟。 */
 	idleTimeoutMs: number;
@@ -96,12 +100,16 @@ function parseMcpPurposes(raw: Record<string, unknown>): Record<string, string> 
 	return Object.keys(purposes).length > 0 ? purposes : undefined;
 }
 
-/** 校验单个 server 定义；非法返回错误原因（不抛）。 */
+/** 校验单个 server 定义；非法返回错误原因（不抛）。description 是发现元数据：
+ * 存在时必须是非空字符串（S6.1）。 */
 export function validateServerDefinition(_name: string, value: unknown): McpServerDefinition | string {
 	if (!isRecord(value)) return "必须是对象";
-	const { command, args, env, inheritEnv, autoStart, url, headers, httpTransport, ...rest } = value;
+	const { description, command, args, env, inheritEnv, autoStart, url, headers, httpTransport, ...rest } = value;
 	const unknownKeys = Object.keys(rest);
 	const extra = unknownKeys.length > 0 ? `（忽略未知字段: ${unknownKeys.join(", ")}）` : "";
+	if (description !== undefined && (typeof description !== "string" || description.trim() === ""))
+		return `description 必须是非空字符串${extra}`;
+	const descriptionField = typeof description === "string" ? { description } : {};
 	if (typeof command === "string") {
 		if (url !== undefined) return `command 与 url 不能同时声明${extra}`;
 		if (args !== undefined && !(Array.isArray(args) && args.every((arg) => typeof arg === "string")))
@@ -110,6 +118,7 @@ export function validateServerDefinition(_name: string, value: unknown): McpServ
 		if (inheritEnv !== undefined && typeof inheritEnv !== "boolean") return `inheritEnv 必须是布尔值${extra}`;
 		if (autoStart !== undefined && typeof autoStart !== "boolean") return `autoStart 必须是布尔值${extra}`;
 		return {
+			...descriptionField,
 			command,
 			...(Array.isArray(args) ? { args: args as string[] } : {}),
 			...(isStringRecord(env) ? { env } : {}),
@@ -132,6 +141,7 @@ export function validateServerDefinition(_name: string, value: unknown): McpServ
 			return `httpTransport 必须是 auto / streamable-http / sse${extra}`;
 		if (autoStart !== undefined && typeof autoStart !== "boolean") return `autoStart 必须是布尔值${extra}`;
 		return {
+			...descriptionField,
 			url,
 			...(typeof autoStart === "boolean" ? { autoStart } : {}),
 			...(isStringRecord(headers) ? { headers } : {}),
@@ -143,7 +153,9 @@ export function validateServerDefinition(_name: string, value: unknown): McpServ
 	return `需要 command（stdio）或 url（streamable HTTP）${extra}`;
 }
 
-/** Pi hashProjectServerDefinition 同法：键排序、去 undefined，sha256。 */
+/** Pi hashProjectServerDefinition 同法：键排序、去 undefined，sha256。
+ * description 是发现元数据（S6.1），不进入指纹——单纯改描述不触发重新授权、
+ * 断开连接或工具目录过期；定义真正变化仍照旧重新判定。 */
 export function definitionFingerprint(definition: McpServerDefinition): string {
 	const canonicalize = (value: unknown): unknown => {
 		if (Array.isArray(value)) return value.map(canonicalize);
@@ -155,8 +167,9 @@ export function definitionFingerprint(definition: McpServerDefinition): string {
 				.map(([key, entry]) => [key, canonicalize(entry)]),
 		);
 	};
+	const { description: _description, ...executionDefinition } = definition;
 	return createHash("sha256")
-		.update(JSON.stringify(canonicalize(definition)))
+		.update(JSON.stringify(canonicalize(executionDefinition)))
 		.digest("hex");
 }
 

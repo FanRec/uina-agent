@@ -137,6 +137,27 @@ export function installUIFeatures(
 		);
 	});
 
+	register("context", (action) => {
+		if (!options.promptPort) {
+			host.notify("/context 不可用：宿主未提供请求检查端口", "warning");
+			return;
+		}
+		host.showPanel(
+			"context",
+			(close) => {
+				// /context：完整请求检视（默认展开语义消息与来源结构；R 刷新可在
+				// 最近真实准备请求与当前纯预览之间看到 basis 标注）。
+				const view = new PromptOverlay(options.promptPort!, {
+					title: "请求检视 · /context",
+					expanded: true,
+				});
+				view.onClose = close;
+				return view;
+			},
+			action.signal,
+		);
+	});
+
 	return {
 		dispose: () => {
 			for (const dispose of disposers.splice(0)) dispose();

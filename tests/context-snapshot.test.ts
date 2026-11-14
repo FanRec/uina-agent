@@ -78,7 +78,7 @@ describe("ContextSnapshot", () => {
 			"probe",
 			{
 				id: "gate",
-				kind: "capability",
+				kind: "observation",
 				read: async ({ modelKey }: { modelKey: string }) => {
 					if (modelKey.endsWith("/old")) {
 						entered();
@@ -125,7 +125,7 @@ describe("ContextSnapshot", () => {
 			"probe",
 			{
 				id: "gate",
-				kind: "capability",
+				kind: "observation",
 				read: async () => {
 					reads++;
 					if (reads === 1) {

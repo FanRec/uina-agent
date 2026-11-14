@@ -459,7 +459,7 @@ describe("extension composition", () => {
 		});
 		b.provideContext({
 			id: "skills",
-			kind: "capability",
+			kind: "observation",
 			read: () => ({ text: "skills", source: { type: "skills", origin: "internal" } }),
 		});
 		const result = await host

@@ -70,11 +70,27 @@ const PROXY_SCHEMA = {
 
 const PROXY_DESCRIPTION =
 	"Interact with configured MCP servers through a single proxy. " +
-	"Actions: list (no server: overview from local catalog; with server: discover/recalibrate that server's tools), " +
-	"search (query keyword across catalog), describe (full schema of serverName.toolName), " +
+	"Actions: list (no server: configured servers with purposes and catalog status, zero connections; " +
+	"with server: discover/recalibrate that server's tools), " +
+	"search (query matches configured server names/purposes AND discovered tools; never starts servers), " +
+	"describe (full schema of serverName.toolName), " +
 	"call (execute serverName.toolName with args), status (connection/trust/freshness). " +
 	"Discover with list(server) before calling; tools are named serverName.toolName. " +
 	'call never cold-discovers unknown tools — run list(server="<name>") first.';
+
+/** Server 用途（S6.1）：优先 Server 自带 description；无 description 时过渡期读取旧
+ * uina.mcpPurposes（仅全局作用域，parseConfigFile 已保证）。二者都无则缺省。 */
+function serverDescription(snapshot: McpConfigSnapshot, serverName: string): string | undefined {
+	const resolved = snapshot.servers.get(serverName);
+	const declared = resolved?.kind === "valid" ? resolved.config.definition.description?.trim() : undefined;
+	if (declared) return declared;
+	const purposes = snapshot.mcpPurposes;
+	if (purposes && Object.hasOwn(purposes, serverName)) {
+		const purpose = purposes[serverName]!.replace(/\s+/g, " ").trim();
+		if (purpose) return purpose;
+	}
+	return undefined;
+}
 
 export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 	const { api, catalog, manager, tmpDir } = deps;
@@ -125,20 +141,25 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 	): Promise<ProxyToolResult> {
 		const serverName = typeof args.server === "string" ? args.server : undefined;
 		if (serverName === undefined) {
+			// 本地概览：已配置 Server 名称、用途简述与信任/目录状态；零连接、零工具调用。
+			// 未信任的项目 Server 也显示候选名与用途（非敏感发现元数据）——被列出不代表
+			// 获得执行许可，信任门归 list(server)/call。
 			const lines: string[] = [];
 			for (const [name, resolved] of snapshot.servers) {
 				if (resolved.kind === "invalid") {
 					lines.push(`- ${name}: invalid (${resolved.error})`);
 					continue;
 				}
+				const desc = serverDescription(snapshot, name);
+				const descPart = desc ? ` — ${desc}` : "";
 				const entry = catalog.get(name);
 				if (!entry) {
-					lines.push(`- ${name}: missing (未发现)`);
+					lines.push(`- ${name}: missing (未发现)${descPart}`);
 					continue;
 				}
 				const status = classifyEntry(entry, snapshot, name);
 				if (status.kind === "unconfigured") continue;
-				lines.push(`- ${name}: ${statusLabel(entry, snapshot, name)}`);
+				lines.push(`- ${name}: ${statusLabel(entry, snapshot, name)}${descPart}`);
 			}
 			return {
 				result:
@@ -235,6 +256,18 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 
 	function executeSearch(snapshot: McpConfigSnapshot, query: string): ProxyToolResult {
 		const needle = query.toLowerCase();
+		// 两级发现（S6.2）：第一级检索配置级 Server 名称与 description（零连接、零启动）；
+		// 第二级检索已缓存目录中的工具名/title/description。search 永不启动 Server。
+		const serverMatches: Array<{ name: string; description?: string; trusted: boolean }> = [];
+		for (const [serverName, resolved] of snapshot.servers) {
+			if (resolved.kind === "invalid") continue;
+			const description = serverDescription(snapshot, serverName);
+			const haystack = `${serverName} ${description ?? ""}`.toLowerCase();
+			if (!haystack.includes(needle)) continue;
+			const trusted =
+				resolved.config.source === "global" || isProjectServerTrusted(api.cwd, serverName, resolved.config.fingerprint);
+			serverMatches.push({ name: serverName, description, trusted });
+		}
 		const matches: Array<{ name: string; tool: CatalogTool; serverName: string; entry: CatalogEntry }> = [];
 		for (const [serverName, resolved] of snapshot.servers) {
 			if (resolved.kind === "invalid") continue;
@@ -247,28 +280,48 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 				if (haystack.includes(needle)) matches.push({ name, tool, serverName, entry });
 			}
 		}
-		if (matches.length === 0) {
+		if (matches.length === 0 && serverMatches.length === 0) {
 			return {
-				result: `未检索到匹配 "${query}" 的工具。可通过 list 查看已配置的 server 或通过 list(server="<name>") 发现更多工具。`,
+				result: `未检索到匹配 "${query}" 的工具或 Server。可通过 list 查看已配置的 server 或通过 list(server="<name>") 发现更多工具。`,
 				status: "succeeded",
-				details: { mode: "search", query, matches: [] },
+				details: { mode: "search", query, matches: [], servers: [] },
 			};
 		}
+		const sections: string[] = [];
 		const shown = matches.slice(0, SEARCH_LIMIT);
-		const lines = shown.map(({ name, tool, entry, serverName }) => {
-			const status = classifyEntry(entry, snapshot, serverName);
-			const staleMark = status.kind === "stale" ? ` [stale: ${status.reason}]` : "";
-			return `- ${name}${staleMark}${tool.description ? ` - ${truncateAtWord(tool.description, 60)}` : ""}`;
-		});
-		let text = `找到 ${matches.length} 个匹配 "${query}" 的工具:\n${lines.join("\n")}`;
-		if (matches.length > SEARCH_LIMIT) {
-			text += `\n\n(仅显示前 ${SEARCH_LIMIT} 条，省略 ${matches.length - SEARCH_LIMIT} 条；请用更具体的关键词)`;
+		if (matches.length > 0) {
+			const lines = shown.map(({ name, tool, entry, serverName }) => {
+				const status = classifyEntry(entry, snapshot, serverName);
+				const staleMark = status.kind === "stale" ? ` [stale: ${status.reason}]` : "";
+				return `- ${name}${staleMark}${tool.description ? ` - ${truncateAtWord(tool.description, 60)}` : ""}`;
+			});
+			let text = `找到 ${matches.length} 个匹配 "${query}" 的工具:\n${lines.join("\n")}`;
+			if (matches.length > SEARCH_LIMIT) {
+				text += `\n\n(仅显示前 ${SEARCH_LIMIT} 条，省略 ${matches.length - SEARCH_LIMIT} 条；请用更具体的关键词)`;
+			}
+			text += `\n\n可通过 describe(tool="...") 查看参数，或通过 call(tool="...", args={...}) 执行`;
+			sections.push(text);
 		}
-		text += `\n\n可通过 describe(tool="...") 查看参数，或通过 call(tool="...", args={...}) 执行`;
+		if (serverMatches.length > 0) {
+			const serverLines = serverMatches.map(({ name, description, trusted }) => {
+				const desc = description ? ` — ${description}` : "";
+				const trustMark = trusted ? "" : " [blocked: 项目 server 未获信任，不能因被搜到而执行]";
+				return `- ${name}${desc}${trustMark}`;
+			});
+			sections.push(
+				`匹配到 ${serverMatches.length} 个配置中的 Server（尚未发现工具；可通过 list(server="<name>") 按需发现）:\n${serverLines.join("\n")}`,
+			);
+		}
 		return {
-			result: text.trim(),
+			result: sections.join("\n\n"),
 			status: "succeeded",
-			details: { mode: "search", query, matches: shown.map(({ name }) => name), total: matches.length },
+			details: {
+				mode: "search",
+				query,
+				matches: shown.map(({ name }) => name),
+				total: matches.length,
+				servers: serverMatches.map(({ name, trusted }) => ({ name, trusted })),
+			},
 		};
 	}
 
@@ -518,8 +571,9 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 							: manager.lastError(name)
 								? `failed (${manager.lastError(name)})`
 								: "stopped";
+			const desc = serverDescription(snapshot, name);
 			lines.push(
-				`- ${name}: trust=${trust} · catalog=${freshness} · connection=${connectionLabel} · endpoint=${describeServerForDisplay(resolved.config.definition)} · source=${resolved.config.source} (${resolved.config.sourcePath})`,
+				`- ${name}${desc ? ` (${desc})` : ""}: trust=${trust} · catalog=${freshness} · connection=${connectionLabel} · endpoint=${describeServerForDisplay(resolved.config.definition)} · source=${resolved.config.source} (${resolved.config.sourcePath})`,
 			);
 		}
 		if (snapshot.servers.size === 0) lines.push("  (无已配置 server)");

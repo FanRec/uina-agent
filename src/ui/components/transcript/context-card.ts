@@ -21,6 +21,11 @@ export interface PromptRequestCardData {
 	systemPrompt: string;
 	messageCount: number;
 	toolCount: number;
+	/** 本次装配实际采用的已发布资源版本（System+Guidance+Skills 的内容哈希与来源）。 */
+	systemRevision?: string;
+	systemSource?: string;
+	/** 当前已发布资源版本（/prompt 区分"最近请求版本"与"Reload 后尚未发送"的新版本）。 */
+	published?: { revision: string; source: string; entry?: string };
 	/** 预览请求携带测量；活动请求观察只携带装配事实，测量可能未获知。 */
 	measurement?: { inputTokens: number; kind: "exact" | "approximate" };
 	sources: readonly { owner: string; id: string; kind: string; status: string; reason?: string }[];
@@ -34,6 +39,8 @@ export interface PromptPort {
 	requestObservation(): Promise<PromptRequestCardData | undefined>;
 	/** 当前预览（纯读装配，未发送）。 */
 	inspectRequest(): Promise<PromptRequestCardData>;
+	/** 当前已发布的 System 快照（可选：缺省时不显示"当前已发布"对照行）。 */
+	publishedSystem?(): Promise<{ revision: string; source: string; entry?: string } | undefined>;
 }
 
 export interface ExternalContextCardData {
@@ -93,6 +100,15 @@ export class ContextCardComponent {
 					? `估算 ${data.measurement.inputTokens} tokens（${data.measurement.kind === "exact" ? "精确" : "近似"}）`
 					: "token 测量未获知"),
 		);
+		// 资源版本行：本请求实际采用的已发布版本；prepared 与当前已发布不同时给出对照——
+		// Reload 成功后旧请求不被改写，/prompt 不把"已发布新版本"假称"模型已看到"。
+		if (data.systemRevision !== undefined) {
+			const self = `资源版本 ${shortRevision(data.systemRevision)}（${data.systemSource ?? "未知来源"}）`;
+			const differs = data.basis === "prepared" && data.published && data.published.revision !== data.systemRevision;
+			rows.push(
+				`${C.text}· ${C.reset}${self}${differs ? ` · ${C.warning}已发布新版本 ${shortRevision(data.published!.revision)}（尚未发送新请求）${C.reset}` : ""}`,
+			);
+		}
 		if (data.basis === "prepared") {
 			rows.push(
 				`  ${C.dim}这是最近准备交给 Provider 的语义请求；不证明已成功发送。可能早于扩展重载、回溯或模型切换。${C.reset}`,
@@ -140,4 +156,8 @@ export class ContextCardComponent {
 		else rows.push(`  ${C.text}${lines.slice(0, 3).join(" ")}…${C.reset}`);
 		return rows;
 	}
+}
+
+function shortRevision(revision: string): string {
+	return revision.slice(0, 12);
 }

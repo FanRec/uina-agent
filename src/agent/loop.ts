@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { validImages } from "../core/content.js";
 import { deliveryKey, validDeliveryTag } from "../core/delivery.js";
 import { errorMessage } from "../core/errors.js";
@@ -23,6 +23,7 @@ import type {
 	RequestInspection,
 	RequestProjection,
 	RequestUsage,
+	SystemSnapshot,
 	ThinkingLevel,
 	TokenMeasurement,
 	ToolDef,
@@ -53,6 +54,12 @@ export interface SubjectOptions {
 	store?: SessionStore;
 	/** 投影 Replacement 缝（单 owner = 本 Subject 实例；缺省字段回落默认实现）。 */
 	projection?: ProjectionPolicy;
+	/**
+	 * 当前已发布 System 快照（Host 装配入口交付；资源刷新经 setSystemSnapshot 替换）。
+	 * 与 systemPrompt 二选一：提供快照时以它为准；提供纯文本时包装为兼容快照。
+	 * 两者都缺省时使用内置默认 System（裸 Subject 兼容回退）。
+	 */
+	system?: SystemSnapshot;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	runtimeHooks?: RuntimeHooks;
@@ -170,6 +177,9 @@ export interface ActiveRequestObservation {
 	readonly modelKey: string;
 	readonly projection: RequestProjection;
 	readonly assembly: RequestAssemblyTrace;
+	/** 本次请求实际采用的已发布资源版本（装配期间固定，发送前复核）。 */
+	readonly systemRevision: string;
+	readonly systemSource: string;
 	readonly wire?: import("../core/types.js").ProviderWireObservation;
 }
 
@@ -229,7 +239,8 @@ export class Subject {
 	private abort: AbortController | null = null;
 	private readonly queues = new InputQueues();
 	private readonly deferredInputRenders = new Map<string, NonNullable<AgentInput["render"]>>();
-	private readonly systemPrompt: string;
+	/** 当前已发布的 System 快照：Host 唯一发布者，请求准备开始时固定，发送前复核。 */
+	private systemSnapshot: SystemSnapshot;
 	private readonly maxConsecutiveToolCalls: number;
 	private readonly store?: SessionStore;
 	private pendingRewind?: { request: RewindRequest; source: string; requestId: string; signal?: AbortSignal };
@@ -237,6 +248,9 @@ export class Subject {
 	private activeRun?: Promise<void>;
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
+	/** 换代续队屏障（仅已受理扩展重载时由 Host 启用）：回合尾跳过自动续队、
+	 * resumeQueued 暂停消费；解除后由 Host 显式恢复队列处理。不新建队列。 */
+	private queueHold = false;
 	private model: Model;
 	private readonly streamFn: ModelStreamFn;
 	private thinkingLevel: ThinkingLevel;
@@ -401,7 +415,9 @@ export class Subject {
 		this.model = model;
 		this.streamFn = streamFn;
 		this.store = options.store;
-		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
+		this.systemSnapshot =
+			options.system ??
+			subjectOnlySnapshot(options.systemPrompt !== undefined ? options.systemPrompt : defaultSystemPrompt());
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
@@ -518,6 +534,23 @@ export class Subject {
 		return this.model;
 	}
 
+	/**
+	 * Host 在资源发布边界替换当前 System 快照（S1/S2）：下一次请求准备开始时固定
+	 * 新版本。已构建或发往 Provider 的请求不可原地改写——这里只换身份，不动历史。
+	 * 快照替换使 idle 上下文基线失效；正在装配的请求靠版本一致性检查重新装配。
+	 */
+	setSystemSnapshot(snapshot: SystemSnapshot): void {
+		if (
+			this.systemSnapshot.revision === snapshot.revision &&
+			this.systemSnapshot.text === snapshot.text &&
+			this.systemSnapshot.source === snapshot.source
+		)
+			return;
+		this.systemSnapshot = snapshot;
+		this.invalidateContext();
+		if (!this.isBusy()) void this.getContextSnapshot().catch((error) => this.reportError(error));
+	}
+
 	getThinkingLevel(): ThinkingLevel {
 		return this.thinkingLevel;
 	}
@@ -554,7 +587,13 @@ export class Subject {
 		// preview：与活动请求同一套纯读装配（含 Context Source 快照），但使用独立身份，
 		// 不冒充"刚刚实际发送"。
 		const requestId = `preview-${randomUUID()}`;
-		const { projection, assembly, history } = await this.prepareProjection(model, this.systemPrompt);
+		// 预览适用同一版本纪律：装配期间资源换代则放弃候选重新装配（有限次）；
+		// 持续并发修改时采用最后一次候选，其版本身份在结果中如实标注。
+		let prepared = await this.prepareProjection(model, this.systemSnapshot);
+		for (let attempt = 0; attempt < 2 && this.systemSnapshot !== prepared.system; attempt++) {
+			prepared = await this.prepareProjection(model, this.systemSnapshot);
+		}
+		const { projection, assembly, history, system } = prepared;
 		const measurement = measureRequestContext(
 			projection,
 			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
@@ -569,6 +608,8 @@ export class Subject {
 			basis: "preview",
 			requestId,
 			assembly,
+			systemRevision: system.revision,
+			systemSource: system.source,
 		};
 	}
 
@@ -593,6 +634,8 @@ export class Subject {
 			availableInputBudget: inspection.inputBudget,
 			measurementKind: inspection.measurement.kind,
 			segments: inspection.measurement.segments,
+			systemRevision: inspection.systemRevision,
+			systemSource: inspection.systemSource,
 		};
 	}
 
@@ -795,7 +838,7 @@ export class Subject {
 		});
 		// 直启必须同步占住 activeRun：调用方是 `void pushInput(); waitForIdle()`，
 		// 中间夹一次 await 会让 waitForIdle 扑空、把这一轮当成已经结束。
-		if (requestedMode === "direct" && !busy && this.queues.size === 0)
+		if (requestedMode === "direct" && !busy && this.queues.size === 0 && !this.queueHold)
 			return this.startRun(normalized, queued, { needsEnqueueEvent: true });
 		return this.enqueueRecord(queued).then(async () => {
 			if (!this.isBusy()) await this.resumeQueued();
@@ -922,8 +965,9 @@ export class Subject {
 		if (!queued) return;
 		// idle 且队列空时同步直启：startRun 首行就占住 activeRun，emitEvent 返回时
 		// 这一轮已在处理，waitForIdle() 才能覆盖它。先入队再异步 resumeQueued 会
-		// 留下 activeRun 的空窗，把尚未提交的回合误判成已经结束。
-		if (!this.isBusy() && this.queues.size === 0)
+		// 留下 activeRun 的空窗，把尚未提交的回合误判成已经结束。换代屏障期间
+		// 不直启：输入落队等待屏障解除后的显式恢复。
+		if (!this.isBusy() && this.queues.size === 0 && !this.queueHold)
 			return this.startRun(queued.source?.kind === "runtime" ? undefined : queued.text, queued, {
 				needsEnqueueEvent: true,
 			}).catch((error) => {
@@ -1293,7 +1337,7 @@ export class Subject {
 		} catch (snapshotError) {
 			this.reportError(snapshotError);
 		}
-		if (success && !this.interrupted && this.queues.size > 0) {
+		if (success && !this.interrupted && !this.queueHold && this.queues.size > 0) {
 			try {
 				await this.resumeQueued();
 			} catch (resumeError) {
@@ -1303,6 +1347,7 @@ export class Subject {
 		}
 		// 失败或被打断的回合不自动续跑队列：失败续跑会错误循环，打断续跑违背用户停止意图。
 		// 队列由 pending 卡片诚实呈现，等待显式投递（Esc+文本 / Ctrl+Enter / Alt+↑ 撤回）。
+		// 换代屏障期间同样暂停：队列保持原状，等待 Host 解除屏障后显式恢复。
 		await this.dispatch({ type: "agent_settled", turnSeq: turnNumber });
 	}
 
@@ -1312,8 +1357,33 @@ export class Subject {
 		return this.resumeQueued();
 	}
 
+	/**
+	 * 换代续队屏障（S3）：受理扩展 Reload Intent 时由 Host 设置——回合已结算、
+	 * 自动续队之前跳过 resumeQueued，等待 Host 在输入准入门内完成换代后再显式恢复。
+	 * 屏障不消费、不重排、不撤回已有队列输入。
+	 */
+	holdQueueResume(): void {
+		this.queueHold = true;
+	}
+
+	/** 解除续队屏障；队列恢复由 Host 在发布完成事实后显式触发。 */
+	releaseQueueResume(): void {
+		this.queueHold = false;
+	}
+
+	/**
+	 * Host 内部可信路径：把输入存入现有队列但不自动启动回合（不直启、不续队）。
+	 * 换代完成报告在屏障解除前先落队，随后 Host 解除准入门并恢复队列——
+	 * 不经会被自身 Reload 门拒绝的扩展 pi.submitInput() 路径。
+	 */
+	acceptDeferred(input: AgentInput, owner?: InputDeliveryOwner): Promise<void> {
+		const queued = this.admitInput(input, owner);
+		if (!queued) return Promise.resolve();
+		return this.enqueueRecord(queued);
+	}
+
 	private async resumeQueued(): Promise<void> {
-		if (this.activity || this.resumingQueue) return;
+		if (this.activity || this.resumingQueue || this.queueHold) return;
 		this.resumingQueue = true;
 		try {
 			await this.drainQueuesIntoRun();
@@ -1361,7 +1431,7 @@ export class Subject {
 				await this.emitInterrupted();
 				return { kind: "aborted" };
 			}
-			const { projection, assembly } = prepared;
+			const { projection, assembly, system } = prepared;
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			// 活动请求观察：preflight 完成后、调用 Provider 前固定（active_semantic）；
 			// Wire 摘要由 Provider Adapter 在协议编码完成之后回填。
@@ -1370,6 +1440,8 @@ export class Subject {
 				modelKey: projection.modelKey,
 				projection,
 				assembly,
+				systemRevision: system.revision,
+				systemSource: system.source,
 			};
 			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(callId, (event) => this.dispatchOutput(event), {
@@ -1480,52 +1552,77 @@ export class Subject {
 		model: Model,
 		turnSignal: AbortSignal,
 	): Promise<
-		{ projection: RequestProjection; assembly: RequestAssemblyTrace; history: readonly ChatMsg[] } | undefined
+		| {
+				projection: RequestProjection;
+				assembly: RequestAssemblyTrace;
+				history: readonly ChatMsg[];
+				system: SystemSnapshot;
+		  }
+		| undefined
 	> {
-		for (let pass = 0; pass <= 1; pass++) {
-			const { projection, assembly, history } = await this.prepareProjection(model, this.systemPrompt, turnSignal);
-			// 投影与测量是同步 CPU（全量历史构建 + JSON 序列化）。不在这里割断，
-			// 事件循环会连同 TUI 心跳、输出流一起被冻住（实测单次 1.4s）。
-			await yieldToLoop();
-			if (this.interrupted || turnSignal.aborted) return undefined;
-			const measurement = measureRequestContext(
-				projection,
-				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
-				{ countThinking: (model.thinkingReplay ?? "none") !== "none" },
-			);
-			const decision = await this.runtimeHooks.turn.preflight({
-				projection,
-				history,
-				measurement,
-				pass,
-				signal: turnSignal,
-			});
-			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
-			if (decision.action === "rebuild") {
-				if (pass >= 1) throw new Error(decision.reason ?? "请求重建后仍需要再次重建");
-				continue;
+		// 请求级版本一致性检查（S2）：装配期间资源换代（System/文件式 Guidance/Skill
+		// 在同一发布边界原子替换）则放弃该次候选并从 Canonical History 重新装配。
+		// 持续并发修改时有限重试后明确失败，不发送混版请求。
+		for (let versionAttempt = 0; versionAttempt < 3; versionAttempt++) {
+			const system = this.systemSnapshot;
+			for (let pass = 0; pass <= 1; pass++) {
+				const { projection, assembly, history } = await this.prepareProjection(model, system, turnSignal);
+				// 投影与测量是同步 CPU（全量历史构建 + JSON 序列化）。不在这里割断，
+				// 事件循环会连同 TUI 心跳、输出流一起被冻住（实测单次 1.4s）。
+				await yieldToLoop();
+				if (this.interrupted || turnSignal.aborted) return undefined;
+				if (this.systemSnapshot !== system) break;
+				const measurement = measureRequestContext(
+					projection,
+					this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
+					{ countThinking: (model.thinkingReplay ?? "none") !== "none" },
+				);
+				const decision = await this.runtimeHooks.turn.preflight({
+					projection,
+					history,
+					measurement,
+					pass,
+					signal: turnSignal,
+				});
+				if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
+				if (decision.action === "rebuild") {
+					if (pass >= 1) throw new Error(decision.reason ?? "请求重建后仍需要再次重建");
+					continue;
+				}
+				const budget = inputTokenBudget(model, projection.thinkingLevel);
+				if (budget !== undefined && measurement.inputTokens > budget) {
+					throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
+				}
+				this.projection.validateContext(projection.messages, { model, tools: projection.tools });
+				// 下面的 provider 调用要先对 1MB 请求体做守卫克隆与序列化，同样让一次。
+				await yieldToLoop();
+				if (this.interrupted || turnSignal.aborted) return undefined;
+				// 最后一个 await 之后的复核：Provider 发送前必须确认本次装配归属于
+				// 同一已发布资源版本（Guidance/Skill 与 System 同边界原子替换，版本身份
+				// 未变即未混版）。此后到 streamFn 之间只有同步代码。
+				if (this.systemSnapshot !== system) break;
+				// An active request supersedes every idle inspection that is still in flight.
+				// Otherwise a slower idle measurement can publish after this snapshot and
+				// overwrite the context actually sent to the provider.
+				this.contextInspectionSeq++;
+				this.publishContextSnapshot(
+					this.contextSnapshot(
+						{
+							projection,
+							history,
+							measurement,
+							contextWindow: model.contextWindow,
+							inputBudget: budget,
+							systemRevision: system.revision,
+							systemSource: system.source,
+						},
+						"active_request",
+					),
+				);
+				return { projection, assembly, history, system };
 			}
-			const budget = inputTokenBudget(model, projection.thinkingLevel);
-			if (budget !== undefined && measurement.inputTokens > budget) {
-				throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
-			}
-			this.projection.validateContext(projection.messages, { model, tools: projection.tools });
-			// 下面的 provider 调用要先对 1MB 请求体做守卫克隆与序列化，同样让一次。
-			await yieldToLoop();
-			if (this.interrupted || turnSignal.aborted) return undefined;
-			// An active request supersedes every idle inspection that is still in flight.
-			// Otherwise a slower idle measurement can publish after this snapshot and
-			// overwrite the context actually sent to the provider.
-			this.contextInspectionSeq++;
-			this.publishContextSnapshot(
-				this.contextSnapshot(
-					{ projection, history, measurement, contextWindow: model.contextWindow, inputBudget: budget },
-					"active_request",
-				),
-			);
-			return { projection, assembly, history };
 		}
-		throw new Error("请求准备失败");
+		throw new Error("资源版本在请求装配期间持续变化，已放弃发送以避免混合版本的请求");
 	}
 
 	/**
@@ -1542,9 +1639,14 @@ export class Subject {
 	 */
 	private async prepareProjection(
 		model: Model,
-		systemPrompt: string,
+		system: SystemSnapshot,
 		signal?: AbortSignal,
-	): Promise<{ projection: RequestProjection; assembly: RequestAssemblyTrace; history: readonly ChatMsg[] }> {
+	): Promise<{
+		projection: RequestProjection;
+		assembly: RequestAssemblyTrace;
+		history: readonly ChatMsg[];
+		system: SystemSnapshot;
+	}> {
 		// 1. canonical history → 协议投影（历史 Event Frame 在此形塑；守卫冻结，hook 不可变改）
 		const history = freezeHistory(this.projection.convertToLlm(this.history, { thinkingReplay: model.thinkingReplay }));
 		// 2. History View（单一所有者：Compaction；无提供者时 identity）
@@ -1555,14 +1657,14 @@ export class Subject {
 		const base: RequestProjection = freezeProjection({
 			projectionId: randomUUID(),
 			modelKey: modelKey(model),
-			messages: [{ role: "system", content: systemPrompt }, ...visibleHistory],
+			messages: [{ role: "system", content: system.text }, ...visibleHistory],
 			tools,
 			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 		});
 		await yieldToLoop();
 		// preview 也走同一套纯读装配；inspectRequest 无活动信号，用永不触发的空信号。
 		// 请求已取消时停止继续装配（read 是纯读，但没必要为将丢弃的请求再读一轮）。
-		if (signal?.aborted) return { projection: base, assembly: { sources: [] }, history: visibleHistory };
+		if (signal?.aborted) return { projection: base, assembly: { sources: [] }, history: visibleHistory, system };
 		const collection = await this.runtimeHooks.context.collect({
 			modelKey: modelKey(model),
 			signal: signal ?? new AbortController().signal,
@@ -1571,7 +1673,12 @@ export class Subject {
 			availableToolNames: tools.map((tool) => tool.function.name),
 		});
 		const composed = composeContextSources({ projection: base, collection });
-		return { projection: composed.projection, assembly: composed.assembly, history: visibleHistory };
+		return {
+			projection: composed.projection,
+			assembly: composed.assembly,
+			history: visibleHistory,
+			system,
+		};
 	}
 
 	/** 下一次模型请求会声明的工具：可执行工具 + 这份历史需要的上下文工具。
@@ -2105,6 +2212,15 @@ export class Subject {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** 裸文本 → 兼容 System 快照（Subject 独立创建 / 测试路径；只描述自身正文）。 */
+function subjectOnlySnapshot(text: string): SystemSnapshot {
+	return {
+		text,
+		source: "subject",
+		revision: createHash("sha256").update(text, "utf8").digest("hex"),
+	};
 }
 
 /**

@@ -164,7 +164,10 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	};
 	pi.signal.addEventListener("abort", onAbort);
 
-	// 5. 模型信息环境：cue 语法 Guidance（文件式）+ 主导身体的 Cue 目录 Capability。
+	// 5. 模型信息环境：cue 语法 Guidance（文件式）。
+	//    合法 Cue ID 不再动态注入（S7 收口）：各身体由自己的扩展 Guidance 描述合法
+	//    线索；运行时可用集按需经 body 工具（status）查询，未送达的 cue 由诊断报告
+	//    列出主导身体声明的 cue id。不建立独立 Cue 目录或动态枚举服务。
 	const guidance = pi.provideContext({
 		id: "cue-guide",
 		kind: "guidance",
@@ -173,27 +176,6 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	void guidance.catch((error) =>
 		pi.reportError(`[Embodiment] 线索指南注册失败: ${error instanceof Error ? error.message : String(error)}`),
 	);
-
-	pi.provideContext({
-		id: "body-cues",
-		kind: "capability",
-		read: () => {
-			const primary = router.getPrimaryEndpoint();
-			if (!primary) return null;
-			const state = primary.state();
-			if (!state.online || state.paused) return null;
-			// 按声明顺序最多 6 个合法 Cue ID，附带已声明的简短含义；不编造动作描述。
-			const cues = primary
-				.affordance()
-				.cues.slice(0, 6)
-				.map((cue) => (cue.description ? `${cue.id}（${cue.description}）` : cue.id));
-			if (cues.length === 0) return null;
-			return {
-				text: `主导身体 ${primary.bodyId} 可响应的轻量线索：${cues.join("、")}。`,
-				source: { type: "body.affordance", origin: "internal" },
-			};
-		},
-	});
 
 	const dispose = () => {
 		unshareDispatch();

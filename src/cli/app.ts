@@ -477,6 +477,14 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 							return observation ? toPromptCard(observation, "prepared") : undefined;
 						},
 						inspectRequest: async () => toPromptCard(await host.inspectRequest(), "preview"),
+						publishedSystem: async () => {
+							const snapshot = host.getSystemSnapshot();
+							return {
+								revision: snapshot.revision,
+								source: snapshot.source,
+								...(snapshot.entry !== undefined ? { entry: snapshot.entry } : {}),
+							};
+						},
 					},
 				},
 			});
@@ -566,6 +574,8 @@ function toPromptCard(
 			readonly messages: readonly { readonly role: string; readonly content: unknown }[];
 			readonly tools: readonly unknown[];
 		};
+		systemRevision?: string;
+		systemSource?: string;
 		measurement?: { readonly inputTokens: number; readonly kind: "exact" | "approximate" };
 		assembly?: {
 			readonly sources: readonly {
@@ -597,6 +607,8 @@ function toPromptCard(
 		systemPrompt: typeof system?.content === "string" ? system.content : "",
 		messageCount: messages.length,
 		toolCount: source.projection.tools.length,
+		...(source.systemRevision !== undefined ? { systemRevision: source.systemRevision } : {}),
+		...(source.systemSource !== undefined ? { systemSource: source.systemSource } : {}),
 		...(source.measurement ? { measurement: source.measurement } : {}),
 		sources: source.assembly?.sources ?? [],
 		...(source.wire ? { wire: source.wire.payload } : {}),

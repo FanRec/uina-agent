@@ -312,14 +312,15 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | `/effort [档位]` | 无参打开强度滑块；有参直接设定 |
 | `/compact [要求]` | 压缩会话历史，释放上下文空间 |
 | `/session` | 查看用量与上下文构成 |
-| `/prompt` | 查看最近一次请求的系统提示词快照与外部来源 |
+| `/prompt` | 查看稳定 System（含 Runtime Protocol）、Guidance 来源与已发布资源版本 |
+| `/context` | 查看完整请求装配（消息/工具/来源片段；区分真实请求与预览） |
 | `/history`、`/branches` | 会话历史与分支 |
 | `/trajectory` | 审计轨迹时序 |
 | `/rewind <节点 id> <原因>` | 回溯主线（不撤销文件修改与已发出的外部调用） |
 | `/think` | 展开或折叠深度思考 |
 | `/clear` | 清空屏幕转录 |
 | `/gutter` | 切换右侧导航轨样式 |
-| `/reload` | 重载项目与本地扩展 |
+| `/reload` | 重载项目扩展并刷新本地资源（`/reload resources` 仅轻量刷新资源） |
 | `/quit`、`/exit` | 等待当前轮次与写入完成后退出 |
 
 ## 内置工具

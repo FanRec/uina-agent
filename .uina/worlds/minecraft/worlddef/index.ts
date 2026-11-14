@@ -238,14 +238,14 @@ export function createMinecraftWorld(
 			// 静态资源与包一起发布（copy-assets.mjs）；缺文件必须显式失败，不能静默少一段教学。
 			const environmentText = await readFile(new URL("./ENV_PROMPT.md", import.meta.url), "utf8");
 			// 信息注入体系：静态指南按世界激活生命周期注册为 guidance（描述"有连接时如何
-			// 行动"，不宣称当前已连接）；简短 capability 让模型无需查询即可判断当前是否
+			// 行动"，不宣称当前已连接）；简短 Observation 让模型无需查询即可判断当前是否
 			// 可操作。两者都随本激活作用域撤销；长目录、Program、建造指南继续由 describe/
 			// Guide/Library 按需读取，不常驻注入。
 			if (ctx.provideContext) {
 				ctx.provideContext({ id: "guidance", kind: "guidance", text: environmentText });
 				ctx.provideContext({
-					id: "capability",
-					kind: "capability",
+					id: "session-status",
+					kind: "observation",
 					read: () => {
 						// 同步纯读：只读当前连接状态，不触发请求、不改状态。
 						const status = controller?.status();
