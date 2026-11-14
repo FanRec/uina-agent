@@ -221,16 +221,29 @@ export async function loadSnapshot(sources: readonly SkillSource[]): Promise<Loa
 
 /**
  * 从 cwd 到 Git 根之间的 `.agents/skills/` 层级：越靠近 cwd 越优先。
- * 不在 Git 仓库时只返回 cwd 一层。返回按近→远排序的目录列表。
+ * 不在 Git 仓库（祖先链上无 .git）时只返回 cwd 一层（设计 §4：不越出仓库边界）。
+ * 返回按近→远排序的目录列表。
  */
 export function agentsSkillAncestors(cwd: string, isGitRoot: (candidate: string) => boolean): string[] {
-	const directories: string[] = [];
+	// 先定位包含 cwd 的最近 Git 根；找不到（非 Git 目录）时边界就是 cwd 本身。
 	let current = resolve(cwd);
+	let boundary = current;
+	for (;;) {
+		if (isGitRoot(current)) {
+			boundary = current;
+			break;
+		}
+		const parent = resolve(current, "..");
+		if (parent === current) break; // 文件系统根：无 Git 仓库
+		current = parent;
+	}
+	const directories: string[] = [];
+	current = resolve(cwd);
 	for (;;) {
 		directories.push(join(current, ".agents", "skills"));
-		if (isGitRoot(current)) break;
+		if (current === boundary) break;
 		const parent = resolve(current, "..");
-		if (parent === current) break; // 文件系统根
+		if (parent === current) break;
 		current = parent;
 	}
 	return directories;

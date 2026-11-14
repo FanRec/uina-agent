@@ -214,6 +214,15 @@ describe("来源优先级与冲突", () => {
 		expect(snapshot.entries.find((entry) => entry.name === "far")!.sourceId).toContain("#2");
 	});
 
+	it("非 Git 目录只扫 cwd 一层（设计 §4：不越出仓库边界，不扫到文件系统根）", async () => {
+		root = await mkdtemp(join(tmpdir(), "uina-skills-"));
+		const deep = join(root, "plain", "project", "deep");
+		await mkdir(deep, { recursive: true });
+		await mkdir(join(root, "plain", ".agents", "skills"), { recursive: true });
+		const isGitRoot = (candidate: string): boolean => existsSync(join(candidate, ".git"));
+		expect(agentsSkillAncestors(deep, isGitRoot)).toEqual([join(deep, ".agents", "skills")]);
+	});
+
 	it("同名同优先级先声明者优先；同一真实目录重复声明只扫一次", async () => {
 		root = await mkdtemp(join(tmpdir(), "uina-skills-"));
 		await writeSkill("same", ["name: same", "description: 第一份"], "正文", { dir: join(root, "shared", "same") });
