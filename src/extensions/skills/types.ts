@@ -18,8 +18,6 @@ export interface SkillSource {
 
 /** 一代快照内的单个 Skill 条目（modelInvocable || userInvocable 才进入集合）。 */
 export interface SkillEntry {
-	/** 来源身份 + 规范化真实路径。 */
-	id: string;
 	name: string;
 	description: string;
 	/** Skill 目录真实路径（相对引用与资源读取的根）。 */
@@ -53,8 +51,6 @@ export interface SkillDiagnostic {
 }
 
 export interface SkillSnapshot {
-	/** 内存代次计数（capability 内递增）；内容身份看 revision。 */
-	generation: number;
 	entries: readonly SkillEntry[];
 	diagnostics: readonly SkillDiagnostic[];
 }

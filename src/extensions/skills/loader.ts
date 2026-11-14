@@ -27,7 +27,6 @@ interface RawSkill {
 	raw: string;
 }
 
-/** 快照形状与 SkillSnapshot 一致；generation 是占位（发布方以自己的内存代次重建）。 */
 export interface LoadSnapshotResult {
 	snapshot: SkillSnapshot;
 }
@@ -186,7 +185,6 @@ export async function loadSnapshot(sources: readonly SkillSource[]): Promise<Loa
 			continue;
 		}
 		const entry: SkillEntry = {
-			id: `${raw.sourceId}:${raw.root}`,
 			name: skill.name,
 			description: skill.description,
 			root: raw.root,
@@ -212,7 +210,6 @@ export async function loadSnapshot(sources: readonly SkillSource[]): Promise<Loa
 	entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return {
 		snapshot: Object.freeze({
-			generation: 0,
 			entries: Object.freeze(entries),
 			diagnostics: Object.freeze(diagnostics),
 		}),

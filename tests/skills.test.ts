@@ -281,7 +281,7 @@ describe("Catalog 渲染", () => {
 		expect(catalog).toContain("条件说明");
 		expect(catalog).not.toContain("manual");
 		expect(catalog).toContain("read_skill");
-		const empty = renderCatalog({ generation: 0, entries: [], diagnostics: [] });
+		const empty = renderCatalog({ entries: [], diagnostics: [] });
 		expect(empty).toBe("");
 	});
 });
@@ -396,7 +396,7 @@ describe("/skills 本地列表", () => {
 		expect(text).toContain("listed（user）· workspace#0");
 		expect(text).toContain("诊断（错误）:");
 		expect(text).toContain("缺少非空 description");
-		const empty = formatSkillList({ generation: 0, entries: [], diagnostics: [] });
+		const empty = formatSkillList({ entries: [], diagnostics: [] });
 		expect(empty).toContain("当前没有可用 Skill。");
 	});
 });

@@ -11,13 +11,6 @@
 import { listResources, resolveSkill } from "./read.js";
 import type { SkillEntry, SkillSnapshot } from "./types.js";
 
-export class SkillInvocationError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "SkillInvocationError";
-	}
-}
-
 interface ParsedArgs {
 	positional: string[];
 	raw: string;
@@ -55,7 +48,7 @@ export function parseInvocationArguments(raw: string): ParsedArgs {
 		current += char;
 		started = true;
 	}
-	if (quote) throw new SkillInvocationError(`参数引号不平衡：${quote} 未闭合`);
+	if (quote) throw new Error(`参数引号不平衡：${quote} 未闭合`);
 	if (started || current) positional.push(current);
 	return { positional, raw };
 }
@@ -175,10 +168,10 @@ export async function expandInvocation(
 ): Promise<SkillInvocation> {
 	const entry = resolveSkill(snapshot, name);
 	if (!entry) {
-		throw new SkillInvocationError(`未知 Skill: ${name}。用 /skills 查看当前可用列表。`);
+		throw new Error(`未知 Skill: ${name}。用 /skills 查看当前可用列表。`);
 	}
 	if (!entry.userInvocable) {
-		throw new SkillInvocationError(`Skill "${name}" 不允许用户显式调用（user-invocable: false）。`);
+		throw new Error(`Skill "${name}" 不允许用户显式调用（user-invocable: false）。`);
 	}
 	const args = parseInvocationArguments(rawArgs);
 	const declaredNames = entry.argumentNames ?? [];
@@ -193,12 +186,7 @@ export async function expandInvocation(
 		// 正文没有有效参数占位符：把非空原始参数串附在末尾作为任务要求，避免重复输入。
 		text += `\n\n[操作者参数] ${args.raw}`;
 	}
-	let listing: string[] = [];
-	try {
-		listing = [...(await listResources(entry)).entries].filter((item) => !item.endsWith("/"));
-	} catch {
-		listing = [];
-	}
+	const listing = [...(await listResources(entry)).entries].filter((item) => !item.endsWith("/"));
 	const guidance = resourceGuidance(entry, listing);
 	const expanded = [
 		`[Skill 调用: ${entry.name}（revision ${entry.revision.slice(0, 12)}，来源 ${entry.sourceId}）]`,

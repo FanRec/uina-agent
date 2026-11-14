@@ -17,7 +17,7 @@
 import type { ToolExecutionResult } from "../../tools/broker.js";
 import type { ExtensionAPI, ExtensionActivation, ExtensionTeardown } from "../runner.js";
 import { renderCatalog } from "./catalog.js";
-import { expandInvocation, SkillInvocationError } from "./invoke.js";
+import { expandInvocation } from "./invoke.js";
 import { loadSnapshot } from "./loader.js";
 import { presentSkillBody, readSkillResource, resolveSkill } from "./read.js";
 import type { SkillSnapshot, SkillSource } from "./types.js";
@@ -30,8 +30,6 @@ export interface SkillsCapability {
 	 * 无可用 Skill 时撤下工具与 Guidance；发布失败撤下过时可见集后重抛。
 	 */
 	refresh(sources: readonly SkillSource[]): Promise<void>;
-	/** 当前快照（诊断与 /skills 展示用；未刷新过时为 undefined）。 */
-	snapshot(): SkillSnapshot | undefined;
 	/** 结构化显式调用展开（网关 skill.invoke 与 /skill 命令共用同一函数）。 */
 	invoke(name: string, args: string): Promise<CommandAgentInputSpec>;
 }
@@ -45,7 +43,6 @@ export interface CommandAgentInputSpec {
 
 export function createSkillsCapability(): SkillsCapability {
 	let current: SkillSnapshot | undefined;
-	let generation = 0;
 	let disposeGuidance: (() => void) | undefined;
 	let disposeTool: (() => void) | undefined;
 	let active = false;
@@ -138,7 +135,7 @@ export function createSkillsCapability(): SkillsCapability {
 			handler: async (args) => {
 				const trimmed = args.trim();
 				const name = /^\S+/.exec(trimmed)?.[0];
-				if (!name) throw new SkillInvocationError("用法: /skill <name> [args...]。用 /skills 查看可用列表。");
+				if (!name) throw new Error("用法: /skill <name> [args...]。用 /skills 查看可用列表。");
 				const rest = trimmed.slice(name.length).replace(/^\s+/, "");
 				const expanded = await invoke(name, rest);
 				return { kind: "agent-input", text: expanded.text, displayText: expanded.displayText, data: expanded.data };
@@ -164,7 +161,6 @@ export function createSkillsCapability(): SkillsCapability {
 		// 先完整构建候选快照与 Guidance 文本；失败不触碰现行可见集。
 		const loaded = await loadSnapshot(sources);
 		const next: SkillSnapshot = Object.freeze({
-			generation: ++generation,
 			entries: loaded.snapshot.entries,
 			diagnostics: loaded.snapshot.diagnostics,
 		});
@@ -197,11 +193,11 @@ export function createSkillsCapability(): SkillsCapability {
 
 	const invoke = async (name: string, args: string): Promise<CommandAgentInputSpec> => {
 		const snapshot = current;
-		if (!snapshot) throw new SkillInvocationError("Skill 资源尚未装配完成，请稍后重试。");
+		if (!snapshot) throw new Error("Skill 资源尚未装配完成，请稍后重试。");
 		return expandInvocation(snapshot, name, args);
 	};
 
-	return { activate, refresh, snapshot: () => current, invoke };
+	return { activate, refresh, invoke };
 }
 
 /** /skills 本地列表文本：名称、来源与诊断；错误信息包含 Skill 名称和来源。 */

@@ -8,7 +8,7 @@
  */
 
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { looksBinary, truncateReadLines } from "../workspace-tools/read-truncate.js";
 import type { SkillEntry, SkillSnapshot } from "./types.js";
 
@@ -64,38 +64,27 @@ export async function listResources(entry: SkillEntry): Promise<ResourceListing>
 	return { entries: Object.freeze(found), truncated };
 }
 
-export class SkillResourceError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "SkillResourceError";
-	}
-}
-
 /** 解析并校验附属资源路径：相对、不越出 Skill 根真实路径、必须是普通文件。 */
 async function resolveResource(entry: SkillEntry, resource: string): Promise<string> {
-	if (!resource.trim()) throw new SkillResourceError("resource 不能为空");
-	if (resource.includes("\\") && sep === "/") {
-		// 非 Windows 平台不接受反斜杠路径（避免不同平台的分隔符歧义）。
-		throw new SkillResourceError(`resource 必须是相对路径: ${resource}`);
-	}
+	if (!resource.trim()) throw new Error("resource 不能为空");
 	const candidate = resolve(entry.root, resource);
 	const rel = relative(entry.root, candidate);
 	if (rel.startsWith("..") || isAbsoluteLike(rel) || rel === "") {
-		throw new SkillResourceError(`resource 越出 Skill 根目录: ${resource}`);
+		throw new Error(`resource 越出 Skill 根目录: ${resource}`);
 	}
 	let realCandidate: string;
 	try {
 		realCandidate = await realpath(candidate);
 	} catch (error) {
-		throw new SkillResourceError(`resource 不存在或不可访问: ${resource}（${String(error)}）`);
+		throw new Error(`resource 不存在或不可访问: ${resource}（${String(error)}）`);
 	}
 	const realRel = relative(entry.root, realCandidate);
 	if (realRel.startsWith("..") || isAbsoluteLike(realRel) || realRel === "") {
-		throw new SkillResourceError(`resource 经符号链接越出 Skill 根目录: ${resource}`);
+		throw new Error(`resource 经符号链接越出 Skill 根目录: ${resource}`);
 	}
 	const fileStat = await stat(realCandidate).catch(() => undefined);
 	if (!fileStat?.isFile()) {
-		throw new SkillResourceError(`resource 必须是普通文件（不是目录或其他类型）: ${resource}`);
+		throw new Error(`resource 必须是普通文件（不是目录或其他类型）: ${resource}`);
 	}
 	return realCandidate;
 }
@@ -119,7 +108,7 @@ export async function readSkillResource(
 	const file = await resolveResource(entry, resource);
 	const buffer = await readFile(file);
 	if (looksBinary(buffer)) {
-		throw new SkillResourceError(
+		throw new Error(
 			`疑似二进制文件，read_skill 拒绝读为文本: ${resource}（脚本执行、图片等由相应工具按其自身权限处理）`,
 		);
 	}
@@ -143,7 +132,7 @@ export async function readSkillResource(
 	}
 	const start = Math.max(1, offset ?? 1) - 1;
 	if (start >= lines.length) {
-		throw new SkillResourceError(`offset ${offset} 超出文件末尾（共 ${lines.length} 行）`);
+		throw new Error(`offset ${offset} 超出文件末尾（共 ${lines.length} 行）`);
 	}
 	const end = limit === undefined ? lines.length : Math.min(start + Math.max(1, limit), lines.length);
 	const selected = lines.slice(start, end);
@@ -180,7 +169,7 @@ export interface SkillBodyPresentation {
  * 包装明确其为 Skill 资源，不是新系统指令。
  */
 export async function presentSkillBody(entry: SkillEntry): Promise<SkillBodyPresentation> {
-	const listing = await listResources(entry).catch(() => ({ entries: [], truncated: false }) as ResourceListing);
+	const listing = await listResources(entry);
 	const resourceLines =
 		listing.entries.length > 0
 			? listing.entries.map((item) => `- ${item}`).join("\n") + (listing.truncated ? "\n- …（列表已截断）" : "")
